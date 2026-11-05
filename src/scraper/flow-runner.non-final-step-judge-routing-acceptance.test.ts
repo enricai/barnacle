@@ -291,6 +291,7 @@ describe("flow-runner non-final step judge routing acceptance", () => {
       signalCounter: { n: 0 },
       preNetworkCount: 0,
       preVisibleTextSignature: PRE_SIGNATURE,
+      settledPostVisibleText: POST_SIGNATURE,
       submitInput: {
         pageUrl: URL,
         pageTitle: "Sign In",
@@ -321,6 +322,7 @@ describe("flow-runner non-final step judge routing acceptance", () => {
       signalCounter: { n: 0 },
       preNetworkCount: 0,
       preVisibleTextSignature: "4:Step",
+      settledPostVisibleText: "Review and submit",
       submitInput: {
         pageUrl: URL,
         pageTitle: "t",

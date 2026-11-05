@@ -303,6 +303,7 @@ describe("judgeStepOutcome — stale title routing", () => {
       signalCounter: { n: 0 },
       preNetworkCount: 0,
       preVisibleTextSignature: `${BEFORE_TEXT.length}:${BEFORE_TEXT}`,
+      settledPostVisibleText: LIVE_TEXT,
       preVisibleText: BEFORE_TEXT,
       submitInput: SUBMIT_INPUT,
     });

@@ -54,6 +54,7 @@ function run(reads: string[], waits: number[]): ReturnType<typeof judgeStepOutco
     signalCounter: { n: 0 },
     preNetworkCount: 0,
     preVisibleTextSignature: "5:start",
+    settledPostVisibleText: (reads[reads.length - 1] ?? ""),
     submitInput: SUBMIT_INPUT,
   });
 }
@@ -100,6 +101,7 @@ describe("judgeStepOutcome re-judge", () => {
       signalCounter: { n: 0 },
       preNetworkCount: 0,
       preVisibleTextSignature: `${preVisibleText.length}:${preVisibleText.slice(0, 200)}`,
+      settledPostVisibleText: afterText,
       preVisibleText,
       submitInput: { ...SUBMIT_INPUT, pageTitle: "Sign In" },
     });
