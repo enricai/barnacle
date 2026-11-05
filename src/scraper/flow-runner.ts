@@ -15961,7 +15961,7 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
-    await awaitNativeCaptchaSolve(page);
+          await awaitNativeCaptchaSolve(page);
           const { midFlowSubmit: retryMidFlowSubmit, advanceBaseline: retryAdvanceBaseline } =
             deriveMidFlowJudgement(retryResolvedElementIsSubmitShaped, pre);
           const { post: retryPost, pageAdvanced: retryPageAdvanced } =
