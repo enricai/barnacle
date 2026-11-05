@@ -57,14 +57,14 @@ function makeTarget() {
 describe("flow-runner xpath call sites route through the shadow resolver", () => {
   it("selectOption verification resolves its xpath via the resolver", async () => {
     const { target, asked } = makeTarget();
-    const action = { selector: SELECTOR, method: "selectOption", arguments: ["T"] } as Action;
+    const action = { selector: SELECTOR, method: "selectOption", arguments: ["T"] } as unknown as Action;
     expect(await verifyDomEffect(target, action)).toBe(true);
     expect(asked).toContain(XPATH);
   });
 
   it("click verification resolves disabled/type/aria/fingerprint probes via the resolver", async () => {
     const { target, asked, exprs } = makeTarget();
-    const action = { selector: SELECTOR, method: "click", arguments: [] } as Action;
+    const action = { selector: SELECTOR, method: "click", arguments: [] } as unknown as Action;
     await verifyDomEffect(target, action);
     expect(exprs.length).toBeGreaterThan(1);
     expect(asked.length).toBeGreaterThan(1);
