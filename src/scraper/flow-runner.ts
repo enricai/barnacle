@@ -4351,7 +4351,7 @@ export async function fillTextDatepickerInput(
   selector: string,
   value: string
 ): Promise<TextDatepickerFillResult | null> {
-  const xpath = xpathBody(selector);
+  const xpath = xpathBody(selector, target);
   if (!xpath) return null;
   const parts = parseDatepickerValue(value);
   if (!parts) return null;
@@ -4486,7 +4486,7 @@ export async function isDateSegmentAtSelector(
   target: FrameTarget,
   selector: string
 ): Promise<boolean> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (xpath === null) return false;
   const expr = `(() => {
     const result = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
@@ -4528,7 +4528,7 @@ export async function verifyFillReadback(
   selector: string,
   expectedValue: string
 ): Promise<VerifyFillReadbackResult | null> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (xpath === null) return null;
   const expr = `(() => {
     const xpath = ${JSON.stringify(xpath)};
@@ -4613,7 +4613,7 @@ export async function verifyPromptSelectorCommitted(
   selector: string,
   requestedOption?: string | null
 ): Promise<VerifyPromptSelectorCommittedResult | null> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (xpath === null) return null;
   const expr = `(() => {
     const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
@@ -4717,8 +4717,29 @@ const STATE_CLASS_METHODS = new Set([
  * `evaluate` expression or wrapped in further xpath. Returns null for
  * css/role/text selectors so callers fall back to a non-xpath code path.
  */
-function xpathBody(selector: string): string | null {
-  return selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
+function xpathBody(selector: string, target?: FrameTarget): string | null {
+  const body = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
+  return body === null ? null : toFrameRelativeXpath(body, target);
+}
+
+/**
+ * Stagehand resolves xpaths in the TOP-document coordinate system, so an
+ * element inside an iframe looks like
+ * `/html[1]/body[1]/main[1]/iframe[1]/html[1]/body[1]/div[2]/a[1]`
+ * (e.g. an iframe on an example.com page). `FrameTarget.evaluate` and the
+ * baseline map ({@link SELECTION_STATE_MAP_EXPR}) run inside the frame's own
+ * document, where that path is `/html[1]/body[1]/div[2]/a[1]`. This strips
+ * the prefix up to the last `/iframe[n]` hop so lookup keys and in-frame
+ * `document.evaluate` agree. Main-document targets (no resolved frame and no
+ * frame selector) and xpaths with no iframe hop are returned unchanged.
+ */
+export function toFrameRelativeXpath(xpath: string, target?: FrameTarget): string {
+  if (!target || (!target.frame && !target.frameSelector)) return xpath;
+  const re = /\/iframe(?:\[\d+\])?(\/html(?:\[\d+\])?(?:\/|$))/gi;
+  let cut = -1;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xpath)) !== null) cut = m.index + m[0].length - m[1].length;
+  return cut < 0 ? xpath : xpath.slice(cut);
 }
 
 /**
@@ -4845,9 +4866,11 @@ export function stepQuotesValueNotControlName(step: string): boolean {
  * `(`); returns null for every other form so the reader resolves nothing rather
  * than evaluating garbage.
  */
-function xpathBodyForEvaluate(selector: string): string | null {
+function xpathBodyForEvaluate(selector: string, target?: FrameTarget): string | null {
   const stripped = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : selector;
-  return stripped.startsWith("/") || stripped.startsWith("(") ? stripped : null;
+  return stripped.startsWith("/") || stripped.startsWith("(")
+    ? toFrameRelativeXpath(stripped, target)
+    : null;
 }
 
 /**
@@ -5146,7 +5169,7 @@ async function readElementSelectionFingerprint(
   target: FrameTarget,
   selector: string
 ): Promise<ElementSelectionFingerprint | null> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (!xpath) return null;
   try {
     return asSelectionFingerprint(await target.evaluate(elementSelectionFingerprintExpr(xpath)));
@@ -5173,7 +5196,7 @@ async function resolvedClickTargetStillPresent(
   target: FrameTarget,
   selector: string
 ): Promise<boolean> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (!xpath) return true;
   const expr = `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); return r !== null; })()`;
   try {
@@ -5221,7 +5244,7 @@ async function resolvedClickTargetIsSubmitShaped(
   xpathTail: string | null = null,
   phrases: string[] = []
 ): Promise<boolean> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (!xpath) return false;
   const expr = `(() => {
     const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
@@ -5306,7 +5329,7 @@ async function resolvedClickUsedXpathTailRetarget(
   phrases: string[] = []
 ): Promise<boolean> {
   if (!xpathTail) return false;
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (!xpath) return false;
   const expr = `(() => {
     const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
@@ -10854,7 +10877,7 @@ export async function dispatchJqueryChangeEvent(
   target: FrameTarget,
   selector: string
 ): Promise<void> {
-  const xpath = xpathBody(selector);
+  const xpath = xpathBody(selector, target);
   if (!xpath) return;
   const expr = `(() => {
     const el = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
@@ -10968,7 +10991,7 @@ export async function verifyDomEffect(
         // iff one of those three fields matches.
         const expected = action.arguments?.[0]?.toString().trim() ?? "";
         if (!expected) return false;
-        const xpath = xpathBody(selector);
+        const xpath = xpathBody(selector, target);
         if (!xpath) {
           const current = await locator.inputValue().catch(() => "");
           return current.length > 0;
@@ -11082,7 +11105,7 @@ export async function verifyDomEffect(
         // authoritative signal is that the clicked element's own fingerprint
         // moved, which this reads directly instead of guessing from page-wide
         // DOM deltas.
-        const xpath = xpathBody(selector);
+        const xpath = xpathBody(selector, target);
         if (!xpath) return false;
         // A click that resolved to a disabled (or aria-disabled) target can't
         // have done anything — veto before trusting any other signal below.
@@ -14807,7 +14830,7 @@ export async function executeStepWithHealing(params: {
         // type-safe without restructuring the outer declaration.
         const prior = resolvedAction as Action | null;
         const lastSelector = triedSelectors[triedSelectors.length - 1] ?? prior?.selector ?? null;
-        const xpath = lastSelector ? xpathBody(lastSelector) : null;
+        const xpath = lastSelector ? xpathBody(lastSelector, frameTarget) : null;
         if (!xpath) {
           record.errorMessage = "structured-click: no xpath from prior attempt";
         } else {
@@ -15707,7 +15730,7 @@ export async function executeStepWithHealing(params: {
       resolvedAction?.method === "click" &&
       resolvedAction.selector
     ) {
-      const xpath = xpathBody(resolvedAction.selector);
+      const xpath = xpathBody(resolvedAction.selector, frameTarget);
       if (xpath) {
         try {
           // Trust boundary: xpath is from Stagehand's resolved selector (not
