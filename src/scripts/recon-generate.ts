@@ -11883,7 +11883,9 @@ function collectResponseLeafValuesUncached(capture: Capture): Set<string> {
     if (typeof value === "number") values.add(String(value));
     if (typeof value === "boolean") values.add(String(value));
   }
-  for (const v of Object.values(capture.responseHeaders)) values.add(v);
+  for (const [k, v] of Object.entries(capture.responseHeaders)) {
+    if (!AMBIENT_HEADER_NAMES.has(k.toLowerCase())) values.add(v);
+  }
   return values;
 }
 
@@ -11943,6 +11945,26 @@ function selectDisambiguatedCandidate(
   });
 }
 
+/** Request/response header names whose values are ambient (content
+ * negotiation, cookie jar, caching, auth replay) and never a per-item minted
+ * value; a re-sent cookie must not create a fold dependency. */
+const AMBIENT_HEADER_NAMES = new Set([
+  "content-type", "content-length", "content-encoding", "accept", "accept-encoding",
+  "accept-language", "cookie", "set-cookie", "cache-control", "date", "etag", "vary",
+  "server", "connection", "user-agent", "host", "origin", "referer", "authorization",
+  "expires", "pragma", "last-modified", "transfer-encoding",
+]);
+
+/** True for a value that could plausibly be a minted id: not a trivial
+ * scalar (single character such as "0"/"3"/"true"-like flags) and not a MIME
+ * type such as "application/json". */
+function isMintedDependencyValue(value: string): boolean {
+  if (value.length < 2) return false;
+  if (value === "true" || value === "false" || value === "null") return false;
+  if (/^[a-z]+\/[a-z0-9.+-]+(;.*)?$/i.test(value)) return false;
+  return true;
+}
+
 function computeFoldChain<T extends { capture: Capture }>(
   actions: readonly T[],
   drillStepIndex: number,
@@ -11963,7 +11985,9 @@ function computeFoldChain<T extends { capture: Capture }>(
       const chainStepCapture = actions[chainIndex]!.capture;
       const responseValues = collectResponseLeafValues(chainStepCapture);
       const echoedValues = collectRequestValuesIncludingHeaders(chainStepCapture);
-      return [...responseValues].some((v) => !echoedValues.has(v) && requestValues.has(v));
+      return [...responseValues].some(
+        (v) => isMintedDependencyValue(v) && !echoedValues.has(v) && requestValues.has(v)
+      );
     });
     if (!dependsOnChain) continue;
     chain.push(i);
@@ -12903,7 +12927,9 @@ export function collectRequestValuesIncludingHeaders(capture: Capture): Set<stri
   const cached = requestValuesCache.get(capture);
   if (cached) return cached;
   const values = collectRequestStringValues(capture);
-  for (const v of Object.values(capture.requestHeaders)) values.add(v);
+  for (const [k, v] of Object.entries(capture.requestHeaders)) {
+    if (!AMBIENT_HEADER_NAMES.has(k.toLowerCase())) values.add(v);
+  }
   requestValuesCache.set(capture, values);
   return values;
 }
