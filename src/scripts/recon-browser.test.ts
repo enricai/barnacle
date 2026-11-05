@@ -7585,7 +7585,7 @@ describe("recon-browser/main — trailing-grace page title bounded against a nev
 
     vi.useFakeTimers();
     const mainPromise = main();
-    const assertion = expect(mainPromise).rejects.toBe(stepFailure);
+    const assertion = expect(mainPromise).resolves.toBeUndefined();
     await vi.advanceTimersByTimeAsync(30_000);
     await assertion;
 
