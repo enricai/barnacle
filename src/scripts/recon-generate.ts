@@ -2654,6 +2654,20 @@ export interface GetInputModel {
   pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
 }
 
+/** The model without the query keys `keys` (inputs another mechanism owns). */
+function pruneGetInputModelKeys(model: GetInputModel, keys: readonly string[]): GetInputModel {
+  const drop = new Set(keys);
+  const dropped = model.dynamicFields.filter((d) => drop.has(d.queryKey)).map((d) => d.field);
+  return {
+    ...model,
+    dynamicFields: model.dynamicFields.filter((d) => !drop.has(d.queryKey)),
+    fixedParams: Object.fromEntries(Object.entries(model.fixedParams).filter(([k]) => !drop.has(k))),
+    fieldToQueryKey: Object.fromEntries(
+      Object.entries(model.fieldToQueryKey).filter(([f]) => !dropped.includes(f))
+    ),
+  };
+}
+
 function safeGetFieldIdentifier(key: string): string {
   const parts = key.split(/[^A-Za-z0-9_$]+/).filter(Boolean);
   let id = parts.map((p, i) => (i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1))).join("");
@@ -14421,6 +14435,30 @@ function detectPaginationSignalFromSample(
 }
 
 /**
+ * The request parameters a capture recorded, as the object a paging signal is
+ * read from: its `variables`, else its decoded params. A GET records neither —
+ * its inputs live in the URL query — so the query is read instead, with
+ * numeric values coerced so a `limit=12&offset=0` pair is recognised as the
+ * page-size/skip container it is.
+ */
+function captureRequestParams(capture: Capture | null | undefined): unknown {
+  if (!capture) return null;
+  const recorded = capture.variables ?? capture.decodedParams ?? null;
+  if (recorded !== null || capture.method !== "GET") return recorded;
+  let url: URL;
+  try {
+    url = new URL(capture.url);
+  } catch {
+    return null;
+  }
+  const params: Record<string, unknown> = {};
+  for (const [k, v] of url.searchParams) {
+    params[k] = /^\d+$/.test(v) ? Number(v) : v;
+  }
+  return Object.keys(params).length > 0 ? params : null;
+}
+
+/**
  * Detects whether a read-only GraphQL primary operation exposes a bounded
  * paging signal, per {@link detectPaginationSignalFromSample}. When present,
  * {@link emitContractTs} emits a paging loop instead of a single fixed page.
@@ -14447,7 +14485,10 @@ function detectPaginationSignal(
   for (const capture of allCaptures) {
     if (capture.status < 200 || capture.status >= 300) continue;
     if (operationGroupKey(capture) !== operationIdentity) continue;
-    const siblingSignal = detectPaginationSignalFromSample(capture.responseBody, capture.variables);
+    const siblingSignal = detectPaginationSignalFromSample(
+      capture.responseBody,
+      captureRequestParams(capture)
+    );
     if (siblingSignal) return siblingSignal;
   }
   return null;
@@ -14627,8 +14668,12 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   // truncated=true" apart from "total=436, delivered=436, truncated=false".
   const withTotalOverrideExpr = `{ ...withItems, deliveredCount: itemsById.size, truncated }`;
 
-  return `    const baseVariables = ${gqlVariablesExpr};
-    const PAGE_SIZE = payload.pageSize ?? ${pageSizeDefault};
+  // A GET pages through its URL query, so there is no variables object to carry.
+  const baseVariablesLine =
+    fetchCall.kind === "rest" && fetchCall.getInputModel
+      ? ""
+      : `    const baseVariables = ${gqlVariablesExpr};\n`;
+  return `${baseVariablesLine}    const PAGE_SIZE = payload.pageSize ?? ${pageSizeDefault};
     // Bounded so a paging bug (a total that never converges) can't loop forever.
     const MAX_PAGES = payload.maxPages ?? 50;
     const itemsById = new Map<string, ${itemTypeExpr}>();
@@ -15041,7 +15086,7 @@ export function emitContractTsParts(opts: {
     gql,
     gqlQuery,
     endpointPath,
-    getInputModel = null,
+    getInputModel: derivedGetInputModel = null,
     gqlOperationName,
     gqlVariables,
     allCaptures = [],
@@ -15180,7 +15225,7 @@ export function emitContractTsParts(opts: {
   // the other sources unchanged.
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow) || getInputModel
+    : inputBody || (omitExecuteHttp && isSubmissionFlow) || derivedGetInputModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -15199,6 +15244,16 @@ export function emitContractTsParts(opts: {
     !multiStepBody && paginationOperationIdentity
       ? detectPaginationSignal(responseBody, gqlVariables, paginationOperationIdentity, allCaptures)
       : null;
+  // The paging loop owns the page-size and skip query keys, so they are not
+  // also caller-facing GET inputs (they would be declared in the schema, then
+  // overridden in the URL).
+  const getInputModel: GetInputModel | null =
+    paginationSignal && derivedGetInputModel
+      ? pruneGetInputModelKeys(derivedGetInputModel, [
+          paginationSignal.countKey,
+          paginationSignal.skipKey,
+        ])
+      : derivedGetInputModel;
   // A resolved drill-down fold plan on the single-primary getGql/httpClient
   // hot path (`multiStepBody` unset — see emitMultiStepExecuteHttp for the
   // multi-step equivalent) folds onto `data` in place, exactly as the
@@ -16932,7 +16987,8 @@ function computeFlowPayloadFieldNames(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary | undefined,
   env: NodeJS.ProcessEnv,
-  canonicalise = false
+  canonicalise = false,
+  explicitFieldHonorsOptional = false
 ): { payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
   const payloadFieldNames = new Set<string>();
   // Widest wins: a field is only optional if EVERY step that registers it
@@ -16970,7 +17026,10 @@ function computeFlowPayloadFieldNames(
         // An explicitly declared payloadField is always required at the
         // schema level, independent of step.optional's execution-skip
         // semantics (which the browser-flow step record still honors as-is).
-        registerFieldOptionality(step.payloadField, false);
+        registerFieldOptionality(
+          step.payloadField,
+          explicitFieldHonorsOptional && step.optional === true
+        );
       }
       continue;
     }
@@ -16995,7 +17054,7 @@ function computeFlowPayloadFieldNames(
       // An explicit payloadField annotation is always required at the
       // schema level; only the vocabulary/composite-persona heuristic falls
       // back to step.optional's execution-skip semantics.
-      registerFieldOptionality(field, explicit ? false : optional);
+      registerFieldOptionality(field, explicit && !explicitFieldHonorsOptional ? false : optional);
     }
     if (composite !== null) {
       payloadFieldNames.add(composite.fieldA);
@@ -17069,11 +17128,15 @@ export function emitBrowserFlowTs(opts: {
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
+  // A read-only GET flow's declared facets are URL filters: an absent one
+  // means "no filter", so an explicit payloadField on an optional step stays
+  // optional in the schema instead of being forced required.
   const { payloadFieldNames, optionalPayloadFieldNames } = computeFlowPayloadFieldNames(
     flowSteps,
     vocabulary,
     env,
-    canonicalise
+    canonicalise,
+    readOnlyGetFlow
   );
   for (const field of capturedFallbackFields) {
     if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
@@ -18776,7 +18839,7 @@ async function main(): Promise<void> {
       // detectPaginationSignal walks to find a skip/count container.
       gqlVariables:
         primaryGraphQLOperation?.capture.variables ??
-        (!gql ? (winningCapture?.variables ?? winningCapture?.decodedParams ?? null) : null),
+        (!gql ? captureRequestParams(winningCapture) : null),
       allCaptures: activeCaptures,
       auxFiles,
       multiStepBody,
