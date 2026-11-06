@@ -3659,21 +3659,17 @@ export function extractActionSequence(
 }
 
 /**
- * True when `producer`'s RESPONSE minted an id that `consumer`'s request
- * later sends — in its URL (path/query) or in its request BODY.
+ * Values a capture's response MINTS, as value -> the set of field names the
+ * value appeared under (`{ openings: [{ openingRef: "r1" }] }` -> `"r1"` ->
+ * `{"openingref"}`).
  *
- * Generalizes {@link capturePathAndQueryValuesAppearIn}, which only ever
- * looks at the consumer's URL. A paged-listing step whose response carries
- * the join key (`{ openings: [{ openingRef }] }`) feeds a drill that POSTs
- * that key in its body (`{ openingRef }`), so the URL-only check cannot see
- * the dependency at all and the producer reads as unrelated to the drill.
+ * The field names are carried rather than discarded because
+ * {@link producedValueIsConsumed} needs them: value equality alone is too
+ * weak a join signal, so it requires the producer and consumer to agree on a
+ * name before a shared value counts.
  *
- * This is a DATA-dependency signal, not a path-shape one, which is what
- * makes it safe where path shape is not: two endpoints under a shared
- * single-word parent (`/openings/roster-search/` + `/openings/applicant-detail/`
- * versus `/widget/search-terms/` + `/widget/status-update/`) are
- * indistinguishable by path, but only the genuine pair actually passes a
- * value from one call's response into the next call's request.
+ * Extracted ONCE per capture, not per producer/consumer pair — see
+ * {@link captureConsumedValues} for why that matters.
  */
 function capturesProducedValues(producer: Capture): Map<string, Set<string>> {
   const produced = new Map<string, Set<string>>();
@@ -3758,9 +3754,23 @@ function captureConsumedValues(consumer: Capture): {
 const POSITIONAL_CONSUMER_KEY = "\u0000positional";
 
 /**
- * True when `produced` (a producer response's leaves) and `consumed` (a later
- * request's sent values) share a value — i.e. the producer's call minted
- * something the consumer's call sends.
+ * True when a producer's response minted something a later request sends —
+ * i.e. `produced` ({@link capturesProducedValues}) and `consumed`
+ * ({@link captureConsumedValues}) share a value on terms strong enough to
+ * read as a genuine join rather than a coincidence.
+ *
+ * Generalizes {@link capturePathAndQueryValuesAppearIn}, which only ever
+ * looks at the consumer's URL. A paged-listing step whose response carries
+ * the join key (`{ openings: [{ openingRef }] }`) feeds a drill that POSTs
+ * that key in its body (`{ openingRef }`), so the URL-only check cannot see
+ * the dependency at all and the producer reads as unrelated to the drill.
+ *
+ * This is a DATA-dependency signal, not a path-shape one, which is what
+ * makes it safe where path shape is not: two endpoints under a shared
+ * single-word parent (`/openings/roster-search/` + `/openings/applicant-detail/`
+ * versus `/widget/search-terms/` + `/widget/status-update/`) are
+ * indistinguishable by path, but only the genuine pair actually passes a
+ * value from one call's response into the next call's request.
  */
 function producedValueIsConsumed(
   produced: ReadonlyMap<string, Set<string>>,
