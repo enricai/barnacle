@@ -3033,6 +3033,9 @@ export function deriveGetInputModel(
       const field = nameFor(key);
       dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
+      // One recorded value in every sibling: it is the fallback when the payload omits the field.
+      if (values.size === 1 && (capturesWithKey.get(key) ?? 0) >= siblings.length)
+        recordedQueryValues[key] = [...values][0] as string;
     } else {
       // A constant-valued key is still a caller input; its recorded value is the fallback.
       const field = nameFor(key);
