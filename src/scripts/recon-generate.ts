@@ -6592,12 +6592,14 @@ export function indexStateValues(
       let reused = false;
       for (let j = i + 1; j < captures.length && !reused; j++) {
         const later = captures[j]!;
-        if (later.method === "GET" || later.status < 200 || later.status >= 300) continue;
-        reused = [
-          later.url,
-          later.requestPostData ?? "",
-          ...Object.values(later.requestHeaders),
-        ].some((h) => h.includes(v));
+        if (later.status < 200 || later.status >= 300) continue;
+        // A later GET re-sends a token only through its URL (no body).
+        reused =
+          later.method === "GET"
+            ? later.url.includes(v)
+            : [later.url, later.requestPostData ?? "", ...Object.values(later.requestHeaders)].some(
+                (h) => h.includes(v)
+              );
       }
       if (!reused) continue;
       index.set(v, {
