@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { getBoolEnv, getEnv, getFloatEnv, getNodeEnv, getNumericEnv } from "@/lib/env";
+import {
+  getBoolEnv,
+  getEnv,
+  getFloatEnv,
+  getNodeEnv,
+  getNumericEnv,
+  getPositiveNumericEnv,
+} from "@/lib/env";
 
 /**
  * The env readers feed every field of the config singleton. A silent
@@ -148,5 +155,55 @@ describe("lib/env getFloatEnv", () => {
 
   it("falls back when unset", () => {
     expect(getFloatEnv(KEY, 0.9)).toBe(0.9);
+  });
+});
+
+describe("lib/env getPositiveNumericEnv", () => {
+  const KEY = "BARNACLE_TEST_POSITIVE";
+  const preserved = process.env[KEY];
+  beforeEach(() => {
+    delete process.env[KEY];
+  });
+  afterEach(() => {
+    if (preserved === undefined) delete process.env[KEY];
+    else process.env[KEY] = preserved;
+  });
+
+  it("parses a valid positive integer", () => {
+    process.env[KEY] = "67108864";
+    expect(getPositiveNumericEnv(KEY, 128)).toBe(67108864);
+  });
+
+  it("falls back when unset", () => {
+    expect(getPositiveNumericEnv(KEY, 128)).toBe(128);
+  });
+
+  // Each of these would otherwise reach a consumer that treats a non-positive
+  // size as a hard error. `lru-cache` throws from its constructor for
+  // maxSize 0 or negative, and that constructor runs at module load — so an
+  // unguarded value turns one typo into a boot crash rather than a degraded
+  // config.
+  it.each([
+    ["zero", "0"],
+    ["a negative", "-5"],
+    ["non-numeric", "abc"],
+    ["empty", ""],
+    ["whitespace", "   "],
+  ])("falls back for %s", (_label, raw) => {
+    process.env[KEY] = raw;
+    expect(getPositiveNumericEnv(KEY, 128)).toBe(128);
+  });
+
+  it("rejects a fraction rather than truncating it", () => {
+    // getNumericEnv uses parseInt, which would turn "1.5" into 1 — a 1-byte
+    // ceiling that silently disables caching. This helper parses the raw
+    // string so a fraction is rejected outright.
+    process.env[KEY] = "1.5";
+    expect(getPositiveNumericEnv(KEY, 128)).toBe(128);
+  });
+
+  it("accepts exponential notation that resolves to a positive integer", () => {
+    process.env[KEY] = "1e3";
+    expect(getPositiveNumericEnv(KEY, 128)).toBe(1000);
   });
 });

@@ -1,11 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import fp from "fastify-plugin";
-import { hasZodFastifySchemaValidationErrors } from "fastify-type-provider-zod";
+import {
+  hasZodFastifySchemaValidationErrors,
+  isResponseSerializationError,
+} from "fastify-type-provider-zod";
 import { ZodError } from "zod/v4";
 
 import { ApiError } from "@/api/errors";
 import { replyWithError } from "@/api/helpers/reply";
 import { ERROR_CODES } from "@/api/schemas/common";
+import { invalidateResponse } from "@/cache/response-cache";
 import { isCaptchaError, isScraperError } from "@/scraper/errors";
 import type { DispatchMetrics } from "@/types/dispatch-metrics";
 
@@ -27,6 +31,26 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
 
   app.setErrorHandler((error, request, reply) => {
     const metrics = (error as unknown as { metrics?: DispatchMetrics }).metrics;
+
+    // A response that fails its own 200 schema was produced successfully and
+    // is already in the response cache: `getOrCreateInFlight` writes on
+    // resolve, while serialization rejects afterwards. Left alone, every
+    // identical request for the rest of the TTL is served the same 500 from
+    // memory. Evict so the next caller at least re-fetches.
+    //
+    // `isResponseSerializationError` is the discriminator rather than
+    // `instanceof ZodError`: a serializer failure arrives as a
+    // `ResponseSerializationError` (statusCode 500) and is NOT a ZodError,
+    // while a request-body violation arrives via
+    // `hasZodFastifySchemaValidationErrors` (statusCode 400). Using the Zod
+    // branch would both miss this case and risk evicting on client input
+    // errors. Verified against fastify-type-provider-zod's real shapes.
+    if (isResponseSerializationError(error) && request.responseCacheKey !== undefined) {
+      invalidateResponse(request.responseCacheKey);
+      request.log.warn(
+        `response failed 200-schema serialization for ${request.method} ${request.url} — evicted its response-cache entry so the failure is not served from cache`
+      );
+    }
 
     if (hasZodFastifySchemaValidationErrors(error)) {
       const message = error.validation

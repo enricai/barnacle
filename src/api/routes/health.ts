@@ -41,7 +41,7 @@ interface ReadinessReport {
    */
   stats: {
     scraperPool: { size: number; pending: number; concurrency: number };
-    cache: { size: number; max: number; inFlight: number };
+    cache: { size: number; max: number; bytes: number; maxBytes: number; inFlight: number };
     /** Per-site drift-detection counters (spec §6B). Rising fallbackActivations signals recon should re-run. */
     metrics: Record<string, SiteMetrics>;
   };
@@ -79,7 +79,13 @@ interface HealthRoutesOptions {
   /** Override for tests — defaults to the live pool stats. */
   poolStats?: () => { size: number; pending: number; concurrency: number };
   /** Override for tests — defaults to the live response-cache stats. */
-  cacheStats?: () => { size: number; max: number; inFlight: number };
+  cacheStats?: () => {
+    size: number;
+    max: number;
+    bytes: number;
+    maxBytes: number;
+    inFlight: number;
+  };
   /** Override for tests — defaults to the live telemetry run state. */
   telemetryState?: () => RunState;
   /**

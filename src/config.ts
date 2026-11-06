@@ -1,4 +1,11 @@
-import { getBoolEnv, getEnv, getFloatEnv, getNodeEnv, getNumericEnv } from "@/lib/env";
+import {
+  getBoolEnv,
+  getEnv,
+  getFloatEnv,
+  getNodeEnv,
+  getNumericEnv,
+  getPositiveNumericEnv,
+} from "@/lib/env";
 import { resolveSessionProxy } from "@/scraper/session-proxy";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 
@@ -239,6 +246,7 @@ export interface AppConfig {
   cache: {
     ttlMs: number;
     maxEntries: number;
+    maxBytes: number;
   };
   rateLimit: {
     max: number;
@@ -562,6 +570,18 @@ export function loadConfig(): AppConfig {
     cache: {
       ttlMs: getNumericEnv("CACHE_TTL_MS", 15 * 60 * 1000),
       maxEntries: getNumericEnv("CACHE_MAX_ENTRIES", 1000),
+      // Byte ceiling for the response cache, enforced alongside `maxEntries`
+      // (whichever binds first). 128 MB is chosen to stay well inside a
+      // modest 1 GB container while still holding a useful working set;
+      // deployments with large responses or small containers should lower it.
+      //
+      // Must be strictly positive: `lru-cache` throws from its constructor —
+      // which runs at module load — for a `maxSize` of 0 or negative, so an
+      // unguarded value here would turn one mistyped env var into a boot
+      // crash. A rejected value falls back to the default. Note a ceiling
+      // below the largest single response silently stops caching it, since
+      // `lru-cache` declines an entry bigger than `maxSize`.
+      maxBytes: getPositiveNumericEnv("CACHE_MAX_BYTES", 128 * 1024 * 1024),
     },
     rateLimit: {
       max: getNumericEnv("RATE_LIMIT_MAX", 120),

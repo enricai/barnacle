@@ -55,6 +55,37 @@ export function getNumericEnv(key: string, defaultValue: number): number {
 }
 
 /**
+ * Parses numeric env vars that must be strictly positive, such as a size
+ * ceiling or a pool width.
+ *
+ * Why separate from {@link getNumericEnv}: some consumers treat a
+ * non-positive value as a hard error rather than "no limit". `lru-cache`, for
+ * instance, throws from its *constructor* when given `maxSize: 0` or a
+ * negative — and that constructor runs at module load, so a single mistyped
+ * env var takes the whole process down at startup instead of degrading. This
+ * keeps the "configuration degrades, it does not crash" contract the rest of
+ * this module follows.
+ *
+ * Zero, negatives, fractions and non-numeric input all fall back to
+ * `defaultValue`. Deliberately does NOT log: `@/lib/logging` imports this
+ * module, so logging here would be a circular import. Callers that want to
+ * surface a rejected value should compare against the default themselves.
+ *
+ * Parses the raw string itself rather than delegating to
+ * {@link getNumericEnv}: that helper uses `parseInt`, which truncates "1.5"
+ * to 1 — so a fractional byte ceiling would silently become a 1-byte one
+ * instead of being rejected.
+ */
+export function getPositiveNumericEnv(key: string, defaultValue: number): number {
+  const value = process.env[key];
+  if (!value) {
+    return defaultValue;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+/**
  * Parses fractional env vars (e.g. LLM sampling temperature, confidence
  * thresholds). Non-numeric input falls back to `defaultValue` so a typo
  * never crashes the process.
