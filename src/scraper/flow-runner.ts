@@ -7817,11 +7817,12 @@ const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_
 /**
  * Re-reads the post-click page while only its header has flipped. One
  * settle-then-snapshot moment can land between a header flip and the body
- * re-render that follows it, and a single quiet round cannot distinguish a
- * finished page from a body that re-renders later. So the verdict waits for the
- * body to swap, or for the text to hold still through the whole re-settle
- * budget, and only then reads the header flip as the page's final state
- * (`settled`). Each round settles against the pre-click text, so the header
+ * re-render that follows it. Each round is a quiescence-gated settle (text quiet
+ * for TEXT_QUIET_POLLS polls), so the verdict waits for the body to swap, or
+ * returns as soon as one such round leaves the text unchanged, and only then
+ * reads the header flip as the page's final state (`settled`). Rounds that still
+ * see text movement continue, up to the bounded budget. Each round settles
+ * against the pre-click text, so the header
  * flip stays movement and the quiet window, not the silent no-op give-up,
  * decides how long a body re-render is waited for. Bounded; a page whose body
  * already swapped returns at once, and one showing no change gets a single
