@@ -4929,6 +4929,60 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
   }, 30_000);
 });
 
+describe("recon-generate CLI — main() classifies a GET-only archive as a read flow", () => {
+  const REPO_ROOT = join(__dirname, "..", "..");
+  const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+  const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
+  let workDir: string | null = null;
+  let siteOutDir: string | null = null;
+  afterEach(() => {
+    if (workDir) rmSync(workDir, { recursive: true, force: true });
+    if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
+    workDir = null;
+    siteOutDir = null;
+  });
+
+  it("emits a contract with no TrackingUrl and the recorded query fallback", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cli-read-flow-"));
+    const runRoot = join(workDir, "run");
+    for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(runRoot, d), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const mk = (n: number, room: string): Capture => ({
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action",
+      method: "GET",
+      url: `https://example.com/api/schedule.json?room_id=${room}&sort=asc`,
+      status: 200,
+      requestHeaders: {},
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { slots: [n] },
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    });
+    writeFileSync(join(runRoot, "graphql", "000-a.json"), JSON.stringify(mk(1, "5")));
+    writeFileSync(join(runRoot, "graphql", "001-b.json"), JSON.stringify(mk(2, "6")));
+    const siteId = "read-flow-cli-site";
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({ steps: [{ step: "view the schedule" }] })
+    );
+    const r = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
+    );
+    expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).not.toContain("TrackingUrl");
+    expect(contract).toContain("room_id");
+  }, 30_000);
+});
+
 describe("emitConfigManifest — a reserved RECON_PASSWORD env token never leaks as a literal", () => {
   const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
   const manifestStr = emitConfigManifest({
@@ -5739,6 +5793,20 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
 });
 
 describe("deriveGetInputModel", () => {
+  it("binds declared camelCase payload fields to snake_case window and entity-id keys", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const base = "https://shop.example.com/api/report.json";
+    const a = cap(`${base}?room_id=5&date_from=2026-10-26&item_ids%5B%5D=1&other_key=x`);
+    const b = cap(`${base}?room_id=6&date_from=2026-11-23&item_ids%5B%5D=2&other_key=x`);
+    const m = deriveGetInputModel(a, [a, b], ["roomId", "dateFrom", "itemIds", "unrelated"])!;
+    expect(m.fieldToQueryKey.roomId).toBe("room_id");
+    expect(m.fieldToQueryKey.dateFrom).toBe("date_from");
+    expect(m.fieldToQueryKey.itemIds).toBe("item_ids[]");
+    expect(m.fieldToQueryKey.room_id).toBeUndefined();
+    expect(m.dynamicFields.map((d) => d.field)).toEqual(
+      expect.arrayContaining(["roomId", "dateFrom", "itemIds"])
+    );
+  });
   const cap = (url: string, method = "GET", status = 200) =>
     ({ method, url, status }) as unknown as import("./recon-shared").Capture;
   it("derives dynamic, fixed, path vars and safe identifiers", async () => {
@@ -5755,6 +5823,24 @@ describe("deriveGetInputModel", () => {
     expect(m.recordedQueryValues).toEqual({ sort: "asc" });
     expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
     expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
+  });
+  it("keeps recorded ids as fallback for a repeated entity-id array key", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://x.test/items?ids[]=1&ids[]=2");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
+    expect(m.recordedQueryValues).toEqual({});
+    expect(m.recordedQueryLists).toEqual({ "ids[]": ["1", "2"] });
+  });
+  it("emits a repeated-key recorded fallback as one pair per recorded value", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://x.test/items?ids[]=1&ids[]=2");
+    const m = deriveGetInputModel(a, [a])!;
+    const source = emitContractTs({ ...BASE_OPTS, endpointPath: "/items", getInputModel: m });
+    expect(source).toContain(
+      'payload.ids !== undefined ? [["ids[]", String(payload.ids)]] : [["ids[]", "1"], ["ids[]", "2"]]'
+    );
+    expect(source).not.toContain('"1,2"');
   });
   it("keeps a multi-word collection segment fixed in /<region>/<collection-slug>/<id>", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -5801,6 +5887,7 @@ describe("deriveGetInputModel", () => {
     const m = deriveGetInputModel(a, [a])!;
     expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["start", "ts", "at", "sort", "n"]);
     expect(m.fixedParams).toEqual({});
+    // Date windows are never replayed as a fallback.
     expect(m.recordedQueryValues).toEqual({ sort: "asc", n: "2030" });
   });
   it("drops cache-buster keys from both dynamicFields and fixedParams", async () => {
@@ -5900,7 +5987,7 @@ describe("deriveGetInputModel", () => {
       { field: "q", queryKey: "q" },
       { field: "from", queryKey: "from" },
     ]);
-    expect(m.recordedQueryValues).toEqual({ q: "1" });
+    expect(m.recordedQueryValues).toEqual({ q: "1", from: "2" });
   });
   it("treats a key present in only some same-route captures as dynamic, not a constant", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -5955,7 +6042,7 @@ describe("deriveGetInputModel", () => {
       { field, queryKey: key },
       { field: "limit", queryKey: "limit" },
     ]);
-    expect(m.recordedQueryValues).toEqual({ limit: "10" });
+    expect(m.recordedQueryValues).toEqual({ [key]: "7", limit: "10" });
   });
   it("exposes a non-entity key that merely ends in id letters as a recorded-fallback input", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -6106,9 +6193,47 @@ describe("emitContractTs — payload-driven GET request", () => {
     expect(source).toContain('["item_ids[]", String(payload.item_ids ?? "7")]');
     expect(source).toContain('["date_from", String(payload.date_from)]');
     expect(source).toContain('["date_to", String(payload.date_to)]');
-    expect(source).not.toContain("2030-01-01");
     // Read-only GET: no mutation body, not emitted as a submission.
     expect(source).not.toContain('method: "POST"');
+  });
+  it("emits a two-capture GET flow with a generic host as a read whose inputs all come from payload", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const mk = (from: string, to: string) =>
+      ({
+        method: "GET",
+        status: 200,
+        url: `https://api.example.org/venues/9/schedule.json?venue_ids%5B%5D=9&date_from=${from}&date_to=${to}`,
+      }) as unknown as Capture;
+    const a = mk("2030-01-07", "2030-01-13");
+    const b = mk("2030-01-14", "2030-01-20");
+    const getInputModel = deriveGetInputModel(a, [a, b])!;
+    expect(getInputModel.pathVars.map((p) => p.field)).toEqual(["venue_ids"]);
+    expect(getInputModel.dynamicFields.map((d) => d.queryKey)).toEqual(["date_from", "date_to"]);
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      baseUrl: "https://api.example.org",
+      endpointPath: "/venues/9/schedule.json",
+      getInputModel,
+      isSubmissionFlow: false,
+    } as never);
+    // Read, not submission: GET request, no mutation body.
+    expect(source).toContain('method: "GET"');
+    expect(source).not.toContain('method: "POST"');
+    expect(source).not.toContain("JSON.stringify({ query: payload.query })");
+    // Payload schema declares every derived field.
+    for (const f of ["venue_ids", "date_from", "date_to"]) {
+      expect(source).toContain(`${f}: z.string().optional(),`);
+    }
+    // executeHttp reads the path id (recorded fallback) and the window from payload.
+    expect(source).toContain('encodeURIComponent(String(payload.venue_ids ?? "9"))');
+    expect(source).toContain('["venue_ids[]", String(payload.venue_ids ?? "9")]');
+    // Window values vary across captures, so none is canonical: sent only when supplied.
+    expect(source).toContain(
+      'payload.date_from !== undefined ? [["date_from", String(payload.date_from)]]'
+    );
+    expect(source).toContain(
+      'payload.date_to !== undefined ? [["date_to", String(payload.date_to)]]'
+    );
   });
   it("keeps the POST emission when no GET model is given", () => {
     const source = emitContractTs({ ...BASE_OPTS });
