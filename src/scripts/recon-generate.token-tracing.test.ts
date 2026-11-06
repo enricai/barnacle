@@ -117,3 +117,36 @@ describe("token tracing across a multi-step flow", () => {
     });
   });
 });
+
+describe("HTML-issued tokens", () => {
+  const T = "Qw8rT5yU2iO9pLkJ4hGf";
+  const html = (extra = "") =>
+    `<html><form action="/checkout?csrf=${T}"><input type="hidden" name="nonce" value="${T}x"/></form>${extra}</html>`;
+  const mk = (reuse: boolean) => [
+    buildCapture({
+      url: "https://shop.example.com/cart",
+      method: "GET",
+      responseBody: html(),
+      timestamp: "2024-01-01T00:00:00Z",
+    }),
+    buildCapture({
+      url: reuse
+        ? `https://shop.example.com/checkout?csrf=${T}`
+        : "https://shop.example.com/checkout",
+      requestPostData: JSON.stringify({ go: 1 }),
+      responseBody: { ok: true },
+      timestamp: "2024-01-01T00:00:01Z",
+    }),
+  ];
+  it("admits the GET and indexes the value with html origin", () => {
+    const caps = mk(true);
+    const seq = extractActionSequence(caps);
+    expect(seq.map((s) => s.index)).toContain(0);
+    const st = indexStateValues(caps, new Set(), new Set(seq.map((s) => s.index)));
+    expect(st.get(T)?.htmlOrigin).toEqual({ element: "form-action", name: "csrf" });
+  });
+  it("still drops a GET whose HTML tokens are not reused", () => {
+    const seq = extractActionSequence(mk(false));
+    expect(seq.map((s) => s.index)).not.toContain(0);
+  });
+});

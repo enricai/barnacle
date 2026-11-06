@@ -3267,6 +3267,70 @@ const ISSUED_TOKEN_MIN_LENGTH = 16;
 /** Longest string considered a token (a larger leaf is document content). */
 const ISSUED_TOKEN_MAX_LENGTH = 512;
 
+/** Kind of HTML element an issued token was read from. */
+type HtmlTokenElement = "form-action" | "link" | "hidden-input";
+
+interface HtmlIssuedToken {
+  value: string;
+  element: HtmlTokenElement;
+  /** Query parameter name or input name. */
+  name: string;
+}
+
+/**
+ * Extracts per-request tokens from an HTML string body: query-parameter values
+ * in `<form action>` / `<a href>` URLs and `<input type="hidden">` values. Each
+ * carries a stable locator (element kind + parameter/input name). Returns [] for
+ * non-string or non-HTML bodies. Values are entity-decoded (`&amp;`).
+ */
+function extractHtmlIssuedTokens(body: unknown): HtmlIssuedToken[] {
+  if (typeof body !== "string" || !body.includes("<")) return [];
+  const out: HtmlIssuedToken[] = [];
+  const decode = (v: string): string =>
+    v
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#0*39;/g, "'")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">");
+  const attr = (tag: string, name: string): string | undefined => {
+    const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
+    if (!m) return undefined;
+    return decode(m[1] ?? m[2] ?? m[3] ?? "");
+  };
+  const fromUrl = (url: string, element: HtmlTokenElement): void => {
+    const q = url.indexOf("?");
+    if (q < 0) return;
+    const query = url.slice(q + 1).split("#")[0]!;
+    for (const pair of query.split("&")) {
+      const eq = pair.indexOf("=");
+      if (eq <= 0) continue;
+      let value = pair.slice(eq + 1);
+      try {
+        value = decodeURIComponent(value.replace(/\+/g, " "));
+      } catch {
+        /* keep raw */
+      }
+      out.push({ value, element, name: pair.slice(0, eq) });
+    }
+  };
+  for (const m of body.matchAll(/<form\b[^>]*>/gi)) {
+    const a = attr(m[0], "action");
+    if (a) fromUrl(a, "form-action");
+  }
+  for (const m of body.matchAll(/<a\b[^>]*>/gi)) {
+    const h = attr(m[0], "href");
+    if (h) fromUrl(h, "link");
+  }
+  for (const m of body.matchAll(/<input\b[^>]*>/gi)) {
+    if (attr(m[0], "type")?.toLowerCase() !== "hidden") continue;
+    const name = attr(m[0], "name");
+    const value = attr(m[0], "value");
+    if (name && value) out.push({ value, element: "hidden-input", name });
+  }
+  return out;
+}
+
 /**
  * True when a GET capture's response issues a value (an opaque token: a
  * session id, CSRF nonce, form handle) that a LATER non-GET 2xx request
@@ -3282,6 +3346,12 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
   const tokens = new Set<string>();
   for (const { value } of walkAllPrimitiveLeaves(getCapture.responseBody)) {
     if (typeof value !== "string") continue;
+    if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+    if (/\s/.test(value)) continue;
+    if (getCapture.url.includes(value)) continue;
+    tokens.add(value);
+  }
+  for (const { value } of extractHtmlIssuedTokens(getCapture.responseBody)) {
     if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
     if (/\s/.test(value)) continue;
     if (getCapture.url.includes(value)) continue;
@@ -4538,6 +4608,10 @@ interface StateValue {
    * body JSON leaf (e.g. listings-fixture's `Set-Cookie: __pa=<jwt>` token mint).
    * `path` is empty in this case since there is no body accessor. */
   headerOrigin?: { sourceHeader: string; cookieName?: string };
+  /** Set when `value` was minted inside an HTML string response body (a form
+   * action / link query parameter or a hidden input). `element` + `name` is the
+   * stable locator; `path` is empty since there is no JSON accessor. */
+  htmlOrigin?: { element: HtmlTokenElement; name: string };
   /**
    * Set ONLY when `value` is short enough (< MIN_STATE_VALUE_LENGTH) that it
    * was indexed exclusively via the chain/force-include exemption — i.e. the
@@ -6506,6 +6580,26 @@ export function indexStateValues(
     // e.g. "candidate" as a state value gets substituted INSIDE an already-
     // emitted ${candidateId} interpolation, producing ${${entityTypeCode}Id}.
     const isGet = c.method === "GET";
+    // Tokens minted only inside an HTML document body: index each as producible
+    // state with an html origin (the document itself is one oversized leaf).
+    // Restricted to values a later non-GET request re-sends, so unrelated
+    // markup parameters never enter the index.
+    for (const t of extractHtmlIssuedTokens(c.responseBody)) {
+      const v = t.value;
+      if (v.length < MIN_STATE_VALUE_LENGTH || v.length > MAX_STATE_VALUE_LENGTH) continue;
+      if (/\s/.test(v) || PLACEHOLDER_STATE_VALUES.has(v) || shieldedUuids.has(v)) continue;
+      if (index.has(v)) continue;
+      let reused = false;
+      for (let j = i + 1; j < captures.length && !reused; j++) {
+        const later = captures[j]!;
+        if (later.method === "GET" || later.status < 200 || later.status >= 300) continue;
+        reused = [later.url, later.requestPostData ?? "", ...Object.values(later.requestHeaders)].some(
+          (h) => h.includes(v)
+        );
+      }
+      if (!reused) continue;
+      index.set(v, { value: v, originIndex: i, path: [], htmlOrigin: { element: t.element, name: t.name } });
+    }
     for (const { value: rawValue, path } of walkAllPrimitiveLeaves(c.responseBody)) {
       if (rawValue === null) continue;
       const value = String(rawValue);
