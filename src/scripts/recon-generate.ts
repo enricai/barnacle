@@ -3508,7 +3508,7 @@ export function extractActionSequence(
   const hostGatedSegments = hostGatedPaths.map((path) => path.split("/").filter(Boolean));
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
-      ? hostGated.filter(({ capture }, i) => {
+      ? hostGated.filter(({ capture, index }, i) => {
           const path = hostGatedPaths[i]!;
           const candidateSegments = hostGatedSegments[i]!;
           const denselyNameSpaced =
@@ -3572,10 +3572,29 @@ export function extractActionSequence(
           // construction — the flow author named it explicitly — so both are
           // exempt from token-overlap isolation, which exists to catch
           // INCIDENTAL same-host captures the flow never declared.
+          // A capture that PRODUCES a value a later author-declared capture
+          // CONSUMES is a genuine step of this flow, whatever its path looks
+          // like. Path shape cannot decide this: a paged listing and the
+          // drill it feeds may share only a plain-word parent segment, which
+          // looks identical to two coincidental same-mount endpoints. The
+          // data dependency is what tells them apart, so it is checked only
+          // against captures the flow author named (the declared submit /
+          // foldReturn targets) — incidental same-host noise never earns the
+          // exemption by coincidentally echoing some unrelated capture.
+          const feedsDeclaredTarget = hostGated.some(
+            ({ capture: other, index: otherIndex }, j) =>
+              j !== i &&
+              otherIndex > index &&
+              (matchesDeclaredSubmitEndpoint(other) ||
+                matchesFoldReturn(other) ||
+                matchesDeclaredSubmitBody(other)) &&
+              producesValueConsumedBy(capture, other)
+          );
           return (
             matchesFoldReturn(capture) ||
             matchesDeclaredSubmitEndpoint(capture) ||
             matchesDeclaredSubmitBody(capture) ||
+            feedsDeclaredTarget ||
             !isStructurallyIsolatedCapture(path, otherPaths)
           );
         })
@@ -3612,6 +3631,57 @@ export function extractActionSequence(
       mintsDrillId(entry) ||
       isStructurallyRelevantCapture(safeUrlPathname(entry.capture.url), referencePaths)
   );
+}
+
+/**
+ * True when `producer`'s RESPONSE minted an id that `consumer`'s request
+ * later sends — in its URL (path/query) or in its request BODY.
+ *
+ * Generalizes {@link capturePathAndQueryValuesAppearIn}, which only ever
+ * looks at the consumer's URL. A paged-listing step whose response carries
+ * the join key (`{ openings: [{ openingRef }] }`) feeds a drill that POSTs
+ * that key in its body (`{ openingRef }`), so the URL-only check cannot see
+ * the dependency at all and the producer reads as unrelated to the drill.
+ *
+ * This is a DATA-dependency signal, not a path-shape one, which is what
+ * makes it safe where path shape is not: two endpoints under a shared
+ * single-word parent (`/openings/roster-search/` + `/openings/applicant-detail/`
+ * versus `/widget/search-terms/` + `/widget/status-update/`) are
+ * indistinguishable by path, but only the genuine pair actually passes a
+ * value from one call's response into the next call's request.
+ */
+function producesValueConsumedBy(producer: Capture, consumer: Capture): boolean {
+  if (producer.responseBody === null || producer.responseBody === undefined) return false;
+  const produced = new Set<string>();
+  for (const { value } of walkAllPrimitiveLeaves(producer.responseBody)) {
+    if (typeof value !== "string" && typeof value !== "number") continue;
+    const text = String(value);
+    if (text.length < 2 || text.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+    produced.add(text);
+  }
+  if (produced.size === 0) return false;
+  const consumedValues: string[] = [];
+  try {
+    const url = new URL(consumer.url);
+    consumedValues.push(...url.pathname.split("/").map(decodePathSegment));
+    consumedValues.push(...url.searchParams.values());
+  } catch {
+    // An unparseable consumer URL still has a body worth checking below.
+  }
+  const body = consumer.requestPostData;
+  if (body !== null && body !== undefined && body.length > 0) {
+    try {
+      for (const { value } of walkAllPrimitiveLeaves(JSON.parse(body) as unknown)) {
+        if (typeof value === "string" || typeof value === "number") {
+          consumedValues.push(String(value));
+        }
+      }
+    } catch {
+      // Non-JSON body: fall back to substring containment below.
+      return [...produced].some((v) => v.length >= 3 && body.includes(v));
+    }
+  }
+  return consumedValues.some((v) => v.length >= 2 && produced.has(v));
 }
 
 /**
