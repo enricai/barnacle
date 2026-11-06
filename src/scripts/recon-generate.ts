@@ -3790,8 +3790,10 @@ export function extractActionSequence(
     );
   return structurallyGated.filter(
     (entry) =>
-      matchesDeclaredSubmitEndpoint(entry.capture) ||
-      matchesFoldReturn(entry.capture) ||
+      isDeclaredAuthoritativeCapture(entry.capture, [
+        matchesDeclaredSubmitEndpoint,
+        matchesFoldReturn,
+      ]) ||
       mintsDrillId(entry) ||
       isStructurallyRelevantCapture(safeUrlPathname(entry.capture.url), referencePaths)
   );
@@ -3963,6 +3965,19 @@ function isOpaqueJoinValue(value: string): boolean {
 }
 
 /**
+ * True when the flow's declared intent (submit endpoint, foldReturn drill or
+ * results) names this capture. Declared captures are author-authoritative and
+ * must survive every structural-relevance filter, even when their path shares
+ * no token with the reference paths. Shared by both read-flow filters.
+ */
+export function isDeclaredAuthoritativeCapture(
+  capture: Capture,
+  matchers: Array<(c: Capture) => boolean>
+): boolean {
+  return matchers.some((m) => m(capture));
+}
+
+/**
  * True when some id-bearing path segment or query value of `drill`'s URL
  * appears as a string leaf of `body` — i.e. `body`'s call minted the id the
  * drill is keyed by.
@@ -4111,6 +4126,7 @@ export function extractGraphQLActionSequence(
   return admitted.filter(
     ({ capture }) =>
       isMutation(capture) ||
+      isDeclaredAuthoritativeCapture(capture, [matchesFoldReturn, matchesFoldReturnResults]) ||
       isStructurallyRelevantCapture(capturePathname(capture.url), mutationPaths)
   );
 }
