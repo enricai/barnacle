@@ -2788,6 +2788,8 @@ export interface GetInputModel {
   fieldToQueryKey: Record<string, string>;
   /** Recorded value (queryKey -> value) replayed when the payload omits a constant-valued query input. */
   recordedQueryValues?: Record<string, string>;
+  /** Recorded values (queryKey -> ordered values) of a repeated query key (`ids[]=1&ids[]=2`), replayed as one pair each when the payload omits the input. */
+  recordedQueryLists?: Record<string, string[]>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
   pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
@@ -2964,13 +2966,14 @@ export function deriveGetInputModel(
   // by the caller per request, so its recorded value is not a constant.
   const capturesWithKey = new Map<string, number>();
   const valuesBySegment: Array<Set<string>> = segments.map(() => new Set<string>());
-  // Per key, the value list each sibling carried (a repeated key such as `ids[]=1&ids[]=2`).
-  const listsByKey = new Map<string, Set<string>>();
+  // Per key, the distinct value lists the siblings carried (a repeated key such as `ids[]=1&ids[]=2`).
+  const listsByKey = new Map<string, Map<string, string[]>>();
   for (const c of siblings) {
     const u = new URL(c.url);
     for (const k of new Set(u.searchParams.keys())) {
-      const lists = listsByKey.get(k) ?? new Set<string>();
-      lists.add(u.searchParams.getAll(k).join(","));
+      const lists = listsByKey.get(k) ?? new Map<string, string[]>();
+      const list = u.searchParams.getAll(k);
+      lists.set(JSON.stringify(list), list);
       listsByKey.set(k, lists);
     }
     for (const k of new Set(u.searchParams.keys()))
@@ -2990,6 +2993,7 @@ export function deriveGetInputModel(
   const fixedParams: Record<string, string> = {};
   const fieldToQueryKey: Record<string, string> = {};
   const recordedQueryValues: Record<string, string> = {};
+  const recordedQueryLists: Record<string, string[]> = {};
   const pathVars: GetInputModel["pathVars"] = [];
   const pathTwins: NonNullable<GetInputModel["pathTwins"]> = [];
   // One normalization for isDeclared and nameFor: the declared payload field a query key
@@ -3043,13 +3047,17 @@ export function deriveGetInputModel(
       // One recorded value in every sibling: it is the fallback when the payload omits the field.
       // A date window is never replayed: a stale recorded window must not be sent.
       if (values.size === 1 && (capturesWithKey.get(key) ?? 0) >= siblings.length) {
-        if (![...values].every(isDateWindowValue)) recordedQueryValues[key] = [...values][0] as string;
+        if (![...values].every(isDateWindowValue))
+          recordedQueryValues[key] = [...values][0] as string;
       } else if (
         values.size > 1 &&
         (capturesWithKey.get(key) ?? 0) >= siblings.length &&
         listsByKey.get(key)?.size === 1
       )
-        recordedQueryValues[key] = [...(listsByKey.get(key) as Set<string>)][0] as string;
+        // A repeated key carrying the same values in every sibling: each is replayed as its own pair.
+        recordedQueryLists[key] = [
+          ...(listsByKey.get(key) as Map<string, string[]>).values(),
+        ][0] as string[];
     } else {
       // A constant-valued key is still a caller input; its recorded value is the fallback.
       const field = nameFor(key);
@@ -3092,7 +3100,15 @@ export function deriveGetInputModel(
     pathVars.push({ field, segmentIndex: i, queryKey: "" });
     fieldByValue.set(value, field);
   }
-  return { dynamicFields, fixedParams, fieldToQueryKey, recordedQueryValues, pathVars, pathTwins };
+  return {
+    dynamicFields,
+    fixedParams,
+    fieldToQueryKey,
+    recordedQueryValues,
+    recordedQueryLists,
+    pathVars,
+    pathTwins,
+  };
 }
 
 /**
@@ -15470,6 +15486,17 @@ function buildGetRequestUrlExpr(
   for (const { field, queryKey } of model.dynamicFields) {
     if (queryKey === "") continue;
     if (overridden.has(JSON.stringify(queryKey))) continue;
+    const recordedList = model.recordedQueryLists?.[queryKey];
+    if (recordedList !== undefined) {
+      // The payload supplies one value; omitting it replays every recorded pair.
+      const recordedPairs = recordedList.map(
+        (v) => `[${JSON.stringify(queryKey)}, ${JSON.stringify(v)}]`
+      );
+      pairs.push(
+        `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [${recordedPairs.join(", ")}])`
+      );
+      continue;
+    }
     const recorded = model.recordedQueryValues?.[queryKey];
     if (recorded !== undefined) {
       pairs.push(

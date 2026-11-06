@@ -5829,15 +5829,18 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://x.test/items?ids[]=1&ids[]=2");
     const m = deriveGetInputModel(a, [a])!;
     expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
-    expect(m.recordedQueryValues).toEqual({ "ids[]": "1,2" });
+    expect(m.recordedQueryValues).toEqual({});
+    expect(m.recordedQueryLists).toEqual({ "ids[]": ["1", "2"] });
   });
-  it("emits a repeated-key recorded fallback as one comma-joined pair", async () => {
+  it("emits a repeated-key recorded fallback as one pair per recorded value", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://x.test/items?ids[]=1&ids[]=2");
     const m = deriveGetInputModel(a, [a])!;
     const source = emitContractTs({ ...BASE_OPTS, endpointPath: "/items", getInputModel: m });
-    expect(source).toContain('["ids[]", String(payload.ids ?? "1,2")]');
-    expect(source).not.toContain('["ids[]", "1"]');
+    expect(source).toContain(
+      'payload.ids !== undefined ? [["ids[]", String(payload.ids)]] : [["ids[]", "1"], ["ids[]", "2"]]'
+    );
+    expect(source).not.toContain('"1,2"');
   });
   it("keeps a multi-word collection segment fixed in /<region>/<collection-slug>/<id>", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
