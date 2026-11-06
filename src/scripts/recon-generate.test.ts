@@ -5434,7 +5434,7 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
     expect(kept.map((a) => a.capture.url)).toEqual([ownDrillDown.url]);
   });
 
-  it("drops a same-host, non-mutation capture that passes isAllowedFixtureHost and the fold-return matcher but is structurally unrelated to the flow's mutation family", () => {
+  it("keeps a same-host, non-mutation capture the declared fold-return endpoint names even when structurally unrelated to the flow's mutation family", () => {
     const mutationCapture = gqlCapture(
       `https://${OWN_BACKEND}/graphql/bookingavail-vas`,
       "SubmitBookingavailVas",
@@ -5474,7 +5474,7 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       null
     );
 
-    expect(kept.map((a) => a.capture.operationName)).toEqual(["SubmitBookingavailVas"]);
+    expect(kept.map((a) => a.capture.operationName)).toEqual(["PromotionsWidgetSearch", "SubmitBookingavailVas"]);
   });
 
   it("drops a minority own-backend host's mutation that coincidentally matches the declared submitEndpointPattern when primaryHost narrows to the dominant host", () => {
