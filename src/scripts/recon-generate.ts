@@ -10728,6 +10728,12 @@ export function emitMultiStepExecuteHttp(
       // chainUsesHeaderThreading below for why that disqualifies
       // parallelizing the item loop.
       let hasItemScopedHeaderThreading = false;
+      // Values minted by an earlier isolated (try-wrapped) drill whose flat
+      // result is merged onto the item. That drill's own local is scoped to
+      // its `try` block, so a later target's request must read the value off
+      // the item's attached result instead — keyed by the produce name the
+      // later request's `${name}` placeholder uses.
+      const attachedMintedValues = new Map<string, string>();
 
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
         // `firstItem` decides which captured literal `parameterize` rewrites
@@ -10997,6 +11003,11 @@ export function emitMultiStepExecuteHttp(
         // anchored pattern misses that shape entirely and lets a genuinely
         // item-scoped reference get hoisted above the item loop, where
         // `itemVar` is never declared.
+        const mintsAttachedValues =
+          (target.payloadFlag !== undefined || target.attachAs !== undefined) &&
+          target.chain[0] !== foldPlan.primaryStepIndex &&
+          target.chainArrayPath.length === 0 &&
+          !Array.isArray(actions[target.chainTerminalIndex]!.capture.responseBody);
         const itemVarRefPattern = new RegExp(`\\b${itemVar}\\b`);
         let referencesItemVar = ancestorVars.length === 0;
         // A chain step that produces a response HEADER threads it through
@@ -11015,9 +11026,21 @@ export function emitMultiStepExecuteHttp(
           // The zero-variance guard lives inside `parameterize` itself (see
           // above) so it can skip only the threaded-value splice while still
           // letting a spec-declared drillParamBindings substitution apply.
-          const paramUrl = parameterize(chainRendered.url, chainStep.capture);
-          const paramHeaders = parameterize(chainRendered.headersExpr, chainStep.capture);
-          const paramBody = parameterize(chainRendered.bodyArg, chainStep.capture);
+          // A value minted by an earlier isolated drill is read from the
+          // item's attached result, not from that drill's block-scoped local.
+          const threadAttached = (text: string): string => {
+            let out = text;
+            for (const [name, accessor] of attachedMintedValues) {
+              if (chainDeclared.has(name)) continue;
+              out = out.split(`\${${name}}`).join(`\${${accessor}}`);
+            }
+            return out;
+          };
+          const paramUrl = threadAttached(parameterize(chainRendered.url, chainStep.capture));
+          const paramHeaders = threadAttached(
+            parameterize(chainRendered.headersExpr, chainStep.capture)
+          );
+          const paramBody = threadAttached(parameterize(chainRendered.bodyArg, chainStep.capture));
           if (
             itemVarRefPattern.test(paramUrl) ||
             itemVarRefPattern.test(paramHeaders) ||
@@ -11085,6 +11108,9 @@ export function emitMultiStepExecuteHttp(
             if (p.kind === "html") continue;
             if (chainDeclared.has(p.name)) continue;
             if (!referencedNames.has(p.name)) continue;
+            // The terminal's mint is read back off the item's attached
+            // result by later targets; a block-scoped local would go unread.
+            if (mintsAttachedValues && chainIndex === target.chainTerminalIndex) continue;
             chainDeclared.add(p.name);
             const assertion = pathToAssertionType(p.path, p.leafType);
             chainLines.push(
@@ -11107,6 +11133,14 @@ export function emitMultiStepExecuteHttp(
           )
         );
         const drillName = drillLabel(actions[target.drillStepIndex]!.capture.url);
+        if (mintsAttachedValues) {
+          for (const p of terminalStep.produces) {
+            if (p.kind === "header" || !referencedNames.has(p.name)) continue;
+            if (!attachedMintedValues.has(p.name)) {
+              attachedMintedValues.set(p.name, unknownValueAccessor(itemVar, p.path));
+            }
+          }
+        }
         if (isolated && target.chain[0] !== foldPlan.primaryStepIndex) {
           // Fetch and merge travel together so a failure drops only this drill.
           itemScopedLines.push(
