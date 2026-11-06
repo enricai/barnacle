@@ -3526,8 +3526,8 @@ export function extractActionSequence(
       index: entry.index,
       consumed: captureConsumedValues(entry.capture),
     }));
-  const producedCache = new Map<number, Set<string>>();
-  const producedValuesAt = (j: number): Set<string> => {
+  const producedCache = new Map<number, Map<string, Set<string>>>();
+  const producedValuesAt = (j: number): Map<string, Set<string>> => {
     const cached = producedCache.get(j);
     if (cached !== undefined) return cached;
     const computed = capturesProducedValues(hostGated[j]!.capture);
@@ -3675,16 +3675,33 @@ export function extractActionSequence(
  * indistinguishable by path, but only the genuine pair actually passes a
  * value from one call's response into the next call's request.
  */
-function capturesProducedValues(producer: Capture): Set<string> {
-  const produced = new Set<string>();
+function capturesProducedValues(producer: Capture): Map<string, Set<string>> {
+  const produced = new Map<string, Set<string>>();
   if (producer.responseBody === null || producer.responseBody === undefined) return produced;
-  for (const { value } of walkAllPrimitiveLeaves(producer.responseBody)) {
+  for (const { value, path } of walkAllPrimitiveLeaves(producer.responseBody)) {
     if (typeof value !== "string" && typeof value !== "number") continue;
     const text = String(value);
     if (text.length < 2 || text.length > ISSUED_TOKEN_MAX_LENGTH) continue;
-    produced.add(text);
+    const key = leafFieldName(path);
+    if (key === null) continue;
+    const bucket = produced.get(text);
+    if (bucket === undefined) produced.set(text, new Set([key]));
+    else bucket.add(key);
   }
   return produced;
+}
+
+/**
+ * The field name a {@link walkAllPrimitiveLeaves} path ends in, ignoring array
+ * indices (`openings.0.openingRef` -> `openingRef`), or null when the path
+ * bottoms out in indices alone and so names no field.
+ */
+function leafFieldName(path: readonly (string | number)[]): string | null {
+  for (let i = path.length - 1; i >= 0; i -= 1) {
+    const segment = path[i];
+    if (typeof segment === "string" && !/^\d+$/.test(segment)) return segment.toLowerCase();
+  }
+  return null;
 }
 
 /**
@@ -3700,22 +3717,36 @@ function capturesProducedValues(producer: Capture): Set<string> {
  * the declared pattern.
  */
 function captureConsumedValues(consumer: Capture): {
-  values: Set<string>;
+  values: Map<string, Set<string>>;
   rawBody: string | null;
 } {
-  const values = new Set<string>();
+  const values = new Map<string, Set<string>>();
+  // A URL path segment or query value is positional, not named: there is no
+  // field name to agree with, so it is recorded under the wildcard key and
+  // matches a produced value of any name. Reaching a later call's URL at all
+  // is already strong evidence (it is how the existing, URL-only
+  // capturePathAndQueryValuesAppearIn exemption works).
+  const addValue = (text: string, key: string): void => {
+    const bucket = values.get(text);
+    if (bucket === undefined) values.set(text, new Set([key]));
+    else bucket.add(key);
+  };
   try {
     const url = new URL(consumer.url);
-    for (const segment of url.pathname.split("/")) values.add(decodePathSegment(segment));
-    for (const value of url.searchParams.values()) values.add(value);
+    for (const segment of url.pathname.split("/")) {
+      addValue(decodePathSegment(segment), POSITIONAL_CONSUMER_KEY);
+    }
+    for (const [key, value] of url.searchParams.entries()) addValue(value, key.toLowerCase());
   } catch {
     // An unparseable consumer URL still has a body worth collecting below.
   }
   const body = consumer.requestPostData ?? null;
   if (body === null || body.length === 0) return { values, rawBody: null };
   try {
-    for (const { value } of walkAllPrimitiveLeaves(JSON.parse(body) as unknown)) {
-      if (typeof value === "string" || typeof value === "number") values.add(String(value));
+    for (const { value, path } of walkAllPrimitiveLeaves(JSON.parse(body) as unknown)) {
+      if (typeof value !== "string" && typeof value !== "number") continue;
+      const key = leafFieldName(path);
+      if (key !== null) addValue(String(value), key);
     }
     return { values, rawBody: null };
   } catch {
@@ -3723,25 +3754,63 @@ function captureConsumedValues(consumer: Capture): {
   }
 }
 
+/** Consumed-value key for a positional (URL path) value, which has no field name. */
+const POSITIONAL_CONSUMER_KEY = "\u0000positional";
+
 /**
  * True when `produced` (a producer response's leaves) and `consumed` (a later
  * request's sent values) share a value — i.e. the producer's call minted
  * something the consumer's call sends.
  */
 function producedValueIsConsumed(
-  produced: ReadonlySet<string>,
-  consumed: { values: Set<string>; rawBody: string | null }
+  produced: ReadonlyMap<string, Set<string>>,
+  consumed: { values: Map<string, Set<string>>; rawBody: string | null }
 ): boolean {
   if (produced.size === 0) return false;
-  for (const value of consumed.values) {
-    if (value.length >= 2 && produced.has(value)) return true;
+  for (const [value, consumerKeys] of consumed.values) {
+    const producerKeys = produced.get(value);
+    if (producerKeys === undefined) continue;
+    // Value equality alone is too weak: a marketing capture answering
+    // `{ count: 20 }` would "feed" a submit sending `{ pageSize: 20 }` and
+    // earn the exemption on a coincidence. Require the two sides to AGREE ON
+    // THE FIELD NAME (`openingRef` -> `openingRef`), which is what a genuine
+    // join actually looks like, or the value to be id-shaped enough to stand
+    // on its own, or to have reached the consumer's URL (positional, where
+    // there is no name to compare).
+    for (const consumerKey of consumerKeys) {
+      if (consumerKey === POSITIONAL_CONSUMER_KEY) return true;
+      if (producerKeys.has(consumerKey)) return true;
+    }
+    // No name agreement: only an OPAQUE value stands on its own. carriesEntityId
+    // is deliberately not used here — it accepts a bare `\d+` because a numeric
+    // URL path segment really is an id, but a bare number in a BODY is far more
+    // often a count/page/flag, which is exactly the coincidence this guard
+    // exists to reject (`{count: 20}` must not feed `{pageSize: 20}`).
+    if (isOpaqueJoinValue(value)) return true;
   }
   const rawBody = consumed.rawBody;
   if (rawBody === null) return false;
-  for (const value of produced) {
-    if (value.length >= 3 && rawBody.includes(value)) return true;
+  for (const [value] of produced) {
+    if (isOpaqueJoinValue(value) && rawBody.includes(value)) return true;
   }
   return false;
+}
+
+/**
+ * True when a value is distinctive enough that two calls carrying it are
+ * related even without agreeing on a field name: a uuid, a long hex/opaque
+ * handle, or a mixed letters-and-digits token (`o1`, `ref-123`, `JOB-55`).
+ *
+ * A pure number is deliberately excluded. In a URL path a number is an id, but
+ * as a request/response VALUE it is usually a count, page index, limit or
+ * enum — so treating it as a join key lets any capture answering `{count: 20}`
+ * claim to feed any call sending `{pageSize: 20}`.
+ */
+function isOpaqueJoinValue(value: string): boolean {
+  if (value.length < 2 || /^\d+$/.test(value)) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
+  if (/^[0-9a-f]{16,}$/i.test(value)) return true;
+  return /[A-Za-z]/.test(value) && /\d/.test(value);
 }
 
 /**
