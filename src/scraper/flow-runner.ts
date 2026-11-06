@@ -202,6 +202,58 @@ export function mergeResponseHeaders(
   return { ...base, ...extra };
 }
 
+/** Console messages the native (Browserbase) solver emits around a solve. */
+const NATIVE_SOLVE_STARTED = "browserbase-solving-started";
+const NATIVE_SOLVE_FINISHED = "browserbase-solving-finished";
+/** Upper bound on waiting for an in-flight native solve before judging a step. */
+export const NATIVE_SOLVE_WAIT_MS = 30_000;
+/** Short settle after a solve finishes, so the page can react to the token. */
+export const NATIVE_SOLVE_POST_SETTLE_MS = 1_000;
+
+type NativeSolveTracker = {
+  inFlight: boolean;
+  stalled: boolean;
+  waiters: Set<() => void>;
+};
+const nativeSolveTrackers = new WeakMap<object, NativeSolveTracker>();
+
+/** True when the last bounded wait on this page gave up on a started-but-unfinished solve. */
+export function isNativeCaptchaSolveStalled(page: Page): boolean {
+  return nativeSolveTrackers.get(page)?.stalled === true;
+}
+
+/**
+ * Waits (bounded) for an in-flight native captcha solve to finish, then a short
+ * settle. No-op when no solve is in flight. Returns "stalled" when the bound
+ * elapsed with the solve still unfinished (also exposed via
+ * {@link isNativeCaptchaSolveStalled}), else "idle" / "finished".
+ */
+export async function awaitNativeCaptchaSolve(
+  page: Page,
+  boundMs: number = NATIVE_SOLVE_WAIT_MS
+): Promise<"idle" | "finished" | "stalled"> {
+  const t = nativeSolveTrackers.get(page);
+  if (!t?.inFlight) return "idle";
+  const finished = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      t.waiters.delete(done);
+      resolve(false);
+    }, boundMs);
+    const done = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    t.waiters.add(done);
+  });
+  if (!finished) {
+    t.stalled = true;
+    logger.warn({ boundMs }, "native captcha solve still in flight after bound; stalled");
+    return "stalled";
+  }
+  await page.waitForTimeout(NATIVE_SOLVE_POST_SETTLE_MS);
+  return "finished";
+}
+
 /**
  * Wires CDP Network event listeners onto the page's main session and returns
  * a cleanup function. Stagehand V3 already enables the Network domain
@@ -239,6 +291,20 @@ export function wireSignalCapture(
   } = params;
   const session = page.getSessionForFrame(page.mainFrameId());
   const inFlight = new Map<string, InFlightRequest>();
+  const solveTracker: NativeSolveTracker = { inFlight: false, stalled: false, waiters: new Set() };
+  nativeSolveTrackers.set(page, solveTracker);
+  const onConsole = (ev: { args?: { value?: unknown }[] }): void => {
+    const text = (ev.args ?? []).map((a) => (typeof a.value === "string" ? a.value : "")).join(" ");
+    if (text.includes(NATIVE_SOLVE_STARTED)) {
+      solveTracker.inFlight = true;
+      solveTracker.stalled = false;
+    } else if (text.includes(NATIVE_SOLVE_FINISHED)) {
+      solveTracker.inFlight = false;
+      solveTracker.stalled = false;
+      for (const w of [...solveTracker.waiters]) w();
+      solveTracker.waiters.clear();
+    }
+  };
   // Set-Cookie (and other extra-info-only headers) keyed by requestId. Held
   // separately because `responseReceivedExtraInfo` can fire before the request
   // is in `inFlight` and more than once per request; accumulated here and folded
@@ -566,6 +632,8 @@ export function wireSignalCapture(
   session.on("Network.responseReceived", onResponse);
   session.on("Network.responseReceivedExtraInfo", onResponseExtraInfo);
   session.on("Network.loadingFinished", onFinished);
+  session.on("Runtime.consoleAPICalled", onConsole);
+  void Promise.resolve(session.send?.("Runtime.enable")).catch(() => {});
 
   return (): void => {
     session.off("Network.requestWillBeSent", onRequest);
@@ -573,6 +641,7 @@ export function wireSignalCapture(
     session.off("Network.responseReceived", onResponse);
     session.off("Network.responseReceivedExtraInfo", onResponseExtraInfo);
     session.off("Network.loadingFinished", onFinished);
+    session.off("Runtime.consoleAPICalled", onConsole);
   };
 }
 
@@ -818,7 +887,7 @@ const PROMPT_VALUE_SELECTORS = [
  * selected, …") is correctly read as filled.
  */
 const PROMPT_EMPTY_VALUE_RX =
-  /^\s*(?:0\s+items?\s+selected|(?:please\s+)?(?:select|choose|pick)(?:\s+[^\s]+){0,2}\s*(?:\.{3}|…)?)\s*$/i;
+  /^[\s\-–—]*(?:0\s+items?\s+selected|make\s+an?\s+(?:selection|choice)|(?:please\s+)?(?:select|choose|pick)(?:\s+[^\s]+){0,2}\s*(?:\.{3}|…)?)[\s\-–—]*$/i;
 /**
  * {@link PROMPT_EMPTY_VALUE_RX}'s source and flags as plain strings, passed into
  * the browser-evaluated expressions to reconstruct the RegExp there. Kept as
@@ -874,6 +943,27 @@ const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
   return "";
 })`;
 /**
+ * Does a widget's label match the question label? Substring either way, or
+ * every token of the shorter label appears in the other ("Phone Country Code"
+ * matches "Country Code"); unrelated labels share no full subset.
+ */
+export function widgetLabelMatches(widgetLabel: string, questionLabel: string): boolean {
+  const lc = (x: string): string => x.toLowerCase().replace(/\s+/g, " ").trim();
+  const wl = lc(widgetLabel);
+  const ql = lc(questionLabel);
+  if (wl && ql && (wl.includes(ql) || ql.includes(wl))) return true;
+  const toks = (x: string): string[] =>
+    x
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+  const a = toks(widgetLabel);
+  const b = toks(questionLabel);
+  if (a.length === 0 || b.length === 0) return false;
+  const [small, big] = a.length <= b.length ? [a, b] : [b, a];
+  return small.every((t) => big.includes(t));
+}
+/**
  * Browser-side expression reading a prompt-selector widget's OWN committed-value
  * text — the single source of truth for "is this widget filled?", shared by the
  * widget-enumeration phase ({@link tryPromptSelectorPrimitive}'s
@@ -893,6 +983,13 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   if (adid) { const opt = document.getElementById(adid); if (opt && optionLabel(opt)) return norm(optionLabel(opt)); }
   if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
   if (w.tagName === "BUTTON" && buttonValue(w).trim() && !emptyRx.test(buttonValue(w).trim())) return norm(buttonValue(w));
+  if (w.tagName !== "BUTTON" && w.tagName !== "INPUT" && w.getAttribute && w.getAttribute("role") === "combobox") {
+    const cc = w.cloneNode(true);
+    for (const d of [w, ...Array.from(w.querySelectorAll("[aria-describedby]"))]) for (const id of (d.getAttribute("aria-describedby") || "").split(/\\s+/)) { const r = id ? cc.querySelector("[id='" + id + "']") : null; if (r) r.remove(); }
+    for (const n of cc.querySelectorAll("[data-automation-id='selectedItemList']")) n.remove();
+    const ct = buttonValue(cc).trim();
+    if (ct && !emptyRx.test(ct)) return norm(ct);
+  }
   const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
   const raw = lbl ? (lbl.textContent || "") : "";
   if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
@@ -974,6 +1071,28 @@ const PROMPT_WIDGET_CONTAINER_EXPR = `((el) => {
   }
   return container;
 })`;
+/**
+ * In-page predicate: is this element actually rendered? Walks the ancestor chain
+ * for "hidden"/"aria-hidden"/"inert" and computed display:none, and resolves
+ * visibility the way the cascade does: the element's own computed value
+ * wins, and an ancestor's inline visibility is inherited unless a nearer
+ * element sets it explicitly (computed styles in a layout-less DOM do not
+ * propagate the inherited value, so the ancestors are read directly). Geometry
+ * is deliberately not consulted — such a DOM reports every box as zero-sized.
+ */
+const PROMPT_RENDERED_EXPR = `((el) => {
+  let visibility = "";
+  for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+    if (n.hidden || n.inert || n.getAttribute("aria-hidden") === "true") return false;
+    const cs = getComputedStyle(n);
+    if (cs.display === "none") return false;
+    if (n === el && (cs.visibility === "hidden" || cs.visibility === "collapse")) return false;
+    const own = (n.style && n.style.visibility) || "";
+    if (visibility === "" && own !== "" && own !== "inherit") visibility = own;
+  }
+  return visibility !== "hidden" && visibility !== "collapse";
+})`;
+
 /**
  * Browser-side expression resolving the DOM root within which a chosen widget's
  * popup options / filter input live. Popup placement is vendor-split: the ARIA
@@ -2999,6 +3118,25 @@ const REPHRASE_SYSTEM_PROMPT =
   "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED.";
 
 /**
+ * A rephrased "click the input, then type X" must replace, not append: Stagehand's
+ * click-then-type leaves existing text in place, so a prefilled field ends up
+ * holding the value twice. Appends an explicit select-all-and-replace clause to
+ * instructions that type into a field. Idempotent; other instructions unchanged.
+ */
+export function withClearBeforeType(instruction: string): string {
+  if (!/\b(type|typing|enter|input)\b/i.test(instruction)) return instruction;
+  if (!/\b(click|focus|select)\b/i.test(instruction)) return instruction;
+  if (
+    /select(ing)? all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(
+      instruction
+    )
+  ) {
+    return instruction;
+  }
+  return `${instruction.replace(/[.\s]+$/, "")}, first selecting all existing text in the field (Ctrl/Cmd+A) and replacing it so the value is not appended to existing content`;
+}
+
+/**
  * Attempt-5 of the step-healing cascade: when three mechanical retry variations
  * all fail, this is the last resort before the step is declared terminal. Exported
  * so tests can inject a fake capture sink without touching the browser session.
@@ -4351,7 +4489,7 @@ export async function fillTextDatepickerInput(
   selector: string,
   value: string
 ): Promise<TextDatepickerFillResult | null> {
-  const xpath = xpathBody(selector);
+  const xpath = xpathBody(selector, target);
   if (!xpath) return null;
   const parts = parseDatepickerValue(value);
   if (!parts) return null;
@@ -4486,7 +4624,7 @@ export async function isDateSegmentAtSelector(
   target: FrameTarget,
   selector: string
 ): Promise<boolean> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (xpath === null) return false;
   const expr = `(() => {
     const result = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
@@ -4528,7 +4666,7 @@ export async function verifyFillReadback(
   selector: string,
   expectedValue: string
 ): Promise<VerifyFillReadbackResult | null> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (xpath === null) return null;
   const expr = `(() => {
     const xpath = ${JSON.stringify(xpath)};
@@ -4613,7 +4751,7 @@ export async function verifyPromptSelectorCommitted(
   selector: string,
   requestedOption?: string | null
 ): Promise<VerifyPromptSelectorCommittedResult | null> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (xpath === null) return null;
   const expr = `(() => {
     const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
@@ -4717,8 +4855,30 @@ const STATE_CLASS_METHODS = new Set([
  * `evaluate` expression or wrapped in further xpath. Returns null for
  * css/role/text selectors so callers fall back to a non-xpath code path.
  */
-function xpathBody(selector: string): string | null {
-  return selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
+function xpathBody(selector: string, target?: FrameTarget): string | null {
+  const body = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
+  return body === null ? null : toFrameRelativeXpath(body, target);
+}
+
+/**
+ * Stagehand resolves xpaths in the TOP-document coordinate system, so an
+ * element inside an iframe looks like
+ * `/html[1]/body[1]/main[1]/iframe[1]/html[1]/body[1]/div[2]/a[1]`
+ * (e.g. an iframe on an example.com page). `FrameTarget.evaluate` and the
+ * baseline map ({@link SELECTION_STATE_MAP_EXPR}) run inside the frame's own
+ * document, where that path is `/html[1]/body[1]/div[2]/a[1]`. This strips
+ * the prefix up to the last `/iframe[n]` hop so lookup keys and in-frame
+ * `document.evaluate` agree. Main-document targets (no resolved frame and no
+ * frame selector) and xpaths with no iframe hop are returned unchanged.
+ */
+export function toFrameRelativeXpath(xpath: string, target?: FrameTarget): string {
+  if (!target || (!target.frame && !target.frameSelector)) return xpath;
+  const re = /\/i?frame(?:\[\d+\])?(\/html(?:\[\d+\])?(?:\/|$))/gi;
+  const hops = Array.from(xpath.matchAll(re));
+  const last = hops[hops.length - 1];
+  return last === undefined
+    ? xpath
+    : xpath.slice(last.index + last[0].length - (last[1] ?? "").length);
 }
 
 /**
@@ -4845,9 +5005,11 @@ export function stepQuotesValueNotControlName(step: string): boolean {
  * `(`); returns null for every other form so the reader resolves nothing rather
  * than evaluating garbage.
  */
-function xpathBodyForEvaluate(selector: string): string | null {
+function xpathBodyForEvaluate(selector: string, target?: FrameTarget): string | null {
   const stripped = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : selector;
-  return stripped.startsWith("/") || stripped.startsWith("(") ? stripped : null;
+  return stripped.startsWith("/") || stripped.startsWith("(")
+    ? toFrameRelativeXpath(stripped, target)
+    : null;
 }
 
 /**
@@ -5146,7 +5308,7 @@ async function readElementSelectionFingerprint(
   target: FrameTarget,
   selector: string
 ): Promise<ElementSelectionFingerprint | null> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (!xpath) return null;
   try {
     return asSelectionFingerprint(await target.evaluate(elementSelectionFingerprintExpr(xpath)));
@@ -5173,7 +5335,7 @@ async function resolvedClickTargetStillPresent(
   target: FrameTarget,
   selector: string
 ): Promise<boolean> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (!xpath) return true;
   const expr = `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); return r !== null; })()`;
   try {
@@ -5221,7 +5383,7 @@ async function resolvedClickTargetIsSubmitShaped(
   xpathTail: string | null = null,
   phrases: string[] = []
 ): Promise<boolean> {
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (!xpath) return false;
   const expr = `(() => {
     const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
@@ -5245,8 +5407,8 @@ async function resolvedClickTargetIsSubmitShaped(
  * div[1]/button[1]` compare equal: a node's first-of-tag and sole-of-tag
  * forms can never coexist under one parent, so dropping `[1]` is injective.
  */
-function canonicalAbsoluteXpath(selector: string): string | null {
-  const body = xpathBodyForEvaluate(selector);
+function canonicalAbsoluteXpath(selector: string, target?: FrameTarget): string | null {
+  const body = xpathBodyForEvaluate(selector, target);
   return body?.startsWith("/") ? body.replace(/\[1\]/g, "").toLowerCase() : null;
 }
 
@@ -5274,7 +5436,7 @@ async function readSubmitShapedControlXpaths(target: FrameTarget): Promise<Set<s
     return new Set(
       result
         .filter((x): x is string => typeof x === "string")
-        .map(canonicalAbsoluteXpath)
+        .map((x) => canonicalAbsoluteXpath(x))
         .filter((x): x is string => x !== null)
     );
   } catch {
@@ -5306,7 +5468,7 @@ async function resolvedClickUsedXpathTailRetarget(
   phrases: string[] = []
 ): Promise<boolean> {
   if (!xpathTail) return false;
-  const xpath = xpathBodyForEvaluate(selector);
+  const xpath = xpathBodyForEvaluate(selector, target);
   if (!xpath) return false;
   const expr = `(() => {
     const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
@@ -5543,7 +5705,13 @@ async function selectionSiblingCommittedValueChanged(
 async function comboboxOpenerPanelOpened(
   target: FrameTarget,
   leafXpath: string,
-  preSelectionState: Record<string, ElementSelectionFingerprint>
+  preSelectionState: Record<string, ElementSelectionFingerprint>,
+  /**
+   * `"bare"` inverts the final verdict: true iff the nearest trigger flipped
+   * collapsed→expanded but its owned scope exposes NO option content (a bare
+   * disclosure), so callers can veto weak html/text-delta credit for it.
+   */
+  mode: "opened" | "bare" = "opened"
 ): Promise<boolean> {
   const expr = `(() => {
     const LEAF = ${JSON.stringify(leafXpath)};
@@ -5552,6 +5720,7 @@ async function comboboxOpenerPanelOpened(
     const OPTION_SEL = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
     const xpathOf = ${XPATH_OF_FN_SRC};
     const scopeRootOf = ${PROMPT_SCOPE_ROOT_EXPR};
+    const BARE = ${JSON.stringify(mode === "bare")};
     const r = ${SHADOW_XPATH_FIRST_NODE}(LEAF);
     let node = r;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
@@ -5568,7 +5737,8 @@ async function comboboxOpenerPanelOpened(
         // options (elsewhere on the page) falsely credit THIS trigger's click.
         const scope = scopeRootOf(node);
         if (!scope || scope === document || !scope.querySelector) return false;
-        return !!scope.querySelector(OPTION_SEL);
+        const hasOptions = !!scope.querySelector(OPTION_SEL);
+        return BARE ? !hasOptions : hasOptions;
       }
       node = node.parentElement;
     }
@@ -5850,6 +6020,17 @@ export async function attachToSurfacedInput(params: {
       "xpath=(//input[@type='file' and not(@disabled)] | //input[@type='file'][not(//input[@type='file' and not(@disabled)])])[1]"
     )
     .first();
+  // Snapshot before the upload: a widget may consume the input (clear .files) and
+  // render the file name; only a name that appears NEWLY counts as success.
+  const nameInPageText = (): Promise<boolean> =>
+    Promise.resolve(
+      target.evaluate(
+        `(() => { const t = (document.body && document.body.innerText) || ""; return t.includes(${JSON.stringify(fixture.name)}); })()`
+      )
+    )
+      .then((v: unknown) => v === true)
+      .catch(() => false);
+  const nameBefore = await nameInPageText();
   try {
     await inputLocator.setInputFiles({
       name: fixture.name,
@@ -5912,6 +6093,16 @@ export async function attachToSurfacedInput(params: {
       "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) return el.files.length; } return 0; })()"
     )
     .catch(() => 0);
+  if (
+    (typeof attachedLength !== "number" || attachedLength === 0) &&
+    !nameBefore &&
+    (await nameInPageText())
+  ) {
+    logger.info(
+      `upload primitive: input consumed and file name newly in page text (name=${fixture.name}); treating as success`
+    );
+    return true;
+  }
   if (typeof attachedLength !== "number" || attachedLength === 0) {
     // A dispatched drop is unverified (no network signal, no .files), so it is
     // not success here: return false and let surfaceAndUpload run the verified
@@ -9637,8 +9828,6 @@ async function tryPromptSelectorPrimitive(params: {
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
   const optLabel = primitiveOptionLabel(option, questionLabel, redactValue, parsed.isFill);
-  const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
-
   // Phase 1 (browser, read-only except for the marker attribute stamped for
   // Phase 2's click addressing): find candidate widgets — popup-dropdown
   // triggers with no native <select> — that are still unfilled/invalid. Options
@@ -9721,11 +9910,41 @@ async function tryPromptSelectorPrimitive(params: {
     // new widget claims that index this round, and the trigger-click selector's
     // \`.first()\` can resolve to the stale widget.
     for (const el of document.querySelectorAll("[" + markAttr + "]")) el.removeAttribute(markAttr);
+    // Layered widgets: one field may render a visible anchor, hidden shadow
+    // openers and a covered native select, all sharing a label. Collapse every
+    // unrendered same-label opener into the single rendered widget (when exactly
+    // one is rendered) so the field is ONE candidate, clicked at its rendered
+    // trigger; the collapsed openers are stamped as mates so option scoping can
+    // still follow their aria-controls link.
+    const rendered = ${PROMPT_RENDERED_EXPR};
+    for (const el of document.querySelectorAll("[" + markAttr + "-mate]")) el.removeAttribute(markAttr + "-mate");
+    // A rendered role=combobox anchor with no aria-controls/aria-haspopup is
+    // outside the trigger union; adopt it when an unrendered union opener shares
+    // its label (the layered shape), so the rendered control becomes the widget.
+    const allWidgets = widgets.slice();
+    const hiddenLabels = new Set(widgets.filter((w) => !rendered(w)).map((w) => norm(widgetLabel(w))).filter(Boolean));
+    if (hiddenLabels.size > 0) {
+      for (const a of document.querySelectorAll("[role='combobox']")) {
+        if (allWidgets.includes(a) || !rendered(a) || allWidgets.some((o) => o.contains(a) || a.contains(o))) continue;
+        if (hiddenLabels.has(norm(widgetLabel(a)))) allWidgets.push(a);
+      }
+    }
+    widgets.length = 0;
+    widgets.push(...allWidgets);
+    const labelOf = new Map(widgets.map((w) => [w, norm(widgetLabel(w))]));
+    const collapsed = new Map();
+    for (const w of widgets) {
+      const l = labelOf.get(w);
+      if (!l || rendered(w)) continue;
+      const vis = widgets.filter((o) => labelOf.get(o) === l && rendered(o));
+      if (vis.length === 1) collapsed.set(w, vis[0]);
+    }
     const candidates = [];
     let idx = 0;
     for (const w of widgets) {
-      if (!isUnfilled(w)) continue;
+      if (collapsed.has(w) || !isUnfilled(w)) continue;
       w.setAttribute(markAttr, String(idx));
+      for (const [m, host] of collapsed) if (host === w) m.setAttribute(markAttr + "-mate", String(idx));
       candidates.push({ wIdx: idx, label: widgetLabel(w) });
       idx++;
     }
@@ -9755,12 +9974,7 @@ async function tryPromptSelectorPrimitive(params: {
     // labeled match must be UNIQUE, and an unlabeled step only resolves when
     // there is exactly one unfilled widget on the page.
     const labelMatches = questionLabel
-      ? candidates.filter(
-          (c) =>
-            c.label !== "" &&
-            (norm(c.label).includes(norm(questionLabel)) ||
-              norm(questionLabel).includes(norm(c.label)))
-        )
+      ? candidates.filter((c) => c.label !== "" && widgetLabelMatches(c.label, questionLabel))
       : [];
     const chosen =
       labelMatches.length === 1
@@ -9792,7 +10006,13 @@ async function tryPromptSelectorPrimitive(params: {
       // Scope options/search to THIS widget's popup (aria-controls portal, or
       // inline subtree), so a sibling widget's options are never picked. Fall
       // back to document only when neither a portal nor an inline popup is found.
-      const scope = ${PROMPT_SCOPE_ROOT_EXPR}(w);
+      const scopeOf = ${PROMPT_SCOPE_ROOT_EXPR};
+      const renderedEl = ${PROMPT_RENDERED_EXPR};
+      const mates = Array.from(document.querySelectorAll("[" + widgetMarkAttr + '-mate="' + wIdx + '"]'));
+      let scope = scopeOf(w);
+      // A rendered anchor without its own popup link borrows its collapsed
+      // layered openers' link (the visible widget's own list).
+      if (scope === document) for (const m of mates) { const sc = scopeOf(m); if (sc !== document) { scope = sc; break; } }
       // Under the document fallback, ownership is structural: content is foreign
       // when, climbing from it WITHOUT passing through this widget, some ancestor
       // is or holds another widget's trigger — e.g. a committed sibling's chips,
@@ -9803,7 +10023,7 @@ async function tryPromptSelectorPrimitive(params: {
       const containerOf = ${PROMPT_WIDGET_CONTAINER_EXPR};
       const foreignRoots = scope === document
         ? Array.from(new Set(Array.from(document.querySelectorAll(triggerSel)).map(containerOf)))
-            .filter((o) => o !== w && !o.contains(w) && !w.contains(o))
+            .filter((o) => o !== w && !o.contains(w) && !w.contains(o) && !mates.includes(o))
         : [];
       const heldByOtherWidget = (el) => {
         if (scope !== document || w.contains(el)) return false;
@@ -9845,6 +10065,9 @@ async function tryPromptSelectorPrimitive(params: {
           text: label,
           nodeId: ids.map.get(opts[i]),
           domText: (opts[i].textContent || "").replace(/\\s+/g, " ").trim(),
+          // Rendered visibility: a closed popup may keep hidden role=option
+          // items in the DOM; those must not count as "already open".
+          visible: renderedEl(opts[i]),
         });
       }
       // scopeIsDocument distinguishes a genuinely resolved (portal or inline)
@@ -9884,7 +10107,7 @@ async function tryPromptSelectorPrimitive(params: {
     const precheck = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
     const alreadyOpen =
       precheck?.optionsPresent === true &&
-      (precheck.options?.length ?? 0) > 0 &&
+      (precheck.options ?? []).some((o) => o.visible !== false) &&
       precheck.scopeIsDocument !== true;
     if (!alreadyOpen) {
       // Phase 2 (real gesture): open the popup. These widgets' trigger requires a
@@ -10076,7 +10299,13 @@ const PROMPT_SELECTOR_MAX_STABLE_READS = 5;
  * One enumerated option. `nodeId` is the in-page identity of the stamped node
  * and `domText` its own text content (what the click-time identity check sees).
  */
-type PromptOptionRead = { oIdx: number; text: string; nodeId?: number; domText?: string };
+type PromptOptionRead = {
+  oIdx: number;
+  text: string;
+  nodeId?: number;
+  domText?: string;
+  visible?: boolean;
+};
 
 /**
  * Re-reads the filtered list until two consecutive reads carry identical
@@ -10177,10 +10406,10 @@ function frameCdpSender(
 /**
  * Clicks at a frame-local viewport point through the same CDP route as keys, so
  * the press lands where the hit test just ran instead of re-resolving a locator.
- * A same-process child frame has no session of its own, so its offset in the
- * page is added to reach page coordinates.
+ * The frame's offset in the page is always added (frame.session only selects
+ * the CDP channel); it is zero only when frameElement is null (out-of-process).
  */
-async function dispatchTrustedClick(
+export async function dispatchTrustedClick(
   page: Page,
   target: FrameTarget,
   x: number,
@@ -10191,18 +10420,16 @@ async function dispatchTrustedClick(
     return;
   }
   const send = frameCdpSender(page, target);
-  const offset = target.frame.session
-    ? { x: 0, y: 0 }
-    : (((await target
-        .evaluate(
-          `(() => {
+  const offset = ((await target
+    .evaluate(
+      `(() => {
             const f = window.frameElement;
             if (!f) return null;
             const r = f.getBoundingClientRect();
             return { x: r.left, y: r.top };
           })()`
-        )
-        .catch(() => null)) as { x: number; y: number } | null) ?? { x: 0, y: 0 });
+    )
+    .catch(() => null)) as { x: number; y: number } | null) ?? { x: 0, y: 0 };
   const point = { x: x + offset.x, y: y + offset.y, button: "left", clickCount: 1 };
   await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
   await send("Input.dispatchMouseEvent", { type: "mousePressed", ...point });
@@ -10854,7 +11081,7 @@ export async function dispatchJqueryChangeEvent(
   target: FrameTarget,
   selector: string
 ): Promise<void> {
-  const xpath = xpathBody(selector);
+  const xpath = xpathBody(selector, target);
   if (!xpath) return;
   const expr = `(() => {
     const el = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
@@ -10968,7 +11195,7 @@ export async function verifyDomEffect(
         // iff one of those three fields matches.
         const expected = action.arguments?.[0]?.toString().trim() ?? "";
         if (!expected) return false;
-        const xpath = xpathBody(selector);
+        const xpath = xpathBody(selector, target);
         if (!xpath) {
           const current = await locator.inputValue().catch(() => "");
           return current.length > 0;
@@ -11082,7 +11309,7 @@ export async function verifyDomEffect(
         // authoritative signal is that the clicked element's own fingerprint
         // moved, which this reads directly instead of guessing from page-wide
         // DOM deltas.
-        const xpath = xpathBody(selector);
+        const xpath = xpathBody(selector, target);
         if (!xpath) return false;
         // A click that resolved to a disabled (or aria-disabled) target can't
         // have done anything — veto before trusting any other signal below.
@@ -11785,6 +12012,13 @@ export async function probeStepBeforeAttempts(params: {
    * with no re-resolution attempt.
    */
   reresolveFrameTarget?: () => Promise<FrameTarget | undefined>;
+  /**
+   * When true and the step is click-shaped (not a fill/select/prompt-selector
+   * step), a zero-candidate focused probe is final: the unfocused-observe
+   * "treat as present" fallback is skipped so the optional step skips instead
+   * of running the cascade and replans. Required steps keep today's behavior.
+   */
+  optional?: boolean;
 }): Promise<"present" | "absent"> {
   const {
     stagehand,
@@ -11796,6 +12030,7 @@ export async function probeStepBeforeAttempts(params: {
     captureFn,
     frameTarget,
     reresolveFrameTarget,
+    optional,
   } = params;
   try {
     const candidates = await guardedObserve(
@@ -11805,6 +12040,12 @@ export async function probeStepBeforeAttempts(params: {
       captureFn,
       frameTarget
     );
+    if (candidates.length === 0 && optional && parsePromptSelectorStep(step) === null) {
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)}: optional click-shaped step, focused probe found 0 candidates — treating as absent (skip, no cascade)`
+      );
+      return "absent";
+    }
     if (candidates.length === 0) {
       // Focused observe under-returns on some controlled-component forms:
       // Stagehand's instruction-scoped observe can resolve zero candidates for a
@@ -13310,6 +13551,7 @@ export async function executeStepWithHealing(params: {
       logger,
       captureFn,
       frameTarget,
+      optional,
       reresolveFrameTarget: async () => {
         await reresolveFrameTargetIfLost();
         return frameTarget;
@@ -14310,7 +14552,7 @@ export async function executeStepWithHealing(params: {
             // trusted click at the real target instead of the host's own
             // bounding box. No shadow root, or no qualifying descendant,
             // falls back unchanged to clicking the host via its xpath.
-            const xpathBody = xpathBodyForEvaluate(topWindowSelector);
+            const xpathBody = xpathBodyForEvaluate(topWindowSelector, frameTarget);
             const markerAttr = "data-barnacle-shadow-click-target";
             const markerValue = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
             const markResult = xpathBody
@@ -14807,7 +15049,7 @@ export async function executeStepWithHealing(params: {
         // type-safe without restructuring the outer declaration.
         const prior = resolvedAction as Action | null;
         const lastSelector = triedSelectors[triedSelectors.length - 1] ?? prior?.selector ?? null;
-        const xpath = lastSelector ? xpathBody(lastSelector) : null;
+        const xpath = lastSelector ? xpathBody(lastSelector, frameTarget) : null;
         if (!xpath) {
           record.errorMessage = "structured-click: no xpath from prior attempt";
         } else {
@@ -14982,7 +15224,7 @@ export async function executeStepWithHealing(params: {
             instruction: a.instruction,
             verdict: a.errorMessage ?? failureReasons[i] ?? null,
           }));
-          const rephrased = await rephraseWithLLM(
+          let rephrased = await rephraseWithLLM(
             rephraseModel,
             step,
             triedSelectors,
@@ -14999,6 +15241,7 @@ export async function executeStepWithHealing(params: {
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
           } else {
+            rephrased = withClearBeforeType(rephrased);
             record.instruction = rephrased;
             params.abortSignal?.throwIfAborted();
             const preCentred = await preCentreNaturalLanguageClick(rephrased);
@@ -15062,7 +15305,7 @@ export async function executeStepWithHealing(params: {
       isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
         ? submitShapeObservedBeforeClick.get(resolvedAction.selector) === true ||
           submitShapedControlsBeforeClick.has(
-            canonicalAbsoluteXpath(resolvedAction.selector) ?? ""
+            canonicalAbsoluteXpath(resolvedAction.selector, frameTarget ?? undefined) ?? ""
           ) ||
           (await resolvedClickTargetIsSubmitShaped(
             frameTarget ?? mainFrameTarget(page),
@@ -15084,6 +15327,7 @@ export async function executeStepWithHealing(params: {
       elementSubmitShaped: resolvedElementIsSubmitShaped,
     });
     await page.waitForTimeout(STEP_PAUSE_MS);
+    await awaitNativeCaptchaSolve(page);
     // A successful act that reported no actions still ran a click-class action;
     // judging it before its round-trip lands would cascade onto the advanced page.
     const mayTriggerRoundTrip =
@@ -15707,7 +15951,7 @@ export async function executeStepWithHealing(params: {
       resolvedAction?.method === "click" &&
       resolvedAction.selector
     ) {
-      const xpath = xpathBody(resolvedAction.selector);
+      const xpath = xpathBody(resolvedAction.selector, frameTarget);
       if (xpath) {
         try {
           // Trust boundary: xpath is from Stagehand's resolved selector (not
@@ -15858,6 +16102,7 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
+          await awaitNativeCaptchaSolve(page);
           const { midFlowSubmit: retryMidFlowSubmit, advanceBaseline: retryAdvanceBaseline } =
             deriveMidFlowJudgement(retryResolvedElementIsSubmitShaped, pre);
           const { post: retryPost, pageAdvanced: retryPageAdvanced } =
@@ -15928,7 +16173,18 @@ export async function executeStepWithHealing(params: {
               // commit may live on a hidden sibling `<input>`/`<select>` the
               // click never re-renders visibly. Diff that control against its
               // own baseline entry instead.
-              return await selectionSiblingCommittedValueChanged(
+              if (
+                await selectionSiblingCommittedValueChanged(
+                  frameTarget ?? mainFrameTarget(page),
+                  xpath,
+                  pre.selectionStateByXpath
+                )
+              ) {
+                return true;
+              }
+              // A combobox-opener click only flips aria-expanded; credit it
+              // iff its owned panel now exposes options.
+              return await comboboxOpenerPanelOpened(
                 frameTarget ?? mainFrameTarget(page),
                 xpath,
                 pre.selectionStateByXpath
@@ -16056,7 +16312,15 @@ export async function executeStepWithHealing(params: {
           // false/verified=true defect.
           const clickTargetIsSelectionMarker =
             xpath !== null &&
-            (await clickTargetHasSelectionMarker(frameTarget ?? mainFrameTarget(page), xpath));
+            ((await clickTargetHasSelectionMarker(frameTarget ?? mainFrameTarget(page), xpath)) ||
+              // A bare disclosure opener (flipped aria-expanded, exposes no
+              // options) must clear the strict signal like any marker.
+              (await comboboxOpenerPanelOpened(
+                frameTarget ?? mainFrameTarget(page),
+                xpath,
+                pre.selectionStateByXpath,
+                "bare"
+              )));
           // Same effective-verdict credit the primary attempt's completion
           // gate uses (see the `record.phantomClickVerdict` computation
           // above), re-run against THIS fallback click's own pre/post pair

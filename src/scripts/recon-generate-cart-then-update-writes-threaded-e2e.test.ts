@@ -211,9 +211,13 @@ describe("recon-generate cart-then-update flow", () => {
     // URL, header and body occurrence goes through context.baseUrl.
     expect(contract.split(ORIGIN).length - 1).toBe(1);
     expect(contract).toContain(`defaultBaseUrl: "${ORIGIN}"`);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(contract).toContain('origin": `${context.baseUrl}`');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(contract).toContain('referer": `${context.baseUrl}/cart`');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(contract).toContain('"returnUrl":"${context.baseUrl}/thanks"');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(contract).toContain("${context.baseUrl}/order.json");
   }, 60_000);
 

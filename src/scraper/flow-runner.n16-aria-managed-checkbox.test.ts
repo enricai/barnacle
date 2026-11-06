@@ -493,3 +493,64 @@ describe("flow-runner n+16 fallback — real clickExpr on happy-dom checkboxes",
     for (const line of probes) expect(line).toContain("verified=false");
   });
 });
+
+describe("flow-runner native captcha solve wait at the forced-checkbox retry site", () => {
+  it("waits for an in-flight solve begun by the retry click, then settles, before judging", async () => {
+    const state: OnboardingSequenceState = {
+      url: BASE_URL,
+      bodyHtmlLength: 42_000,
+      visibleText: "",
+      continueClickCount: 0,
+      fallbackClickFired: false,
+      uploadDocsStepReached: false,
+      clickExprSources: [],
+      probeChecked: true,
+    };
+    const handlers = new Map<string, (e: unknown) => void>();
+    const session = {
+      on: (n: string, h: (e: unknown) => void) => handlers.set(n, h),
+      off: () => {},
+      send: async () => undefined,
+    };
+    const emit = (v: string) =>
+      handlers.get("Runtime.consoleAPICalled")?.({ args: [{ type: "string", value: v }] });
+    const page = makeOnboardingPage(state) as unknown as Record<string, unknown>;
+    const baseEvaluate = page.evaluate as (e: unknown) => Promise<unknown>;
+    const events: string[] = [];
+    page.getSessionForFrame = () => session;
+    page.evaluate = async (expr: unknown) => {
+      const r = await baseEvaluate(expr);
+      if (String(expr).includes("typeof el.click")) {
+        emit("browserbase-solving-started");
+        events.push("started");
+        setTimeout(() => {
+          events.push("finished");
+          emit("browserbase-solving-finished");
+        }, 30);
+      }
+      return r;
+    };
+    page.waitForTimeout = async (ms: number) => {
+      events.push(`wait:${ms}`);
+    };
+
+    await runHealingFlow({
+      stagehand: makeOnboardingStagehand(state),
+      page: page as unknown as Page,
+      steps: ONBOARDING_STEPS,
+      logger: SILENT_LOGGER,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    const startedAt = events.indexOf("started");
+    const finishedAt = events.indexOf("finished");
+    expect(startedAt).toBeGreaterThanOrEqual(0);
+    expect(finishedAt).toBeGreaterThan(startedAt);
+    // The post-solve settle (1000ms) only happens after the solve finished.
+    expect(events.slice(finishedAt + 1)).toContain("wait:1000");
+    expect(events.slice(startedAt, finishedAt)).not.toContain("wait:1000");
+    expect(state.uploadDocsStepReached).toBe(true);
+  });
+});

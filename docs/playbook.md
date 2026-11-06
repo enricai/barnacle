@@ -303,6 +303,26 @@ cascade's own single runner-up retry) before falling through to the
 form-level submit. `verification` is optional — callers exercising the
 rank/click primitives directly get the original, non-verifying contract.
 
+### 1c-2 — Fixture identity override and unique identities
+
+An uploaded fixture (e.g. a resume) can carry its own identity — name, email,
+phone. Sites that parse the upload (resume autofill) repopulate the form
+*after* parsing finishes, so the fixture's values can silently override the
+values your flow filled earlier. If a submitted identity doesn't match the
+payload, check whether the fixture embeds one, and either use a fixture with
+placeholder identity or fill the contact fields **after** the upload settles.
+
+Many sites also reject a reused phone number or email as a duplicate
+applicant. Supply a unique value per run instead of hard-coding one:
+
+- **Email:** pass `--allocate-email <ENV_VAR_NAME>` (UPPERCASE_SNAKE_CASE);
+  the allocated testmail address is exposed under that env var, e.g.
+  `--allocate-email APPLICANT_EMAIL` yields a fresh `{namespace}.{tag}@inbox.testmail.app`
+  address per run.
+- **Phone:** there is no allocation flag. Generate a unique number in your
+  seed flow and export it in an env var (e.g. `APPLICANT_PHONE`) that the
+  payload references, the same way the email env var is consumed.
+
 ### 1d — Step failure dump
 
 When the cascade exhausts, the executor writes a diagnostic bundle to

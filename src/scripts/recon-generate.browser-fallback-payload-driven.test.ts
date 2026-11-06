@@ -38,6 +38,7 @@ describe("emitBrowserFlowTs — payload-driven read fallback", () => {
       readOnlyGetFlow: true,
       getInputFields: [],
     });
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(c).toContain("navigateTo: `${new URL(baseUrl).origin}/deals?a=1`");
     expect(c).not.toContain("https://flights.example.com/deals");
   });

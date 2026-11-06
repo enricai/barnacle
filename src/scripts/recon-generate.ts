@@ -303,18 +303,58 @@ export function resolveStepPayloadField(
   // operational choice the widget merely offers, so the answer itself is
   // validated below.
   const isSelectStep = /\b(select|choose|pick)\b/i.test(instruction);
+  const labelText = labelMatchText(instruction);
   for (const [rx, field] of vocabulary.table) {
-    if (!rx.test(instruction)) continue;
+    const labelMatch = rx.exec(labelText);
+    if (labelMatch === null) continue;
+    if (namesACodeStyleControl(labelText, labelMatch)) continue;
     const resolved = canonicalise ? canonicalPayloadField(field) : field;
     if (!isSelectStep) return resolved;
     const answer = pickedQuotedValue(instruction);
     if (answer !== null && OPERATIONAL_ANSWER.test(answer.trim())) return null;
+    if (answer !== null && DIAL_CODE_ANSWER.test(answer.trim())) return null;
     const known = knownFieldValues.get(resolved);
     if (known !== undefined && answer !== known) return null;
     return resolved;
   }
   return null;
 }
+
+/**
+ * An instruction with its quote delimiters removed, for matching a vocabulary
+ * row against the control's NAME. A flow author may quote one word of a
+ * multi-word label ("the phone 'Number' field"); the delimiters must not split
+ * the name the row is written against. A letter-flanked apostrophe
+ * ("candidate's") is not a delimiter and is kept.
+ */
+function labelMatchText(instruction: string): string {
+  return instruction.replace(
+    /(?<![\p{L}\p{N}])['"\u2018\u2019\u201C\u201D]|['"\u2018\u2019\u201C\u201D](?![\p{L}\p{N}])/gu,
+    ""
+  );
+}
+
+/** Words that qualify a trailing "code"/"id" as a code-style control name. */
+const CODE_STYLE_TAIL =
+  /^[\s_-]*(?:(?:dial(?:l?ing)?|calling|phone|telephone|area|international)[\s_-]+)*(?:code|id)\b/i;
+
+/**
+ * True when the text right after a vocabulary label match turns it into a
+ * code-style control name ("Country Code", "State ID", "Country dialing
+ * code"): a different control than the field the label's leading word names.
+ * "Zip Code" / "Postal Code" are the field's own name, not a code-style variant.
+ */
+function namesACodeStyleControl(labelText: string, labelMatch: RegExpExecArray): boolean {
+  const end = labelMatch.index + labelMatch[0].length;
+  if (!CODE_STYLE_TAIL.test(labelText.slice(end))) return false;
+  return !/\b(?:zip|postal|post)\s*$/i.test(labelText.slice(0, end));
+}
+
+/**
+ * A telephone dialing-code answer ("+1", "United States (+1)"): the value of a
+ * phone country-code control, never the applicant's country datum.
+ */
+const DIAL_CODE_ANSWER = /^\+\d{1,4}$|\(\s*\+\d{1,4}\s*\)\s*$/;
 
 /**
  * Maps a vocabulary row's field name onto the base schema's equivalent so a
@@ -332,12 +372,15 @@ export function canonicalPayloadField(field: string): string {
  * vocabulary/explicit field, else the instruction's own label — never when the
  * author opted out (`payloadFieldNone`) or the vocabulary excludes the step.
  * Shared so known-field and persona-binding registration cannot drift apart.
+ * `labelFallback: false` restricts the answer to fields the emitter itself
+ * splices (vocabulary/explicit), which is the set a leak check must hold to.
  */
 function fieldForFillStep(
   step: FlowStepInput,
   vocabulary: ReconVocabulary,
   knownFieldValues?: ReadonlyMap<string, string>,
-  canonicalise = false
+  canonicalise = false,
+  labelFallback = true
 ): string | null {
   const isObj = typeof step !== "string";
   const instruction = isObj ? step.step : step;
@@ -350,10 +393,64 @@ function fieldForFillStep(
     canonicalise
   );
   if (vocabField !== null) return vocabField;
+  if (!labelFallback) return null;
   if (isObj && step.payloadFieldNone) return null;
   if (vocabulary.exclusions.some((rx) => rx.test(instruction))) return null;
   const labelField = deriveFillLabelField(instruction);
   return canonicalise && labelField !== null ? canonicalPayloadField(labelField) : labelField;
+}
+
+/**
+ * True when a fill step answers a screening/operational question rather than
+ * naming an applicant datum: the field came only from label derivation (no
+ * explicit field, no vocabulary row) and the label is phrased as a question.
+ * Such answers ('75000' salary) are not persona constants.
+ */
+function isOperationalFill(step: FlowStepInput, vocabulary: ReconVocabulary): boolean {
+  if (typeof step !== "string") {
+    if (step.payloadFieldNone) return true;
+    if (step.payloadField) return false;
+  }
+  const instruction = typeof step === "string" ? step : step.step;
+  if (matchesVocabularyRow(instruction, vocabulary)) return false;
+  const label = /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
+    instruction
+  )?.[1];
+  if (label === undefined) return false;
+  return (
+    /\?/.test(label) ||
+    /^\W*(?:what|how|why|when|where|which|who|do|does|are|is|will|would|can|please)\b/i.test(label)
+  );
+}
+
+function matchesVocabularyRow(instruction: string, vocabulary: ReconVocabulary): boolean {
+  const labelText = labelMatchText(instruction);
+  return vocabulary.table.some(([rx]) => {
+    const match = rx.exec(labelText);
+    return match !== null && !namesACodeStyleControl(labelText, match);
+  });
+}
+
+/**
+ * Parse-time visibility: one warning per fill step whose instruction matches no
+ * vocabulary row (and carries no explicit field / opt-out), so a fill silently
+ * left to label derivation or a literal is surfaced.
+ */
+export function warnUnmatchedFillSteps(
+  flowSteps: FlowStepInput[],
+  vocabulary: ReconVocabulary,
+  warn: (msg: string) => void
+): void {
+  for (const step of flowSteps) {
+    const isObj = typeof step !== "string";
+    const instruction = isObj ? step.step : step;
+    if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
+    if (isObj && (step.payloadField || step.payloadFieldNone)) continue;
+    if (matchesVocabularyRow(instruction, vocabulary)) continue;
+    warn(
+      `recon-generate: fill step matches no vocabulary row; its value is not bound to a payload field via the vocabulary: ${JSON.stringify(instruction)}`
+    );
+  }
 }
 
 /**
@@ -369,17 +466,20 @@ export function buildKnownFieldValues(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary,
   env: NodeJS.ProcessEnv,
-  canonicalise = false
+  canonicalise = false,
+  labelFallback = true
 ): Map<string, string> {
   const known = new Map<string, string>();
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
     if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
-    const field = fieldForFillStep(step, vocabulary, undefined, canonicalise);
+    const field = fieldForFillStep(step, vocabulary, undefined, canonicalise, labelFallback);
     if (field === null) continue;
+    if (isOperationalFill(step, vocabulary)) continue;
     const value = extractStepPersonaValue(instruction, env);
     if (value === null) continue;
+    if (OPERATIONAL_ANSWER.test(value.trim())) continue;
     if (!known.has(field)) known.set(field, value);
   }
   return known;
@@ -892,14 +992,18 @@ function allPersonaLiterals(knownFieldValues: ReadonlyMap<string, string>): stri
  *
  * @throws when a persona literal survives emission
  */
-function assertNoLeakedPersonaConstant(
+export function assertNoLeakedPersonaConstant(
   code: string,
-  knownFieldValues: ReadonlyMap<string, string>
+  knownFieldValues: ReadonlyMap<string, string>,
+  flowSteps: FlowStepInput[] = []
 ): void {
   for (const value of allPersonaLiterals(knownFieldValues)) {
     if (code.includes(`'${value}'`)) {
+      const step = flowSteps
+        .map((st) => (typeof st === "string" ? st : st.step))
+        .find((text) => text.includes(value));
       throw new Error(
-        `recon-generate: persona constant '${value}' survived emission — a flow step failed to splice its known field value to payload.<field>`
+        `recon-generate: persona constant '${value}' survived emission${step === undefined ? "" : ` (step: ${JSON.stringify(step)})`} — a flow step failed to splice its known field value to payload.<field>`
       );
     }
   }
@@ -3158,6 +3262,47 @@ export function resolveManifestActionSequence(
   return resolved;
 }
 
+/** Shortest string a response leaf must be to count as a server-issued token. */
+const ISSUED_TOKEN_MIN_LENGTH = 16;
+/** Longest string considered a token (a larger leaf is document content). */
+const ISSUED_TOKEN_MAX_LENGTH = 512;
+
+/**
+ * True when a GET capture's response issues a value (an opaque token: a
+ * session id, CSRF nonce, form handle) that a LATER non-GET 2xx request
+ * re-sends verbatim in its URL, body or headers. Such a GET is the only
+ * producer of that value, so dropping it (the default for GETs) leaves the
+ * consumer replaying the recon run's frozen token instead of the live one.
+ * Admitting it lets `indexStateValues`/`compileActionSteps` thread the value.
+ * A GET that issues nothing later reused stays dropped.
+ */
+function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
+  const getCapture = captures[index]!;
+  if (getCapture.responseBody === undefined || getCapture.responseBody === null) return false;
+  const tokens = new Set<string>();
+  for (const { value } of walkAllPrimitiveLeaves(getCapture.responseBody)) {
+    if (typeof value !== "string") continue;
+    if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+    if (/\s/.test(value)) continue;
+    if (getCapture.url.includes(value)) continue;
+    tokens.add(value);
+  }
+  if (tokens.size === 0) return false;
+  for (let j = index + 1; j < captures.length; j++) {
+    const later = captures[j]!;
+    if (later.method === "GET" || later.status < 200 || later.status >= 300) continue;
+    const haystacks = [
+      later.url,
+      later.requestPostData ?? "",
+      ...Object.values(later.requestHeaders),
+    ];
+    for (const token of tokens) {
+      if (haystacks.some((h) => h.includes(token))) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Extracts the ordered sequence of meaningful POSTs that represent the
  * transactional flow: non-noise 2xx POSTs, minus telemetry and error-reporting
@@ -3298,7 +3443,8 @@ export function extractActionSequence(
         index !== firstPrimaryIndex &&
         !matchesFoldReturn(capture) &&
         !matchesDeclaredSubmitEndpoint(capture) &&
-        !matchesDeclaredSubmitBody(capture)
+        !matchesDeclaredSubmitBody(capture) &&
+        !issuesTokenReusedLater(captures, index)
       )
         return false;
       if (capture.status < 200 || capture.status >= 300) return false;
@@ -17926,7 +18072,14 @@ ${flowStepsBlock}
 }
 `
   }`;
-  assertNoLeakedPersonaConstant(code, knownFieldValues);
+  // The emitter splices only vocabulary/explicit-bound fills, so only those are
+  // persona constants it can fail to splice; a label-derived fill (free text
+  // answer) is emitted literally by design and is not a leak.
+  assertNoLeakedPersonaConstant(
+    code,
+    buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env, canonicalise, false),
+    flowSteps
+  );
   return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
 }
 
@@ -17949,6 +18102,9 @@ function buildNavigateToExpr(
   if (rebaseOrigin) {
     const m = /^https?:\/\/[^/?#]+/i.exec(url);
     if (m) {
+      // Literal interpolation text emitted into the generated plugin source,
+      // evaluated there against that module's own `baseUrl` — not here.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted source text
       prefix = "${new URL(baseUrl).origin}";
       rest = url.slice(m[0].length);
     }
@@ -18977,6 +19133,7 @@ async function main(): Promise<void> {
     // applicant fields and job context reach the caller's data instead of the
     // recon persona's. Both are site-agnostic: persona mapping comes from the
     // consumer vocabulary, job coordinates from the entry URL's own query keys.
+    warnUnmatchedFillSteps(flowSteps, vocabulary, (msg) => logger.warn(msg));
     const personaBindings = harvestPersonaBindings(flowSteps, vocabulary, process.env);
     const entryUrlParams = extractEntryUrlParams(activeCaptures[0]?.url ?? "");
     // T4 — Phase B+C: detect a form-schema GET capture and insert it into the

@@ -32,7 +32,6 @@ describe("applyDrillParamBindings JSON body keys", () => {
 
   it("still rewrites query params", () => {
     expect(applyDrillParamBindings(spec, capture, `${URL_}?adults=2`)).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting emitted source
       `${URL_}?adults=\${payload.adults ?? 2}`
     );
   });

@@ -4,11 +4,22 @@
  * as a real failure (the site didn't send the confirmation email).
  */
 export class TestmailTimeoutError extends Error {
-  constructor(message: string) {
+  /**
+   * What a REST `api/json` probe said after every GraphQL attempt failed:
+   * `reachable_no_mail` (API healthy, inbox empty), `service_unavailable`
+   * (REST failed too), or `undetermined` (GraphQL answered at least once, so
+   * no probe was needed).
+   */
+  readonly serviceStatus: TestmailServiceStatus;
+
+  constructor(message: string, serviceStatus: TestmailServiceStatus = "undetermined") {
     super(message);
     this.name = new.target.name;
+    this.serviceStatus = serviceStatus;
   }
 }
+
+export type TestmailServiceStatus = "reachable_no_mail" | "service_unavailable" | "undetermined";
 
 /**
  * The testmail.app GraphQL API returned a non-success `result` field or an

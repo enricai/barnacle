@@ -228,7 +228,7 @@ Use `as unknown as SitePluginContext`, not a direct annotation (avoids excess-pr
 
 ## Integration-test scaffold
 
-`runIntegrationJob` (`src/testing/integration-runner.ts`) polls a [testmail.app](https://testmail.app) inbox; per-plugin tests own only the payload mapping.
+`runIntegrationJob` (`src/testing/integration-runner.ts`) polls a [testmail.app](https://testmail.app) inbox; per-plugin tests own only the payload mapping. If every GraphQL poll fails, the thrown `TestmailTimeoutError.serviceStatus` says `reachable_no_mail` (REST `api/json` count was 0) or `service_unavailable` (REST failed too). Note some ATSes never deliver to the `inbox.testmail.app` domain, so an empty inbox can be a sender limitation, not a bug.
 
 ```ts
 import { runIntegrationJob } from "@/testing/integration-runner";

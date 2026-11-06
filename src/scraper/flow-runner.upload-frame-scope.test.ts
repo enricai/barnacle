@@ -74,10 +74,14 @@ describe("flow-runner/attachToSurfacedInput — unverified attach frame scope", 
     const page = makeFakePage(pageEvaluate);
     const childEvaluate = vi
       .fn()
+      // file name not in page text before upload
+      .mockResolvedValueOnce(false)
       // framework-wrapper change dispatch: no file registered
       .mockResolvedValueOnce(false)
       // DOM-attached fallback check: no file in DOM
-      .mockResolvedValueOnce(0);
+      .mockResolvedValueOnce(0)
+      // file name still not in page text after upload
+      .mockResolvedValueOnce(false);
     const target = makeChildTarget(childEvaluate);
 
     const result = await attachToSurfacedInput({
@@ -90,17 +94,21 @@ describe("flow-runner/attachToSurfacedInput — unverified attach frame scope", 
     });
 
     expect(result).toBe(false);
-    expect(childEvaluate).toHaveBeenCalledTimes(2);
+    expect(childEvaluate).toHaveBeenCalledTimes(4);
     expect(pageEvaluate).not.toHaveBeenCalled();
   });
 
   it("still probes via page.evaluate when the target is the main frame (unchanged top-frame behavior)", async () => {
     const pageEvaluate = vi
       .fn()
+      // file name not in page text before upload
+      .mockResolvedValueOnce(false)
       // framework-wrapper change dispatch: no file registered
       .mockResolvedValueOnce(false)
       // DOM-attached fallback check: no file in DOM
-      .mockResolvedValueOnce(0);
+      .mockResolvedValueOnce(0)
+      // file name still not in page text after upload
+      .mockResolvedValueOnce(false);
     const page = makeFakePage(pageEvaluate);
     const target = mainFrameTarget(page);
 
@@ -114,7 +122,7 @@ describe("flow-runner/attachToSurfacedInput — unverified attach frame scope", 
     });
 
     expect(result).toBe(false);
-    expect(pageEvaluate).toHaveBeenCalledTimes(2);
+    expect(pageEvaluate).toHaveBeenCalledTimes(4);
   });
 });
 

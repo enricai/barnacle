@@ -91,10 +91,14 @@ describe("flow-runner/attachToSurfacedInput — unverified-attach frame targetin
     const page = makeFakePage();
     const childEvaluate = vi
       .fn()
+      // file name not in page text before upload
+      .mockResolvedValueOnce(false)
       // change-dispatch after setInputFiles: report no file attached
       .mockResolvedValueOnce(false)
       // DOM-attached fallback check: no file in DOM
-      .mockResolvedValueOnce(0);
+      .mockResolvedValueOnce(0)
+      // file name still not in page text after upload
+      .mockResolvedValueOnce(false);
     const target = makeChildTarget(childEvaluate);
 
     const result = await attachToSurfacedInput({
@@ -109,7 +113,7 @@ describe("flow-runner/attachToSurfacedInput — unverified-attach frame targetin
     expect(result).toBe(false);
     // Both evaluate calls (change-dispatch, DOM-attach check) must have gone
     // through the child target and no unverified drop is dispatched.
-    expect(childEvaluate).toHaveBeenCalledTimes(2);
+    expect(childEvaluate).toHaveBeenCalledTimes(4);
     expect(page.evaluate).not.toHaveBeenCalled();
   });
 });

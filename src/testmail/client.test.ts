@@ -286,6 +286,43 @@ describe("pollTestmailInbox", () => {
     ).rejects.toThrow(TestmailTimeoutError);
   });
 
+  it("flags reachable_no_mail when GraphQL always fails but REST reports count 0", async () => {
+    const inbox = allocateTestmailInbox();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: unknown) => {
+        if (String(url).includes("/api/json")) {
+          return {
+            status: 200,
+            ok: true,
+            headers: { get: vi.fn().mockReturnValue(null) },
+            text: vi.fn().mockResolvedValue(JSON.stringify({ result: "success", count: 0 })),
+          };
+        }
+        throw new Error("timeout");
+      })
+    );
+    const err = await pollTestmailInbox({
+      inbox,
+      timeoutMs: 30,
+      intervalMs: 10,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(TestmailTimeoutError);
+    expect(err.serviceStatus).toBe("reachable_no_mail");
+  });
+
+  it("flags service_unavailable when GraphQL and REST both fail", async () => {
+    const inbox = allocateTestmailInbox();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("down")));
+    const err = await pollTestmailInbox({
+      inbox,
+      timeoutMs: 30,
+      intervalMs: 10,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(TestmailTimeoutError);
+    expect(err.serviceStatus).toBe("service_unavailable");
+  });
+
   it("includes the configured subjectContains in the timeout message", async () => {
     const inbox = allocateTestmailInbox();
     vi.stubGlobal(

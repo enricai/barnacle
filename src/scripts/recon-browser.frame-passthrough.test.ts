@@ -9,7 +9,7 @@
 
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -96,6 +96,16 @@ vi.mock("@/scraper/flow-runner", async (importOriginal) => {
 
 import { createBrowserSession } from "@/scraper/session";
 import { main, parseCli, RECON_FLOW_FILE_SCHEMA } from "@/scripts/recon-browser";
+
+function findFiles(root: string, name: string): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(root, { withFileTypes: true })) {
+    const full = join(root, e.name);
+    if (e.isDirectory()) out.push(...findFiles(full, name));
+    else if (e.name === name) out.push(full);
+  }
+  return out;
+}
 
 describe("recon-browser CLI/parseCli — frameSelector parsing", () => {
   const ORIGINAL_ARGV = process.argv;
@@ -281,20 +291,19 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
     expect(anthropicMessagesParseStub).toHaveBeenCalled();
 
-    const rewrittenBytes = readFileSync(flowFilePath, "utf8");
-    const rewritten: unknown = JSON.parse(rewrittenBytes);
+    // Input flow file is never rewritten and no backup sibling is created.
+    expect(readFileSync(flowFilePath, "utf8")).toBe(originalFlowFileContents);
+    expect(readdirSync(runsRoot).filter((f) => f.endsWith(".bak.json"))).toHaveLength(0);
+
+    const replanned = findFiles(runsRoot, "recon-flow.json").filter((f) => f !== flowFilePath);
+    expect(replanned).toHaveLength(1);
+    const rewritten: unknown = JSON.parse(readFileSync(replanned[0]!, "utf8"));
     const parsedSchema = RECON_FLOW_FILE_SCHEMA.safeParse(rewritten);
     expect(parsedSchema.success).toBe(true);
     if (!parsedSchema.success) return;
     expect(Array.isArray(parsedSchema.data)).toBe(false);
     const object = parsedSchema.data as { frameSelector?: string };
     expect(object.frameSelector).toBe("#apply_frame");
-
-    const flowFileDir = dirname(flowFilePath);
-    const backupFiles = readdirSync(flowFileDir).filter((f) => f.endsWith(".bak.json"));
-    expect(backupFiles.length).toBeGreaterThanOrEqual(1);
-    const backupContents = readFileSync(join(flowFileDir, backupFiles[0]!), "utf8");
-    expect(backupContents).toBe(originalFlowFileContents);
   });
 
   it("forwards an object-shape flow's frameSelector as the exact resolved FrameTarget", async () => {
