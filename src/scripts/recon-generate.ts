@@ -6676,7 +6676,20 @@ interface HeaderProduce {
   targetHeader: string;
 }
 
-type Produce = BodyProduce | HeaderProduce;
+/** A per-request token minted inside an HTML string response (a form action /
+ * link query parameter or a hidden input). It has no JSON accessor: the emitter
+ * fetches the response text and renders a generated extraction located by
+ * element kind + `locatorName`. `value` is the recon-time token, used only at
+ * compile time to splice later requests — never emitted. */
+interface HtmlProduce {
+  kind: "html";
+  name: string;
+  element: HtmlTokenElement;
+  locatorName: string;
+  value: string;
+}
+
+type Produce = BodyProduce | HeaderProduce | HtmlProduce;
 
 interface ActionStep {
   /** The capture this step corresponds to. */
@@ -7343,6 +7356,31 @@ export function compileActionSteps(
       }
     }
 
+    // HTML-issued tokens: only values this capture is the earliest origin of
+    // and that a later request re-sends (usedValues).
+    for (const t of extractHtmlIssuedTokens(capture.responseBody)) {
+      if (!usedValues.has(t.value)) continue;
+      const sv = stateIndex.get(t.value);
+      if (!sv || sv.originIndex !== index || !sv.htmlOrigin) continue;
+      if (sv.htmlOrigin.element !== t.element || sv.htmlOrigin.name !== t.name) continue;
+      if (produces.some((q) => q.kind === "html" && q.value === t.value)) continue;
+      const base = `${pathToVarName(t.name.split(/[^A-Za-z0-9_$]+/).filter(Boolean))}Token`;
+      let name = /^[A-Za-z_$]/.test(base) ? base : `_${base}`;
+      let suffix = 1;
+      while (seenNames.has(name)) {
+        suffix++;
+        name = `${base}${suffix}`;
+      }
+      seenNames.add(name);
+      produces.push({
+        kind: "html",
+        name,
+        element: t.element,
+        locatorName: t.name,
+        value: t.value,
+      });
+    }
+
     const ct = Object.entries(capture.requestHeaders).find(
       ([k]) => k.toLowerCase() === "content-type"
     );
@@ -7817,7 +7855,7 @@ export function deriveProducerBoundaryBindings(
     const step = actions[i]!;
     const bodyLeafValues = jsonBodyLeafValues(step.capture.requestPostData);
     for (const p of step.produces) {
-      if (p.kind === "header") continue;
+      if (p.kind !== "body") continue;
       const value = resolveResponsePathValue(step.capture.responseBody, p.path);
       if (value === null || value.length < MIN_STATE_VALUE_LENGTH) continue;
       if (bindings.has(value)) continue;
@@ -7977,6 +8015,17 @@ function deriveStateVarByValue(
   for (const step of priorSteps) {
     for (const p of step.produces) {
       if (p.kind === "header") continue;
+      if (p.kind === "html") {
+        // Name-free: the token is located by element kind, not a JSON path, so
+        // no key correlation applies at the splice site.
+        varNameByValue.set(p.value, {
+          varName: p.name,
+          sourceName: p.name,
+          restricted: false,
+          unconditional: false,
+        });
+        continue;
+      }
       if (p.eligibleConsumers && !p.eligibleConsumers.has(targetCapture)) continue;
       const value = resolveResponsePathValue(step.capture.responseBody, p.path);
       if (value !== null) {
@@ -10695,7 +10744,32 @@ export function emitMultiStepExecuteHttp(
           const hasReferencedProduce = chainStep.produces.some(
             (p) => p.kind !== "header" && referencedNames.has(p.name) && !chainDeclared.has(p.name)
           );
+          const chainHtmlProduces = chainStep.produces.filter(
+            (p): p is HtmlProduce =>
+              p.kind === "html" && referencedNames.has(p.name) && !chainDeclared.has(p.name)
+          );
           const bindsChainResponse = isChainTerminal || hasReferencedProduce;
+          if (chainHtmlProduces.length > 0) {
+            // The runtime httpClient JSON-parses its body, so an HTML token is
+            // read from a direct fetch of the response text.
+            const textVar = `text_${chainStep.varName}`;
+            chainLines.push(
+              ...emitHtmlFetchLines(
+                chainRendered.method,
+                paramUrl,
+                paramHeaders,
+                paramBody,
+                textVar,
+                chainStep.varName,
+                "      "
+              )
+            );
+            for (const p of chainHtmlProduces) {
+              chainDeclared.add(p.name);
+              chainLines.push(...emitHtmlExtractionLines(p, textVar, "      "));
+            }
+            continue;
+          }
           chainLines.push(
             bindsChainResponse
               ? `      const ${chainStep.varName} = (await httpClient(\`${paramUrl}\`, {`
@@ -10799,12 +10873,33 @@ export function emitMultiStepExecuteHttp(
         `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
       );
     }
-    const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
+    const htmlProduces = step.produces.filter(
+      (p): p is HtmlProduce => p.kind === "html" && referencedNames.has(p.name)
+    );
+    const bindResponse =
+      referencedNames.has(step.varName) || produceLines.length > 0 || htmlProduces.length > 0;
 
     if (step.isCrossDomain) {
       lines.push(
         `    // TODO: cross-domain redirect detected (${cap.url.split("/")[2]}) — likely needs browser fallback for this step.`
       );
+    }
+
+    if (htmlProduces.length > 0 && !step.isMultipart) {
+      // The runtime httpClient JSON-parses its body, so a token minted in an
+      // HTML document is read from a direct fetch of the response text.
+      const textVar = `text_${step.varName}`;
+      lines.push(
+        ...emitHtmlFetchLines(r.method, r.url, r.headersExpr, r.bodyArg, textVar, step.varName, "    ")
+      );
+      for (const p of htmlProduces) {
+        if (declaredNames.has(p.name)) continue;
+        declaredNames.add(p.name);
+        lines.push(...emitHtmlExtractionLines(p, textVar, "    "));
+      }
+      for (const line of produceLines) lines.push(line);
+      lines.push("");
+      continue;
     }
 
     if (step.isMultipart) {
@@ -10980,6 +11075,77 @@ export function emitMultiStepExecuteHttp(
   const renderedMultiStepBody = lines.join("\n");
   assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
   return renderedMultiStepBody;
+}
+
+/**
+ * Renders a direct `fetch` of a step whose response is an HTML document, binding
+ * the response text to `textVar`. Headers merge `BASE_HEADERS` with the step's
+ * per-call header literal; the body (if any) is the already-interpolated
+ * template. Throws on a non-2xx so the sequence stops at the failed hop.
+ */
+function emitHtmlFetchLines(
+  method: string,
+  url: string,
+  headersExpr: string,
+  bodyArg: string,
+  textVar: string,
+  stepVar: string,
+  indent: string
+): string[] {
+  const literal = headersExpr.replace(/^headers:\s*/, "").replace(/,\s*$/, "");
+  const headers = literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
+  const respVar = `resp_${stepVar}`;
+  return [
+    `${indent}const ${respVar} = await fetch(\`${url}\`, {`,
+    `${indent}  method: ${JSON.stringify(method)},`,
+    `${indent}  headers: ${headers},`,
+    ...(bodyArg !== "" ? [`${indent}  ${bodyArg}`] : []),
+    `${indent}});`,
+    `${indent}if (!${respVar}.ok) throw new Error(\`step ${stepVar} (HTML token fetch) failed: HTTP \${${respVar}.status}\`);`,
+    `${indent}const ${textVar} = await ${respVar}.text();`,
+  ];
+}
+
+/**
+ * Renders the extraction of one HTML-issued token from `textVar`, located by
+ * element kind + name (never by the recon literal). Throws when the markup no
+ * longer carries it, so a changed page fails loudly instead of replaying a
+ * stale token.
+ */
+function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string): string[] {
+  const name = JSON.stringify(p.locatorName);
+  const fail = `${indent}if (${p.name} === undefined) throw new Error(\`HTML token ${p.locatorName.replace(/[`$\\]/g, "")} not found in response\`);`;
+  if (p.element === "hidden-input") {
+    return [
+      `${indent}const ${p.name} = (() => {`,
+      `${indent}  for (const tag of ${textVar}.match(/<input\\b[^>]*>/gi) ?? []) {`,
+      `${indent}    if (!/\\stype\\s*=\\s*["']?hidden\\b/i.test(tag)) continue;`,
+      `${indent}    const n = /\\sname\\s*=\\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);`,
+      `${indent}    if ((n?.[1] ?? n?.[2]) !== ${name}) continue;`,
+      `${indent}    const v = /\\svalue\\s*=\\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);`,
+      `${indent}    if (v) return (v[1] ?? v[2] ?? "").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#0*39;/g, "'");`,
+      `${indent}  }`,
+      `${indent}  return undefined;`,
+      `${indent}})();`,
+      fail,
+    ];
+  }
+  const tagPattern = p.element === "form-action" ? "<form\\b[^>]*>" : "<a\\b[^>]*>";
+  const attrName = p.element === "form-action" ? "action" : "href";
+  return [
+    `${indent}const ${p.name} = (() => {`,
+    `${indent}  for (const tag of ${textVar}.match(/${tagPattern}/gi) ?? []) {`,
+    `${indent}    const a = /\\s${attrName}\\s*=\\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);`,
+    `${indent}    const target = (a?.[1] ?? a?.[2] ?? "").replace(/&amp;/gi, "&");`,
+    `${indent}    const q = target.indexOf("?");`,
+    `${indent}    if (q < 0) continue;`,
+    `${indent}    const found = new URLSearchParams(target.slice(q + 1).split("#")[0]).get(${name});`,
+    `${indent}    if (found !== null) return found;`,
+    `${indent}  }`,
+    `${indent}  return undefined;`,
+    `${indent}})();`,
+    fail,
+  ];
 }
 
 function summariseResponseShape(value: unknown): unknown {

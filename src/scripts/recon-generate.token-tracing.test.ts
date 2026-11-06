@@ -182,3 +182,45 @@ describe("HTML-issued tokens from anchors and realistic markup", () => {
     expect(st.get(T)?.htmlOrigin).toEqual({ element: "link", name: "token" });
   });
 });
+
+describe("HTML-issued token emission", () => {
+  const T = "Qw8rT5yU2iO9pLkJ4hGf";
+  const mk = (markup: string, postData: string, urlSuffix: string) => [
+    buildCapture({
+      url: "https://shop.example.com/cart",
+      method: "GET",
+      requestPostData: null,
+      responseBody: `<html>${markup}</html>`,
+      timestamp: "2024-01-01T00:00:00Z",
+    }),
+    buildCapture({
+      url: `https://shop.example.com/checkout${urlSuffix}`,
+      requestPostData: postData,
+      requestHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
+      responseBody: { ok: true },
+      timestamp: "2024-01-01T00:00:01Z",
+    }),
+  ];
+  it("extracts a form-action token from the response text and splices it into the URL", () => {
+    const out = emit(
+      mk(`<form action="/checkout?csrf=${T}"></form>`, "go=1", `?csrf=${T}`),
+      true
+    );
+    expect(out).not.toContain(T);
+    expect(out).toContain("await fetch(");
+    expect(out).toContain("text_r0");
+    expect(out).toContain('.get("csrf")');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
+    expect(out).toContain("?csrf=${csrfToken}");
+  });
+  it("extracts a hidden-input token and splices it into a urlencoded body", () => {
+    const out = emit(
+      mk(`<input type="hidden" name="nonce" value="${T}">`, `nonce=${T}&go=1`, ""),
+      true
+    );
+    expect(out).not.toContain(T);
+    expect(out).toContain('"nonce"');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
+    expect(out).toContain("nonce=${nonceToken}");
+  });
+});
