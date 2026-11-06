@@ -383,7 +383,6 @@ export function wireSignalCapture(
     const prior = inFlight.get(params.requestId);
     const inline = params.request.postData;
     const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
-    const carriesBodyByMethod = /^(POST|PUT|PATCH)$/i.test(params.request.method);
     const mayHaveBody = isBodyCapable(params.request.method, params.request.hasPostData);
     const entry: InFlightRequest = {
       url: params.request.url,
