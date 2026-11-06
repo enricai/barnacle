@@ -5636,6 +5636,32 @@ describe("deriveGetInputModel", () => {
     expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
     expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
   });
+  it("keeps a multi-word collection segment fixed in /<region>/<collection-slug>/<id>", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://x.test/api/us-east/price-lists/42/rates");
+    const m = deriveGetInputModel(a, [a])!;
+    const idxs = m.pathVars.map((v) => v.segmentIndex);
+    expect(idxs).toContain(4);
+    expect(idxs).not.toContain(3);
+  });
+  it("keeps a hyphenated collection slug fixed for report-shaped same-endpoint captures", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const base = "https://shop.example.com/us-east/price-lists/9/schedule.json";
+    const a = cap(`${base}?item_ids%5B%5D=9&date_from=2026-10-26&date_to=2026-11-01`);
+    const b = cap(`${base}?item_ids%5B%5D=9&date_from=2026-11-23&date_to=2026-11-29`);
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.pathVars.map((v) => v.segmentIndex)).toEqual([3]);
+    expect(m.pathVars[0]!.segmentIndex).not.toBe(2);
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["date_from", "date_to"]);
+    expect(m.fieldToQueryKey.item_ids).toBe("item_ids[]");
+  });
+  it("still binds an instance slug after a collection segment", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example.com/price-lists/spring-sale/items.json");
+    expect(deriveGetInputModel(a, [a])!.pathVars).toEqual([
+      { field: "priceListsId", segmentIndex: 2, queryKey: "" },
+    ]);
+  });
   it("keeps declared names for non-varying keys instead of freezing them", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap(

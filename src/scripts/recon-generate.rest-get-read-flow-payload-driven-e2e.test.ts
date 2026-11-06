@@ -146,4 +146,22 @@ describe("recon-generate CLI — payload-driven GET read flow, end to end", () =
     expect(contract).toMatch(/^ {2}item_ids: z\.string\(\)/m);
     expect(contract).not.toMatch(/submission/i);
   }, 60_000);
+
+  it("keeps a hyphenated collection slug fixed while the id, window come from payload", () => {
+    const base = "https://shop.example.com/us-east/price-lists/9/schedule.json";
+    const urls = [
+      `${base}?item_ids%5B%5D=9&date_from=2026-10-26&date_to=2026-11-01`,
+      `${base}?item_ids%5B%5D=9&date_from=2026-11-23&date_to=2026-11-29`,
+    ];
+    const contract = generateContract(null, urls);
+    const http = contract.slice(contract.indexOf("async executeHttp("));
+    expect(http).toContain("/us-east/price-lists/");
+    expect(http).toContain(`encodeURIComponent(String(payload.item_ids ?? "9"))`);
+    expect(http).toContain('["item_ids[]", String(payload.item_ids ?? "9")]');
+    expect(http).toContain('["date_from", String(payload.date_from)]');
+    expect(http).toContain('["date_to", String(payload.date_to)]');
+    expect(http).not.toMatch(/payload\.priceLists/i);
+    expect(contract).not.toMatch(/^ {2}priceLists\w*: /m);
+    expect(contract).not.toMatch(/\b(?:const|class|function)\s+\d/);
+  }, 60_000);
 });

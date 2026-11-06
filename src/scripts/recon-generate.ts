@@ -2683,8 +2683,23 @@ function isSlugSegment(segment: string): boolean {
  * route parts. Seen in a single capture it is still a caller input; the
  * recorded value stays as its fallback.
  */
-function isInstanceSlug(i: number, value: string): boolean {
+function isInstanceSlug(
+  i: number,
+  value: string,
+  next: string | undefined,
+  nextBound: boolean
+): boolean {
   if (i < 2 || value.includes(".") || /^v\d+$/i.test(value)) return false;
+  // A multi-word segment directly before an id-bearing or already-bound segment is the
+  // collection word (`/<region>/<collection-slug>/<id>/...`), a fixed route part.
+  if (
+    nextBound ||
+    (next !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(next) && carriesEntityId(next))
+  )
+    return false;
+  // Two adjacent multi-word segments: the first is the collection word, the second the instance.
+  if (next !== undefined && !next.includes(".") && !/^v\d+$/i.test(next) && isSlugSegment(next))
+    return false;
   return isSlugSegment(value);
 }
 
@@ -2865,7 +2880,17 @@ export function deriveGetInputModel(
       continue;
     }
     const varies = (valuesBySegment[i]?.size ?? 0) > 1;
-    if (!varies && !carriesEntityId(value) && !isInstanceSlug(i, value)) continue;
+    if (
+      !varies &&
+      !carriesEntityId(value) &&
+      !isInstanceSlug(
+        i,
+        value,
+        segments[i + 1] === undefined ? undefined : decode(segments[i + 1] as string),
+        boundSegments.has(i + 1)
+      )
+    )
+      continue;
     const prev = safeGetFieldIdentifier(decode(segments[i - 1] ?? ""));
     const base = prev === "param" ? "id" : `${prev}Id`;
     let field = base;
