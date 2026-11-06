@@ -15314,7 +15314,7 @@ export async function executeStepWithHealing(params: {
           !stepDeclaredNonSubmit &&
           submitShapeObservedBeforeClick.values().next().value === true;
     if (resolvedElementIsSubmitShaped) adoptElementStepStartBaseline();
-    const advanceBaseline = stepStartSnapshot ?? pre;
+    const stepStartBaseline = stepStartSnapshot ?? pre;
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
     const stepIsMidFlowSubmit = isMidFlowSubmitShapedStep({
@@ -15335,12 +15335,16 @@ export async function executeStepWithHealing(params: {
     // Re-settle is not gated on submit shape: an unflagged step or a no-action
     // act can still advance a page whose body re-renders late. Credit stays
     // gated on stepIsMidFlowSubmit, so the final step keeps its strictness.
-    const { post } = await readMidFlowPostClickAdvance({
+    const {
+      post,
+      advanceBaseline,
+      pageAdvanced: settledPageAdvanced,
+    } = await readMidFlowPostClickAdvance({
       target: frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
       pre,
-      stepStartSnapshot: advanceBaseline,
+      stepStartSnapshot: stepStartBaseline,
       midFlowSubmit: stepIsMidFlowSubmit,
       mayTriggerRoundTrip,
       waitForMutations: isSettleWaitStep || resolvedElementIsSubmitShaped,
@@ -15523,7 +15527,7 @@ export async function executeStepWithHealing(params: {
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausibleForPost,
       midFlowSubmit,
-      pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post),
+      pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
     });
     if (
@@ -15855,7 +15859,7 @@ export async function executeStepWithHealing(params: {
         signalAdvanced: clickViewSwapVerified,
         judgeUnavailable: judgeVerdict === null,
         networkAdvanced: networkIsRealAdvance,
-        pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post),
+        pageAdvanced: settledPageAdvanced,
         invalidMarkerCount,
       });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
@@ -16794,7 +16798,7 @@ export async function executeStepWithHealing(params: {
           !isGenuineFinalSubmit({
             isFinalStep,
             flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-          }) && hasSettledPageAdvanced(advanceBaseline, post),
+          }) && settledPageAdvanced,
       });
       if (earlyExit) {
         const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;
