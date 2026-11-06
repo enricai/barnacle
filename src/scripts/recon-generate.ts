@@ -2985,10 +2985,20 @@ export function deriveGetInputModel(
   const recordedQueryValues: Record<string, string> = {};
   const pathVars: GetInputModel["pathVars"] = [];
   const pathTwins: NonNullable<GetInputModel["pathTwins"]> = [];
+  // One normalization for isDeclared and nameFor: the declared payload field a query key
+  // binds to — the key itself, its identifier form, or its camelCase form (room_id -> roomId).
+  const declaredFieldFor = (key: string): string | undefined => {
+    const base = safeGetFieldIdentifier(key);
+    if (declared.has(key) && base === key) return key;
+    if (declared.has(base)) return base;
+    const camel = base.replace(/_+([A-Za-z0-9])/g, (_m, c: string) => c.toUpperCase());
+    if (camel !== base && declared.has(camel)) return camel;
+    return undefined;
+  };
   const nameFor = (key: string): string => {
     const base = safeGetFieldIdentifier(key);
-    if (declared.has(key) && safeGetFieldIdentifier(key) === key) return key;
-    if (declared.has(base)) return base;
+    const bound = declaredFieldFor(key);
+    if (bound !== undefined) return bound;
     let name = base;
     for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
     taken.add(name);
@@ -3003,7 +3013,7 @@ export function deriveGetInputModel(
       winnerValue !== null && winnerValue !== ""
         ? segments.findIndex((s, i) => i > 0 && decode(s) === winnerValue)
         : -1;
-    const isDeclared = declared.has(key) || declared.has(safeGetFieldIdentifier(key));
+    const isDeclared = declared.has(key) || declaredFieldFor(key) !== undefined;
     const boundField = boundSegments.get(segIdx);
     if (segIdx >= 0 && boundField !== undefined) {
       // Another query key repeating an already-bound path segment follows the same caller input.

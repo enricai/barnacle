@@ -5739,6 +5739,20 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
 });
 
 describe("deriveGetInputModel", () => {
+  it("binds declared camelCase payload fields to snake_case window and entity-id keys", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const base = "https://shop.example.com/api/report.json";
+    const a = cap(`${base}?room_id=5&date_from=2026-10-26&item_ids%5B%5D=1&other_key=x`);
+    const b = cap(`${base}?room_id=6&date_from=2026-11-23&item_ids%5B%5D=2&other_key=x`);
+    const m = deriveGetInputModel(a, [a, b], ["roomId", "dateFrom", "itemIds", "unrelated"])!;
+    expect(m.fieldToQueryKey.roomId).toBe("room_id");
+    expect(m.fieldToQueryKey.dateFrom).toBe("date_from");
+    expect(m.fieldToQueryKey.itemIds).toBe("item_ids[]");
+    expect(m.fieldToQueryKey.room_id).toBeUndefined();
+    expect(m.dynamicFields.map((d) => d.field)).toEqual(
+      expect.arrayContaining(["roomId", "dateFrom", "itemIds"])
+    );
+  });
   const cap = (url: string, method = "GET", status = 200) =>
     ({ method, url, status }) as unknown as import("./recon-shared").Capture;
   it("derives dynamic, fixed, path vars and safe identifiers", async () => {
