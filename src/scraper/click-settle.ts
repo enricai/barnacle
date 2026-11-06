@@ -62,7 +62,9 @@ export const MAX_MS = 60000;
  * `holdUnmovedMs` serves a re-settle of a page whose header already flipped and whose body has
  * not yet re-rendered: the text the call starts on is then not the finished page, so quiet alone
  * cannot end the wait. While the text has not moved since the call began, the wait is held to
- * that allowance instead of IDLE_GIVE_UP_MS; once the text moves again it falls back to the
+ * that allowance instead of IDLE_GIVE_UP_MS (with an armed probe that has seen the page
+ * re-render and go quiet again, the hold ends on that quiescence, not at the full allowance;
+ * a page the probe never saw move still holds, since a late body may yet land); once the text moves again it falls back to the
  * ordinary quiet window, so a body that lands mid-wait does not cost the rest of the allowance.
  */
 export async function settleAfterClick(
@@ -88,6 +90,7 @@ export async function settleAfterClick(
   let seen = counter.n > preCount || textMoved;
   let last = counter.n;
   let movedSinceStart = false;
+  let probeSawActivity = false;
   let quiet = 0;
   let elapsed = 0;
   while (elapsed < MAX_MS) {
@@ -109,6 +112,7 @@ export async function settleAfterClick(
         (lastMutations !== undefined && q.mutations !== lastMutations));
     if (q !== undefined) lastMutations = q.mutations;
     if (pageBusy) {
+      probeSawActivity = true;
       seen = true;
       quiet = 0;
       continue;
@@ -127,7 +131,9 @@ export async function settleAfterClick(
       }
       const idleAllowanceMs =
         holdUnmovedMs !== undefined && !movedSinceStart
-          ? holdUnmovedMs
+          ? readQuiescence && probeSawActivity
+            ? 0
+            : holdUnmovedMs
           : IDLE_GIVE_UP_MS;
       if (quiet >= TEXT_QUIET_POLLS && elapsed >= idleAllowanceMs)
         return "quiescent";

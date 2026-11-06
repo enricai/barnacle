@@ -615,6 +615,26 @@ describe("settleAfterClick", () => {
       expect(f.polls()).toBeLessThan(HOLD_MS / 1000);
     });
 
+    it("ends the hold on probe quiescence once the probe saw the page re-render", async () => {
+      const f = makeFake(() => {});
+      const busy = async (): Promise<{ pending: number; mutations: number }> => ({
+        pending: f.polls() >= 3 && f.polls() < 8 ? 1 : 0,
+        mutations: 0,
+      });
+      const outcome = await settleAfterClick(
+        f.page,
+        f.counter,
+        0,
+        true,
+        async () => "header",
+        "pre",
+        busy,
+        HOLD_MS,
+      );
+      expect(outcome).toBe("quiescent");
+      expect(f.polls()).toBeLessThan(HOLD_MS / 1000);
+    });
+
     it("holds a header flip whose body never re-renders to the allowance", async () => {
       const f = makeFake(() => {});
       await settleAfterClick(
