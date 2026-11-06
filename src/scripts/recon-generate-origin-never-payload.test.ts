@@ -126,6 +126,32 @@ describe("origin in later write and multipart steps", () => {
     expect(body).not.toContain(ORIGIN);
   });
 
+  it("later write binds its own scalar leaves, skipping empty, numeric and array leaves", () => {
+    const first = step(0, "POST", `${ORIGIN}/api/cart`, { label: "first-label-value" });
+    first.capture.responseBody = { cartId: "cart-identifier-12345" } as never;
+    first.produces = [
+      { kind: "body", name: "cartId", path: ["cartId"], leafType: "string" },
+    ] as never;
+    const discovered = new Set<string>();
+    const body = emit(
+      [
+        first,
+        step(1, "PUT", `${ORIGIN}/api/cart/cart-identifier-12345/items`, {
+          empty: "",
+          count: 3,
+          note: "second-note-value",
+          tags: ["array-leaf-value"],
+          cartId: "cart-identifier-12345",
+        }),
+      ],
+      discovered
+    );
+    expect([...discovered].some((f) => /note/i.test(f))).toBe(true);
+    expect(body).not.toContain("second-note-value");
+    expect(body).toContain('"empty":""');
+    expect(body).toContain('"count":3');
+  });
+
   it("multipart step carries origin header as context.baseUrl", () => {
     const mp = step(0, "POST", `${ORIGIN}/api/upload`, { a: 1 });
     mp.isMultipart = true;
