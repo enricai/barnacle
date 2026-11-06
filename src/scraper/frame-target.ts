@@ -549,3 +549,24 @@ export async function waitForChildFrameReady(
     `child frame ${target.frameSelector ?? "(unresolved)"} still not ready after ${timeoutMs}ms — proceeding anyway`
   );
 }
+
+/**
+ * Stagehand resolves xpaths in the TOP-document coordinate system, so an
+ * element inside an iframe looks like
+ * `/html[1]/body[1]/main[1]/iframe[1]/html[1]/body[1]/div[2]/a[1]`
+ * (e.g. an iframe on an example.com page). `FrameTarget.evaluate` and the
+ * baseline map ({@link SELECTION_STATE_MAP_EXPR}) run inside the frame's own
+ * document, where that path is `/html[1]/body[1]/div[2]/a[1]`. This strips
+ * the prefix up to the last `/iframe[n]` hop so lookup keys and in-frame
+ * `document.evaluate` agree. Main-document targets (no resolved frame and no
+ * frame selector) and xpaths with no iframe hop are returned unchanged.
+ */
+export function toFrameRelativeXpath(xpath: string, target?: FrameTarget): string {
+  if (!target || (!target.frame && !target.frameSelector)) return xpath;
+  const re = /\/i?frame(?:\[\d+\])?(\/html(?:\[\d+\])?(?:\/|$))/gi;
+  const hops = Array.from(xpath.matchAll(re));
+  const last = hops[hops.length - 1];
+  return last === undefined
+    ? xpath
+    : xpath.slice(last.index + last[0].length - (last[1] ?? "").length);
+}
