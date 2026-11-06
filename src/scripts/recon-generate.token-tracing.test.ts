@@ -3,6 +3,7 @@ import {
   compileActionSteps,
   emitMultiStepExecuteHttp,
   extractActionSequence,
+  findFrozenRequestTokens,
   indexStateValues,
 } from "@/scripts/recon-generate";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
@@ -234,5 +235,110 @@ describe("HTML-issued token emission", () => {
     expect(out).not.toContain(T2);
     expect(out).toMatch(/const idToken\b/);
     expect(out).toMatch(/const idToken2\b/);
+  });
+});
+
+describe("percent-encoded token replay", () => {
+  const B64 = "ab+cd/ef12GH34ij56KL==";
+  const start = buildCapture({
+    url: "https://shop.example.com/api/session/start",
+    requestPostData: JSON.stringify({ intent: "begin" }),
+    responseBody: { handle: B64 },
+    timestamp: "2024-01-01T00:00:00Z",
+  });
+  it("threads a JSON-issued token re-sent percent-encoded in the next URL", () => {
+    const out = emit([
+      start,
+      buildCapture({
+        url: `https://shop.example.com/api/session/commit?handle=${encodeURIComponent(B64)}`,
+        requestPostData: JSON.stringify({ qty: 2 }),
+        responseBody: { done: true },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ]);
+    expect(out).not.toContain(B64);
+    expect(out).not.toContain(encodeURIComponent(B64));
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
+    expect(out).toContain("?handle=${encodeURIComponent(handle)}");
+  });
+  it("threads an HTML-issued token re-sent percent-encoded in the next URL", () => {
+    const out = emit(
+      [
+        buildCapture({
+          url: "https://shop.example.com/cart",
+          method: "GET",
+          requestPostData: null,
+          responseBody: `<input type="hidden" name="nonce" value="${B64}">`,
+          timestamp: "2024-01-01T00:00:00Z",
+        }),
+        buildCapture({
+          url: `https://shop.example.com/checkout?n=${encodeURIComponent(B64)}`,
+          requestPostData: JSON.stringify({ go: 1 }),
+          responseBody: { ok: true },
+          timestamp: "2024-01-01T00:00:01Z",
+        }),
+      ],
+      true
+    );
+    expect(out).not.toContain(B64);
+    expect(out).not.toContain(encodeURIComponent(B64));
+    expect(out).toContain("await fetch(");
+  });
+});
+
+describe("findFrozenRequestTokens", () => {
+  const T = "Qw8rT5yU2iO9pLkJ4hGf";
+  const steps = (caps: ReturnType<typeof buildCapture>[]) =>
+    compileActionSteps(
+      caps.map((capture, index) => ({ capture, index })),
+      new Map()
+    );
+  const page = (body: unknown) =>
+    buildCapture({
+      url: "https://shop.example.com/cart",
+      method: "GET",
+      requestPostData: null,
+      responseBody: body,
+      timestamp: "2024-01-01T00:00:00Z",
+    });
+  const write = (url: string, n: number) =>
+    buildCapture({
+      url,
+      requestPostData: JSON.stringify({ go: 1 }),
+      responseBody: { ok: true },
+      timestamp: `2024-01-01T00:00:0${n}Z`,
+    });
+
+  it("flags a token an earlier page carried in markup that emitted code still holds literally", () => {
+    const caps = [
+      page(`<script>var s = "${T}";</script>`),
+      write(`https://shop.example.com/step?s=${T}`, 1),
+    ];
+    expect(findFrozenRequestTokens(steps(caps.slice(1)), caps, `/step?s=${T}`)).toEqual([T]);
+  });
+  it("flags an opaque query value seen on exactly one request and issued by nothing", () => {
+    const caps = [write(`https://shop.example.com/step?s=${T}`, 1)];
+    expect(findFrozenRequestTokens(steps(caps), caps, `/step?s=${T}`)).toEqual([T]);
+  });
+  it("does not flag a constant value every request carries", () => {
+    const caps = [
+      write(`https://shop.example.com/a?key=${T}`, 1),
+      write(`https://shop.example.com/b?key=${T}`, 2),
+    ];
+    expect(findFrozenRequestTokens(steps(caps), caps, `/a?key=${T}`)).toEqual([]);
+  });
+  it("does not flag a token the emitted code no longer carries", () => {
+    const caps = [
+      page(`<script>var s = "${T}";</script>`),
+      write(`https://shop.example.com/step?s=${T}`, 1),
+    ];
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
+    expect(findFrozenRequestTokens(steps(caps.slice(1)), caps, "/step?s=${sToken}")).toEqual([]);
+  });
+  it("does not flag a slug-shaped value", () => {
+    const caps = [write("https://shop.example.com/step?q=software-engineer-remote-2024", 1)];
+    expect(
+      findFrozenRequestTokens(steps(caps), caps, "/step?q=software-engineer-remote-2024")
+    ).toEqual([]);
   });
 });

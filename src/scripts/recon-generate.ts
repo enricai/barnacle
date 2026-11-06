@@ -3267,6 +3267,32 @@ const ISSUED_TOKEN_MIN_LENGTH = 16;
 /** Longest string considered a token (a larger leaf is document content). */
 const ISSUED_TOKEN_MAX_LENGTH = 512;
 
+/**
+ * The forms a value takes when a later request re-sends it: verbatim, or
+ * percent-encoded when it rides in a URL or a form-urlencoded body (an opaque
+ * token carrying `+`, `/` or `=` is never present verbatim there). Every
+ * "does a later request re-send this value" test must consider both, or a
+ * token the server issued is mistaken for an unrelated constant and frozen.
+ */
+function replayForms(value: string): string[] {
+  let forms = replayFormsCache.get(value);
+  if (forms === undefined) {
+    const encoded = encodeURIComponent(value);
+    forms = encoded === value ? [value] : [value, encoded];
+    // Callers test every indexed value against every request, so the same
+    // value is asked for many times per run; bound the memo for long runs.
+    if (replayFormsCache.size >= 50_000) replayFormsCache.clear();
+    replayFormsCache.set(value, forms);
+  }
+  return forms;
+}
+const replayFormsCache = new Map<string, string[]>();
+
+/** True when `haystack` carries `value` in any {@link replayForms} form. */
+function resends(haystack: string, value: string): boolean {
+  return replayForms(value).some((form) => haystack.includes(form));
+}
+
 /** Kind of HTML element an issued token was read from. */
 type HtmlTokenElement = "form-action" | "link" | "hidden-input";
 
@@ -3367,7 +3393,7 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
       ...Object.values(later.requestHeaders),
     ];
     for (const token of tokens) {
-      if (haystacks.some((h) => h.includes(token))) return true;
+      if (haystacks.some((h) => resends(h, token))) return true;
     }
   }
   return false;
@@ -6596,9 +6622,9 @@ export function indexStateValues(
         // A later GET re-sends a token only through its URL (no body).
         reused =
           later.method === "GET"
-            ? later.url.includes(v)
+            ? resends(later.url, v)
             : [later.url, later.requestPostData ?? "", ...Object.values(later.requestHeaders)].some(
-                (h) => h.includes(v)
+                (h) => resends(h, v)
               );
       }
       if (!reused) continue;
@@ -7210,7 +7236,7 @@ export function compileActionSteps(
       // everywhere else, a coincidental substring match (a digit inside an
       // unrelated opaque path segment) is not reuse and must not splice.
       if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture)) continue;
-      if (capture.url.includes(sv.value)) {
+      if (resends(capture.url, sv.value)) {
         usedValues.add(sv.value);
         continue;
       }
@@ -7227,7 +7253,11 @@ export function compileActionSteps(
       // preserving substring-in-value reuse. Non-JSON bodies (multipart raw
       // bytes) keep whole-body substring matching.
       if (bodyLeafValues === null) {
-        if (capture.requestPostData?.includes(sv.value)) usedValues.add(sv.value);
+        if (
+          typeof capture.requestPostData === "string" &&
+          resends(capture.requestPostData, sv.value)
+        )
+          usedValues.add(sv.value);
         continue;
       }
       // A produced value's SOURCE key name (the last segment of its response
@@ -7410,6 +7440,105 @@ export function compileActionSteps(
     const finalProduces = isMultipart ? produces.filter((q) => q.kind !== "html") : produces;
     return { capture, varName, produces: finalProduces, isMultipart, isCrossDomain };
   });
+}
+
+/**
+ * True for a value shaped like an opaque server-minted credential rather than
+ * a word, slug, date or id: long enough to be unguessable and mixing upper-case,
+ * lower-case and digits (or a long hex digest). UUIDs are excluded — those are
+ * stable structural identifiers the generator already anchors or binds.
+ */
+function isOpaqueToken(value: string): boolean {
+  if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH)
+    return false;
+  if (/\s/.test(value) || value.includes("://") || UUID_REGEX.test(value)) return false;
+  if (!/^[A-Za-z0-9_\-+/=.~%]+$/.test(value)) return false;
+  const mixed = /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value);
+  return mixed || (value.length >= 32 && /^[0-9a-f]+$/i.test(value) && /\d/.test(value));
+}
+
+/**
+ * Per-request tokens a multi-step flow re-sends that the emitted `executeHttp`
+ * body still carries as literals. Such a flow replays one recording session's
+ * credential on every live call, so the generator must not ship it as an HTTP
+ * hot path — the browser flow is the only honest emission (the tokens cannot
+ * be traced to a producer the plugin can re-run).
+ *
+ * A request value is a per-request token when it is an {@link isOpaqueToken}
+ * and either (a) an EARLIER response in the recording carried it in any form
+ * — JSON leaf, markup, script, header — or (b) it is a URL query value whose
+ * key takes a different value on another call to the same endpoint. URL query
+ * values and path segments are checked against both; body values are checked
+ * only against tokens issued inside earlier HTML documents, because a JSON
+ * body legitimately re-sends stable anchors (option codes, field ids) the
+ * generator keeps literal by design. `shieldedUuids` are never tokens.
+ */
+export function findFrozenRequestTokens(
+  actionSteps: ActionStep[],
+  allCaptures: readonly Capture[],
+  emittedBody: string,
+  shieldedUuids: ReadonlySet<string> = new Set()
+): string[] {
+  const responseText = (c: Capture): string => {
+    const body =
+      typeof c.responseBody === "string" ? c.responseBody : JSON.stringify(c.responseBody ?? "");
+    return `${body}\n${Object.values(c.responseHeaders ?? {}).join("\n")}`;
+  };
+  const issuedBefore = (capture: Capture): Capture[] => {
+    const at = allCaptures.indexOf(capture);
+    return at >= 0
+      ? allCaptures.slice(0, at)
+      : allCaptures.filter((c) => c !== capture && c.timestamp < capture.timestamp);
+  };
+  const frozen = new Set<string>();
+  const carriers = (value: string): number =>
+    allCaptures.filter((c) =>
+      [c.url, c.requestPostData ?? "", ...Object.values(c.requestHeaders ?? {})].some((h) =>
+        resends(h, value)
+      )
+    ).length;
+  const check = (value: string, capture: Capture, urlValue: boolean, isQuery = false): void => {
+    if (!isOpaqueToken(value) || shieldedUuids.has(value) || frozen.has(value)) return;
+    if (!resends(emittedBody, value)) return;
+    const earlier = issuedBefore(capture);
+    const perRequest = urlValue
+      ? earlier.some((c) => resends(responseText(c), value)) ||
+        isGenuineVaryingQueryValue(value, capture, allCaptures) ||
+        // A one-off opaque query value no other request, earlier response or
+        // header carries has no producer to thread and no sibling to prove it
+        // constant: it is a credential minted for this one request.
+        (isQuery && carriers(value) <= 1)
+      : earlier.some((c) => extractHtmlIssuedTokens(c.responseBody).some((t) => t.value === value));
+    if (perRequest) frozen.add(value);
+  };
+  for (const { capture } of actionSteps) {
+    let url: URL | null = null;
+    try {
+      url = new URL(capture.url);
+    } catch {
+      url = null;
+    }
+    if (url !== null) {
+      for (const [, v] of url.searchParams) check(v, capture, true, true);
+      for (const segment of url.pathname.split("/")) {
+        try {
+          check(decodeURIComponent(segment), capture, true);
+        } catch {
+          check(segment, capture, true);
+        }
+      }
+    }
+    const raw = capture.requestPostData;
+    if (typeof raw !== "string" || raw === "") continue;
+    try {
+      for (const { value } of walkAllPrimitiveLeaves(JSON.parse(raw) as unknown)) {
+        if (typeof value === "string") check(value, capture, false);
+      }
+    } catch {
+      for (const [, v] of new URLSearchParams(raw)) check(v, capture, false);
+    }
+  }
+  return [...frozen];
 }
 
 /**
@@ -7756,6 +7885,16 @@ function interpolateStateValues(
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
     if (binding.unconditional) unconditionalValues.add(value);
+    // A token the server issued verbatim reaches a URL / form-urlencoded body
+    // percent-encoded; splice the produced variable back through the same
+    // encoding so the live value is re-encoded exactly as the recording was.
+    const encoded = encodeURIComponent(value);
+    if (encoded !== value && !isJsonBody && !bindingByValue.has(encoded)) {
+      bindingByValue.set(encoded, `\${encodeURIComponent(${binding.varName})}`);
+      sourceNameByValue.set(encoded, binding.sourceName);
+      if (binding.restricted) restrictedValues.add(encoded);
+      if (binding.unconditional) unconditionalValues.add(encoded);
+    }
   }
   if (bindingByValue.size === 0) return template;
 
@@ -19910,10 +20049,32 @@ async function main(): Promise<void> {
     // downgrade to the single-endpoint `{query}` branch either, since that's a
     // fabrication of its own kind for a flow that isn't a single-action
     // query/search to begin with.
-    const browserFlowOnly =
+    const mustBeBrowserFlowOnly =
       isSubmissionFlow &&
       (browserFlowOnlyOptIn || noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
-    const multiStepBody = browserFlowOnly
+    // emitMultiStepExecuteHttp registers what it binds into these collectors;
+    // a body discarded below must leave them as it found them.
+    const collectorRestores: Array<() => void> = [
+      ...[discoveredPayloadAccessorFields, discoveredOptionFields].map((set) => {
+        const kept = [...set];
+        return () => {
+          set.clear();
+          for (const v of kept) set.add(v);
+        };
+      }),
+      ...[
+        discoveredRawOptionFields as Map<string, unknown>,
+        discoveredAdditionalBodyKeys as Map<string, unknown>,
+        discoveredStructuredKeys as Map<string, unknown>,
+      ].map((map) => {
+        const kept = [...map];
+        return () => {
+          map.clear();
+          for (const [k, v] of kept) map.set(k, v);
+        };
+      }),
+    ];
+    const synthesizedMultiStepBody = mustBeBrowserFlowOnly
       ? undefined
       : isSubmissionFlow
         ? emitMultiStepExecuteHttp(
@@ -19942,6 +20103,26 @@ async function main(): Promise<void> {
             vocabulary
           )
         : undefined;
+    // A per-request token the recording re-sends that no step of the emitted
+    // hot path produces would be replayed as one session's frozen literal on
+    // every live call: ship the browser flow instead of that hot path.
+    const untracedTokens =
+      synthesizedMultiStepBody === undefined
+        ? []
+        : findFrozenRequestTokens(
+            actionSteps,
+            activeCaptures,
+            synthesizedMultiStepBody,
+            shieldedUuids
+          );
+    if (untracedTokens.length > 0) {
+      for (const restore of collectorRestores) restore();
+      logger.warn(
+        `WARN ${untracedTokens.length} per-request token(s) re-sent by the recorded flow could not be traced to a producer step — emitting a browser-only plugin rather than freezing them into executeHttp`
+      );
+    }
+    const browserFlowOnly = mustBeBrowserFlowOnly || untracedTokens.length > 0;
+    const multiStepBody = untracedTokens.length > 0 ? undefined : synthesizedMultiStepBody;
     // Explicit merge — every field emitMultiStepExecuteHttp registered as a
     // `payload.<field>` accessor (persona, entryUrlParams, tenant-
     // subdomain headers, walkStringLeaves) flows into the same discovered-
