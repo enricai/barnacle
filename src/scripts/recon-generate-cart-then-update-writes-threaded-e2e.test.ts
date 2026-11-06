@@ -14,6 +14,7 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 const ORDER_ID = "ord_8f3a91c2b7d4";
 /** Concatenated so Biome does not read the emitted placeholder as a stray template interpolation. */
 const BASE_URL_PLACEHOLDER = "$" + "{context.baseUrl}";
+const PLACEHOLDER_OPEN = "$" + "{";
 
 const create: Capture = {
   timestamp: "2024-01-01T00:00:00Z",
@@ -453,5 +454,176 @@ describe("recon-generate cart-then-update flow", () => {
     expect(contract).not.toContain(REQUEST_BODY_UNAVAILABLE);
     expect(contract).not.toContain(String(NUM_ID));
     expect(contract).toContain("x-csrf-token");
+  }, 60_000);
+});
+
+describe("recon-generate cart-then-update flow with a numeric id and flat contact scalars", () => {
+  it("threads the numeric id and exposes name and email as payload inputs", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-flat-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const NUM_ID = 514391;
+    const post: Capture = { ...create, responseBody: { id: NUM_ID, state: "cart" } };
+    const put: Capture = {
+      ...update,
+      requestPostData: JSON.stringify({
+        id: NUM_ID,
+        name: "Jane Roe",
+        email: "jane.roe@mail.example.org",
+        phone: "5551234567",
+      }),
+      responseBody: { id: NUM_ID, state: "updated" },
+    };
+    [post, put].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
+    const siteId = `recon-cart-update-flat-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+        env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+      }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).toContain('method: "POST"');
+    expect(contract).toContain('method: "PUT"');
+    expect(contract).toContain("(r0 as { id: number }).id");
+    expect(contract).not.toContain(String(NUM_ID));
+    expect(contract).not.toContain("Jane Roe");
+    expect(contract).not.toContain("jane.roe@mail.example.org");
+    expect(contract).toMatch(/\bname: z\.string\(\)/);
+    expect(contract).toMatch(/\bemail: z\.string\(\)/);
+    expect(contract).toContain("payload.name");
+    expect(contract).not.toContain("5551234567");
+    expect(contract).not.toMatch(/\bBaseUrl\b/);
+  }, 60_000);
+});
+
+function generateContract(captures: Capture[], label: string): string {
+  workDir = mkdtempSync(join(tmpdir(), `recon-cart-update-${label}-`));
+  const runRoot = join(workDir, "run");
+  const capturesDir = join(runRoot, "graphql");
+  mkdirSync(capturesDir, { recursive: true });
+  mkdirSync(join(runRoot, "replays"), { recursive: true });
+  mkdirSync(join(runRoot, "aux"), { recursive: true });
+  writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+  captures.forEach((c, i) => {
+    writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+  });
+  const siteId = `recon-cart-update-${label}-${process.pid}`;
+  siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+  mkdirSync(siteOutDir, { recursive: true });
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      GENERATE_SCRIPT,
+      "--site-id",
+      siteId,
+      "--run-dir",
+      runRoot,
+      "--emit",
+      "ts",
+      "--force",
+    ],
+    {
+      cwd: RECON_GENERATE_CWD,
+      encoding: "utf8",
+      env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+    }
+  );
+  expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  return readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+}
+
+describe("recon-generate cart-then-update flow, structural contracts", () => {
+  const ORIGIN = "https://shop.example.com";
+  const NUM_ID = 514391;
+  const games = [
+    { gameId: 11, qty: 2 },
+    { gameId: 12, qty: 1 },
+  ];
+  const contact = { name: "Jane Roe", email: "jane.roe@mail.example.org", phone: "5551234567" };
+  const post = (body: unknown): Capture => ({
+    ...create,
+    url: `${ORIGIN}/api/carts`,
+    requestHeaders: { "content-type": "application/json", origin: ORIGIN },
+    requestPostData: JSON.stringify(body),
+    responseBody: { id: NUM_ID, state: "cart" },
+  });
+  const put = (url: string, body: unknown): Capture => ({
+    ...update,
+    url,
+    requestHeaders: { "content-type": "application/json", origin: ORIGIN },
+    requestPostData: JSON.stringify(body),
+    responseBody: { id: NUM_ID, state: "updated" },
+  });
+
+  it("threads an id the update carries only in its URL path and exposes the contact scalars", () => {
+    const contract = generateContract(
+      [post({ games, source: "web" }), put(`${ORIGIN}/api/carts/${NUM_ID}`, { games, ...contact })],
+      "urlid"
+    );
+    expect(contract).toContain("(r0 as { id: number }).id");
+    expect(contract).toContain(`/api/carts/${PLACEHOLDER_OPEN}id}`);
+    expect(contract).not.toContain(String(NUM_ID));
+    for (const field of ["name", "email", "phone"]) {
+      expect(contract).toMatch(new RegExp(`\\b${field}: z\\.string\\(\\)`));
+    }
+    expect(contract).not.toContain("jane.roe@mail.example.org");
+  }, 60_000);
+
+  it("exposes a body array nested under a wrapper exactly once", () => {
+    const contract = generateContract(
+      [
+        post({ booking: { games, source: "web" } }),
+        put(`${ORIGIN}/api/carts/${NUM_ID}`, { booking: { id: NUM_ID, games, ...contact } }),
+      ],
+      "wrapped"
+    );
+    expect(contract.match(/^\s+booking\w*: multipartJsonObject/gm)).toHaveLength(1);
+    expect(contract).toMatch(/\bbookingGames: multipartJsonObject/);
+    expect(contract).not.toMatch(/\n\s+booking: multipartJsonObject/);
+    expect(contract.match(/payload\.bookingGames/g)).toHaveLength(2);
+  }, 60_000);
+
+  it("never exposes an entry body key that carries the origin as a payload input", () => {
+    const contract = generateContract(
+      [
+        post({ games, source: "web", baseUrl: ORIGIN }),
+        put(`${ORIGIN}/api/carts/${NUM_ID}`, { id: NUM_ID, games, ...contact }),
+      ],
+      "originkey"
+    );
+    const payloadSchema = contract.match(
+      /PayloadSchema = z\.object[\s\S]*?\.merge\(JobTrackingSchema\)/
+    )?.[0];
+    expect(payloadSchema).toBeDefined();
+    expect(payloadSchema).not.toMatch(/baseUrl/i);
+    expect(contract).not.toMatch(/payload\.baseUrl/i);
+    expect(contract).toContain(`"baseUrl":"${BASE_URL_PLACEHOLDER}"`);
+    expect(contract.split(ORIGIN).length - 1).toBe(1);
   }, 60_000);
 });

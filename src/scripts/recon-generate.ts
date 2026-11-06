@@ -4890,6 +4890,40 @@ function* walkAllPrimitiveLeaves(
  * inflate the index without contributing to state threading. */
 const MIN_STATE_VALUE_LENGTH = 8;
 
+/** True when `value` is or embeds the recorded origin. The origin is runtime
+ * context (`context.baseUrl`), never a caller payload field. */
+function embedsOrigin(value: string, baseUrl: string): boolean {
+  return baseUrl.length > 0 && value.includes(baseUrl);
+}
+
+/** Rewrite every occurrence of the recorded origin in `value` to the
+ * `context.baseUrl` template placeholder. Built by concatenation so Biome
+ * doesn't mistake it for a placeholder in this file's own source. */
+function substituteOrigin(value: string, baseUrl: string): string {
+  if (baseUrl.length === 0) return value;
+  return value.split(baseUrl).join(`$${"{"}context.baseUrl${"}"}`);
+}
+
+/** Sorts recorded base headers into static, origin-derived and tenant-subdomain buckets. */
+export function partitionBaseHeaders(
+  baseHeaders: Record<string, string>,
+  baseUrl: string,
+  firstSubdomain: string,
+  staticBaseHeaders: Record<string, string>,
+  baseUrlDerivedHeaders: Map<string, string>,
+  tenantSubdomainHeaders: Map<string, string>
+): void {
+  for (const [k, v] of Object.entries(baseHeaders)) {
+    if (firstSubdomain.length > 0 && v === firstSubdomain) {
+      tenantSubdomainHeaders.set(k, v);
+    } else if (embedsOrigin(v, baseUrl)) {
+      baseUrlDerivedHeaders.set(k, v);
+    } else {
+      staticBaseHeaders[k] = v;
+    }
+  }
+}
+
 /**
  * Documented enum of common HTTP-API error-reporting key names. Closed set
  * (per the no-regex-open-sets feedback): when an API returns 200 with an
@@ -6040,8 +6074,6 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
       }
     }
     const coveredByAncestorField = coveringAncestorLen > 0;
-    // Only a direct child of the registered ancestor has a one-hop accessor.
-    if (coveredByAncestorField && valuePath.length - coveringAncestorLen !== 1) continue;
     // Schema registration and the wholesale text-swallow below are
     // independent concerns: this field's inferred Zod shape is correct
     // regardless of whether any of the exclusion/guard checks below skip
@@ -6156,9 +6188,12 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
     if (result.slice(spanStart, spanEnd).includes("${payload.")) continue;
     // A value nested in an already-registered ancestor field is read from that
     // field's content instead of being frozen as the recorded literal.
-    const valueExpr = coveredByAncestorField
-      ? `(payload.${pathToPayloadFieldName(valuePath.slice(0, coveringAncestorLen))} as Record<string, unknown>)[${JSON.stringify(key)}]`
-      : `payload.${fieldName}`;
+    // Descendants at any depth below the ancestor are read hop by hop.
+    let ancestorExpr = `payload.${pathToPayloadFieldName(valuePath.slice(0, coveringAncestorLen))}`;
+    for (const seg of valuePath.slice(coveringAncestorLen)) {
+      ancestorExpr = `(${ancestorExpr} as Record<string, unknown>)[${JSON.stringify(seg)}]`;
+    }
+    const valueExpr = coveredByAncestorField ? ancestorExpr : `payload.${fieldName}`;
     const replacement = `$${"{"}JSON.stringify(${valueExpr})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
@@ -6995,8 +7030,9 @@ function emitItemLoopLines(
 /**
  * Short identifier values (below {@link MIN_STATE_VALUE_LENGTH}, e.g. a
  * six-digit numeric record id) that an earlier response mints under an
- * identifier-named key and a LATER body-bearing (non-GET/HEAD) request re-sends
- * in its JSON body under an identifier-named key the two names correlate on.
+ * identifier-named key and a LATER non-GET/HEAD request re-sends as a bare URL
+ * path segment, a correlated identifier query parameter, or in its JSON body
+ * under an identifier-named key the two names correlate on.
  * This is the cart-then-update shape: `POST /order` -> `{id: 514391}`, then
  * `PUT /order` carrying `{order: {id: 514391}}`. Without this the length floor
  * drops the id from the state index and the update call freezes the recon
@@ -7029,7 +7065,33 @@ function collectMutationIdentifierThreadedValues(
     for (let j = i + 1; j < captures.length; j++) {
       const consumer = captures[j]!;
       const method = consumer.method.toUpperCase();
-      if (method === "GET" || method === "HEAD" || !consumer.requestPostData) continue;
+      if (method === "GET" || method === "HEAD") continue;
+      const markConsumed = (text: string): void => {
+        const consumers = result.get(text) ?? new Set<Capture>();
+        consumers.add(consumer);
+        result.set(text, consumers);
+      };
+      // REST-style updates address the record in the URL: a bare path segment is
+      // name-free, so it threads on the value alone, like a drill-down hop's
+      // path id; a query parameter must correlate on an identifier key.
+      try {
+        const url = new URL(consumer.url);
+        for (const segment of url.pathname.split("/").filter(Boolean)) {
+          if (produced.has(segment)) markConsumed(segment);
+        }
+        for (const [name, text] of url.searchParams) {
+          const sourceKey = produced.get(text);
+          if (
+            sourceKey !== undefined &&
+            isIdentifierKey(name) &&
+            keyNamesCorrelate(sourceKey, name)
+          )
+            markConsumed(text);
+        }
+      } catch {
+        // A relative or invalid URL carries no path/query signal.
+      }
+      if (!consumer.requestPostData) continue;
       let parsed: unknown;
       try {
         parsed = JSON.parse(consumer.requestPostData);
@@ -7042,9 +7104,7 @@ function collectMutationIdentifierThreadedValues(
         const text = String(value);
         const sourceKey = produced.get(text);
         if (sourceKey === undefined || !keyNamesCorrelate(sourceKey, targetKey)) continue;
-        const consumers = result.get(text) ?? new Set<Capture>();
-        consumers.add(consumer);
-        result.set(text, consumers);
+        markConsumed(text);
       }
     }
   }
@@ -8074,7 +8134,10 @@ export function applyPayloadKeyValueSubstitutions(
    * {@link CAPACITY_FIELD_NAME_PATTERN}-shaped numeric leaves — the
    * evidence source for a discovered "number" key's `capacityMax`. */
   responseBodiesForCapacitySignal: readonly unknown[] = [],
-  outStructuredKeys: Map<string, string> = new Map()
+  outStructuredKeys: Map<string, string> = new Map(),
+  /** The recorded origin: runtime context (`context.baseUrl`), so a value that
+   * is or embeds it never mints a caller payload key. */
+  baseUrl = ""
 ): string {
   const merged: Array<[string, string | number | boolean]> = [];
   const seenPairs = new Set<string>();
@@ -8088,8 +8151,14 @@ export function applyPayloadKeyValueSubstitutions(
     if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
       continue;
     }
+    // A top-level key that wraps the body's form envelope is a container, not a
+    // caller input: the structured pass names the structures inside it by full
+    // path (`<wrapper><Child>`), so registering the wrapper too would expose the
+    // same nested value under two names.
+    const [wrapperKey] = locateFormEnvelopePath(body);
     for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
       if (!isValidJsIdentifier(key)) continue;
+      if (key === wrapperKey) continue;
       if (value === null || typeof value !== "object") continue;
       if (Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0) continue;
       registerStructuredPayloadField(outStructuredKeys, key, value);
@@ -8105,6 +8174,7 @@ export function applyPayloadKeyValueSubstitutions(
       if (!isValidJsIdentifier(key)) continue;
       if (outStructuredKeys.has(key)) continue;
       if (value === null) continue;
+      if (typeof value === "string" && embedsOrigin(value, baseUrl)) continue;
       // Dedupe identical (key, value) pairs only — a repeated occurrence of
       // the SAME literal value for a key across bodies needs no second
       // substitution pass, but a DIFFERENT value under the same key is its
@@ -8703,11 +8773,11 @@ function isMutatingMethod(method: string): boolean {
  * Binds every string leaf of a later write's body that no earlier pass bound
  * (still a bare literal in `template`) to a flat `payload.<field>` input, so the
  * caller's own scalars are never frozen from the recording. The field name is
- * derived from the leaf's path ({@link pathToPayloadFieldName}); a value already
+ * derived from the leaf's path ({@link payloadAccessorForPath}); a value already
  * bound elsewhere reuses its accessor, and a name clash between different values
  * is disambiguated with a numeric suffix. Leaves under an array are left to the
- * structured-value passes, as are shielded ids, pure-digit strings, strings
- * that embed the recorded origin, and single-character enum-like values.
+ * structured-value passes, as are shielded ids and strings that embed the
+ * recorded origin.
  */
 function bindLaterWriteScalarLeaves(
   template: string,
@@ -8720,15 +8790,15 @@ function bindLaterWriteScalarLeaves(
 ): string {
   let result = template;
   for (const { value, path } of walkAllPrimitiveLeaves(parsedBody)) {
-    if (typeof value !== "string" || value.length < 3) continue;
+    if (typeof value !== "string" || value.length === 0) continue;
     if (path.length === 0 || path.some((seg) => /^\d+$/.test(seg))) continue;
-    if (shieldedUuids.has(value) || boundValues.has(value) || /^\d+$/.test(value)) continue;
-    if (baseUrl.length > 0 && value.includes(baseUrl)) continue;
+    if (shieldedUuids.has(value) || boundValues.has(value)) continue;
+    if (embedsOrigin(value, baseUrl)) continue;
     const literal = JSON.stringify(value);
     if (!result.includes(literal)) continue;
     let accessor = payloadAccessorByValue.get(value);
     if (accessor === undefined) {
-      const base = pathToPayloadFieldName(path);
+      const { field: base } = payloadAccessorForPath(path);
       if (!isValidJsIdentifier(base)) continue;
       let field = base;
       for (let n = 2; outDiscoveredFields.has(field); n++) field = `${base}${n}`;
@@ -9450,7 +9520,7 @@ export function emitMultiStepExecuteHttp(
       // The recon origin is runtime context, never a caller payload field: a
       // leaf that is or embeds it must not mint a payload key (e.g. BaseUrl);
       // the origin substitution below rewrites it to `${context.baseUrl}`.
-      if (baseUrl.length > 0 && value.includes(baseUrl)) continue;
+      if (embedsOrigin(value, baseUrl)) continue;
       // An element of an array any call site's facet pass owns belongs to the
       // facet's payloadField (or stays literal), not to a by-index accessor
       // that would freeze the sibling elements' shape.
@@ -9486,6 +9556,12 @@ export function emitMultiStepExecuteHttp(
   // from the runtime context, never a caller payload field (no schema key).
   if (baseUrl.length >= MIN_STATE_VALUE_LENGTH) {
     payloadAccessorByValue.set(baseUrl, "context.baseUrl");
+    // The same origin travelling percent-encoded (a form-encoded body or a
+    // redirect query parameter) is still the runtime origin.
+    const encodedOrigin = encodeURIComponent(baseUrl);
+    if (encodedOrigin !== baseUrl) {
+      payloadAccessorByValue.set(encodedOrigin, "encodeURIComponent(context.baseUrl)");
+    }
   }
   // Persona identity bindings (from the flow's quoted literals + RECON_EMAIL,
   // paired to a payload field by the consumer vocabulary). Merged into the same
@@ -9972,7 +10048,8 @@ export function emitMultiStepExecuteHttp(
           additionalBodies,
           outDiscoveredAdditionalBodyKeys,
           allResponseBodies,
-          outStructuredKeys
+          outStructuredKeys,
+          baseUrl
         )
       : "";
     // Mechanism A — generic (plain-JSON, wire-key-anchored) dropdown label→code
@@ -10007,8 +10084,9 @@ export function emitMultiStepExecuteHttp(
         boundValues
       );
       // A later write that threads a prior response carries the caller's own scalars (contact
-      // details and the like): bind each still-literal string leaf to a payload
-      // input instead of freezing the recorded value into the request.
+      // details and the like): bind each still-literal string leaf to a payload input instead
+      // of freezing the recorded value into the request. Independent writes that thread nothing
+      // keep their recorded constants.
       const threadsPriorResponse = (text: string): boolean =>
         prior.some((p) =>
           [p.varName, ...p.produces.map((pr) => pr.name)].some((name) =>
@@ -10092,9 +10170,8 @@ export function emitMultiStepExecuteHttp(
     // Emit "${context.baseUrl}" as a template-literal placeholder into the
     // generated plugin code. Built via concatenation so Biome doesn't mistake
     // it for a placeholder in THIS file's source.
-    const baseUrlPlaceholder = `$${"{"}context.baseUrl${"}"}`;
     for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-      perCallHeaders[headerName] = observedValue.split(baseUrl).join(baseUrlPlaceholder);
+      perCallHeaders[headerName] = substituteOrigin(observedValue, baseUrl);
     }
     // G2: emit tenant-subdomain headers per-call from caller payload field
     // (e.g. API-ShortName → ${payload.ApiShortName}). The discoveredFields
@@ -10769,9 +10846,8 @@ export function emitMultiStepExecuteHttp(
       // G1+G2: include tenant-derived headers in the multipart fetch too.
       // Build the placeholder via concatenation so Biome doesn't mistake it
       // for a template-literal in THIS file's source.
-      const baseUrlPlaceholder = `$${"{"}context.baseUrl${"}"}`;
       for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-        const v = observedValue.split(baseUrl).join(baseUrlPlaceholder);
+        const v = substituteOrigin(observedValue, baseUrl);
         perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`${v}\``);
       }
       for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
@@ -16815,10 +16891,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // ancestor scopes too is what lets a param that only lives on a
         // parent object (e.g. a group id) resolve at all.
         const parameterizeUrl = (rawUrl: string, chainCapture: Capture): string => {
-          const withBase =
-            baseUrl.length > 0
-              ? rawUrl.split(baseUrl).join(`$${"{"}context.baseUrl${"}"}`)
-              : rawUrl;
+          const withBase = substituteOrigin(rawUrl, baseUrl);
           const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
             ...findThreadedJoinFields(threadingScopes, chainCapture, allCaptures),
@@ -19605,15 +19678,14 @@ async function main(): Promise<void> {
         return "";
       }
     })();
-    for (const [k, v] of Object.entries(baseHeaders)) {
-      if (firstSubdomain.length > 0 && v === firstSubdomain) {
-        tenantSubdomainHeaders.set(k, v);
-      } else if (baseUrl.length > 0 && v.includes(baseUrl)) {
-        baseUrlDerivedHeaders.set(k, v);
-      } else {
-        staticBaseHeaders[k] = v;
-      }
-    }
+    partitionBaseHeaders(
+      baseHeaders,
+      baseUrl,
+      firstSubdomain,
+      staticBaseHeaders,
+      baseUrlDerivedHeaders,
+      tenantSubdomainHeaders
+    );
     // Third branch (browser-flow-only): a multi-action flow (isSubmissionFlow)
     // that crosses hosts mid-sequence (compileActionSteps' isCrossDomain — a
     // captured redirect off the original domain, e.g. an auth bounce or a

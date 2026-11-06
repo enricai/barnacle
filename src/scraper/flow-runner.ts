@@ -351,13 +351,39 @@ export function wireSignalCapture(
   type LoadingFinishedEvent = { requestId: string };
   type GetResponseBodyResponse = { body: string; base64Encoded: boolean };
 
+  // One decision for "can this request carry a body": POST/PUT/PATCH always
+  // (hasPostData may be false/absent for XHR writes), other methods only when
+  // the browser says so.
+  const isBodyCapable = (method: string, hasPostData: boolean | undefined): boolean =>
+    /^(POST|PUT|PATCH)$/i.test(method) || hasPostData === true;
+
+  // One resolver for request and loadingFinished: fetch the body while none is
+  // held, and settle on the explicit marker (never null) when nothing is found.
+  const resolveBody = async (
+    entry: InFlightRequest,
+    requestId: string,
+    hasPostData: boolean | undefined
+  ): Promise<void> => {
+    if (!isBodyCapable(entry.method, hasPostData)) return;
+    if (entry.requestPostData && entry.requestPostData !== REQUEST_BODY_UNAVAILABLE) return;
+    try {
+      const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
+        requestId,
+      });
+      if (typeof res?.postData === "string" && res.postData.length > 0) {
+        entry.requestPostData = res.postData;
+      }
+    } catch {
+      // fall through to the explicit marker
+    }
+    if (!entry.requestPostData) entry.requestPostData = REQUEST_BODY_UNAVAILABLE;
+  };
+
   const onRequest = (params: RequestWillBeSentEvent): void => {
     const prior = inFlight.get(params.requestId);
     const inline = params.request.postData;
     const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
-    const carriesBodyByMethod = /^(POST|PUT|PATCH)$/i.test(params.request.method);
-    const mayHaveBody =
-      params.request.hasPostData === true || (params.request.hasPostData === undefined && mutating);
+    const mayHaveBody = isBodyCapable(params.request.method, params.request.hasPostData);
     const entry: InFlightRequest = {
       url: params.request.url,
       method: params.request.method,
@@ -390,25 +416,7 @@ export function wireSignalCapture(
             return;
           }
         }
-        try {
-          const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
-            requestId: params.requestId,
-          });
-          if (typeof res?.postData === "string" && res.postData.length > 0) {
-            entry.requestPostData = res.postData;
-          }
-        } catch {
-          // fall through to the explicit marker
-        }
-        // A null body must mean "no body". An omitted flag proves nothing, so a
-        // body-bearing method with nothing recovered is recorded as unavailable;
-        // DELETE is bodyless by convention and needs the explicit flag.
-        if (
-          !entry.requestPostData &&
-          (params.request.hasPostData === true || carriesBodyByMethod)
-        ) {
-          entry.requestPostData = REQUEST_BODY_UNAVAILABLE;
-        }
+        await resolveBody(entry, params.requestId, params.request.hasPostData);
       })();
     }
     inFlight.set(params.requestId, entry);
@@ -490,18 +498,7 @@ export function wireSignalCapture(
     // A body the browser only exposes once the request has been sent is not
     // readable at requestWillBeSent time; retry once now that loading finished
     // before settling for the unavailable marker.
-    if (req.bodyPending && req.requestPostData === REQUEST_BODY_UNAVAILABLE) {
-      try {
-        const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
-          requestId: params.requestId,
-        });
-        if (typeof res?.postData === "string" && res.postData.length > 0) {
-          req.requestPostData = res.postData;
-        }
-      } catch {
-        // keep the explicit marker
-      }
-    }
+    await resolveBody(req, params.requestId, req.hasPostData);
 
     let operationName: string | null = null;
     let query: string | null = null;
