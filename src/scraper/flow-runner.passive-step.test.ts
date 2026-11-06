@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { isPassiveNoopStep } from "@/scraper/flow-runner";
+import { executeStepWithHealing, isPassiveNoopStep } from "@/scraper/flow-runner";
 
 describe("isPassiveNoopStep", () => {
   it("wait/do-not-click step is passive", () => {
@@ -22,7 +22,6 @@ describe("isPassiveNoopStep", () => {
 
 describe("executeStepWithHealing — passive step dispatch", () => {
   it("returns completed without touching the page or stagehand", async () => {
-    const { executeStepWithHealing } = await import("@/scraper/flow-runner");
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
     const page = { url: () => "https://x.example.com/", evaluate: vi.fn() };
     const trajectory: unknown[] = [];
