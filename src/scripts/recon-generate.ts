@@ -8738,11 +8738,11 @@ function isMutatingMethod(method: string): boolean {
  * Binds every string leaf of a later write's body that no earlier pass bound
  * (still a bare literal in `template`) to a flat `payload.<field>` input, so the
  * caller's own scalars are never frozen from the recording. The field name is
- * derived from the leaf's path ({@link pathToPayloadFieldName}); a value already
+ * derived from the leaf's path ({@link payloadAccessorForPath}); a value already
  * bound elsewhere reuses its accessor, and a name clash between different values
  * is disambiguated with a numeric suffix. Leaves under an array are left to the
- * structured-value passes, as are shielded ids, pure-digit strings, strings
- * that embed the recorded origin, and single-character enum-like values.
+ * structured-value passes, as are shielded ids and strings that embed the
+ * recorded origin.
  */
 function bindLaterWriteScalarLeaves(
   template: string,
@@ -8755,15 +8755,15 @@ function bindLaterWriteScalarLeaves(
 ): string {
   let result = template;
   for (const { value, path } of walkAllPrimitiveLeaves(parsedBody)) {
-    if (typeof value !== "string" || value.length < 3) continue;
+    if (typeof value !== "string" || value.length === 0) continue;
     if (path.length === 0 || path.some((seg) => /^\d+$/.test(seg))) continue;
-    if (shieldedUuids.has(value) || boundValues.has(value) || /^\d+$/.test(value)) continue;
+    if (shieldedUuids.has(value) || boundValues.has(value)) continue;
     if (embedsOrigin(value, baseUrl)) continue;
     const literal = JSON.stringify(value);
     if (!result.includes(literal)) continue;
     let accessor = payloadAccessorByValue.get(value);
     if (accessor === undefined) {
-      const base = pathToPayloadFieldName(path);
+      const { field: base } = payloadAccessorForPath(path);
       if (!isValidJsIdentifier(base)) continue;
       let field = base;
       for (let n = 2; outDiscoveredFields.has(field); n++) field = `${base}${n}`;
@@ -10041,20 +10041,10 @@ export function emitMultiStepExecuteHttp(
         shieldedUuids,
         boundValues
       );
-      // A later write that threads a prior response carries the caller's own scalars (contact
-      // details and the like): bind each still-literal string leaf to a payload
-      // input instead of freezing the recorded value into the request.
-      const threadsPriorResponse = (text: string): boolean =>
-        prior.some((p) =>
-          [p.varName, ...p.produces.map((pr) => pr.name)].some((name) =>
-            new RegExp(`\\$\\{[^}]*(?<![.\\w])${name}\\b`).test(text)
-          )
-        );
-      if (
-        isMutatingMethod(cap.method) &&
-        prior.some((p) => isMutatingMethod(p.capture.method)) &&
-        (threadsPriorResponse(url) || threadsPriorResponse(bodyTemplate))
-      ) {
+      // A later write in a flow carries the caller's own scalars (contact details and the
+      // like): bind each still-literal string leaf to a payload input instead of freezing
+      // the recorded value into the request.
+      if (isMutatingMethod(cap.method) && prior.some((p) => isMutatingMethod(p.capture.method))) {
         bodyTemplate = bindLaterWriteScalarLeaves(
           bodyTemplate,
           parsedBody,

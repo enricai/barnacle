@@ -455,3 +455,66 @@ describe("recon-generate cart-then-update flow", () => {
     expect(contract).toContain("x-csrf-token");
   }, 60_000);
 });
+
+describe("recon-generate cart-then-update flow with a numeric id and flat contact scalars", () => {
+  it("threads the numeric id and exposes name and email as payload inputs", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-flat-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const NUM_ID = 514391;
+    const post: Capture = { ...create, responseBody: { id: NUM_ID, state: "cart" } };
+    const put: Capture = {
+      ...update,
+      requestPostData: JSON.stringify({
+        id: NUM_ID,
+        name: "Jane Roe",
+        email: "jane.roe@mail.example.org",
+        phone: "5551234567",
+      }),
+      responseBody: { id: NUM_ID, state: "updated" },
+    };
+    [post, put].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
+    const siteId = `recon-cart-update-flat-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+        env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+      }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).toContain('method: "POST"');
+    expect(contract).toContain('method: "PUT"');
+    expect(contract).toContain("(r0 as { id: number }).id");
+    expect(contract).not.toContain(String(NUM_ID));
+    expect(contract).not.toContain("Jane Roe");
+    expect(contract).not.toContain("jane.roe@mail.example.org");
+    expect(contract).toMatch(/\bname: z\.string\(\)/);
+    expect(contract).toMatch(/\bemail: z\.string\(\)/);
+    expect(contract).toContain("payload.name");
+    expect(contract).not.toContain("5551234567");
+    expect(contract).not.toMatch(/\bBaseUrl\b/);
+  }, 60_000);
+});
