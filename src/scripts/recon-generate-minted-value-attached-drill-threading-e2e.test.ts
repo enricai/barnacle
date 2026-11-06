@@ -243,7 +243,7 @@ describe("recon-generate in-process — minted value threads from the attached d
         "--force",
       ];
       vi.resetModules();
-      await import("@/scripts/recon-generate");
+      await import("./recon-generate.js");
       await vi.waitFor(() => expect(existsSync(contractPath)).toBe(true), {
         timeout: 30_000,
       });
