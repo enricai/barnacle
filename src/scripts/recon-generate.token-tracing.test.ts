@@ -165,6 +165,7 @@ describe("HTML-issued tokens from anchors and realistic markup", () => {
       buildCapture({
         url: "https://shop.example.com/inbox",
         method: "GET",
+        requestPostData: null,
         responseBody: page,
         timestamp: "2024-01-01T00:00:00Z",
       }),
