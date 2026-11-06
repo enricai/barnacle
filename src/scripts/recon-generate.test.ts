@@ -947,35 +947,54 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
   it("keeps a structurally-isolated producer whose response field name matches what the declared target sends", () => {
     const kept = extractActionSequence(
       dataFlowPool(
-        `https://${HOST}/postings/posting-list/`,
+        `https://${HOST}/moorings/vessel-slot-index/`,
         [{ page: 1 }, { page: 2 }],
-        [{ postings: [{ jobId: 12345 }] }, { postings: [{ jobId: 67890 }] }],
-        [`https://${HOST}/postings/apply-now/`, `https://${HOST}/postings/apply-now/`],
-        [{ jobId: 12345 }, { jobId: 67890 }]
+        [{ slots: [{ vesselSlotRef: 12345 }] }, { slots: [{ vesselSlotRef: 67890 }] }],
+        [`https://${HOST}/moorings/mooring-record/`, `https://${HOST}/moorings/mooring-record/`],
+        [{ vesselSlotRef: 12345 }, { vesselSlotRef: 67890 }]
       ),
-      { endpoint: "apply-now", body: null },
+      { endpoint: "mooring-record", body: null },
       null,
       [HOST],
       null,
       false
     ).map((a) => a.capture.url);
 
-    // A NUMERIC join key is carried by field-name agreement (jobId -> jobId),
-    // which is why name agreement is the primary signal rather than value shape.
-    expect(kept.some((url) => url.includes("posting-list"))).toBe(true);
+    // A NUMERIC join key is carried by field-name agreement (vesselSlotRef ->
+    // vesselSlotRef), which is why name agreement is the primary signal rather
+    // than value shape.
+    //
+    // Two fixture properties are what make this actually reach the exemption,
+    // and both are easy to lose by accident:
+    //   1. Token-DISJOINT paths. `vessel-slot-index` and `mooring-record`
+    //      share only the plain single-word parent `moorings`, which
+    //      pathStructuralTokens deliberately drops. A compound pair that
+    //      repeats a word across both leaves (`/reqs/req-list/` +
+    //      `/reqs/req-detail/`) is already related by the `req` token, so the
+    //      isolation pass would never ask about the data dependency.
+    //   2. A 3-TOKEN producer path (`vessel`/`slot`/`index`), which trips
+    //      `denselyNameSpaced` (>2 tokens) so the producer's own same-path
+    //      repeats stop vouching for it. With only 2 tokens its own repeat
+    //      stays in otherPaths, nothing is ever isolated from itself, and
+    //      `!isStructurallyIsolatedCapture` keeps the capture regardless —
+    //      leaving the exemption redundant and the test vacuous.
+    expect(kept.some((url) => url.includes("vessel-slot-index"))).toBe(true);
     expect(kept).not.toContain(NOISE_URL);
   });
 
   it("keeps a structurally-isolated producer whose minted id reaches the declared target's URL path", () => {
     const kept = extractActionSequence(
       dataFlowPool(
-        `https://${HOST}/reqs/req-list/`,
+        `https://${HOST}/pastures/herd-census-roll/`,
         [{ page: 1 }, { page: 2 }],
-        [{ reqs: [{ id: 778899 }] }, { reqs: [{ id: 112233 }] }],
-        [`https://${HOST}/reqs/req-detail/778899/`, `https://${HOST}/reqs/req-detail/112233/`],
+        [{ herds: [{ id: 778899 }] }, { herds: [{ id: 112233 }] }],
+        [
+          `https://${HOST}/pastures/grazing-permit/778899/`,
+          `https://${HOST}/pastures/grazing-permit/112233/`,
+        ],
         [{}, {}]
       ),
-      { endpoint: "req-detail", body: null },
+      { endpoint: "grazing-permit", body: null },
       null,
       [HOST],
       null,
@@ -983,8 +1002,10 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
     ).map((a) => a.capture.url);
 
     // Different field names (`id` vs the path segment), so the positional
-    // escape is what carries this one.
-    expect(kept.some((url) => url.includes("req-list"))).toBe(true);
+    // escape is what carries this one. `herd-census-roll` is token-disjoint
+    // from `grazing-permit` and 3 tokens long, for both reasons spelled out in
+    // the test above.
+    expect(kept.some((url) => url.includes("herd-census-roll"))).toBe(true);
     expect(kept).not.toContain(NOISE_URL);
   });
 
