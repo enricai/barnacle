@@ -208,6 +208,12 @@ export function registrableDomain(hostname: string): string {
 /** Tokens too short or too generic to signal endpoint-family relatedness on their own. */
 const GENERIC_PATH_TOKENS = new Set(["api", "app", "apps", "v1", "v2", "v3", "com", "get", "post"]);
 
+/** Memoizes {@link pathStructuralTokens}: the isolation passes that call it are
+ * O(n^2) over a capture pool, so re-tokenizing the same paths dominated a
+ * production-scale run. Pure function of a short string; callers only read the
+ * returned set. */
+const PATH_STRUCTURAL_TOKEN_CACHE = new Map<string, Set<string>>();
+
 /**
  * Splits a URL path into lowercase word tokens, breaking on non-alphanumeric
  * separators (`/`, `-`, `_`, `.`) and camelCase boundaries, then drops tokens
@@ -223,8 +229,6 @@ const GENERIC_PATH_TOKENS = new Set(["api", "app", "apps", "v1", "v2", "v3", "co
  * because both happen to end in the common word "search"). Compound segments
  * are where a real endpoint-family identifier lives.
  */
-const PATH_STRUCTURAL_TOKEN_CACHE = new Map<string, Set<string>>();
-
 export function pathStructuralTokens(path: string): Set<string> {
   const cached = PATH_STRUCTURAL_TOKEN_CACHE.get(path);
   if (cached !== undefined) return cached;
@@ -249,6 +253,10 @@ function computePathStructuralTokens(path: string): Set<string> {
   return new Set(words);
 }
 
+/** Memoizes {@link meaningfulPathSegments}, for the same reason as
+ * {@link PATH_STRUCTURAL_TOKEN_CACHE}. */
+const MEANINGFUL_PATH_SEGMENT_CACHE = new Map<string, string[]>();
+
 /**
  * Lowercased raw path segments, dropping the same short (<3 chars) and
  * generic ({@link GENERIC_PATH_TOKENS}) ones {@link pathStructuralTokens}
@@ -256,8 +264,6 @@ function computePathStructuralTokens(path: string): Set<string> {
  * can't be satisfied by two paths sharing nothing but a boilerplate `/api/`
  * or `/v1/` segment.
  */
-const MEANINGFUL_PATH_SEGMENT_CACHE = new Map<string, string[]>();
-
 function meaningfulPathSegments(path: string): string[] {
   const cached = MEANINGFUL_PATH_SEGMENT_CACHE.get(path);
   if (cached !== undefined) return cached;
@@ -300,7 +306,6 @@ function hasRepeatedMeaningfulSegment(path: string): boolean {
  * on segment words — ignoring short/generic tokens — catches that relation
  * while still rejecting a same-host capture that shares nothing but the
  * host (e.g. a marketing endpoint alongside a resolved booking flow).
- *
  */
 export function isStructurallyRelevantCapture(
   candidatePath: string,
