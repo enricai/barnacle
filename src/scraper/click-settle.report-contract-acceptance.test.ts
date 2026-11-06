@@ -98,6 +98,16 @@ describe("report contract: non-final submit-shaped click, header flips at once, 
     expect(r.pageAdvanced).toBe(true);
     expect(r.post.networkCount).toBe(0);
     expect(hasSettledPageAdvanced(pre, r.post)).toBe(true);
+    expect(
+      classifyPhantomClick({
+        actResultSuccess: true,
+        pre,
+        post: r.post,
+        destinationPlausible: true,
+        isSubmitShapedStep: true,
+        isMidFlowSubmitStep: true,
+      })
+    ).toBe("effective");
   });
 
   it("keeps a genuine no-op at the QUIESCENT_NO_OP_GIVE_UP_MS give-up and phantom", async () => {
