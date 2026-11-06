@@ -449,4 +449,14 @@ describe("readMidFlowPostClickAdvance", () => {
     expect(r.advanceBaseline).toBe(pre);
     expect(r.pageAdvanced).toBe(false);
   });
+
+  it("exits the resettle early and marks settled when the text holds still after a header flip", async () => {
+    const t = makeIo([FLIPPED_SIG, FLIPPED_SIG, BODY_SIG]);
+    const start = snap(START_SIG);
+    const r = await read(snap(FLIPPED_SIG, 3), start, true, t.io);
+    expect(t.settles()).toBe(2);
+    expect(r.post.visibleTextSignature).toBe(FLIPPED_SIG);
+    expect(r.post.settled).toBe(true);
+    expect(r.pageAdvanced).toBe(true);
+  });
 });
