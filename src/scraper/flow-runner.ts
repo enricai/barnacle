@@ -362,7 +362,7 @@ export function wireSignalCapture(
   const resolveBody = async (
     entry: InFlightRequest,
     requestId: string,
-    hasPostData: boolean | undefined,
+    hasPostData: boolean | undefined
   ): Promise<void> => {
     if (!isBodyCapable(entry.method, hasPostData)) return;
     if (entry.requestPostData && entry.requestPostData !== REQUEST_BODY_UNAVAILABLE) return;

@@ -161,3 +161,63 @@ describe("origin in later write and multipart steps", () => {
     expect(body).toContain('"Origin": `${context.baseUrl}`');
   });
 });
+
+describe.each([
+  ["https://shop.example.com"],
+  ["http://localhost:8080"],
+  ["https://www.shop.example.co.uk:8443"],
+])("origin %s as an entry body value", (origin) => {
+  const emitFor = (key: string, discovered: Set<string>, additional: Map<string, unknown>) =>
+    emitMultiStepExecuteHttp(
+      [
+        step(0, "POST", `${origin}/api/cart`, { [key]: origin, label: "first-label-value" }),
+        step(1, "POST", `${origin}/api/cart/items`, { [key]: origin, other: "other-label-value" }),
+      ] as never,
+      { [key]: origin, label: "first-label-value" },
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      discovered,
+      new Map(),
+      new Set(),
+      new Map(),
+      additional as never,
+      origin,
+      new Map(),
+      new Map()
+    );
+
+  it.each(["baseUrl", "base_url", "siteUrl", "origin"])(
+    "never mints a payload field for the key %s",
+    (key) => {
+      const discovered = new Set<string>();
+      const additional = new Map<string, unknown>();
+      const body = emitFor(key, discovered, additional);
+      expect([...discovered].filter((f) => f.toLowerCase() === key.toLowerCase())).toEqual([]);
+      expect([...additional.keys()]).not.toContain(key);
+      expect(body).not.toContain(origin);
+      expect(body).not.toContain(`payload.${key}`);
+      expect(body).toContain(`"${key}":"${"$"}{context.baseUrl}"`);
+    }
+  );
+
+  it("rewrites a percent-encoded origin in a form-encoded body to the runtime origin", () => {
+    const form = step(0, "POST", `${origin}/api/cart`, {});
+    form.capture.requestPostData = `ref=${encodeURIComponent(origin)}&label=x`;
+    const body = emitMultiStepExecuteHttp(
+      [form, step(1, "POST", `${origin}/api/done`, { b: 2 })] as never,
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      origin,
+      new Map(),
+      new Map()
+    );
+    expect(body).not.toContain(encodeURIComponent(origin));
+    expect(body).toContain("$" + "{encodeURIComponent(context.baseUrl)}");
+  });
+});

@@ -10,7 +10,10 @@ async function run(
   postDataCalls: Array<string | null>
 ): Promise<Capture> {
   const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
-  const session = { on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h), off: () => {} };
+  const session = {
+    on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
+    off: () => {},
+  };
   const queue = [...postDataCalls];
   const page = {
     getSessionForFrame: () => session,
@@ -34,7 +37,11 @@ async function run(
     getCurrentPageOrigin: () => "https://api.example.com",
     onCapture: (c) => captured.push(c),
   });
-  const request: Record<string, unknown> = { url: "https://api.example.com/x", method, headers: {} };
+  const request: Record<string, unknown> = {
+    url: "https://api.example.com/x",
+    method,
+    headers: {},
+  };
   if (hasPostData !== undefined) request.hasPostData = hasPostData;
   handlers.get("Network.requestWillBeSent")?.({ requestId: "r1", request });
   await handlers.get("Network.loadingFinished")?.({ requestId: "r1" });
