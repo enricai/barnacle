@@ -33,6 +33,14 @@
  *     --url https://example.com \
  *     --flow-file src/sites/my-site/recon-flow.json
  *
+ *   # Flow-file step keys (generator hints, ignored at runtime): a step may be an
+ *   # object such as {"instruction": "open the catalog", "navigateTo":
+ *   # "https://example.com/catalog", "payloadField": "categoryId"}. `payloadField`
+ *   # on a navigateTo step pins the payload field the generator threads into the
+ *   # navigated URL/body, and survives write-back. `foldReturn` takes one object
+ *   # or a non-empty array (attachAs, payloadFlag, drillParamBindings; later
+ *   # entries may omit resultsPath).
+ *
  *   # Landing-page-only reconnaissance: captures every network response with no
  *   # flow steps — no URL-shape filtering. Requires --allow-empty-flow, since a
  *   # flowless run cannot scaffold a submission plugin and must not be fed to
