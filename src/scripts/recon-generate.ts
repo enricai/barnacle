@@ -10041,10 +10041,21 @@ export function emitMultiStepExecuteHttp(
         shieldedUuids,
         boundValues
       );
-      // A later write in a flow carries the caller's own scalars (contact details and the
-      // like): bind each still-literal string leaf to a payload input instead of freezing
-      // the recorded value into the request.
-      if (isMutatingMethod(cap.method) && prior.some((p) => isMutatingMethod(p.capture.method))) {
+      // A later write that threads a prior response carries the caller's own scalars (contact
+      // details and the like): bind each still-literal string leaf to a payload input instead
+      // of freezing the recorded value into the request. Independent writes that thread nothing
+      // keep their recorded constants.
+      const threadsPriorResponse = (text: string): boolean =>
+        prior.some((p) =>
+          [p.varName, ...p.produces.map((pr) => pr.name)].some((name) =>
+            new RegExp(`\\$\\{[^}]*(?<![.\\w])${name}\\b`).test(text)
+          )
+        );
+      if (
+        isMutatingMethod(cap.method) &&
+        prior.some((p) => isMutatingMethod(p.capture.method)) &&
+        (threadsPriorResponse(url) || threadsPriorResponse(bodyTemplate))
+      ) {
         bodyTemplate = bindLaterWriteScalarLeaves(
           bodyTemplate,
           parsedBody,
