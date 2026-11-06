@@ -17631,9 +17631,23 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             bindsChainResponse
               ? `      const ${chainStep.varName} = (await httpClient(\`${url}\`, {`
               : `      await httpClient(\`${url}\`, {`,
-            `        method: ${JSON.stringify(chainStep.capture.method)},`,
-            `        schema: ${schemaExpr},`
+            `        method: ${JSON.stringify(chainStep.capture.method)},`
           );
+          // A captured POST/PUT/PATCH drill hop must carry its body and
+          // content type; drillParamBindings rewrite bound JSON body keys
+          // via the same parameterizeUrl pass the URL goes through.
+          const hopBody = chainStep.capture.requestPostData;
+          if (isMutatingMethod(chainStep.capture.method) && hopBody) {
+            const ctHeader = Object.entries(chainStep.capture.requestHeaders ?? {}).find(
+              ([k]) => k.toLowerCase() === "content-type"
+            );
+            const ct = ctHeader?.[1] ?? "application/json";
+            chainLines.push(
+              `        headers: { "content-type": ${JSON.stringify(ct)} },`,
+              `        body: \`${parameterizeUrl(escapeForTemplateLiteral(hopBody), chainStep.capture)}\`,`
+            );
+          }
+          chainLines.push(`        schema: ${schemaExpr},`);
           chainLines.push(
             bindsChainResponse ? `      })) as Record<string, unknown>;` : `      });`
           );
