@@ -38,8 +38,6 @@ const SEARCH_ON_SUBMIT_HTML = `
   </div>
 </div>`;
 
-const OPTIONS = ["Norway", "Sweden", "Denmark"];
-
 function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>, step: string) {
   const stagehand = {
     act: stagehandAct,
@@ -73,13 +71,6 @@ function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>, step: st
     knownErrorClassPrefixes: [],
     wizardExitButtonLabels: [],
   };
-}
-
-function enterKeyDowns(cdpEvents: { method: string; params: unknown }[]): number {
-  return cdpEvents.filter((e) => {
-    const p = e.params as { type?: string; key?: string } | undefined;
-    return e.method === "Input.dispatchKeyEvent" && p?.type === "keyDown" && p.key === "Enter";
-  }).length;
 }
 
 const SELECTOR = "[data-automation-id='promptSelectionLabel']";

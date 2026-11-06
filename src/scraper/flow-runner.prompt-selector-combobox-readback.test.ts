@@ -25,12 +25,17 @@ describe("combobox read-back", () => {
     win.document.body.innerHTML = html;
     const expr = exprSrc
       .replace(
+        // Literal placeholder text in the extracted source, not an interpolation:
+        // exprSrc is read off disk as raw characters, so these two names must stay
+        // un-interpolated for .replace() to find and substitute them.
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder in extracted source
         "${BUTTON_VALUE_EXPR}",
         (/const BUTTON_VALUE_EXPR =\s*\n?\s*"([\s\S]*?)";\n/.exec(src)?.[1] ?? "").replace(
           /\\"/g,
           '"'
         )
       )
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder in extracted source
       .replace("${OPTION_ACCESSIBLE_LABEL_EXPR}", "(() => '')")
       .replace(/\\\\/g, "\\");
     const fn = new win.Function(`return ${expr}`)();

@@ -5705,7 +5705,13 @@ async function selectionSiblingCommittedValueChanged(
 async function comboboxOpenerPanelOpened(
   target: FrameTarget,
   leafXpath: string,
-  preSelectionState: Record<string, ElementSelectionFingerprint>
+  preSelectionState: Record<string, ElementSelectionFingerprint>,
+  /**
+   * `"bare"` inverts the final verdict: true iff the nearest trigger flipped
+   * collapsed→expanded but its owned scope exposes NO option content (a bare
+   * disclosure), so callers can veto weak html/text-delta credit for it.
+   */
+  mode: "opened" | "bare" = "opened"
 ): Promise<boolean> {
   const expr = `(() => {
     const LEAF = ${JSON.stringify(leafXpath)};
@@ -5714,6 +5720,7 @@ async function comboboxOpenerPanelOpened(
     const OPTION_SEL = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
     const xpathOf = ${XPATH_OF_FN_SRC};
     const scopeRootOf = ${PROMPT_SCOPE_ROOT_EXPR};
+    const BARE = ${JSON.stringify(mode === "bare")};
     const r = ${SHADOW_XPATH_FIRST_NODE}(LEAF);
     let node = r;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
@@ -5730,7 +5737,8 @@ async function comboboxOpenerPanelOpened(
         // options (elsewhere on the page) falsely credit THIS trigger's click.
         const scope = scopeRootOf(node);
         if (!scope || scope === document || !scope.querySelector) return false;
-        return !!scope.querySelector(OPTION_SEL);
+        const hasOptions = !!scope.querySelector(OPTION_SEL);
+        return BARE ? !hasOptions : hasOptions;
       }
       node = node.parentElement;
     }
@@ -16165,7 +16173,18 @@ export async function executeStepWithHealing(params: {
               // commit may live on a hidden sibling `<input>`/`<select>` the
               // click never re-renders visibly. Diff that control against its
               // own baseline entry instead.
-              return await selectionSiblingCommittedValueChanged(
+              if (
+                await selectionSiblingCommittedValueChanged(
+                  frameTarget ?? mainFrameTarget(page),
+                  xpath,
+                  pre.selectionStateByXpath
+                )
+              ) {
+                return true;
+              }
+              // A combobox-opener click only flips aria-expanded; credit it
+              // iff its owned panel now exposes options.
+              return await comboboxOpenerPanelOpened(
                 frameTarget ?? mainFrameTarget(page),
                 xpath,
                 pre.selectionStateByXpath
@@ -16293,7 +16312,15 @@ export async function executeStepWithHealing(params: {
           // false/verified=true defect.
           const clickTargetIsSelectionMarker =
             xpath !== null &&
-            (await clickTargetHasSelectionMarker(frameTarget ?? mainFrameTarget(page), xpath));
+            ((await clickTargetHasSelectionMarker(frameTarget ?? mainFrameTarget(page), xpath)) ||
+              // A bare disclosure opener (flipped aria-expanded, exposes no
+              // options) must clear the strict signal like any marker.
+              (await comboboxOpenerPanelOpened(
+                frameTarget ?? mainFrameTarget(page),
+                xpath,
+                pre.selectionStateByXpath,
+                "bare"
+              )));
           // Same effective-verdict credit the primary attempt's completion
           // gate uses (see the `record.phantomClickVerdict` computation
           // above), re-run against THIS fallback click's own pre/post pair

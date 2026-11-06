@@ -18102,6 +18102,9 @@ function buildNavigateToExpr(
   if (rebaseOrigin) {
     const m = /^https?:\/\/[^/?#]+/i.exec(url);
     if (m) {
+      // Literal interpolation text emitted into the generated plugin source,
+      // evaluated there against that module's own `baseUrl` — not here.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted source text
       prefix = "${new URL(baseUrl).origin}";
       rest = url.slice(m[0].length);
     }

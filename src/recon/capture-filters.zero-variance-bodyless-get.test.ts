@@ -16,11 +16,15 @@ describe("isZeroVarianceRepeatCapture bodyless GET", () => {
         results: [{ id: i, name: `item-${f}`, price: 10 + i }],
       })
     );
-    expect(isZeroVarianceRepeatCapture(all[0]!, all)).toBe(false);
+    const [first] = all;
+    if (!first) throw new Error("fixture must produce captures");
+    expect(isZeroVarianceRepeatCapture(first, all)).toBe(false);
   });
   it("drops identical-URL repeats with no business state", () => {
     const all = [1, 2, 3].map(() => cap("https://x.test/api/ping?limit=1", {}));
-    expect(isZeroVarianceRepeatCapture(all[0]!, all)).toBe(true);
+    const [first] = all;
+    if (!first) throw new Error("fixture must produce captures");
+    expect(isZeroVarianceRepeatCapture(first, all)).toBe(true);
   });
   it("keeps a varying search GET whose parsed body arrived without a content-type header", () => {
     const all = ["a", "b", "c"].map((f, i) => ({
@@ -30,7 +34,9 @@ describe("isZeroVarianceRepeatCapture bodyless GET", () => {
       responseHeaders: {},
       responseBody: { results: [{ id: i, name: `item-${f}` }] },
     }));
-    expect(isZeroVarianceRepeatCapture(all[0]!, all)).toBe(false);
+    const [first] = all;
+    if (!first) throw new Error("fixture must produce captures");
+    expect(isZeroVarianceRepeatCapture(first, all)).toBe(false);
   });
   it("still treats a declared non-JSON response as no business state", () => {
     const all = ["a", "b", "c"].map((f) => ({
@@ -40,6 +46,8 @@ describe("isZeroVarianceRepeatCapture bodyless GET", () => {
       responseHeaders: { "content-type": "image/gif" },
       responseBody: { results: [{ id: 1, name: "n" }] },
     }));
-    expect(isZeroVarianceRepeatCapture(all[0]!, all)).toBe(true);
+    const [first] = all;
+    if (!first) throw new Error("fixture must produce captures");
+    expect(isZeroVarianceRepeatCapture(first, all)).toBe(true);
   });
 });

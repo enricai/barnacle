@@ -46,17 +46,17 @@ describe("recon-summarize main (real call path)", () => {
   it("renders every section from a run directory", async () => {
     const root = mkdtempSync(join(tmpdir(), "recon-sum-"));
     for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(root, d), { recursive: true });
-    w(root + "/graphql", "a.json", cap("https://a.com/gql", "POST", "Op1"));
-    w(root + "/graphql", "b.json", cap("https://a.com/rest", "GET", null));
-    w(root + "/graphql", "c.json", cap("https://a.com/other", "GET", null));
-    w(root + "/replays", "a.json", {
+    w(join(root, "graphql"), "a.json", cap("https://a.com/gql", "POST", "Op1"));
+    w(join(root, "graphql"), "b.json", cap("https://a.com/rest", "GET", null));
+    w(join(root, "graphql"), "c.json", cap("https://a.com/other", "GET", null));
+    w(join(root, "replays"), "a.json", {
       ...replay("https://a.com/gql", 200, true),
       replayHeaders: { "x-custom": "1" },
     });
-    w(root + "/replays", "b.json", replay("https://a.com/rest", null, false));
-    w(root + "/replays", "c.json", replay("https://a.com/auth", 401, false));
-    w(root + "/replays", "d.json", replay("https://a.com/blocked", 403, false));
-    w(root + "/replays", "rate-limit.json", [
+    w(join(root, "replays"), "b.json", replay("https://a.com/rest", null, false));
+    w(join(root, "replays"), "c.json", replay("https://a.com/auth", 401, false));
+    w(join(root, "replays"), "d.json", replay("https://a.com/blocked", 403, false));
+    w(join(root, "replays"), "rate-limit.json", [
       {
         endpoint: "https://a.com/gql",
         safeRps: 4,
@@ -82,7 +82,7 @@ describe("recon-summarize main (real call path)", () => {
         xRateLimitHeaders: {},
       },
     ]);
-    w(root + "/aux", "fixture.json", {});
+    w(join(root, "aux"), "fixture.json", {});
     const out = join(root, "out", "r.md");
 
     process.argv = [

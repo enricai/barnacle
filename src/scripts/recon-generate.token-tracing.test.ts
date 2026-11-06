@@ -78,6 +78,7 @@ describe("token tracing across a multi-step flow", () => {
         timestamp: "2024-01-01T00:00:01Z",
       }),
     ]);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(out).not.toContain("${sessionToken}");
     expect(out).not.toContain("${r0");
   });

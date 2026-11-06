@@ -55,13 +55,6 @@ function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>, step: st
   };
 }
 
-function enterKeyDowns(cdpEvents: { method: string; params: unknown }[]): number {
-  return cdpEvents.filter((e) => {
-    const p = e.params as { type?: string; key?: string } | undefined;
-    return e.method === "Input.dispatchKeyEvent" && p?.type === "keyDown" && p.key === "Enter";
-  }).length;
-}
-
 const HTML = `
 <form>
   <div>
