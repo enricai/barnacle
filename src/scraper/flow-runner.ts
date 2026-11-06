@@ -2024,7 +2024,7 @@ export const ERROR_SUMMARY_EXPR = `(() => {
 
 /** Verbs that make a step an action on the page (checked after negated clauses are removed). */
 const ACTIONABLE_STEP_VERB =
-  /\b(?:click|tap|press|select|choose|pick|fill|type|enter|input|check|uncheck|tick|toggle|upload|attach|submit|open|expand|collapse|scroll|navigate|go to|visit|hover|drag|drop|focus|search|close|dismiss|accept|decline|log ?in|sign ?in|sign ?up|set|clear|apply|save|continue|advance|proceed)\b/i;
+  /\b(?:click|tap|press|select|choose|pick|fill|type|enter|input|check|uncheck|tick|toggle|upload|attach|submit|open|expand|collapse|scroll|navigate|go to|visit|hover|drag|drop|focus|search|close|dismiss|accept|decline|log ?in|sign ?in|sign ?up|set|clear|apply|save|continue|advance|proceed|next|finish|done)\b/i;
 
 /** Markers that a step only asks to wait/observe/leave the page alone. */
 const PASSIVE_STEP_MARKER =
