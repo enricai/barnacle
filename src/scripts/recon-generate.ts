@@ -3506,10 +3506,59 @@ export function extractActionSequence(
           const path = safeUrlPathname(capture.url);
           const denselyNameSpaced =
             pathStructuralTokens(path).size > 2 || hasNoBusinessRelevantResponseState(capture);
+          // A same-path-FAMILY pool member does not vouch for the candidate
+          // when one of their paths is a pure SEGMENT-PREFIX EXTENSION of the
+          // other (e.g. `/marketing-spa/banner` and `/marketing-spa/banner/2`,
+          // or `/promotions-spa/banner` + `/promotions-spa/banner/2`). That is
+          // one templated endpoint wearing a trailing id/variant segment, not
+          // corroborating evidence, so letting the two vouch for each other's
+          // compound tokens is circular — and neither then reads as isolated,
+          // the same circular-evidence gap isStructurallyIsolatedCapture
+          // already closes for the self-referential, empty-token shape, and
+          // which `denselyNameSpaced` does not catch on its own: it only ever
+          // withholds same-pathname repeats, and only for a candidate that is
+          // densely name-spaced or answers with no business-relevant state.
+          //
+          // GENUINE sibling endpoints differ WITHIN a segment rather than by
+          // appending one, so they keep vouching for each other:
+          // `/item/find-a/` vs `/item/find-b/`, `/stay-search/` vs
+          // `/stay-quote-bar/`, `/booking-apps-productavail-vas/v1/search` vs
+          // `/booking-apps-sailingavailability-vas/v1/search`. Deliberately not
+          // keyed on body variance or token-set containment: a real chain may
+          // send byte-identical bodies (two `"{}"` searches), and a real
+          // sibling's distinguishing suffix can tokenize away entirely when it
+          // is shorter than 3 chars (`find-a` / `find-b` both yield `find`).
+          //
+          // A same-pathname sibling (a query-only variant, e.g. `/site-banner`
+          // vs `/site-banner?campaign=summer`) is the same endpoint too, so it
+          // cannot corroborate either. The candidate's own capture still
+          // vouches for itself, which is what keeps a genuine polled endpoint
+          // (e.g. 6 identical `POST /toggles/product-avail`, whose only family
+          // is its own repeats) from reading as isolated against the flow's
+          // unrelated paths and being dropped.
+          const segmentsOf = (p: string): string[] => p.split("/").filter(Boolean);
+          const isSegmentPrefixExtension = (a: string[], b: string[]): boolean => {
+            const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+            if (shorter.length === longer.length) return false;
+            return shorter.every((segment, i) => segment === longer[i]);
+          };
+          const vouchesFor = (other: ActionCapture): boolean => {
+            const otherPath = safeUrlPathname(other.capture.url);
+            // Same pathname: an identical-URL repeat still vouches (it is the
+            // candidate's own endpoint re-observed, which is what keeps a
+            // genuine polled endpoint alive), but a QUERY-ONLY variant
+            // (`/site-banner` vs `/site-banner?campaign=summer`) does not —
+            // one templated endpoint re-parameterized is the same circular
+            // evidence as the trailing-segment variant below.
+            if (otherPath === path) return other.capture.url === capture.url;
+            if (!isSamePathFamily(path, otherPath)) return true;
+            return !isSegmentPrefixExtension(segmentsOf(path), segmentsOf(otherPath));
+          };
           const otherPaths = hostGated
             .filter((h, j) =>
               denselyNameSpaced ? safeUrlPathname(h.capture.url) !== path : j !== i
             )
+            .filter(vouchesFor)
             .map((h) => safeUrlPathname(h.capture.url));
           // A capture admitted via the flow's own declared foldReturnSpec
           // endpointPattern (the drill-down target), or matching the flow's
