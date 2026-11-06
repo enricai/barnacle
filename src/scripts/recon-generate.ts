@@ -16825,17 +16825,34 @@ export function unreferencedRequiredUrlFields(
   payloadSchemaExpr?: string
 ): string[] {
   // Judge only the payload schema: a response schema's required `*Url` leaf is
-  // output, not caller input. Text with no payload-schema declaration is itself
-  // the schema fragment under test.
+  // output, not caller input. A contract with no payload-schema declaration has
+  // no caller-supplied fields to judge.
   const span = payloadSchemaExpr === undefined ? payloadSchemaSpan(contractCode) : null;
-  const scanned =
-    payloadSchemaExpr ?? (span ? contractCode.slice(span.start, span.end) : contractCode);
+  const scanned = payloadSchemaExpr ?? (span ? contractCode.slice(span.start, span.end) : "");
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
   return [...scanned.matchAll(URL_FIELD_LINE_PATTERN)]
-    .filter((match) => !match[0].includes(".optional("))
+    .filter((match) => !isOptionalFieldEntry(scanned, match.index))
     .map((match) => match[1])
     .filter((name): name is string => name !== undefined)
     .filter((name) => !emittedCode.includes(`payload.${name}`));
+}
+
+/**
+ * Whether the field entry a {@link URL_FIELD_LINE_PATTERN} match opens is
+ * optional. An entry runs to the `,` that closes it at its own bracket depth
+ * (or to the enclosing schema's closer), and may span several lines, so it is
+ * optional only through its own trailing call, never through a nested field.
+ */
+function isOptionalFieldEntry(schemaText: string, matchStart: number): boolean {
+  let end = schemaText.length;
+  walkCode(schemaText, matchStart, (ch, i, depth) => {
+    if (depth === 0 && /[,)\]}]/.test(ch)) {
+      end = i;
+      return true;
+    }
+    return false;
+  });
+  return /\.optional\(\)\s*$/.test(schemaText.slice(matchStart, end));
 }
 
 const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
@@ -16860,32 +16877,78 @@ function payloadSchemaSpan(
   const declaration = /^(?:export\s+)?const\s+\w*PayloadSchema\b[^=\n]*=/m.exec(contractCode);
   if (!declaration) return null;
   const start = declaration.index + declaration[0].length;
-  let depth = 0;
-  for (let i = start; i < contractCode.length; i++) {
-    const ch = contractCode[i];
-    if (ch === '"' || ch === "'" || ch === "`") {
-      i = skipStringLiteral(contractCode, i);
-    } else if (ch === "/" && contractCode[i + 1] === "/") {
-      const eol = contractCode.indexOf("\n", i);
-      i = eol < 0 ? contractCode.length : eol - 1;
-    } else if (ch === "/" && contractCode[i + 1] === "*") {
-      const close = contractCode.indexOf("*/", i + 2);
-      i = close < 0 ? contractCode.length : close + 1;
-    } else if (ch === "(" || ch === "[" || ch === "{") {
-      depth++;
-    } else if (ch === ")" || ch === "]" || ch === "}") {
-      depth--;
-    } else if (depth === 0 && ch === ";") {
-      return { start, end: i };
-    } else if (
+  let end = contractCode.length;
+  walkCode(contractCode, start, (ch, i, depth) => {
+    if (depth === 0 && ch === ";") {
+      end = i;
+      return true;
+    }
+    if (
       depth === 0 &&
       ch === "\n" &&
       /^\s*(?:export|const|let|type|function|interface|import)\s/.test(contractCode.slice(i + 1))
     ) {
-      return { start, end: i };
+      end = i;
+      return true;
+    }
+    return false;
+  });
+  return { start, end };
+}
+
+/**
+ * Visits each significant character of `code` from `start` — skipping string,
+ * template and regex literals and comments, whose contents are never brackets
+ * or terminators — with the bracket depth before it. Stops when `visit` returns
+ * true. A `/` opens a regex literal where an operand is expected, otherwise it
+ * divides.
+ */
+function walkCode(
+  code: string,
+  start: number,
+  visit: (ch: string, index: number, depth: number) => boolean
+): void {
+  let depth = 0;
+  let prev = "=";
+  for (let i = start; i < code.length; i++) {
+    const ch = code[i] as string;
+    if (ch === '"' || ch === "'" || ch === "`") {
+      i = skipStringLiteral(code, i);
+      prev = ch;
+    } else if (ch === "/" && code[i + 1] === "/") {
+      const eol = code.indexOf("\n", i);
+      i = eol < 0 ? code.length : eol - 1;
+    } else if (ch === "/" && code[i + 1] === "*") {
+      const close = code.indexOf("*/", i + 2);
+      i = close < 0 ? code.length : close + 1;
+    } else if (ch === "/" && REGEX_PRECEDING_CHARS.includes(prev)) {
+      i = skipRegexLiteral(code, i);
+      prev = ch;
+    } else {
+      if (visit(ch, i, depth)) return;
+      if (ch === "(" || ch === "[" || ch === "{") depth++;
+      else if (ch === ")" || ch === "]" || ch === "}") depth--;
+      if (!/\s/.test(ch)) prev = ch;
     }
   }
-  return { start, end: contractCode.length };
+}
+
+/** Characters after which a `/` opens a regex literal rather than dividing. */
+const REGEX_PRECEDING_CHARS = "=(,:[{};!&|?+-*%<>~^";
+
+/** Index of the closing `/` of the regex literal opening at `open`: a `/` or a
+ * quote inside a `[...]` class or after a `\` escape does not end or open anything. */
+function skipRegexLiteral(code: string, open: number): number {
+  let inClass = false;
+  for (let i = open + 1; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === "\n") return i;
+    if (ch === "\\") i++;
+    else if (ch === "[") inClass = true;
+    else if (ch === "]") inClass = false;
+    else if (ch === "/" && !inClass) return i;
+  }
+  return code.length;
 }
 
 /** Index of the closing quote of the string literal opening at `open`. */

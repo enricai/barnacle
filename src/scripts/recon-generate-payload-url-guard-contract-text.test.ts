@@ -56,3 +56,37 @@ describe("required-URL guard on contract text alone", () => {
     expect(unreadRelaxedResponseUrlFields(payload("  q: z.string(),"), "")).toEqual([]);
   });
 });
+
+describe("required-URL guard: payload span survives regex literals and multi-line entries", () => {
+  const flow = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
+  const responseOnly = `export const ExampleResponseSchema = z.object({\n  mapUrl: z.string(),\n}).loose();\n`;
+
+  it.each([
+    ["a quote", '/^[a-z"]+$/'],
+    ["an unbalanced paren", "/^(a|b$/"],
+    ["a closing brace inside a character class", "/^[}]+$/"],
+    ["a bracket", "/^\\[a\\]$/"],
+  ])("a payload regex literal holding %s does not widen the scan into the response", (_n, re) => {
+    const code = `const ExamplePayloadSchema = z.object({\n  code: z.string().regex(${re}),\n  date: z.string(),\n});\n\n${responseOnly}`;
+    expect(unreferencedRequiredUrlFields(code, flow)).toEqual([]);
+  });
+
+  it("still reports an unread required payload field after a regex literal", () => {
+    const code = `const ExamplePayloadSchema = z.object({\n  code: z.string().regex(/^[}"(]+$/),\n  siteUrl: z.string(),\n});\n\n${responseOnly}`;
+    expect(unreferencedRequiredUrlFields(code, flow)).toEqual(["siteUrl"]);
+  });
+
+  it("reports nothing for a response-only contract with no payload declaration", () => {
+    expect(unreferencedRequiredUrlFields(responseOnly, flow)).toEqual([]);
+  });
+
+  it("treats a multi-line entry ending in .optional() as optional", () => {
+    const code = `const ExamplePayloadSchema = z.object({\n  siteUrl: z.string()\n    .describe("where to start")\n    .optional(),\n});\n`;
+    expect(unreferencedRequiredUrlFields(code, flow)).toEqual([]);
+  });
+
+  it("does not treat a nested .optional() as making a multi-line entry optional", () => {
+    const code = `const ExamplePayloadSchema = z.object({\n  siteUrl: z.object({\n    a: z.string().optional(),\n  }),\n});\n`;
+    expect(unreferencedRequiredUrlFields(code, flow)).toEqual(["siteUrl"]);
+  });
+});
