@@ -3041,10 +3041,10 @@ export function deriveGetInputModel(
       dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
       // One recorded value in every sibling: it is the fallback when the payload omits the field.
-      if (values.size === 1 && (capturesWithKey.get(key) ?? 0) >= siblings.length)
-        recordedQueryValues[key] = [...values][0] as string;
-      // A repeated key carrying the same ids in every sibling: those ids are the fallback.
-      else if (
+      // A date window is never replayed: a stale recorded window must not be sent.
+      if (values.size === 1 && (capturesWithKey.get(key) ?? 0) >= siblings.length) {
+        if (![...values].every(isDateWindowValue)) recordedQueryValues[key] = [...values][0] as string;
+      } else if (
         values.size > 1 &&
         (capturesWithKey.get(key) ?? 0) >= siblings.length &&
         listsByKey.get(key)?.size === 1
