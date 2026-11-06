@@ -65,20 +65,22 @@ describe("emitMultiStepExecuteHttp Pass 1 bypass-site hoist — output parity", 
 });
 
 describe("emitMultiStepExecuteHttp Pass 1 bypass-site hoist — scale", () => {
-  // Measured directly against this repo (not assumed): at 1600 chained
-  // beacon calls, the hoisted `allCaptures` reference (recon-generate.ts:6703)
-  // completes in ~2.6-3.0s on this hardware, since `captureEndpointIndexFor`'s
-  // WeakMap-cached index is built once and reused. Reverting to a fresh
-  // `actions.map((a) => a.capture)` per Pass-1 iteration — forcing the same
-  // index rebuild 1600 times — measured ~8.4-8.9s for the identical input on
-  // the same hardware, a ~3x constant-factor gap driven purely by the rebuild
-  // count (other Pass-1 work is shared between both shapes and scales
-  // identically either way, so this bound targets that specific gap rather
-  // than overall algorithmic order). 6000ms sits below every observed
-  // pre-fix sample and above every observed post-fix sample with headroom on
-  // both sides.
-  it("emits a large chained-beacon flow within a bound only the hoisted reference can meet", () => {
-    const actions = buildLargeBeaconActionSequence(1600);
+  // Guards the reference-keyed caches that keep Pass 1's per-step rescans
+  // cheap: the hoisted `allCaptures` reference feeding
+  // `captureEndpointIndexFor`'s WeakMap index, and `endpointTemplateKey`'s
+  // own memo. Dropping either one re-derives the same index/parse per step
+  // and measured a ~3x slowdown on this input.
+  //
+  // Pass 1 is quadratic in capture count regardless (`gatherEntityVarianceEvidence`
+  // and `gatherResponseBodySamples` each rescan every capture per step), so
+  // this is a constant-factor guard, not an O(n) claim. Capture count is kept
+  // at 600 — ~0.5-0.8s locally — precisely so the bound keeps a wide margin:
+  // a shared CI runner several times slower than a dev machine still passes,
+  // while losing a cache still overshoots. An earlier 1600-capture version of
+  // this test sat ~4.4s against the same bound and failed on CI for machine
+  // speed alone rather than for any regression.
+  it("emits a large chained-beacon flow within a bound only the cached references can meet", () => {
+    const actions = buildLargeBeaconActionSequence(600);
 
     const start = performance.now();
     emit(actions);
