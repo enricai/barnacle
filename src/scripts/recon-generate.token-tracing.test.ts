@@ -151,3 +151,33 @@ describe("HTML-issued tokens", () => {
     expect(seq.map((s) => s.index)).not.toContain(0);
   });
 });
+
+describe("HTML-issued tokens from anchors and realistic markup", () => {
+  const T = "Zx9cV3bN7mAsDfGh2JkL";
+  const page = `<!DOCTYPE html><html><body>
+    <nav><a class="n" href="/home">Home</a></nav>
+    <A HREF='/confirm?token=${T}&amp;step=2'>Confirm</A>
+    <a href=/plain?x=1>plain</a>
+    <input type=HIDDEN name=sid value=${T}y>
+  </body></html>`;
+  it("admits the GET and indexes an anchor-issued value as link origin", () => {
+    const caps = [
+      buildCapture({
+        url: "https://shop.example.com/inbox",
+        method: "GET",
+        responseBody: page,
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildCapture({
+        url: `https://shop.example.com/confirm?token=${T}`,
+        requestPostData: JSON.stringify({ go: 1 }),
+        responseBody: { ok: true },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ];
+    const seq = extractActionSequence(caps);
+    expect(seq.map((s) => s.index)).toContain(0);
+    const st = indexStateValues(caps, new Set(), new Set(seq.map((s) => s.index)));
+    expect(st.get(T)?.htmlOrigin).toEqual({ element: "link", name: "token" });
+  });
+});
