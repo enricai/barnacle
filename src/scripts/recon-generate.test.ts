@@ -6144,6 +6144,47 @@ describe("emitContractTs — payload-driven GET request", () => {
     // Read-only GET: no mutation body, not emitted as a submission.
     expect(source).not.toContain('method: "POST"');
   });
+  it("emits a two-capture GET flow with a generic host as a read whose inputs all come from payload", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const ts = await import("typescript");
+    const mk = (from: string, to: string) =>
+      ({
+        method: "GET",
+        status: 200,
+        url: `https://api.example.org/venues/9/schedule.json?venue_ids%5B%5D=9&date_from=${from}&date_to=${to}`,
+      }) as unknown as Capture;
+    const a = mk("2030-01-07", "2030-01-13");
+    const b = mk("2030-01-14", "2030-01-20");
+    const getInputModel = deriveGetInputModel(a, [a, b])!;
+    expect(getInputModel.pathVars.map((p) => p.field)).toEqual(["venue_ids"]);
+    expect(getInputModel.dynamicFields.map((d) => d.queryKey)).toEqual(["date_from", "date_to"]);
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      baseUrl: "https://api.example.org",
+      endpointPath: "/venues/9/schedule.json",
+      getInputModel,
+      isSubmissionFlow: false,
+    } as never);
+    // Read, not submission: GET request, no mutation body.
+    expect(source).toContain('method: "GET"');
+    expect(source).not.toContain('method: "POST"');
+    expect(source).not.toContain("JSON.stringify({ query: payload.query })");
+    // Payload schema declares every derived field.
+    for (const f of ["venue_ids", "date_from", "date_to"]) {
+      expect(source).toContain(`${f}: z.string().optional(),`);
+    }
+    // executeHttp reads path id and window from payload with recorded fallbacks.
+    expect(source).toContain('encodeURIComponent(String(payload.venue_ids ?? "9"))');
+    expect(source).toContain('["venue_ids[]", String(payload.venue_ids ?? "9")]');
+    expect(source).toContain('["date_from", String(payload.date_from ?? "2030-01-07")]');
+    expect(source).toContain('["date_to", String(payload.date_to ?? "2030-01-13")]');
+    // The output parses as TypeScript.
+    const out = ts.transpileModule(source, {
+      reportDiagnostics: true,
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+    });
+    expect(out.diagnostics ?? []).toEqual([]);
+  });
   it("keeps the POST emission when no GET model is given", () => {
     const source = emitContractTs({ ...BASE_OPTS });
     expect(source).toContain("JSON.stringify({ query: payload.query })");
