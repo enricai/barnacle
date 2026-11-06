@@ -15,9 +15,21 @@ export interface PageQuiescence {
  * Folds the whole-page text digest into the signature settle compares, so a
  * re-render that keeps the length and the 200-char head still counts as movement.
  */
-export function settleTextKey(visibleTextSignature: string, visibleTextDigest?: string): string {
-  return visibleTextDigest ? `${visibleTextSignature}#${visibleTextDigest}` : visibleTextSignature;
+export function settleTextKey(
+  visibleTextSignature: string,
+  visibleTextDigest?: string,
+): string {
+  return visibleTextDigest
+    ? `${visibleTextSignature}#${visibleTextDigest}`
+    : visibleTextSignature;
 }
+
+/**
+ * How a settle ended. `quiescent`: the page was observed quiet (no pending
+ * request, no mutation, text stable for the quiet window, or the silent give-up).
+ * `ceiling`: the MAX_MS ceiling elapsed while the page was still moving.
+ */
+export type SettleOutcome = "quiescent" | "ceiling";
 
 const POLL_MS = 1000;
 const QUIET_POLLS = 3;
@@ -61,16 +73,18 @@ export async function settleAfterClick(
   readText?: () => Promise<string>,
   preText?: string,
   readQuiescence?: () => Promise<PageQuiescence>,
-  holdUnmovedMs?: number
-): Promise<void> {
-  const read = async (): Promise<string | undefined> => (readText ? readText() : undefined);
+  holdUnmovedMs?: number,
+): Promise<SettleOutcome> {
+  const read = async (): Promise<string | undefined> =>
+    readText ? readText() : undefined;
   const quiescence = async (): Promise<PageQuiescence | undefined> =>
     readQuiescence ? readQuiescence() : undefined;
   const startQ = await quiescence();
   let lastMutations = startQ?.mutations;
   const startText = await read();
   let lastText = preText ?? startText;
-  let textMoved = preText !== undefined && startText !== undefined && startText !== preText;
+  let textMoved =
+    preText !== undefined && startText !== undefined && startText !== preText;
   let seen = counter.n > preCount || textMoved;
   let last = counter.n;
   let movedSinceStart = false;
@@ -91,7 +105,8 @@ export async function settleAfterClick(
     const q = await quiescence();
     const pageBusy =
       q !== undefined &&
-      (q.pending > 0 || (lastMutations !== undefined && q.mutations !== lastMutations));
+      (q.pending > 0 ||
+        (lastMutations !== undefined && q.mutations !== lastMutations));
     if (q !== undefined) lastMutations = q.mutations;
     if (pageBusy) {
       seen = true;
@@ -107,18 +122,24 @@ export async function settleAfterClick(
     if (seen) {
       quiet += 1;
       if (!textMoved && !submitShaped) {
-        if (quiet >= QUIET_POLLS) return;
+        if (quiet >= QUIET_POLLS) return "quiescent";
         continue;
       }
       const idleAllowanceMs =
-        holdUnmovedMs !== undefined && !movedSinceStart ? holdUnmovedMs : IDLE_GIVE_UP_MS;
-      if (quiet >= TEXT_QUIET_POLLS && elapsed >= idleAllowanceMs) return;
+        holdUnmovedMs !== undefined && !movedSinceStart
+          ? holdUnmovedMs
+          : IDLE_GIVE_UP_MS;
+      if (quiet >= TEXT_QUIET_POLLS && elapsed >= idleAllowanceMs)
+        return "quiescent";
       continue;
     }
-    if (!submitShaped) return;
-    const giveUpMs = readQuiescence ? QUIESCENT_NO_OP_GIVE_UP_MS : IDLE_GIVE_UP_MS;
-    if (elapsed >= giveUpMs) return;
+    if (!submitShaped) return "quiescent";
+    const giveUpMs = readQuiescence
+      ? QUIESCENT_NO_OP_GIVE_UP_MS
+      : IDLE_GIVE_UP_MS;
+    if (elapsed >= giveUpMs) return "quiescent";
   }
+  return "ceiling";
 }
 
 /**
@@ -174,15 +195,17 @@ export interface SettleSnapshotTarget<
  */
 export async function settleAndSnapshot<
   S extends { networkCount: number; visibleTextSignature: string },
->(target: SettleSnapshotTarget<S>): Promise<S> {
-  await settleAfterClick(
+>(
+  target: SettleSnapshotTarget<S>,
+): Promise<{ snapshot: S; outcome: SettleOutcome }> {
+  const outcome = await settleAfterClick(
     target.page,
     target.counter,
     target.pre.networkCount,
     target.submitShaped,
     async () => (await target.snapshot(false)).visibleTextSignature,
     target.pre.visibleTextSignature,
-    target.readQuiescence
+    target.readQuiescence,
   );
-  return target.snapshot(true);
+  return { snapshot: await target.snapshot(true), outcome };
 }

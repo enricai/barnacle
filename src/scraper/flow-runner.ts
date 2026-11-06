@@ -81,6 +81,7 @@ import {
   MAX_MS as SETTLE_MAX_MS,
   type SettlePage,
   settleAfterClick,
+  type SettleOutcome,
   settleTextKey,
 } from "@/scraper/click-settle";
 import {
@@ -1712,8 +1713,8 @@ export async function settleWithPageQuiescence(
   preVisibleTextSignature: string,
   preVisibleTextDigest?: string,
   holdUnmovedMs?: number
-): Promise<void> {
-  await settleAfterClick(
+): Promise<SettleOutcome> {
+  return settleAfterClick(
     page,
     signalCounter,
     preNetworkCount,
