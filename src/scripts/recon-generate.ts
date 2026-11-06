@@ -3311,6 +3311,96 @@ const ISSUED_TOKEN_MIN_LENGTH = 16;
 const ISSUED_TOKEN_MAX_LENGTH = 512;
 
 /**
+ * The forms a value takes when a later request re-sends it: verbatim, or
+ * percent-encoded when it rides in a URL or a form-urlencoded body (an opaque
+ * token carrying `+`, `/` or `=` is never present verbatim there). Every
+ * "does a later request re-send this value" test must consider both, or a
+ * token the server issued is mistaken for an unrelated constant and frozen.
+ */
+function replayForms(value: string): string[] {
+  let forms = replayFormsCache.get(value);
+  if (forms === undefined) {
+    const encoded = encodeURIComponent(value);
+    forms = encoded === value ? [value] : [value, encoded];
+    // Callers test every indexed value against every request, so the same
+    // value is asked for many times per run; bound the memo for long runs.
+    if (replayFormsCache.size >= 50_000) replayFormsCache.clear();
+    replayFormsCache.set(value, forms);
+  }
+  return forms;
+}
+const replayFormsCache = new Map<string, string[]>();
+
+/** True when `haystack` carries `value` in any {@link replayForms} form. */
+function resends(haystack: string, value: string): boolean {
+  return replayForms(value).some((form) => haystack.includes(form));
+}
+
+/** Kind of HTML element an issued token was read from. */
+type HtmlTokenElement = "form-action" | "link" | "hidden-input";
+
+interface HtmlIssuedToken {
+  value: string;
+  element: HtmlTokenElement;
+  /** Query parameter name or input name. */
+  name: string;
+}
+
+/**
+ * Extracts per-request tokens from an HTML string body: query-parameter values
+ * in `<form action>` / `<a href>` URLs and `<input type="hidden">` values. Each
+ * carries a stable locator (element kind + parameter/input name). Returns [] for
+ * non-string or non-HTML bodies. Values are entity-decoded (`&amp;`).
+ */
+function extractHtmlIssuedTokens(body: unknown): HtmlIssuedToken[] {
+  if (typeof body !== "string" || !body.includes("<")) return [];
+  const out: HtmlIssuedToken[] = [];
+  const decode = (v: string): string =>
+    v
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#0*39;/g, "'")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">");
+  const attr = (tag: string, name: string): string | undefined => {
+    const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
+    if (!m) return undefined;
+    return decode(m[1] ?? m[2] ?? m[3] ?? "");
+  };
+  const fromUrl = (url: string, element: HtmlTokenElement): void => {
+    const q = url.indexOf("?");
+    if (q < 0) return;
+    const query = url.slice(q + 1).split("#")[0]!;
+    for (const pair of query.split("&")) {
+      const eq = pair.indexOf("=");
+      if (eq <= 0) continue;
+      let value = pair.slice(eq + 1);
+      try {
+        value = decodeURIComponent(value.replace(/\+/g, " "));
+      } catch {
+        /* keep raw */
+      }
+      out.push({ value, element, name: pair.slice(0, eq) });
+    }
+  };
+  for (const m of body.matchAll(/<form\b[^>]*>/gi)) {
+    const a = attr(m[0], "action");
+    if (a) fromUrl(a, "form-action");
+  }
+  for (const m of body.matchAll(/<a\b[^>]*>/gi)) {
+    const h = attr(m[0], "href");
+    if (h) fromUrl(h, "link");
+  }
+  for (const m of body.matchAll(/<input\b[^>]*>/gi)) {
+    if (attr(m[0], "type")?.toLowerCase() !== "hidden") continue;
+    const name = attr(m[0], "name");
+    const value = attr(m[0], "value");
+    if (name && value) out.push({ value, element: "hidden-input", name });
+  }
+  return out;
+}
+
+/**
  * True when a GET capture's response issues a value (an opaque token: a
  * session id, CSRF nonce, form handle) that a LATER non-GET 2xx request
  * re-sends verbatim in its URL, body or headers. Such a GET is the only
@@ -3330,6 +3420,12 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
   }
+  for (const { value } of extractHtmlIssuedTokens(getCapture.responseBody)) {
+    if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+    if (/\s/.test(value)) continue;
+    if (getCapture.url.includes(value)) continue;
+    tokens.add(value);
+  }
   if (tokens.size === 0) return false;
   for (let j = index + 1; j < captures.length; j++) {
     const later = captures[j]!;
@@ -3340,7 +3436,7 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
       ...Object.values(later.requestHeaders),
     ];
     for (const token of tokens) {
-      if (haystacks.some((h) => h.includes(token))) return true;
+      if (haystacks.some((h) => resends(h, token))) return true;
     }
   }
   return false;
@@ -4581,6 +4677,10 @@ interface StateValue {
    * body JSON leaf (e.g. listings-fixture's `Set-Cookie: __pa=<jwt>` token mint).
    * `path` is empty in this case since there is no body accessor. */
   headerOrigin?: { sourceHeader: string; cookieName?: string };
+  /** Set when `value` was minted inside an HTML string response body (a form
+   * action / link query parameter or a hidden input). `element` + `name` is the
+   * stable locator; `path` is empty since there is no JSON accessor. */
+  htmlOrigin?: { element: HtmlTokenElement; name: string };
   /**
    * Set ONLY when `value` is short enough (< MIN_STATE_VALUE_LENGTH) that it
    * was indexed exclusively via the chain/force-include exemption — i.e. the
@@ -6584,6 +6684,35 @@ export function indexStateValues(
     // e.g. "candidate" as a state value gets substituted INSIDE an already-
     // emitted ${candidateId} interpolation, producing ${${entityTypeCode}Id}.
     const isGet = c.method === "GET";
+    // Tokens minted only inside an HTML document body: index each as producible
+    // state with an html origin (the document itself is one oversized leaf).
+    // Restricted to values a later non-GET request re-sends, so unrelated
+    // markup parameters never enter the index.
+    for (const t of extractHtmlIssuedTokens(c.responseBody)) {
+      const v = t.value;
+      if (v.length < MIN_STATE_VALUE_LENGTH || v.length > MAX_STATE_VALUE_LENGTH) continue;
+      if (/\s/.test(v) || PLACEHOLDER_STATE_VALUES.has(v) || shieldedUuids.has(v)) continue;
+      if (index.has(v)) continue;
+      let reused = false;
+      for (let j = i + 1; j < captures.length && !reused; j++) {
+        const later = captures[j]!;
+        if (later.status < 200 || later.status >= 300) continue;
+        // A later GET re-sends a token only through its URL (no body).
+        reused =
+          later.method === "GET"
+            ? resends(later.url, v)
+            : [later.url, later.requestPostData ?? "", ...Object.values(later.requestHeaders)].some(
+                (h) => resends(h, v)
+              );
+      }
+      if (!reused) continue;
+      index.set(v, {
+        value: v,
+        originIndex: i,
+        path: [],
+        htmlOrigin: { element: t.element, name: t.name },
+      });
+    }
     for (const { value: rawValue, path } of walkAllPrimitiveLeaves(c.responseBody)) {
       if (rawValue === null) continue;
       const value = String(rawValue);
@@ -6660,7 +6789,20 @@ interface HeaderProduce {
   targetHeader: string;
 }
 
-type Produce = BodyProduce | HeaderProduce;
+/** A per-request token minted inside an HTML string response (a form action /
+ * link query parameter or a hidden input). It has no JSON accessor: the emitter
+ * fetches the response text and renders a generated extraction located by
+ * element kind + `locatorName`. `value` is the recon-time token, used only at
+ * compile time to splice later requests — never emitted. */
+interface HtmlProduce {
+  kind: "html";
+  name: string;
+  element: HtmlTokenElement;
+  locatorName: string;
+  value: string;
+}
+
+type Produce = BodyProduce | HeaderProduce | HtmlProduce;
 
 interface ActionStep {
   /** The capture this step corresponds to. */
@@ -7197,7 +7339,7 @@ export function compileActionSteps(
       // everywhere else, a coincidental substring match (a digit inside an
       // unrelated opaque path segment) is not reuse and must not splice.
       if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture)) continue;
-      if (capture.url.includes(sv.value)) {
+      if (resends(capture.url, sv.value)) {
         usedValues.add(sv.value);
         continue;
       }
@@ -7214,7 +7356,11 @@ export function compileActionSteps(
       // preserving substring-in-value reuse. Non-JSON bodies (multipart raw
       // bytes) keep whole-body substring matching.
       if (bodyLeafValues === null) {
-        if (capture.requestPostData?.includes(sv.value)) usedValues.add(sv.value);
+        if (
+          typeof capture.requestPostData === "string" &&
+          resends(capture.requestPostData, sv.value)
+        )
+          usedValues.add(sv.value);
         continue;
       }
       // A produced value's SOURCE key name (the last segment of its response
@@ -7352,6 +7498,31 @@ export function compileActionSteps(
       }
     }
 
+    // HTML-issued tokens: only values this capture is the earliest origin of
+    // and that a later request re-sends (usedValues).
+    for (const t of extractHtmlIssuedTokens(capture.responseBody)) {
+      if (!usedValues.has(t.value)) continue;
+      const sv = stateIndex.get(t.value);
+      if (!sv || sv.originIndex !== index || !sv.htmlOrigin) continue;
+      if (sv.htmlOrigin.element !== t.element || sv.htmlOrigin.name !== t.name) continue;
+      if (produces.some((q) => q.kind === "html" && q.value === t.value)) continue;
+      const base = `${pathToVarName(t.name.split(/[^A-Za-z0-9_$]+/).filter(Boolean))}Token`;
+      let name = /^[A-Za-z_$]/.test(base) ? base : `_${base}`;
+      let suffix = 1;
+      while (seenNames.has(name)) {
+        suffix++;
+        name = `${base}${suffix}`;
+      }
+      seenNames.add(name);
+      produces.push({
+        kind: "html",
+        name,
+        element: t.element,
+        locatorName: t.name,
+        value: t.value,
+      });
+    }
+
     const ct = Object.entries(capture.requestHeaders).find(
       ([k]) => k.toLowerCase() === "content-type"
     );
@@ -7367,8 +7538,110 @@ export function compileActionSteps(
     const isCrossDomain = lastHost !== null && currentHost !== null && lastHost !== currentHost;
     lastHost = currentHost;
 
-    return { capture, varName, produces, isMultipart, isCrossDomain };
+    // Multipart steps are emitted through a path that cannot read the HTML
+    // text, so an html produce there would be interpolated but never declared.
+    const finalProduces = isMultipart ? produces.filter((q) => q.kind !== "html") : produces;
+    return { capture, varName, produces: finalProduces, isMultipart, isCrossDomain };
   });
+}
+
+/**
+ * True for a value shaped like an opaque server-minted credential rather than
+ * a word, slug, date or id: long enough to be unguessable and mixing upper-case,
+ * lower-case and digits (or a long hex digest). UUIDs are excluded — those are
+ * stable structural identifiers the generator already anchors or binds.
+ */
+function isOpaqueToken(value: string): boolean {
+  if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH)
+    return false;
+  if (/\s/.test(value) || value.includes("://") || UUID_REGEX.test(value)) return false;
+  if (!/^[A-Za-z0-9_\-+/=.~%]+$/.test(value)) return false;
+  const mixed = /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value);
+  return mixed || (value.length >= 32 && /^[0-9a-f]+$/i.test(value) && /\d/.test(value));
+}
+
+/**
+ * Per-request tokens a multi-step flow re-sends that the emitted `executeHttp`
+ * body still carries as literals. Such a flow replays one recording session's
+ * credential on every live call, so the generator must not ship it as an HTTP
+ * hot path — the browser flow is the only honest emission (the tokens cannot
+ * be traced to a producer the plugin can re-run).
+ *
+ * A request value is a per-request token when it is an {@link isOpaqueToken}
+ * and either (a) an EARLIER response in the recording carried it in any form
+ * — JSON leaf, markup, script, header — or (b) it is a URL query value whose
+ * key takes a different value on another call to the same endpoint. URL query
+ * values and path segments are checked against both; body values are checked
+ * only against tokens issued inside earlier HTML documents, because a JSON
+ * body legitimately re-sends stable anchors (option codes, field ids) the
+ * generator keeps literal by design. `shieldedUuids` are never tokens.
+ */
+export function findFrozenRequestTokens(
+  actionSteps: ActionStep[],
+  allCaptures: readonly Capture[],
+  emittedBody: string,
+  shieldedUuids: ReadonlySet<string> = new Set()
+): string[] {
+  const responseText = (c: Capture): string => {
+    const body =
+      typeof c.responseBody === "string" ? c.responseBody : JSON.stringify(c.responseBody ?? "");
+    return `${body}\n${Object.values(c.responseHeaders ?? {}).join("\n")}`;
+  };
+  const issuedBefore = (capture: Capture): Capture[] => {
+    const at = allCaptures.indexOf(capture);
+    return at >= 0
+      ? allCaptures.slice(0, at)
+      : allCaptures.filter((c) => c !== capture && c.timestamp < capture.timestamp);
+  };
+  const frozen = new Set<string>();
+  const carriers = (value: string): number =>
+    allCaptures.filter((c) =>
+      [c.url, c.requestPostData ?? "", ...Object.values(c.requestHeaders ?? {})].some((h) =>
+        resends(h, value)
+      )
+    ).length;
+  const check = (value: string, capture: Capture, urlValue: boolean, isQuery = false): void => {
+    if (!isOpaqueToken(value) || shieldedUuids.has(value) || frozen.has(value)) return;
+    if (!resends(emittedBody, value)) return;
+    const earlier = issuedBefore(capture);
+    const perRequest = urlValue
+      ? earlier.some((c) => resends(responseText(c), value)) ||
+        isGenuineVaryingQueryValue(value, capture, allCaptures) ||
+        // A one-off opaque query value no other request, earlier response or
+        // header carries has no producer to thread and no sibling to prove it
+        // constant: it is a credential minted for this one request.
+        (isQuery && carriers(value) <= 1)
+      : earlier.some((c) => extractHtmlIssuedTokens(c.responseBody).some((t) => t.value === value));
+    if (perRequest) frozen.add(value);
+  };
+  for (const { capture } of actionSteps) {
+    let url: URL | null = null;
+    try {
+      url = new URL(capture.url);
+    } catch {
+      url = null;
+    }
+    if (url !== null) {
+      for (const [, v] of url.searchParams) check(v, capture, true, true);
+      for (const segment of url.pathname.split("/")) {
+        try {
+          check(decodeURIComponent(segment), capture, true);
+        } catch {
+          check(segment, capture, true);
+        }
+      }
+    }
+    const raw = capture.requestPostData;
+    if (typeof raw !== "string" || raw === "") continue;
+    try {
+      for (const { value } of walkAllPrimitiveLeaves(JSON.parse(raw) as unknown)) {
+        if (typeof value === "string") check(value, capture, false);
+      }
+    } catch {
+      for (const [, v] of new URLSearchParams(raw)) check(v, capture, false);
+    }
+  }
+  return [...frozen];
 }
 
 /**
@@ -7715,6 +7988,16 @@ function interpolateStateValues(
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
     if (binding.unconditional) unconditionalValues.add(value);
+    // A token the server issued verbatim reaches a URL / form-urlencoded body
+    // percent-encoded; splice the produced variable back through the same
+    // encoding so the live value is re-encoded exactly as the recording was.
+    const encoded = encodeURIComponent(value);
+    if (encoded !== value && !isJsonBody && !bindingByValue.has(encoded)) {
+      bindingByValue.set(encoded, `\${encodeURIComponent(${binding.varName})}`);
+      sourceNameByValue.set(encoded, binding.sourceName);
+      if (binding.restricted) restrictedValues.add(encoded);
+      if (binding.unconditional) unconditionalValues.add(encoded);
+    }
   }
   if (bindingByValue.size === 0) return template;
 
@@ -7826,7 +8109,7 @@ export function deriveProducerBoundaryBindings(
     const step = actions[i]!;
     const bodyLeafValues = jsonBodyLeafValues(step.capture.requestPostData);
     for (const p of step.produces) {
-      if (p.kind === "header") continue;
+      if (p.kind !== "body") continue;
       const value = resolveResponsePathValue(step.capture.responseBody, p.path);
       if (value === null || value.length < MIN_STATE_VALUE_LENGTH) continue;
       if (bindings.has(value)) continue;
@@ -7986,6 +8269,17 @@ function deriveStateVarByValue(
   for (const step of priorSteps) {
     for (const p of step.produces) {
       if (p.kind === "header") continue;
+      if (p.kind === "html") {
+        // Name-free: the token is located by element kind, not a JSON path, so
+        // no key correlation applies at the splice site.
+        varNameByValue.set(p.value, {
+          varName: p.name,
+          sourceName: p.name,
+          restricted: false,
+          unconditional: false,
+        });
+        continue;
+      }
       if (p.eligibleConsumers && !p.eligibleConsumers.has(targetCapture)) continue;
       const value = resolveResponsePathValue(step.capture.responseBody, p.path);
       if (value !== null) {
@@ -10721,7 +11015,32 @@ export function emitMultiStepExecuteHttp(
           const hasReferencedProduce = chainStep.produces.some(
             (p) => p.kind !== "header" && referencedNames.has(p.name) && !chainDeclared.has(p.name)
           );
+          const chainHtmlProduces = chainStep.produces.filter(
+            (p): p is HtmlProduce =>
+              p.kind === "html" && referencedNames.has(p.name) && !chainDeclared.has(p.name)
+          );
           const bindsChainResponse = isChainTerminal || hasReferencedProduce;
+          if (chainHtmlProduces.length > 0) {
+            // The runtime httpClient JSON-parses its body, so an HTML token is
+            // read from a direct fetch of the response text.
+            const textVar = `text_${chainStep.varName}`;
+            chainLines.push(
+              ...emitHtmlFetchLines(
+                chainRendered.method,
+                paramUrl,
+                paramHeaders,
+                paramBody,
+                textVar,
+                chainStep.varName,
+                "      "
+              )
+            );
+            for (const p of chainHtmlProduces) {
+              chainDeclared.add(p.name);
+              chainLines.push(...emitHtmlExtractionLines(p, textVar, "      "));
+            }
+            continue;
+          }
           chainLines.push(
             bindsChainResponse
               ? `      const ${chainStep.varName} = (await httpClient(\`${paramUrl}\`, {`
@@ -10739,6 +11058,7 @@ export function emitMultiStepExecuteHttp(
               chainUsesHeaderThreading = true;
               continue;
             }
+            if (p.kind === "html") continue;
             if (chainDeclared.has(p.name)) continue;
             if (!referencedNames.has(p.name)) continue;
             chainDeclared.add(p.name);
@@ -10816,7 +11136,7 @@ export function emitMultiStepExecuteHttp(
       // Header/cookie-origin produces never surface as a JS accessor —
       // createHttpClient's `bind` option (rendered once, above the steps)
       // captures and forwards the value internally.
-      if (p.kind === "header") continue;
+      if (p.kind !== "body") continue;
       if (declaredNames.has(p.name)) continue;
       if (!referencedNames.has(p.name)) continue;
       declaredNames.add(p.name);
@@ -10825,12 +11145,41 @@ export function emitMultiStepExecuteHttp(
         `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
       );
     }
-    const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
+    const htmlProduces = step.produces.filter(
+      (p): p is HtmlProduce => p.kind === "html" && referencedNames.has(p.name)
+    );
+    const bindResponse =
+      referencedNames.has(step.varName) || produceLines.length > 0 || htmlProduces.length > 0;
 
     if (step.isCrossDomain) {
       lines.push(
         `    // TODO: cross-domain redirect detected (${cap.url.split("/")[2]}) — likely needs browser fallback for this step.`
       );
+    }
+
+    if (htmlProduces.length > 0 && !step.isMultipart) {
+      // The runtime httpClient JSON-parses its body, so a token minted in an
+      // HTML document is read from a direct fetch of the response text.
+      const textVar = `text_${step.varName}`;
+      lines.push(
+        ...emitHtmlFetchLines(
+          r.method,
+          r.url,
+          r.headersExpr,
+          r.bodyArg,
+          textVar,
+          step.varName,
+          "    "
+        )
+      );
+      for (const p of htmlProduces) {
+        if (declaredNames.has(p.name)) continue;
+        declaredNames.add(p.name);
+        lines.push(...emitHtmlExtractionLines(p, textVar, "    "));
+      }
+      for (const line of produceLines) lines.push(line);
+      lines.push("");
+      continue;
     }
 
     if (step.isMultipart) {
@@ -11005,6 +11354,77 @@ export function emitMultiStepExecuteHttp(
   const renderedMultiStepBody = lines.join("\n");
   assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
   return renderedMultiStepBody;
+}
+
+/**
+ * Renders a direct `fetch` of a step whose response is an HTML document, binding
+ * the response text to `textVar`. Headers merge `BASE_HEADERS` with the step's
+ * per-call header literal; the body (if any) is the already-interpolated
+ * template. Throws on a non-2xx so the sequence stops at the failed hop.
+ */
+function emitHtmlFetchLines(
+  method: string,
+  url: string,
+  headersExpr: string,
+  bodyArg: string,
+  textVar: string,
+  stepVar: string,
+  indent: string
+): string[] {
+  const literal = headersExpr.replace(/^headers:\s*/, "").replace(/,\s*$/, "");
+  const headers = literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
+  const respVar = `resp_${stepVar}`;
+  return [
+    `${indent}const ${respVar} = await fetch(\`${url}\`, {`,
+    `${indent}  method: ${JSON.stringify(method)},`,
+    `${indent}  headers: ${headers},`,
+    ...(bodyArg !== "" ? [`${indent}  ${bodyArg}`] : []),
+    `${indent}});`,
+    `${indent}if (!${respVar}.ok) throw new Error(\`step ${stepVar} (HTML token fetch) failed: HTTP \${${respVar}.status}\`);`,
+    `${indent}const ${textVar} = await ${respVar}.text();`,
+  ];
+}
+
+/**
+ * Renders the extraction of one HTML-issued token from `textVar`, located by
+ * element kind + name (never by the recon literal). Throws when the markup no
+ * longer carries it, so a changed page fails loudly instead of replaying a
+ * stale token.
+ */
+function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string): string[] {
+  const name = JSON.stringify(p.locatorName);
+  const fail = `${indent}if (${p.name} === undefined) throw new Error(\`HTML token ${p.locatorName.replace(/[`$\\]/g, "")} not found in response\`);`;
+  if (p.element === "hidden-input") {
+    return [
+      `${indent}const ${p.name} = (() => {`,
+      `${indent}  for (const tag of ${textVar}.match(/<input\\b[^>]*>/gi) ?? []) {`,
+      `${indent}    if (!/\\stype\\s*=\\s*["']?hidden\\b/i.test(tag)) continue;`,
+      `${indent}    const n = /\\sname\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
+      `${indent}    if ((n?.[1] ?? n?.[2] ?? n?.[3]) !== ${name}) continue;`,
+      `${indent}    const v = /\\svalue\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
+      `${indent}    if (v) return (v[1] ?? v[2] ?? v[3] ?? "").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#0*39;/g, "'");`,
+      `${indent}  }`,
+      `${indent}  return undefined;`,
+      `${indent}})();`,
+      fail,
+    ];
+  }
+  const tagPattern = p.element === "form-action" ? "<form\\b[^>]*>" : "<a\\b[^>]*>";
+  const attrName = p.element === "form-action" ? "action" : "href";
+  return [
+    `${indent}const ${p.name} = (() => {`,
+    `${indent}  for (const tag of ${textVar}.match(/${tagPattern}/gi) ?? []) {`,
+    `${indent}    const a = /\\s${attrName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
+    `${indent}    const target = (a?.[1] ?? a?.[2] ?? a?.[3] ?? "").replace(/&amp;/gi, "&");`,
+    `${indent}    const q = target.indexOf("?");`,
+    `${indent}    if (q < 0) continue;`,
+    `${indent}    const found = new URLSearchParams(target.slice(q + 1).split("#")[0]).get(${name});`,
+    `${indent}    if (found !== null) return found;`,
+    `${indent}  }`,
+    `${indent}  return undefined;`,
+    `${indent}})();`,
+    fail,
+  ];
 }
 
 function summariseResponseShape(value: unknown): unknown {
@@ -19755,10 +20175,32 @@ async function main(): Promise<void> {
     // downgrade to the single-endpoint `{query}` branch either, since that's a
     // fabrication of its own kind for a flow that isn't a single-action
     // query/search to begin with.
-    const browserFlowOnly =
+    const mustBeBrowserFlowOnly =
       isSubmissionFlow &&
       (browserFlowOnlyOptIn || noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
-    const multiStepBody = browserFlowOnly
+    // emitMultiStepExecuteHttp registers what it binds into these collectors;
+    // a body discarded below must leave them as it found them.
+    const collectorRestores: Array<() => void> = [
+      ...[discoveredPayloadAccessorFields, discoveredOptionFields].map((set) => {
+        const kept = [...set];
+        return () => {
+          set.clear();
+          for (const v of kept) set.add(v);
+        };
+      }),
+      ...[
+        discoveredRawOptionFields as Map<string, unknown>,
+        discoveredAdditionalBodyKeys as Map<string, unknown>,
+        discoveredStructuredKeys as Map<string, unknown>,
+      ].map((map) => {
+        const kept = [...map];
+        return () => {
+          map.clear();
+          for (const [k, v] of kept) map.set(k, v);
+        };
+      }),
+    ];
+    const synthesizedMultiStepBody = mustBeBrowserFlowOnly
       ? undefined
       : isSubmissionFlow
         ? emitMultiStepExecuteHttp(
@@ -19787,6 +20229,26 @@ async function main(): Promise<void> {
             vocabulary
           )
         : undefined;
+    // A per-request token the recording re-sends that no step of the emitted
+    // hot path produces would be replayed as one session's frozen literal on
+    // every live call: ship the browser flow instead of that hot path.
+    const untracedTokens =
+      synthesizedMultiStepBody === undefined
+        ? []
+        : findFrozenRequestTokens(
+            actionSteps,
+            activeCaptures,
+            synthesizedMultiStepBody,
+            shieldedUuids
+          );
+    if (untracedTokens.length > 0) {
+      for (const restore of collectorRestores) restore();
+      logger.warn(
+        `WARN ${untracedTokens.length} per-request token(s) re-sent by the recorded flow could not be traced to a producer step — emitting a browser-only plugin rather than freezing them into executeHttp`
+      );
+    }
+    const browserFlowOnly = mustBeBrowserFlowOnly || untracedTokens.length > 0;
+    const multiStepBody = untracedTokens.length > 0 ? undefined : synthesizedMultiStepBody;
     // Explicit merge — every field emitMultiStepExecuteHttp registered as a
     // `payload.<field>` accessor (persona, entryUrlParams, tenant-
     // subdomain headers, walkStringLeaves) flows into the same discovered-

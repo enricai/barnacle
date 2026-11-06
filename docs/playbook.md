@@ -82,6 +82,17 @@ A forced flow gets `ApplicantContactSchema` (with `ClickUrl`, `Answers`,
 `ResumeBase64`) as its payload base and enters on `payload.ClickUrl`,
 regardless of any body HTTP analysis captured. Ignored for single-action flows.
 
+**Automatic browser-only fallback for untraceable tokens:** `recon:generate`
+threads a per-request token (a session handle, CSRF nonce, form-action or link
+query value, hidden input) from the earlier response that issued it into the
+later URL or body that re-sends it, including a token re-sent percent-encoded.
+When the recording re-sends an opaque token that no earlier JSON leaf, form
+action, link or hidden input produced (it arrived in a script variable, a path
+segment or a header, or nothing issued it), the generator cannot re-mint it at
+call time. It then emits the browser-only plugin automatically — the same
+output as `browserFlowOnly: true` — rather than freezing the recording's
+literal into `executeHttp`, and logs a warning saying so.
+
 **Emailed verification:** a step targeting an emailed link or code (magic-link
 sign-in, OTP confirmation) sets `emailStep: true` plus an `emailStepConfig`
 object — `extract` (`"link"` | `"code"`, default `"link"`), `subjectContains`,
