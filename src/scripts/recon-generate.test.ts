@@ -915,6 +915,105 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
     decodedParams: null,
   });
 
+  // The data-dependency exemption: a structurally-isolated capture is kept
+  // when it PRODUCES a value a later declared target CONSUMES. These pin the
+  // discriminator, because value equality alone is not it — a marketing
+  // capture answering `{count: 20}` must not "feed" a submit sending
+  // `{pageSize: 20}`.
+  const dataFlowCapture = (url: string, body: unknown, responseBody: unknown, seconds: number) => ({
+    ...capture(url, JSON.stringify(body)),
+    timestamp: `2024-01-01T00:00:${String(seconds).padStart(2, "0")}Z`,
+    responseBody,
+  });
+
+  const HOST = "api.dataflow-fixture.example.com";
+  const NOISE_URL = `https://${HOST}/promo-banner/campaign-widget/`;
+
+  /** Pool of 5 so the isolation pass (guarded to 3+) actually runs. */
+  const dataFlowPool = (
+    producerUrl: string,
+    producerBodies: [unknown, unknown],
+    producerResponses: [unknown, unknown],
+    consumerUrls: [string, string],
+    consumerBodies: [unknown, unknown]
+  ) => [
+    dataFlowCapture(NOISE_URL, { a: 1 }, { count: 20 }, 0),
+    dataFlowCapture(producerUrl, producerBodies[0], producerResponses[0], 1),
+    dataFlowCapture(producerUrl, producerBodies[1], producerResponses[1], 2),
+    dataFlowCapture(consumerUrls[0], consumerBodies[0], { ok: true }, 3),
+    dataFlowCapture(consumerUrls[1], consumerBodies[1], { ok: true }, 4),
+  ];
+
+  it("keeps a structurally-isolated producer whose response field name matches what the declared target sends", () => {
+    const kept = extractActionSequence(
+      dataFlowPool(
+        `https://${HOST}/postings/posting-list/`,
+        [{ page: 1 }, { page: 2 }],
+        [{ postings: [{ jobId: 12345 }] }, { postings: [{ jobId: 67890 }] }],
+        [`https://${HOST}/postings/apply-now/`, `https://${HOST}/postings/apply-now/`],
+        [{ jobId: 12345 }, { jobId: 67890 }]
+      ),
+      { endpoint: "apply-now", body: null },
+      null,
+      [HOST],
+      null,
+      false
+    ).map((a) => a.capture.url);
+
+    // A NUMERIC join key is carried by field-name agreement (jobId -> jobId),
+    // which is why name agreement is the primary signal rather than value shape.
+    expect(kept.some((url) => url.includes("posting-list"))).toBe(true);
+    expect(kept).not.toContain(NOISE_URL);
+  });
+
+  it("keeps a structurally-isolated producer whose minted id reaches the declared target's URL path", () => {
+    const kept = extractActionSequence(
+      dataFlowPool(
+        `https://${HOST}/reqs/req-list/`,
+        [{ page: 1 }, { page: 2 }],
+        [{ reqs: [{ id: 778899 }] }, { reqs: [{ id: 112233 }] }],
+        [`https://${HOST}/reqs/req-detail/778899/`, `https://${HOST}/reqs/req-detail/112233/`],
+        [{}, {}]
+      ),
+      { endpoint: "req-detail", body: null },
+      null,
+      [HOST],
+      null,
+      false
+    ).map((a) => a.capture.url);
+
+    // Different field names (`id` vs the path segment), so the positional
+    // escape is what carries this one.
+    expect(kept.some((url) => url.includes("req-list"))).toBe(true);
+    expect(kept).not.toContain(NOISE_URL);
+  });
+
+  it("does not let a bare numeric value coincidence earn the producer exemption", () => {
+    const kept = extractActionSequence(
+      dataFlowPool(
+        `https://${HOST}/orders/order-list/`,
+        [{ page: 1 }, { page: 2 }],
+        [{ orders: [{ orderRef: "o1" }] }, { orders: [{ orderRef: "o2" }] }],
+        [`https://${HOST}/orders/submit-order/`, `https://${HOST}/orders/submit-order/`],
+        [
+          { orderRef: "o1", pageSize: 20 },
+          { orderRef: "o2", pageSize: 20 },
+        ]
+      ),
+      { endpoint: "submit-order", body: null },
+      null,
+      [HOST],
+      null,
+      false
+    ).map((a) => a.capture.url);
+
+    // The noise's `{count: 20}` matches the submit's `{pageSize: 20}` by VALUE
+    // under a different name, which must not be enough; the real producer
+    // (orderRef -> orderRef) is still kept alongside.
+    expect(kept).not.toContain(NOISE_URL);
+    expect(kept.some((url) => url.includes("order-list"))).toBe(true);
+  });
+
   it("excludes a same-host marketing capture structurally unrelated to the declared submitEndpointPattern match", () => {
     // Mirrors the reported shape: two real endpoint families sharing a
     // `-vas` token (only distinguishable structurally, not by literal
