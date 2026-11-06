@@ -5777,6 +5777,14 @@ describe("deriveGetInputModel", () => {
     expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
     expect(m.recordedQueryValues).toEqual({ "ids[]": "1,2" });
   });
+  it("emits a repeated-key recorded fallback as one comma-joined pair", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://x.test/items?ids[]=1&ids[]=2");
+    const m = deriveGetInputModel(a, [a])!;
+    const source = emitContractTs({ ...BASE_OPTS, endpointPath: "/items", getInputModel: m });
+    expect(source).toContain('["ids[]", String(payload.ids ?? "1,2")]');
+    expect(source).not.toContain('["ids[]", "1"]');
+  });
   it("keeps a multi-word collection segment fixed in /<region>/<collection-slug>/<id>", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://x.test/api/us-east/price-lists/42/rates");
