@@ -3500,10 +3500,17 @@ export function extractActionSequence(
   // them, so a candidate whose own repeats carry no business-relevant state
   // loses the self-vouching exemption regardless of its token count, while a
   // genuinely data-bearing single-compound-segment endpoint keeps it.
+  // Pathname and segment split of every pool member, computed ONCE up front.
+  // The vouching pass below is O(n^2) over the pool, so parsing each URL
+  // inside its inner loop made a production-scale archive (~4.7k captures)
+  // run tens of millions of URL parses and stall for minutes.
+  const hostGatedPaths = hostGated.map(({ capture }) => safeUrlPathname(capture.url));
+  const hostGatedSegments = hostGatedPaths.map((path) => path.split("/").filter(Boolean));
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
       ? hostGated.filter(({ capture }, i) => {
-          const path = safeUrlPathname(capture.url);
+          const path = hostGatedPaths[i]!;
+          const candidateSegments = hostGatedSegments[i]!;
           const denselyNameSpaced =
             pathStructuralTokens(path).size > 2 || hasNoBusinessRelevantResponseState(capture);
           // A same-path-FAMILY pool member does not vouch for the candidate
@@ -3536,30 +3543,29 @@ export function extractActionSequence(
           // (e.g. 6 identical `POST /toggles/product-avail`, whose only family
           // is its own repeats) from reading as isolated against the flow's
           // unrelated paths and being dropped.
-          const segmentsOf = (p: string): string[] => p.split("/").filter(Boolean);
           const isSegmentPrefixExtension = (a: string[], b: string[]): boolean => {
             const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
             if (shorter.length === longer.length) return false;
-            return shorter.every((segment, i) => segment === longer[i]);
+            return shorter.every((segment, k) => segment === longer[k]);
           };
-          const vouchesFor = (other: ActionCapture): boolean => {
-            const otherPath = safeUrlPathname(other.capture.url);
+          const vouchesFor = (j: number): boolean => {
+            const otherPath = hostGatedPaths[j]!;
             // Same pathname: an identical-URL repeat still vouches (it is the
             // candidate's own endpoint re-observed, which is what keeps a
             // genuine polled endpoint alive), but a QUERY-ONLY variant
             // (`/site-banner` vs `/site-banner?campaign=summer`) does not —
             // one templated endpoint re-parameterized is the same circular
             // evidence as the trailing-segment variant below.
-            if (otherPath === path) return other.capture.url === capture.url;
+            if (otherPath === path) return hostGated[j]!.capture.url === capture.url;
             if (!isSamePathFamily(path, otherPath)) return true;
-            return !isSegmentPrefixExtension(segmentsOf(path), segmentsOf(otherPath));
+            return !isSegmentPrefixExtension(candidateSegments, hostGatedSegments[j]!);
           };
-          const otherPaths = hostGated
-            .filter((h, j) =>
-              denselyNameSpaced ? safeUrlPathname(h.capture.url) !== path : j !== i
-            )
-            .filter(vouchesFor)
-            .map((h) => safeUrlPathname(h.capture.url));
+          const otherPaths: string[] = [];
+          for (let j = 0; j < hostGated.length; j += 1) {
+            if (denselyNameSpaced ? hostGatedPaths[j] === path : j === i) continue;
+            if (!vouchesFor(j)) continue;
+            otherPaths.push(hostGatedPaths[j]!);
+          }
           // A capture admitted via the flow's own declared foldReturnSpec
           // endpointPattern (the drill-down target), or matching the flow's
           // own declared submitEndpointPattern, is authoritative by

@@ -223,7 +223,17 @@ const GENERIC_PATH_TOKENS = new Set(["api", "app", "apps", "v1", "v2", "v3", "co
  * because both happen to end in the common word "search"). Compound segments
  * are where a real endpoint-family identifier lives.
  */
+const PATH_STRUCTURAL_TOKEN_CACHE = new Map<string, Set<string>>();
+
 export function pathStructuralTokens(path: string): Set<string> {
+  const cached = PATH_STRUCTURAL_TOKEN_CACHE.get(path);
+  if (cached !== undefined) return cached;
+  const computed = computePathStructuralTokens(path);
+  PATH_STRUCTURAL_TOKEN_CACHE.set(path, computed);
+  return computed;
+}
+
+function computePathStructuralTokens(path: string): Set<string> {
   const words = path
     .split("/")
     .filter(Boolean)
@@ -246,7 +256,17 @@ export function pathStructuralTokens(path: string): Set<string> {
  * can't be satisfied by two paths sharing nothing but a boilerplate `/api/`
  * or `/v1/` segment.
  */
+const MEANINGFUL_PATH_SEGMENT_CACHE = new Map<string, string[]>();
+
 function meaningfulPathSegments(path: string): string[] {
+  const cached = MEANINGFUL_PATH_SEGMENT_CACHE.get(path);
+  if (cached !== undefined) return cached;
+  const computed = computeMeaningfulPathSegments(path);
+  MEANINGFUL_PATH_SEGMENT_CACHE.set(path, computed);
+  return computed;
+}
+
+function computeMeaningfulPathSegments(path: string): string[] {
   return path
     .split("/")
     .filter(Boolean)
@@ -269,33 +289,67 @@ function hasRepeatedMeaningfulSegment(path: string): boolean {
 }
 
 /**
- * Meaningful parent-namespace segments of `path`: every meaningful segment
- * except the last one, which is the endpoint's own leaf name.
- *
- * {@link pathStructuralTokens} deliberately ignores single-word segments
- * because a shared *leaf* word (`search`, `detail`, `list`) recurs across
- * unrelated families on one host. A shared single-word segment in a
- * NON-TERMINAL position is different evidence: it is the resource namespace
- * the site mounted both endpoints under, which is exactly what makes them
- * siblings of one family. Keeping the two signals separate is what lets
- * `/openings/roster-search/` and `/openings/applicant-detail/` be judged
- * related (shared `openings` parent) without also relating a marketing
- * `/promotions/search` to a booking `/v1/search` (nothing shared but a leaf).
+ * Splits a path segment into its lowercased word parts (hyphen/underscore/dot
+ * separators and camelCase boundaries), the same way
+ * {@link pathStructuralTokens} does before it discards single-word segments.
  */
-function parentPathSegments(path: string): string[] {
-  return meaningfulPathSegments(path).slice(0, -1);
+function segmentWords(segment: string): string[] {
+  return segment
+    .split(/[^a-zA-Z0-9]+/)
+    .flatMap((part) => part.split(/(?<=[a-z0-9])(?=[A-Z])/))
+    .filter(Boolean)
+    .map((word) => word.toLowerCase());
 }
 
 /**
- * True when `pathA` and `pathB` are mounted under a common meaningful parent
- * namespace — a shared non-terminal segment ({@link parentPathSegments}).
- * Used as a second relatedness signal alongside compound-segment token
- * overlap, which cannot see a single-word parent namespace at all.
+ * True when two paths are siblings of one resource family: they share a
+ * meaningful NON-TERMINAL segment (the namespace the site mounted both
+ * under) AND each one's own leaf segment is compound.
+ *
+ * {@link pathStructuralTokens} drops single-word segments by design, because a
+ * shared *leaf* word (`search`, `detail`, `list`) recurs across unrelated
+ * families on one host. That leaves a real family shape invisible, though:
+ * `/openings/roster-search/` and `/openings/applicant-detail/` share only the
+ * plain-word parent `openings`, so they tokenize to disjoint sets and read as
+ * mutually isolated.
+ *
+ * Both halves of the conjunction are load-bearing, and each rules out a
+ * distinct false positive the compound-only rule was protecting against:
+ *
+ * - The shared parent must be non-terminal, so a shared leaf word cannot
+ *   satisfy it (`/promotions/search` vs `/v1/search` stays unrelated).
+ * - Both leaves must be compound, so a shared mount point cannot relate two
+ *   unrelated endpoints that merely live under it — a genuine chain's own
+ *   plain-word steps (`/lodging/hold/` vs `/lodging/submit/`) stay unrelated.
+ *   A compound leaf on each side is what makes the pair read as two NAMED
+ *   members of one family rather than two arbitrary endpoints under a shared
+ *   prefix.
+ * - The shared parent must not be a {@link TRANSPORT_MOUNT_SEGMENTS transport
+ *   mount point}: every GraphQL operation on a host lives under `/graphql`,
+ *   so that segment says nothing about which family an endpoint belongs to
+ *   (`/graphql/marketing-promotions` vs `/graphql/bookingavail-vas` stay
+ *   unrelated). A genuine resource namespace (`openings`) names the entity.
  */
-function sharesParentNamespace(pathA: string, pathB: string): boolean {
-  const parentsB = new Set(parentPathSegments(pathB));
-  if (parentsB.size === 0) return false;
-  return parentPathSegments(pathA).some((segment) => parentsB.has(segment));
+/**
+ * Path segments that are a transport/protocol mount point rather than a
+ * resource namespace: shared by every endpoint of their kind on a host, so
+ * they carry no endpoint-family signal. Kept separate from
+ * {@link GENERIC_PATH_TOKENS} because that set is also consulted for raw
+ * segment overlap elsewhere, where `graphql` IS a meaningful segment.
+ */
+const TRANSPORT_MOUNT_SEGMENTS = new Set(["graphql", "gql", "rest", "rpc", "jsonrpc"]);
+
+function sharesResourceFamilyNamespace(pathA: string, pathB: string): boolean {
+  const segmentsA = meaningfulPathSegments(pathA);
+  const segmentsB = meaningfulPathSegments(pathB);
+  if (segmentsA.length < 2 || segmentsB.length < 2) return false;
+  const leafA = segmentsA.at(-1) ?? "";
+  const leafB = segmentsB.at(-1) ?? "";
+  if (segmentWords(leafA).length < 2 || segmentWords(leafB).length < 2) return false;
+  const parentsB = new Set(segmentsB.slice(0, -1));
+  return segmentsA
+    .slice(0, -1)
+    .some((segment) => !TRANSPORT_MOUNT_SEGMENTS.has(segment) && parentsB.has(segment));
 }
 
 /**
@@ -315,11 +369,10 @@ function sharesParentNamespace(pathA: string, pathB: string): boolean {
  * mounted under a common single-word namespace (`/openings/roster-search/`
  * and `/openings/applicant-detail/`) share no COMPOUND-segment token, since
  * the only thing they have in common is the plain-word parent `openings`,
- * which {@link pathStructuralTokens} drops by design. A shared parent
- * namespace ({@link sharesParentNamespace}) is therefore accepted as a second,
- * independent relatedness signal — it is positional, so it cannot be
- * satisfied by the shared *leaf* word (`search`, `detail`) that the
- * compound-only rule exists to reject.
+ * which {@link pathStructuralTokens} drops by design. A shared resource-family
+ * namespace ({@link sharesResourceFamilyNamespace}) is therefore accepted as a
+ * second, independent relatedness signal, scoped tightly enough that none of
+ * the false positives the compound-only rule exists to reject can satisfy it.
  */
 export function isStructurallyRelevantCapture(
   candidatePath: string,
@@ -327,7 +380,7 @@ export function isStructurallyRelevantCapture(
 ): boolean {
   const candidateTokens = pathStructuralTokens(candidatePath);
   return referencePaths.some((referencePath) => {
-    if (sharesParentNamespace(candidatePath, referencePath)) return true;
+    if (sharesResourceFamilyNamespace(candidatePath, referencePath)) return true;
     if (candidateTokens.size === 0) return false;
     const referenceTokens = pathStructuralTokens(referencePath);
     for (const token of candidateTokens) {
