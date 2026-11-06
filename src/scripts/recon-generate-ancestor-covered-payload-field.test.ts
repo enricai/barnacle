@@ -36,3 +36,13 @@ describe("applyStructuredValuePayloadSubstitutionsForEnvelope ancestor coverage"
     expect(keys.size).toBeGreaterThan(0);
   });
 });
+
+describe("ancestor-covered descendants at depth > 1", () => {
+  it("never freezes a nested descendant as a recorded literal from the ancestor field", () => {
+    const body = { cart: { a: { b: "ABC123" } } };
+    const keys = new Map<string, string>([["cart", "z.object({})"]]);
+    const out = run(body, body.cart, ["cart"], keys);
+    expect(out.result).toContain("payload.cart as Record<string, unknown>");
+    expect(out.result).not.toContain("ABC123");
+  });
+});
