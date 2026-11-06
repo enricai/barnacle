@@ -18,7 +18,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
-import { SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
+import { SHADOW_XPATH_ALL_RESOLVER_SRC, SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
 
 import { REQUEST_BODY_UNAVAILABLE } from "./request-body-marker";
 
@@ -4925,7 +4925,7 @@ const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
     const accessibleName = (el) =>
       (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
-    const r = document.evaluate("//" + tail, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+    const matches = ${SHADOW_XPATH_ALL_RESOLVER_SRC}("//" + tail);
     const names = (phrases || []).map((p) => String(p).replace(/\\s+/g, " ").trim().toLowerCase()).filter(Boolean);
     const namesTarget = (el) => {
       if (names.length === 0) return true;
@@ -4936,8 +4936,7 @@ const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
       return texts.some((t) => names.some((n) => t.includes(n) || n.includes(t)));
     };
     const nodes = [];
-    for (let i = 0; i < r.snapshotLength; i++) {
-      const node = r.snapshotItem(i);
+    for (const node of matches) {
       if (namesTarget(node)) nodes.push(node);
     }
     if (nodes.length <= 1) return nodes[0] || null;
