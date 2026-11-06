@@ -379,6 +379,62 @@ describe("recon-generate cart-then-update flow", () => {
     expect(schema.match(/items_attributes: z\.array/g)).toHaveLength(1);
     expect(schema.match(/^ {2}\w+: multipartJsonObject/gm)).toHaveLength(1);
   }, 60_000);
+  it("emits one payload field for a string array nested under a wrapper in both writes", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-nested-strings-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const post: Capture = {
+      ...create,
+      requestPostData: JSON.stringify({
+        order: { cart: { lines: [{ sku: "SKU-1", qty: 1 }], tags: ["alpha-tag", "beta-tag"] } },
+      }),
+    };
+    const put: Capture = {
+      ...update,
+      requestPostData: JSON.stringify({
+        order: { id: ORDER_ID, cart: { lines: [{ sku: "SKU-9", qty: 2 }], tags: ["alpha-tag", "beta-tag"] }, contact_name: "Jane" },
+      }),
+    };
+    [post, put].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
+    const siteId = `recon-cart-update-nested-strings-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+        env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+      }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).not.toContain("orderCartTags");
+    const schema = contract.slice(
+      contract.indexOf("PayloadSchema = "),
+      contract.indexOf(".merge(JobTrackingSchema)")
+    );
+    expect(schema.match(/tags: z\.array/g)).toHaveLength(1);
+    expect(schema.match(/^ {2}\w+: multipartJsonObject/gm)).toHaveLength(1);
+  }, 60_000);
   it("replays an HTML GET, a numeric-id POST and a marker-body PUT in order without leaking the marker", () => {
     workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-html-csrf-"));
     const runRoot = join(workDir, "run");

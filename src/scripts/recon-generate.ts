@@ -7011,6 +7011,17 @@ function payloadAccessorForPath(path: string[]): {
   };
 }
 
+/** True when `key` is a top-level entry of `body` holding a non-empty plain object. */
+function isWrappedObjectRoot(body: unknown, key: string): boolean {
+  const value = valueAtJsonPath(body, [key]);
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).length > 0
+  );
+}
+
 /** Reads the value at `path` inside a parsed JSON body, or undefined when any hop is missing. */
 function valueAtJsonPath(root: unknown, path: string[]): unknown {
   return path.reduce<unknown>(
@@ -10012,6 +10023,20 @@ export function emitMultiStepExecuteHttp(
         continue;
       }
       const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
+      // A top-level object wrapping the array (`{"order":{"cart":{"tags":[...]}}}`) is
+      // registered whole as one structured payload field by the structured passes
+      // (unless it is the body's form envelope, whose children are named by full path).
+      // A by-index accessor here would mint a second flattened field (`orderCartTags`)
+      // for that same array, so leave the leaf to those passes.
+      if (
+        structuredRootPath !== null &&
+        structuredRootPath.length > 1 &&
+        path[0] !== locateFormEnvelopePath(inputBody)[0] &&
+        isValidJsIdentifier(path[0] ?? "") &&
+        isWrappedObjectRoot(inputBody, path[0] ?? "")
+      ) {
+        continue;
+      }
       payloadAccessorByValue.set(value, accessor);
       // The accessor indexes into this field, so its declared type must be the
       // structured shape regardless of whether Mechanism B visited the key.
