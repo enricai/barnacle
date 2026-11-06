@@ -197,7 +197,7 @@ async function runPluginPipeline<TResult>(
   plugin: SitePlugin<unknown, unknown>,
   payload: unknown,
   context: SitePluginContext,
-  options: { forceFallback?: boolean }
+  options: { forceFallback?: boolean; onCacheMiss?: (key: string) => void }
 ): Promise<SitePluginResult<TResult>> {
   if (!plugin.executeHttp || options.forceFallback) {
     if (options.forceFallback) {
@@ -227,6 +227,10 @@ async function runPluginPipeline<TResult>(
       recordHotPathSuccess(plugin.meta.siteId);
       return cached;
     }
+    // Report the key for the miss path only. A hit was serialized successfully
+    // at least once already, so invalidating it on a later unrelated error
+    // would evict a good entry.
+    options.onCacheMiss?.(key);
     const t0 = Date.now();
     const fresh = await getOrCreateInFlight(
       key,
@@ -442,7 +446,7 @@ export async function dispatch<TResult>(
   plugin: SitePlugin<unknown, unknown>,
   payload: unknown,
   context: SitePluginContext,
-  options: { forceFallback?: boolean } = {}
+  options: { forceFallback?: boolean; onCacheMiss?: (key: string) => void } = {}
 ): Promise<SitePluginResult<TResult>> {
   const startedAt = Date.now();
   const hasHttpPath = !!plugin.executeHttp && !options.forceFallback;
@@ -631,7 +635,15 @@ export async function registerRoutes(
           requestId: request.id,
           logger: extendLogger(request.log as unknown as pino.Logger),
         });
-        const result = await dispatch(plugin, request.body, context, { forceFallback });
+        const result = await dispatch(plugin, request.body, context, {
+          forceFallback,
+          // Recorded so the error handler can evict this entry if the response
+          // fails schema serialization on the way out — otherwise the 500 it
+          // produces would be served from cache for the whole TTL.
+          onCacheMiss: (key) => {
+            request.responseCacheKey = key;
+          },
+        });
         return successEnvelope({
           ...(result.data as object),
           ...(result.metrics && { metrics: result.metrics }),

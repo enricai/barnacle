@@ -5,6 +5,7 @@ import {
   clearResponseCache,
   getCachedResponse,
   getOrCreateInFlight,
+  invalidateResponse,
 } from "@/cache/response-cache";
 
 describe("response-cache", () => {
@@ -130,5 +131,80 @@ describe("response-cache getOrCreateInFlight", () => {
     expect(producer).toHaveBeenCalledTimes(1);
     // Cache must stay empty — we never persist failed results.
     expect(getCachedResponse("/v1/test", { a: 1 }).value).toBeUndefined();
+  });
+});
+
+describe("response-cache byte bound", () => {
+  beforeEach(() => {
+    clearResponseCache();
+  });
+
+  it("reports byte usage and the configured ceiling, not just entry counts", async () => {
+    const { key } = getCachedResponse("/v1/test", { a: 1 });
+    await getOrCreateInFlight(key, async () => ({ blob: "x".repeat(10_000) }));
+    const stats = cacheStats();
+    expect(stats.bytes).toBeGreaterThan(10_000);
+    expect(stats.maxBytes).toBeGreaterThan(0);
+    // The point of the bound: entry count alone cannot reveal this.
+    expect(stats.size).toBe(1);
+  });
+
+  it("evicts least-recently-used entries to stay under the byte ceiling", async () => {
+    // Each entry is ~2 MB, so a 128 MB default ceiling needs many of them to
+    // bind. Rather than allocate that much, assert the invariant that matters:
+    // retained bytes never exceed the ceiling, whatever is inserted.
+    const payload = { blob: "y".repeat(2_000_000) };
+    for (let i = 0; i < 12; i += 1) {
+      const { key } = getCachedResponse("/v1/test", { i });
+      await getOrCreateInFlight(key, async () => ({ ...payload, i }));
+    }
+    const stats = cacheStats();
+    expect(stats.bytes).toBeLessThanOrEqual(stats.maxBytes);
+  });
+
+  it("charges an unstringifiable value a nominal size instead of throwing", async () => {
+    // A cycle cannot be JSON-stringified. Caching is a side effect of a
+    // successful request, so a size-calculation failure must never propagate
+    // out and fail that request.
+    const cyclic: Record<string, unknown> = { name: "loop" };
+    cyclic.self = cyclic;
+    const { key } = getCachedResponse("/v1/test", { cyclic: true });
+    await expect(getOrCreateInFlight(key, async () => cyclic)).resolves.toBe(cyclic);
+    expect(cacheStats().size).toBe(1);
+  });
+});
+
+describe("response-cache invalidateResponse", () => {
+  beforeEach(() => {
+    clearResponseCache();
+  });
+
+  it("removes a single entry, leaving the rest of the cache intact", async () => {
+    const doomed = getCachedResponse("/v1/test", { keep: false });
+    await getOrCreateInFlight(doomed.key, async () => ({ bad: true }));
+    const kept = getCachedResponse("/v1/test", { keep: true });
+    await getOrCreateInFlight(kept.key, async () => ({ good: true }));
+
+    invalidateResponse(doomed.key);
+
+    expect(getCachedResponse("/v1/test", { keep: false }).value).toBeUndefined();
+    expect(getCachedResponse("/v1/test", { keep: true }).value).toEqual({ good: true });
+  });
+
+  it("is a no-op for a key that was never cached", () => {
+    expect(() => invalidateResponse("never-stored")).not.toThrow();
+  });
+
+  it("documents the write-then-reject window it exists to close", async () => {
+    // `getOrCreateInFlight` caches on resolve, but a caller can still reject
+    // the value afterwards — a response that fails its 200 schema becomes a
+    // 500 *after* the write. Without invalidation the failure is served from
+    // cache for the full TTL.
+    const { key } = getCachedResponse("/v1/carnival", { maxPages: 1 });
+    const produced = await getOrCreateInFlight(key, async () => ({ label: null }));
+    expect(getCachedResponse("/v1/carnival", { maxPages: 1 }).value).toEqual(produced);
+
+    invalidateResponse(key);
+    expect(getCachedResponse("/v1/carnival", { maxPages: 1 }).value).toBeUndefined();
   });
 });

@@ -27,6 +27,13 @@ function isValidTraceId(value: unknown): value is string {
 declare module "fastify" {
   interface FastifyRequest {
     correlationId?: string;
+    /**
+     * Response-cache key for this request, set by the plugin `/run` route on a
+     * cache miss. The error handler uses it to evict an entry whose response
+     * failed schema serialization, so a 500 is not served from cache for the
+     * rest of the TTL. Absent on cache hits and on routes that do not cache.
+     */
+    responseCacheKey?: string;
   }
 }
 

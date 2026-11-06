@@ -224,6 +224,72 @@ export function getScriptLogger(name: string): Logger {
 }
 
 /**
+ * Caps how many validation issues a serialized error can carry into one log
+ * line.
+ *
+ * A violation of a repeated field produces one issue per element, so a large
+ * array yields a correspondingly large error: a 600-entry response measured
+ * ~225 KB as a single line, against CloudWatch's 256 KB event cap — which is
+ * why such a line arrives split across events and unreadable at exactly the
+ * moment it is needed. Ten issues identify the offending field, which is all
+ * the log is for; the full set still reaches the error envelope.
+ *
+ * `issues` are read from the error AND from `cause`, because a
+ * `ResponseSerializationError` from `fastify-type-provider-zod` carries the
+ * underlying `ZodError` on `cause` rather than exposing `issues` itself.
+ *
+ * `message` and `stack` are truncated too, not just `issues`: a `ZodError`
+ * renders every issue into its own `message` (measured 121.8 KB for 600
+ * issues) and the `stack` embeds that same message again, so capping only the
+ * issue array still left ~288 KB on the line.
+ */
+const MAX_LOGGED_ISSUES = 10;
+const MAX_LOGGED_TEXT = 2000;
+
+/** Truncates an error's free-text field, noting how much was dropped. */
+function capText(value: unknown): unknown {
+  if (typeof value !== "string" || value.length <= MAX_LOGGED_TEXT) return value;
+  return `${value.slice(0, MAX_LOGGED_TEXT)}… [${value.length - MAX_LOGGED_TEXT} more chars]`;
+}
+
+function serializeError(error: unknown): object {
+  const err = error as {
+    constructor?: { name?: string };
+    message?: unknown;
+    stack?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    issues?: unknown;
+    cause?: { issues?: unknown; message?: unknown };
+  };
+  const base = {
+    type: err?.constructor?.name,
+    message: capText(err?.message),
+    stack: capText(err?.stack),
+    ...(err?.statusCode !== undefined && { statusCode: err.statusCode }),
+    ...(err?.code !== undefined && { code: err.code }),
+  };
+  const issues = Array.isArray(err?.issues)
+    ? err.issues
+    : Array.isArray(err?.cause?.issues)
+      ? err.cause.issues
+      : undefined;
+  if (issues === undefined) {
+    return err?.cause?.message === undefined
+      ? base
+      : { ...base, cause: { message: capText(err.cause.message) } };
+  }
+  return {
+    ...base,
+    issues: issues.slice(0, MAX_LOGGED_ISSUES),
+    issuesTotal: issues.length,
+    ...(issues.length > MAX_LOGGED_ISSUES && {
+      issuesTruncated: issues.length - MAX_LOGGED_ISSUES,
+    }),
+  };
+}
+
+/**
  * Pino options for the project's standard logger: pino-pretty transport in
  * dev, JSON in prod, silent in test, secrets redacted, request values scrubbed
  * by hook, and every line tagged with the `DD_SERVICE` service so Datadog does
@@ -255,6 +321,9 @@ export function buildLoggerOptions({
     },
     timestamp: getTimestamp,
     formatters,
+    // Child loggers inherit serializers, so this also covers Fastify's
+    // `request.log` (the server passes this logger as `loggerInstance`).
+    serializers: { err: serializeError },
     hooks: PII_REDACTING_LOG_HOOKS,
     mixin: ddEnabled ? ddMixin : undefined,
     redact: {

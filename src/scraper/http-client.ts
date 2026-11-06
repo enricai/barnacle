@@ -322,6 +322,100 @@ function extractCookieValue(setCookieHeaders: string[], cookieName: string): str
  * `boundHeaders`, which is normalized via `targetHeaderCasing`), so a plain
  * `headers["Cookie"]` lookup would miss a `"cookie"` or `"COOKIE"` key.
  */
+/**
+ * Maximum redirect hops followed while preserving the request method.
+ * Bounds a redirect loop; five matches the conventional browser limit.
+ */
+const MAX_METHOD_PRESERVING_REDIRECTS = 5;
+
+/**
+ * Follows redirects without silently downgrading the request method.
+ *
+ * `fetch`'s default `redirect: "follow"` implements the historical browser
+ * rule: on a 301/302 it may rewrite a POST into a GET and drop the body. A
+ * JSON API reached through a redirecting path then receives a bodyless GET
+ * and answers 404/411/400 — a failure that reads as the endpoint refusing the
+ * caller rather than the redirect mangling the request, which makes it
+ * expensive to diagnose.
+ *
+ * Observed on ncl.com: `POST /api/vacation-builder/v2/stateroom-types-availability`
+ * 301s to a locale-prefixed path for any non-US-market egress. Following it
+ * with the default policy yields 404 HTML; re-issuing the same POST and body
+ * at the `Location` yields 200 with real pricing. Any site that 301s its API
+ * path turns every POST drill into a 404 under the default policy.
+ *
+ * 307/308 already forbid the rewrite, so `fetch` handles those correctly on
+ * its own. 301/302 are followed here manually, re-issuing the original
+ * method, headers and body. A 303 is followed as a GET with the body dropped,
+ * which is what the status means and is therefore preserved deliberately
+ * rather than overridden. A relative `Location` resolves against the URL that
+ * produced it. No redirect is the common case and costs one extra
+ * `redirect: "manual"` fetch and nothing else.
+ *
+ * Two things following the chain by hand lets us do that `fetch` cannot:
+ * `Set-Cookie` headers from intermediate hops are carried onto the follow-up
+ * request (a site that mints its session on the 302 would otherwise land
+ * unauthenticated), and `onHop` reports every response in the chain so a
+ * caller's response bindings can read headers that only ever appear on a
+ * redirect.
+ */
+async function fetchFollowingRedirectsPreservingMethod(
+  url: string,
+  init: RequestInit,
+  onHop?: (hop: { status: number; headers: Headers; url: string }) => void
+): Promise<Response> {
+  const currentInit: RequestInit = { ...init, redirect: "manual" };
+  // Cookies minted by intermediate hops, by name, newest winning. A login or
+  // consent redirect commonly sets the session cookie on the 302 itself, so
+  // dropping these makes the final request arrive unauthenticated.
+  const hopCookies = new Map<string, string>();
+  let currentUrl = url;
+  for (let hop = 0; hop <= MAX_METHOD_PRESERVING_REDIRECTS; hop += 1) {
+    const response = await fetch(currentUrl, currentInit);
+    onHop?.({ status: response.status, headers: response.headers, url: currentUrl });
+    if (response.status !== 301 && response.status !== 302 && response.status !== 303) {
+      return response;
+    }
+    const location = response.headers.get("location");
+    // A redirect status with no usable Location is not followable; hand it
+    // back so the caller's status classification reports the real response
+    // rather than a synthesized error.
+    if (location === null || location === "") return response;
+
+    // `Set-Cookie` is `name=value; Path=/; HttpOnly` — the FIRST pair is the
+    // cookie and the rest are attributes, so only the first is carried
+    // forward. Attributes (Domain, Path, Expires) are deliberately not
+    // honored: this is a short-lived redirect chain inside one logical
+    // request, not a cookie jar.
+    for (const setCookie of response.headers.getSetCookie()) {
+      const [first] = parseCookiePairs(setCookie);
+      if (first !== undefined) hopCookies.set(first[0], first[1]);
+    }
+    if (hopCookies.size > 0) {
+      const headers = { ...(currentInit.headers as Record<string, string> | undefined) };
+      const existingKey =
+        Object.keys(headers).find((k) => k.toLowerCase() === "cookie") ?? "Cookie";
+      // Merge rather than replace, so a cookie the caller sent survives
+      // alongside the hop's — and a hop setting the same name wins, since it
+      // is the more current value.
+      const merged = new Map(parseCookiePairs(headers[existingKey] ?? ""));
+      for (const [name, value] of hopCookies) merged.set(name, value);
+      headers[existingKey] = [...merged.entries()]
+        .map(([name, value]) => `${name}=${value}`)
+        .join("; ");
+      currentInit.headers = headers;
+    }
+
+    currentUrl = new URL(location, currentUrl).toString();
+    // 303 means "see other": the follow-up is a GET and the body is dropped.
+    if (response.status === 303) {
+      currentInit.method = "GET";
+      currentInit.body = undefined;
+    }
+  }
+  throw new Error(`exceeded ${MAX_METHOD_PRESERVING_REDIRECTS} redirects starting at ${url}`);
+}
+
 function findHeaderCaseInsensitive(
   headers: Record<string, string>,
   name: string
@@ -617,40 +711,54 @@ export function createHttpClient<TResponse>(
                   ? AbortSignal.timeout(defaultTimeoutMs)
                   : undefined));
 
+          // Observed for EVERY response in the chain, redirect hops included,
+          // not just the final one. A site that mints its session cookie on a
+          // 302 would otherwise be invisible to `bind`, which is the whole
+          // mechanism plugins use to carry such a value forward.
+          const observeResponse = (observed: {
+            status: number;
+            headers: Headers;
+            url: string;
+          }): void => {
+            onResponse?.(observed);
+
+            for (const binding of bind) {
+              const value = resolveBinding(binding, observed.headers);
+              // A miss leaves any previously-bound value in place rather than
+              // clearing it — and if nothing has ever been bound, the target
+              // header stays absent from `boundHeaders` entirely, so later
+              // requests never send it as an empty string.
+              if (value === undefined) continue;
+              const targetKey = binding.targetHeader.toLowerCase();
+              const canonicalTarget = targetHeaderCasing.get(targetKey) ?? binding.targetHeader;
+              targetHeaderCasing.set(targetKey, canonicalTarget);
+              if (binding.cookieName === undefined) {
+                boundHeaders[canonicalTarget] = value;
+                continue;
+              }
+              const cookies = boundCookiesByTarget.get(targetKey) ?? new Map<string, string>();
+              cookies.set(binding.cookieName, value);
+              boundCookiesByTarget.set(targetKey, cookies);
+              boundHeaders[canonicalTarget] = [...cookies.entries()]
+                .map(([name, cookieValue]) => `${name}=${cookieValue}`)
+                .join("; ");
+            }
+          };
+
           let response: Response;
           try {
-            response = await fetch(url, {
-              method,
-              headers,
-              body: init.body,
-              signal,
-            });
+            response = await fetchFollowingRedirectsPreservingMethod(
+              url,
+              {
+                method,
+                headers,
+                body: init.body,
+                signal,
+              },
+              observeResponse
+            );
           } catch (err) {
             throw toTransportFailure(err, `http fetch to ${url} failed`);
-          }
-
-          onResponse?.({ status: response.status, headers: response.headers, url });
-
-          for (const binding of bind) {
-            const value = resolveBinding(binding, response.headers);
-            // A miss leaves any previously-bound value in place rather than
-            // clearing it — and if nothing has ever been bound, the target
-            // header stays absent from `boundHeaders` entirely, so later
-            // requests never send it as an empty string.
-            if (value === undefined) continue;
-            const targetKey = binding.targetHeader.toLowerCase();
-            const canonicalTarget = targetHeaderCasing.get(targetKey) ?? binding.targetHeader;
-            targetHeaderCasing.set(targetKey, canonicalTarget);
-            if (binding.cookieName === undefined) {
-              boundHeaders[canonicalTarget] = value;
-              continue;
-            }
-            const cookies = boundCookiesByTarget.get(targetKey) ?? new Map<string, string>();
-            cookies.set(binding.cookieName, value);
-            boundCookiesByTarget.set(targetKey, cookies);
-            boundHeaders[canonicalTarget] = [...cookies.entries()]
-              .map(([name, cookieValue]) => `${name}=${cookieValue}`)
-              .join("; ");
           }
 
           if (response.status === 401 || response.status === 403) {

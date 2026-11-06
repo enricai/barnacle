@@ -12,9 +12,35 @@ import { config } from "@/config";
  *
  * Why lru-cache: zero-dep, maintained, O(1) operations, battle-tested.
  * We set `ttl` at construction and rely on lazy expiry on get().
+ *
+ * Why a byte bound and not just `max`: plugin responses vary in size by
+ * three orders of magnitude. A count-only bound sized for small responses
+ * admits a thousand large ones — a downstream deployment OOM-killed its
+ * container (exit 137) holding measured 16.4 MB entries under a 1000-entry
+ * bound, where 60 such entries alone retain ~984 MB. `maxSize` makes the
+ * ceiling a memory budget rather than a guess about per-entry size, and
+ * `lru-cache` evicts least-recently-used entries to stay under it.
+ *
+ * `sizeCalculation` stringifies each value, so it costs CPU proportional to
+ * the response on insert. That is the deliberate trade: `lru-cache` calls it
+ * once per `set` (never on `get`), and an insert has just paid for a scrape
+ * or an origin fetch, so the marginal cost is small against work already
+ * done — and it buys a hard bound instead of an unbounded failure mode.
  */
 const cache = new LRUCache<string, object>({
   max: config.cache.maxEntries,
+  maxSize: config.cache.maxBytes,
+  sizeCalculation: (value) => {
+    try {
+      // `|| 1`: lru-cache rejects a zero/NaN size. An unstringifiable value
+      // (a cycle, a BigInt) must not throw out of a cache write and fail the
+      // request whose result we were merely trying to cache, so it is charged
+      // a nominal 1 byte and bounded by `max` alone.
+      return Buffer.byteLength(JSON.stringify(value)) || 1;
+    } catch {
+      return 1;
+    }
+  },
   ttl: config.cache.ttlMs,
 });
 
@@ -83,9 +109,43 @@ export function clearResponseCache(): void {
  * Returns a snapshot of cache internals for the `/readyz` observability
  * endpoint. Exposed so the health route can surface cache pressure without
  * importing the LRU cache instance directly.
+ *
+ * `bytes`/`maxBytes` are reported alongside the entry counts because entry
+ * count alone hides the failure mode that matters: a cache well under `max`
+ * can still be holding most of the heap. Without these, byte pressure is
+ * invisible until the container dies.
  */
-export function cacheStats(): { size: number; max: number; inFlight: number } {
-  return { size: cache.size, max: cache.max, inFlight: inFlight.size };
+export function cacheStats(): {
+  size: number;
+  max: number;
+  bytes: number;
+  maxBytes: number;
+  inFlight: number;
+} {
+  return {
+    size: cache.size,
+    max: cache.max,
+    bytes: cache.calculatedSize,
+    maxBytes: cache.maxSize,
+    inFlight: inFlight.size,
+  };
+}
+
+/**
+ * Drops a single cached entry by key.
+ *
+ * Why this exists: `getOrCreateInFlight` writes to the cache as soon as the
+ * producer resolves, but a caller can still reject the value afterwards —
+ * most importantly when the response fails schema serialization on the way
+ * out, which turns a 200 into a 500. Without this, that unserializable
+ * result stays cached for the full TTL and every subsequent identical
+ * request is served the same 500 from memory, turning a transient upstream
+ * quirk into a sticky outage. The write stays where it is (moving it would
+ * break the in-flight coalescing contract below); the error path invalidates
+ * instead.
+ */
+export function invalidateResponse(key: string): void {
+  cache.delete(key);
 }
 
 /**
