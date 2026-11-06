@@ -4904,6 +4904,26 @@ function substituteOrigin(value: string, baseUrl: string): string {
   return value.split(baseUrl).join(`$${"{"}context.baseUrl${"}"}`);
 }
 
+/** Sorts recorded base headers into static, origin-derived and tenant-subdomain buckets. */
+export function partitionBaseHeaders(
+  baseHeaders: Record<string, string>,
+  baseUrl: string,
+  firstSubdomain: string,
+  staticBaseHeaders: Record<string, string>,
+  baseUrlDerivedHeaders: Map<string, string>,
+  tenantSubdomainHeaders: Map<string, string>
+): void {
+  for (const [k, v] of Object.entries(baseHeaders)) {
+    if (firstSubdomain.length > 0 && v === firstSubdomain) {
+      tenantSubdomainHeaders.set(k, v);
+    } else if (embedsOrigin(v, baseUrl)) {
+      baseUrlDerivedHeaders.set(k, v);
+    } else {
+      staticBaseHeaders[k] = v;
+    }
+  }
+}
+
 /**
  * Documented enum of common HTTP-API error-reporting key names. Closed set
  * (per the no-regex-open-sets feedback): when an API returns 200 with an
@@ -19614,15 +19634,14 @@ async function main(): Promise<void> {
         return "";
       }
     })();
-    for (const [k, v] of Object.entries(baseHeaders)) {
-      if (firstSubdomain.length > 0 && v === firstSubdomain) {
-        tenantSubdomainHeaders.set(k, v);
-      } else if (embedsOrigin(v, baseUrl)) {
-        baseUrlDerivedHeaders.set(k, v);
-      } else {
-        staticBaseHeaders[k] = v;
-      }
-    }
+    partitionBaseHeaders(
+      baseHeaders,
+      baseUrl,
+      firstSubdomain,
+      staticBaseHeaders,
+      baseUrlDerivedHeaders,
+      tenantSubdomainHeaders
+    );
     // Third branch (browser-flow-only): a multi-action flow (isSubmissionFlow)
     // that crosses hosts mid-sequence (compileActionSteps' isCrossDomain — a
     // captured redirect off the original domain, e.g. an auth bounce or a
