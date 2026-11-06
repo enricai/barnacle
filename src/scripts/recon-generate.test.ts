@@ -5770,6 +5770,13 @@ describe("deriveGetInputModel", () => {
     expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
     expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
   });
+  it("keeps recorded ids as fallback for a repeated entity-id array key", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://x.test/items?ids[]=1&ids[]=2");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
+    expect(m.recordedQueryValues).toEqual({ "ids[]": "1,2" });
+  });
   it("keeps a multi-word collection segment fixed in /<region>/<collection-slug>/<id>", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://x.test/api/us-east/price-lists/42/rates");

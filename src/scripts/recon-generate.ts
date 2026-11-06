@@ -2964,8 +2964,15 @@ export function deriveGetInputModel(
   // by the caller per request, so its recorded value is not a constant.
   const capturesWithKey = new Map<string, number>();
   const valuesBySegment: Array<Set<string>> = segments.map(() => new Set<string>());
+  // Per key, the value list each sibling carried (a repeated key such as `ids[]=1&ids[]=2`).
+  const listsByKey = new Map<string, Set<string>>();
   for (const c of siblings) {
     const u = new URL(c.url);
+    for (const k of new Set(u.searchParams.keys())) {
+      const lists = listsByKey.get(k) ?? new Set<string>();
+      lists.add(u.searchParams.getAll(k).join(","));
+      listsByKey.set(k, lists);
+    }
     for (const k of new Set(u.searchParams.keys()))
       capturesWithKey.set(k, (capturesWithKey.get(k) ?? 0) + 1);
     for (const [k, v] of u.searchParams) {
@@ -3036,6 +3043,13 @@ export function deriveGetInputModel(
       // One recorded value in every sibling: it is the fallback when the payload omits the field.
       if (values.size === 1 && (capturesWithKey.get(key) ?? 0) >= siblings.length)
         recordedQueryValues[key] = [...values][0] as string;
+      // A repeated key carrying the same ids in every sibling: those ids are the fallback.
+      else if (
+        values.size > 1 &&
+        (capturesWithKey.get(key) ?? 0) >= siblings.length &&
+        listsByKey.get(key)?.size === 1
+      )
+        recordedQueryValues[key] = [...(listsByKey.get(key) as Set<string>)][0] as string;
     } else {
       // A constant-valued key is still a caller input; its recorded value is the fallback.
       const field = nameFor(key);
