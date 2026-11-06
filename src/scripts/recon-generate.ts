@@ -2697,6 +2697,9 @@ function isInstanceSlug(
     (next !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(next) && carriesEntityId(next))
   )
     return false;
+  // Two adjacent multi-word segments: the first is the collection word, the second the instance.
+  if (next !== undefined && !next.includes(".") && !/^v\d+$/i.test(next) && isSlugSegment(next))
+    return false;
   return isSlugSegment(value);
 }
 
