@@ -329,6 +329,17 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     expect(hasPageBodySwapped(pre, post)).toBe(true);
   });
 
+  it("returns the last snapshot unsettled when the text never holds still within the budget", async () => {
+    const timeline = Array.from(
+      { length: 200 },
+      (_, i) => `300:My Account|Tick ${i}|${CHROME}`
+    );
+    const t = makeIo(timeline);
+    const post = await run(snap(PRE_SIG), t.io);
+    expect(t.settles()).toBe(1 + Math.floor(MAX_MS / IDLE_GIVE_UP_MS));
+    expect(post.settled).not.toBe(true);
+  });
+
   it("never credits a no-op click", async () => {
     const t = makeIo([PRE_SIG]);
     const pre = snap(PRE_SIG);
