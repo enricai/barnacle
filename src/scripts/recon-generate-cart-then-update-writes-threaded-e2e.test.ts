@@ -396,7 +396,11 @@ describe("recon-generate cart-then-update flow", () => {
     const put: Capture = {
       ...update,
       requestPostData: JSON.stringify({
-        order: { id: ORDER_ID, cart: { lines: [{ sku: "SKU-9", qty: 2 }], tags: ["alpha-tag", "beta-tag"] }, contact_name: "Jane" },
+        order: {
+          id: ORDER_ID,
+          cart: { lines: [{ sku: "SKU-9", qty: 2 }], tags: ["alpha-tag", "beta-tag"] },
+          contact_name: "Jane",
+        },
       }),
     };
     [post, put].forEach((c, i) => {
