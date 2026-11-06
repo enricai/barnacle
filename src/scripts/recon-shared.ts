@@ -6,7 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { format } from "date-fns";
 import { getScriptLogger } from "@/lib/logging";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
@@ -66,8 +66,15 @@ export function resolveReconRunDir(): ReconRunDir {
 
   const runId = process.env.RECON_RUN_ID || generateRunId();
   const baseDir = reconOutBaseDir();
-  const root = join(baseDir, runId);
+  return adoptReconRunRoot(join(baseDir, runId), runId);
+}
 
+/**
+ * Adopts an existing run root as this process's run dir (creating any missing
+ * subdirs) instead of minting a new one, so a reader-phase script such as
+ * recon-http works on the run it was pointed at without nesting a fresh run.
+ */
+export function adoptReconRunRoot(root: string, runId: string = basename(root)): ReconRunDir {
   const runDir: ReconRunDir = {
     runId,
     root,

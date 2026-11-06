@@ -384,7 +384,8 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
       }),
     ];
 
-    await expect(main()).rejects.toThrow();
+    // Exhausted optional step is now logged and skipped, not aborted.
+    await expect(main()).resolves.toBeUndefined();
 
     expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
     expect(loggerStub.info).not.toHaveBeenCalledWith(

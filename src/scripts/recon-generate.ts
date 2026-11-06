@@ -2280,12 +2280,32 @@ export function gatherResponseBodySamples(
   for (const c of captures) {
     if (c.status < 200 || c.status >= 300) continue;
     if (identityOf(c) !== winningIdentity) continue;
+    // A null/undefined body carries no shape evidence; sampling it would make
+    // the whole schema nullable.
+    if (c.responseBody === null || c.responseBody === undefined) continue;
     const serialized = JSON.stringify(c.responseBody);
     if (seen.has(serialized)) continue;
     seen.add(serialized);
     samples.push(c.responseBody);
   }
-  return samples.length > 0 ? samples : [winningCapture.responseBody];
+  if (samples.length > 0) return samples;
+  return winningCapture.responseBody === null || winningCapture.responseBody === undefined
+    ? [null]
+    : [winningCapture.responseBody];
+}
+
+/**
+ * Synthetic sample keeping only the array-valued top-level fields of a plain
+ * object body, emptied. Folded into drill schemas so `{ results: [] }` (an
+ * empty answer) validates and the non-array fields are optional.
+ */
+export function emptyArrayOnlySample(body: unknown): unknown | null {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+  const out: Record<string, unknown[]> = {};
+  for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+    if (Array.isArray(v)) out[k] = [];
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 export interface EntityVarianceEvidence {
@@ -2548,6 +2568,38 @@ export function selectPrimaryGraphQLOperation(
 }
 
 /**
+ * Builds a predicate telling whether a non-GET capture is a recurring beacon
+ * (bot-manager sensor, heartbeat) rather than a candidate for the flow's real
+ * endpoint: vendor noise, a request-invariant repeat, or a method+endpoint
+ * that recurs in `pool` while its answer does not depend on what was sent --
+ * no business data at all, or the same response every time despite different
+ * requests (a sensor POST acknowledges every body with one fixed `{ok}`).
+ * A one-off submission, or a recurring endpoint whose responses differ with
+ * its requests, is not one. Always false for GET: a read is judged by its
+ * response, not its recurrence.
+ */
+function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
+  const occurrences = new Map<string, Capture[]>();
+  for (const c of pool) {
+    if (c.method === "GET") continue;
+    const key = `${c.method} ${endpointKey(c.url)}`;
+    const list = occurrences.get(key);
+    if (list) list.push(c);
+    else occurrences.set(key, [c]);
+  }
+  const answerIgnoresRequest = (list: Capture[]): boolean =>
+    new Set(list.map((c) => JSON.stringify(c.responseBody ?? null))).size === 1;
+  return (c) => {
+    if (c.method === "GET") return false;
+    if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool)) return true;
+    const same = occurrences.get(`${c.method} ${endpointKey(c.url)}`) ?? [];
+    return (
+      same.length >= 2 && (hasNoBusinessRelevantResponseState(c) || answerIgnoresRequest(same))
+    );
+  };
+}
+
+/**
  * Resolves the same primary-endpoint capture that {@link firstEndpointPath}
  * derives a path string from, so non-GraphQL flows can also read that
  * capture's own `.responseBody` instead of an array-order-first replay.
@@ -2584,44 +2636,34 @@ export function firstEndpointCapture(
       return false;
     return true;
   };
-  const nonGetCaptures = restrictToSubmitPattern(
-    captures.filter((c) => c.method !== "GET" && allowed(c)),
-    submitPatterns
-  );
-  for (const c of nonGetCaptures) {
+  // Declared submit pattern first, over ALL allowed captures: an unrelated
+  // non-GET (bot-sensor beacon) must not beat a GET the flow declared.
+  const pool = restrictToSubmitPattern(captures.filter(allowed), submitPatterns);
+  const valid = (c: Capture): boolean => {
     try {
       new URL(c.url);
-      return c;
+      return true;
     } catch {
-      // skip
+      return false;
     }
+  };
+  // A non-GET only beats a read when it can be the flow's real endpoint
+  // ({@link isRecurringNonGetBeacon}): "any non-GET wins" let a bot-manager's
+  // recurring sensor POST outrank the GET search that produced the flow's data.
+  const isRecurringBeacon = nonGetBeaconPredicate(pool);
+  const nonGet = pool.find((c) => c.method !== "GET" && valid(c) && !isRecurringBeacon(c));
+  if (nonGet) return nonGet;
+  // Read-only REST flow: prefer a successful non-noise GET, richest query first
+  // (ties keep chronological order).
+  const queryCount = (c: Capture): number => new URL(c.url).searchParams.size;
+  let best: Capture | null = null;
+  for (const c of pool) {
+    if (c.method !== "GET" || c.status < 200 || c.status >= 300 || isNoiseUrl(c.url)) continue;
+    if (!valid(c)) continue;
+    if (best === null || queryCount(c) > queryCount(best)) best = c;
   }
-  // No non-GET submit capture: a read-only REST flow. Prefer a successful
-  // own-backend GET over failed/noise captures that the generic fallback
-  // below would otherwise pick by array order.
-  for (const c of restrictToSubmitPattern(
-    captures.filter(
-      (c) =>
-        c.method === "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url) && allowed(c)
-    ),
-    submitPatterns
-  )) {
-    try {
-      new URL(c.url);
-      return c;
-    } catch {
-      // skip
-    }
-  }
-  for (const c of restrictToSubmitPattern(captures.filter(allowed), submitPatterns)) {
-    try {
-      new URL(c.url);
-      return c;
-    } catch {
-      // skip
-    }
-  }
-  return null;
+  if (best) return best;
+  return pool.find(valid) ?? null;
 }
 
 function safeUrlPathname(url: string): string {
@@ -2646,6 +2688,25 @@ export interface GetInputModel {
   pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
   pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+}
+
+/** The model without the query keys `keys` (inputs another mechanism owns). */
+export function pruneGetInputModelKeys(
+  model: GetInputModel,
+  keys: readonly string[]
+): GetInputModel {
+  const drop = new Set(keys);
+  const dropped = model.dynamicFields.filter((d) => drop.has(d.queryKey)).map((d) => d.field);
+  return {
+    ...model,
+    dynamicFields: model.dynamicFields.filter((d) => !drop.has(d.queryKey)),
+    fixedParams: Object.fromEntries(
+      Object.entries(model.fixedParams).filter(([k]) => !drop.has(k))
+    ),
+    fieldToQueryKey: Object.fromEntries(
+      Object.entries(model.fieldToQueryKey).filter(([f]) => !dropped.includes(f))
+    ),
+  };
 }
 
 function safeGetFieldIdentifier(key: string): string {
@@ -3207,11 +3268,34 @@ export function extractActionSequence(
   const matchesDeclaredSubmitBody = (capture: Capture): boolean =>
     declaredSubmitBodyRx?.test(capture.requestPostData ?? "") ?? false;
 
+  // The read-only flow's PRIMARY is the FIRST occurrence of the chosen search:
+  // the first 2xx GET (not itself the drill) whose response resolves the
+  // declared foldReturn `resultsPath` to an array. Later pages/repeats of it
+  // are not the primary, so they stay out and cannot reorder the sequence.
+  const primaryResultsPath = foldReturnSpec?.resultsPath?.split(".") ?? null;
+  const resolvesResultsArray = (capture: Capture): boolean => {
+    if (primaryResultsPath === null) return false;
+    let cur: unknown = capture.responseBody;
+    for (const key of primaryResultsPath) {
+      if (cur === null || typeof cur !== "object") return false;
+      cur = (cur as Record<string, unknown>)[key];
+    }
+    return Array.isArray(cur);
+  };
+  const firstPrimaryIndex = captures.findIndex(
+    (c) =>
+      c.method === "GET" &&
+      c.status >= 200 &&
+      c.status < 300 &&
+      !matchesFoldReturn(c) &&
+      resolvesResultsArray(c)
+  );
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
-    .filter(({ capture }) => {
+    .filter(({ capture, index }) => {
       if (
         capture.method === "GET" &&
+        index !== firstPrimaryIndex &&
         !matchesFoldReturn(capture) &&
         !matchesDeclaredSubmitEndpoint(capture) &&
         !matchesDeclaredSubmitBody(capture)
@@ -3219,8 +3303,9 @@ export function extractActionSequence(
         return false;
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
-      if (isZeroVarianceRepeatCapture(capture, captures)) return false;
-      if (!matchesSubmit(capture)) return false;
+      if (index !== firstPrimaryIndex && isZeroVarianceRepeatCapture(capture, captures))
+        return false;
+      if (index !== firstPrimaryIndex && !matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
         !isAllowedFixtureHost(
@@ -3309,11 +3394,51 @@ export function extractActionSequence(
     .map(({ capture }) => safeUrlPathname(capture.url));
   if (referencePaths.length === 0) return structurallyGated;
 
+  // A declared foldReturn drill-down is author-declared and authoritative, the
+  // same as the submit endpoint: it may share no path token with the submit
+  // endpoint, so structural relevance must not drop it. Neither may it drop
+  // the earlier call that MINTED the id the drill is keyed by (e.g. a POST
+  // whose response carries the id in the drill's path/query).
+  const drillCaptures = structurallyGated.filter(({ capture }) => matchesFoldReturn(capture));
+  const mintsDrillId = ({ capture, index }: { capture: Capture; index: number }): boolean =>
+    drillCaptures.some(
+      (d) => d.index > index && capturePathAndQueryValuesAppearIn(d.capture, capture.responseBody)
+    );
   return structurallyGated.filter(
-    ({ capture }) =>
-      matchesDeclaredSubmitEndpoint(capture) ||
-      isStructurallyRelevantCapture(safeUrlPathname(capture.url), referencePaths)
+    (entry) =>
+      matchesDeclaredSubmitEndpoint(entry.capture) ||
+      matchesFoldReturn(entry.capture) ||
+      mintsDrillId(entry) ||
+      isStructurallyRelevantCapture(safeUrlPathname(entry.capture.url), referencePaths)
   );
+}
+
+/**
+ * True when some id-bearing path segment or query value of `drill`'s URL
+ * appears as a string leaf of `body` — i.e. `body`'s call minted the id the
+ * drill is keyed by.
+ */
+function capturePathAndQueryValuesAppearIn(drill: Capture, body: unknown): boolean {
+  if (body === null || typeof body !== "object") return false;
+  let url: URL;
+  try {
+    url = new URL(drill.url);
+  } catch {
+    return false;
+  }
+  const candidates = [
+    ...url.pathname.split("/").map(decodePathSegment),
+    ...[...url.searchParams.values()],
+  ].filter((v) => v.length >= 4 && carriesEntityId(v));
+  if (candidates.length === 0) return false;
+  const leaves = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (typeof v === "string" || typeof v === "number") leaves.add(String(v));
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v !== null && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(body);
+  return candidates.some((c) => leaves.has(c));
 }
 
 /**
@@ -8317,6 +8442,90 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
 }
 
 /**
+ * The key a drill's WHOLE row array is attached under, or `null` when the
+ * normal per-row join applies. Several rows and not one carrying any join
+ * field (checked the way the emitted matcher reads it: full nested path, then
+ * bare last segment) means no row can be matched to a primary item, so the
+ * array itself belongs on the item. Shared by the emitter and shape
+ * inference so both describe the same attach. The key is the declared
+ * `attachAs`, else the drill URL's last path segment.
+ */
+export function wholeArrayAttachKey(
+  target: Pick<FoldTarget, "joinFields" | "chainArrayPath" | "attachAs">,
+  terminalBody: unknown,
+  drillUrl: string
+): string | null {
+  const rows = objectItemsAtPath(terminalBody, target.chainArrayPath);
+  if (!rows || rows.length < 2) return null;
+  const carriesJoinField = rows.some((row) =>
+    target.joinFields.some((f) => {
+      const segments = f.split(".");
+      return (
+        readValueAtPath(row, segments) !== undefined ||
+        readValueAtPath(row, [segments[segments.length - 1]!]) !== undefined
+      );
+    })
+  );
+  if (carriesJoinField) return null;
+  if (target.attachAs !== undefined) return target.attachAs;
+  let pathname: string;
+  try {
+    pathname = new URL(drillUrl).pathname;
+  } catch {
+    return null;
+  }
+  const last = pathname
+    .split("/")
+    .filter((seg) => seg !== "")
+    .pop();
+  return last === undefined ? null : decodeURIComponent(last);
+}
+
+/** A drill's log-safe name: its URL's last path segment. */
+function drillLabel(url: string): string {
+  let pathname = url;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    // not an absolute URL — use it as is
+  }
+  const last =
+    pathname
+      .split("/")
+      .filter((seg) => seg !== "")
+      .pop() ?? "drill";
+  return last.replace(/[^\w.-]/g, "_");
+}
+
+/**
+ * Wraps one drill's fetch+merge lines so a flagged drill is skipped when its
+ * payload flag is falsy and a failing drill logs (drill name and item) and
+ * drops only its own key instead of failing the whole item. Drills without
+ * `payloadFlag`/`attachAs` are returned untouched.
+ */
+export function wrapIsolatedDrillLines(
+  target: Pick<FoldTarget, "payloadFlag" | "attachAs">,
+  drillName: string,
+  itemVar: string,
+  lines: string[]
+): string[] {
+  if (target.payloadFlag === undefined && target.attachAs === undefined) return lines;
+  const body = [
+    "      try {",
+    ...lines.map((l) => `  ${l}`),
+    "      } catch (error) {",
+    `        getLogger({ name: "fold-drill" }).error(\`fold drill ${drillName} failed for item \${JSON.stringify(${itemVar})}: \${error}\`);`,
+    "      }",
+  ];
+  if (target.payloadFlag === undefined) return body;
+  return [
+    `      if ((payload as Record<string, unknown>)[${JSON.stringify(target.payloadFlag)}]) {`,
+    ...body.map((l) => `  ${l}`),
+    "      }",
+  ];
+}
+
+/**
  * Emits the lines that match a fold target's drill-down chain response
  * against the loop item and merge the match onto it — the last leg of a
  * fold, shared by {@link emitMultiStepExecuteHttp}'s per-item loop and
@@ -8324,13 +8533,18 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
  * both emitters describe the exact same match/merge semantics rather than
  * two copies that could drift apart.
  */
-function emitFoldMatchAndMergeLines(
+export function emitFoldMatchAndMergeLines(
   terminalStep: { varName: string; capture: { responseBody: unknown } },
   target: FoldTarget,
   itemVar: string,
   suffix: string,
-  joinAccessor: (field: string) => string
+  joinAccessor: (field: string) => string,
+  wholeArrayKey: string | null = null
 ): string[] {
+  // An array-root terminal (the response body IS the row array) is cast via
+  // `unknown` — an array is not a `Record<string, unknown>`.
+  const isArrayRoot =
+    target.chainArrayPath.length === 0 && Array.isArray(terminalStep.capture.responseBody);
   // An empty chainArrayPath means the terminal step's response IS the
   // implicit one-item collection (see findAllObjectArrayFieldsOrWholeObject
   // / objectItemsAtPath's flat-object branch): the response is a flat
@@ -8338,7 +8552,7 @@ function emitFoldMatchAndMergeLines(
   // no join-field match is needed (or even possible against an array
   // API) — emit a direct object reference instead of the array
   // `.find()` machinery the multi-item branch below needs.
-  if (target.chainArrayPath.length === 0) {
+  if (target.chainArrayPath.length === 0 && !isArrayRoot) {
     return [
       `      const foldMatch${suffix} = ${terminalStep.varName} as Record<string, unknown>;`,
       `      Object.assign(${itemVar}, Object.fromEntries(Object.entries(foldMatch${suffix} ?? {}).filter(([k]) => !(k in ${itemVar}))));`,
@@ -8354,15 +8568,23 @@ function emitFoldMatchAndMergeLines(
   const isFlatObjectAtPath =
     !target.chainArrayPath.includes(ARRAY_WILDCARD_SEGMENT) &&
     isObjectArrayItem(readValueAtPath(terminalStep.capture.responseBody, target.chainArrayPath));
-  const foldMatchesExpr = isFlatObjectAtPath
-    ? `[${pathToFoldAccessorExpr(
-        `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath, "Record<string, unknown>")})`,
-        target.chainArrayPath
-      )}]`
-    : pathToFoldAccessorExpr(
-        `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
-        target.chainArrayPath
-      );
+  const foldMatchesExpr = isArrayRoot
+    ? `(${terminalStep.varName} as unknown as Record<string, unknown>[])`
+    : isFlatObjectAtPath
+      ? `[${pathToFoldAccessorExpr(
+          `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath, "Record<string, unknown>")})`,
+          target.chainArrayPath
+        )}]`
+      : pathToFoldAccessorExpr(
+          `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
+          target.chainArrayPath
+        );
+  if (wholeArrayKey !== null) {
+    return [
+      `      const foldMatches${suffix} = ${foldMatchesExpr};`,
+      `      if (foldMatches${suffix} != null && !(${JSON.stringify(wholeArrayKey)} in ${itemVar})) Object.assign(${itemVar}, { [${JSON.stringify(wholeArrayKey)}]: foldMatches${suffix} });`,
+    ];
+  }
   const matchAccessorFor = (f: string, varName: string, optionalRoot: boolean): string => {
     const segments = f.split(".");
     // The drill-down response is a DIFFERENT payload than the
@@ -9997,14 +10219,28 @@ export function emitMultiStepExecuteHttp(
           }
         }
         const terminalStep = actions[target.chainTerminalIndex]!;
+        const isolated = target.payloadFlag !== undefined || target.attachAs !== undefined;
         const matchLines = emitFoldMatchAndMergeLines(
           terminalStep,
           target,
           itemVar,
           suffix,
-          joinAccessor
+          joinAccessor,
+          wholeArrayAttachKey(
+            target,
+            terminalStep.capture.responseBody,
+            actions[target.drillStepIndex]!.capture.url
+          )
         );
-        if (referencesItemVar) {
+        const drillName = drillLabel(actions[target.drillStepIndex]!.capture.url);
+        if (isolated && target.chain[0] !== foldPlan.primaryStepIndex) {
+          // Fetch and merge travel together so a failure drops only this drill.
+          itemScopedLines.push(
+            ...wrapIsolatedDrillLines(target, drillName, itemVar, [...chainLines, ...matchLines])
+          );
+          if (chainLines.length > 0) hasItemScopedFetch = true;
+          if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
+        } else if (referencesItemVar) {
           itemScopedLines.push(...chainLines, ...matchLines);
           if (chainLines.length > 0) hasItemScopedFetch = true;
           if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
@@ -11029,6 +11265,11 @@ export interface FoldTarget {
   chain: number[];
   chainArrayPath: string[];
   chainTerminalIndex: number;
+  /** Key the drill's whole result is attached under (from the declared
+   * foldReturn entry's `attachAs`); also isolates the drill's failures. */
+  attachAs?: string;
+  /** Caller payload flag gating this drill; also isolates its failures. */
+  payloadFlag?: string;
 }
 
 /** Every string and numeric value present in a capture's outbound request —
@@ -11476,7 +11717,16 @@ export function applyDrillParamBindings(
     const accessor = `\${payload.${binding.payloadField} ?? ${formatDrillParamBindingDefault(binding.type, binding.default)}}`;
     const escapedParamName = paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
-    return acc.replace(paramRx, (_full, prefix: string) => `${prefix}${accessor}`);
+    const withQuery = acc.replace(paramRx, (_full, prefix: string) => `${prefix}${accessor}`);
+    // JSON body key: `"name": <scalar>` — keeps the original quoting so a
+    // captured `"2"` stays a JSON string and a bare `2` stays a number.
+    const keyRx = new RegExp(
+      `("${escapedParamName}"\\s*:\\s*)("(?:[^"\\\\]|\\\\.)*"|-?\\d[\\d.eE+-]*|true|false|null)`,
+      "g"
+    );
+    return withQuery.replace(keyRx, (_full, prefix: string, old: string) =>
+      old.startsWith('"') ? `${prefix}"${accessor}"` : `${prefix}${accessor}`
+    );
   }, text);
 }
 
@@ -11922,7 +12172,9 @@ function collectResponseLeafValuesUncached(capture: Capture): Set<string> {
     if (typeof value === "number") values.add(String(value));
     if (typeof value === "boolean") values.add(String(value));
   }
-  for (const v of Object.values(capture.responseHeaders)) values.add(v);
+  for (const [k, v] of Object.entries(capture.responseHeaders)) {
+    if (!AMBIENT_HEADER_NAMES.has(k.toLowerCase())) values.add(v);
+  }
   return values;
 }
 
@@ -11982,7 +12234,45 @@ function selectDisambiguatedCandidate(
   });
 }
 
-function computeFoldChain<T extends { capture: Capture }>(
+/** Request/response header names whose values are ambient (content
+ * negotiation, cookie jar, caching, auth replay) and never a per-item minted
+ * value; a re-sent cookie must not create a fold dependency. */
+const AMBIENT_HEADER_NAMES = new Set([
+  "content-type",
+  "content-length",
+  "content-encoding",
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "cookie",
+  "set-cookie",
+  "cache-control",
+  "date",
+  "etag",
+  "vary",
+  "server",
+  "connection",
+  "user-agent",
+  "host",
+  "origin",
+  "referer",
+  "authorization",
+  "expires",
+  "pragma",
+  "last-modified",
+  "transfer-encoding",
+]);
+
+/** True for a value that could plausibly be a minted id: not a trivial
+ * scalar (single character such as "0"/"3"/"true"-like flags) and not a MIME
+ * type such as "application/json". */
+function isMintedDependencyValue(value: string): boolean {
+  if (value.length < 2) return false;
+  if (/^[a-z]+\/[a-z0-9.+-]+(;.*)?$/i.test(value)) return false;
+  return true;
+}
+
+export function computeFoldChain<T extends { capture: Capture }>(
   actions: readonly T[],
   drillStepIndex: number,
   drillArrayPath: string[]
@@ -12002,7 +12292,9 @@ function computeFoldChain<T extends { capture: Capture }>(
       const chainStepCapture = actions[chainIndex]!.capture;
       const responseValues = collectResponseLeafValues(chainStepCapture);
       const echoedValues = collectRequestValuesIncludingHeaders(chainStepCapture);
-      return [...responseValues].some((v) => !echoedValues.has(v) && requestValues.has(v));
+      return [...responseValues].some(
+        (v) => isMintedDependencyValue(v) && !echoedValues.has(v) && requestValues.has(v)
+      );
     });
     if (!dependsOnChain) continue;
     chain.push(i);
@@ -12506,6 +12798,10 @@ export interface FoldReturnSpec {
       default: string | number | boolean;
     }
   >;
+  /** Key under which this entry's folded result is attached (array form). */
+  attachAs?: string;
+  /** Name of the caller payload flag gating this entry (array form). */
+  payloadFlag?: string;
 }
 
 /**
@@ -12516,6 +12812,17 @@ export interface FoldReturnSpec {
  * `submitEndpointPattern`/`submitBodyPattern`.
  */
 export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | null {
+  const specs = parseFoldReturnSpecs(flowFileContents);
+  return specs === null ? null : specs[0]!;
+}
+
+/**
+ * Parses `foldReturn` as one-or-array. The first entry is the primary drill
+ * and must carry `resultsPath`; later entries inherit the primary's
+ * `resultsPath` when they omit it. Any invalid entry rejects the whole
+ * declaration (`null`), matching the single-object behavior.
+ */
+export function parseFoldReturnSpecs(flowFileContents: string): FoldReturnSpec[] | null {
   try {
     const raw: unknown = JSON.parse(flowFileContents);
     if (Array.isArray(raw)) return null;
@@ -12528,43 +12835,72 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
       return null;
     }
     const foldReturn = (raw as { foldReturn?: unknown }).foldReturn;
-    if (foldReturn === undefined || foldReturn === null || typeof foldReturn !== "object") {
-      return null;
+    const entries: unknown[] = Array.isArray(foldReturn) ? foldReturn : [foldReturn];
+    if (entries.length === 0) return null;
+    const specs: FoldReturnSpec[] = [];
+    for (const entry of entries) {
+      const spec = parseFoldReturnEntry(entry, specs[0]?.resultsPath);
+      if (spec === null) return null;
+      specs.push(spec);
     }
-    const { endpointPattern, resultsPath, drillResultsPath, joinFields, drillParamBindings } =
-      foldReturn as {
-        endpointPattern?: unknown;
-        resultsPath?: unknown;
-        drillResultsPath?: unknown;
-        joinFields?: unknown;
-        drillParamBindings?: unknown;
-      };
-    if (
-      typeof endpointPattern !== "string" ||
-      typeof resultsPath !== "string" ||
-      (drillResultsPath !== undefined &&
-        (typeof drillResultsPath !== "string" || drillResultsPath.length === 0)) ||
-      !Array.isArray(joinFields) ||
-      joinFields.length === 0 ||
-      !joinFields.every((f): f is string => typeof f === "string" && f.length > 0)
-    ) {
-      return null;
-    }
-    const parsedDrillParamBindings =
-      drillParamBindings !== undefined ? parseDrillParamBindings(drillParamBindings) : undefined;
-    if (drillParamBindings !== undefined && parsedDrillParamBindings === null) {
-      return null;
-    }
-    return {
-      endpointPattern,
-      resultsPath,
-      ...(drillResultsPath !== undefined ? { drillResultsPath } : {}),
-      joinFields,
-      ...(parsedDrillParamBindings ? { drillParamBindings: parsedDrillParamBindings } : {}),
-    };
+    return specs;
   } catch {
     return null;
   }
+}
+
+function parseFoldReturnEntry(
+  entry: unknown,
+  inheritedResultsPath?: string
+): FoldReturnSpec | null {
+  if (entry === undefined || entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    return null;
+  }
+  const {
+    endpointPattern,
+    resultsPath: declaredResultsPath,
+    drillResultsPath,
+    joinFields,
+    drillParamBindings,
+    attachAs,
+    payloadFlag,
+  } = entry as {
+    endpointPattern?: unknown;
+    resultsPath?: unknown;
+    drillResultsPath?: unknown;
+    joinFields?: unknown;
+    drillParamBindings?: unknown;
+    attachAs?: unknown;
+    payloadFlag?: unknown;
+  };
+  const resultsPath =
+    declaredResultsPath === undefined ? inheritedResultsPath : declaredResultsPath;
+  const optNonEmptyString = (v: unknown): boolean =>
+    v === undefined || (typeof v === "string" && v.length > 0);
+  if (
+    typeof endpointPattern !== "string" ||
+    typeof resultsPath !== "string" ||
+    !optNonEmptyString(drillResultsPath) ||
+    !optNonEmptyString(attachAs) ||
+    !optNonEmptyString(payloadFlag) ||
+    !Array.isArray(joinFields) ||
+    joinFields.length === 0 ||
+    !joinFields.every((f): f is string => typeof f === "string" && f.length > 0)
+  ) {
+    return null;
+  }
+  const parsedDrillParamBindings =
+    drillParamBindings !== undefined ? parseDrillParamBindings(drillParamBindings) : undefined;
+  if (drillParamBindings !== undefined && parsedDrillParamBindings === null) return null;
+  return {
+    endpointPattern,
+    resultsPath,
+    ...(drillResultsPath !== undefined ? { drillResultsPath: drillResultsPath as string } : {}),
+    joinFields,
+    ...(attachAs !== undefined ? { attachAs: attachAs as string } : {}),
+    ...(payloadFlag !== undefined ? { payloadFlag: payloadFlag as string } : {}),
+    ...(parsedDrillParamBindings ? { drillParamBindings: parsedDrillParamBindings } : {}),
+  };
 }
 
 /**
@@ -12942,7 +13278,9 @@ export function collectRequestValuesIncludingHeaders(capture: Capture): Set<stri
   const cached = requestValuesCache.get(capture);
   if (cached) return cached;
   const values = collectRequestStringValues(capture);
-  for (const v of Object.values(capture.requestHeaders)) values.add(v);
+  for (const [k, v] of Object.entries(capture.requestHeaders)) {
+    if (!AMBIENT_HEADER_NAMES.has(k.toLowerCase())) values.add(v);
+  }
   requestValuesCache.set(capture, values);
   return values;
 }
@@ -14107,13 +14445,32 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   return consumersByValue;
 }
 
+/**
+ * Array-form `foldReturn` entries after the primary, set once by `main()` so
+ * every resolveFoldPlan call site sees the same declared drills.
+ */
+let ambientExtraDrillSpecs: readonly FoldReturnSpec[] = [];
+
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null = null,
   // See detectDrillDownFoldPlan's identical parameter — threaded through to
   // both the structural and spec-driven resolution paths below.
-  primaryIdentityAnchor: string | null = null
+  primaryIdentityAnchor: string | null = null,
+  // Further declared drill-downs (array-form foldReturn entries after the
+  // primary one). Each folds onto the same primary as its own target and is
+  // invisible to the primary spec's resolution — see
+  // {@link maskExtraDrillActions}.
+  extraDrillSpecs: readonly FoldReturnSpec[] = ambientExtraDrillSpecs
 ): FoldPlan[] {
+  if (extraDrillSpecs.length > 0) {
+    return resolveFoldPlanWithExtraDrills(
+      actions,
+      foldReturnSpec,
+      primaryIdentityAnchor,
+      extraDrillSpecs
+    );
+  }
   const structuralPlans = detectDrillDownFoldPlan(actions, primaryIdentityAnchor);
   const plans =
     structuralPlans.length > 0
@@ -14141,12 +14498,161 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
           );
           return specPlan === null ? [] : [specPlan];
         })();
-  return plans.flatMap((plan) => {
+  return collapseTargetsToDeclaredDrillPath(
+    actions,
+    plans,
+    foldReturnSpec === null ? [] : [foldReturnSpec]
+  ).flatMap((plan) => {
     const targets = plan.targets.filter(
       (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
     );
     return targets.length === 0 ? [] : [{ ...plan, targets }];
   });
+}
+
+/**
+ * For each declared spec carrying a `drillResultsPath`, keeps only the target
+ * on that spec's drill endpoint whose folded array IS the declared one,
+ * dropping structural targets on the same endpoint whose array is an
+ * ancestor (or descendant) of it. One drill endpoint yields one target.
+ */
+function collapseTargetsToDeclaredDrillPath<T extends { capture: Capture }>(
+  actions: readonly T[],
+  plans: readonly FoldPlan[],
+  specs: readonly FoldReturnSpec[]
+): FoldPlan[] {
+  return plans.map((plan) => {
+    let targets = plan.targets;
+    for (const spec of specs) {
+      if (spec.drillResultsPath === undefined) continue;
+      const matches = compileFoldReturnEndpointMatcher(spec);
+      const onEndpoint = (t: FoldTarget): boolean =>
+        matches(actions[t.chainTerminalIndex]!.capture);
+      const declaredPathOf = (t: FoldTarget): string[] =>
+        resolveDeclaredArrayPath(
+          spec.drillResultsPath!.split("."),
+          actions[t.chainTerminalIndex]!.capture.responseBody
+        );
+      const isDeclared = (t: FoldTarget): boolean =>
+        onEndpoint(t) && JSON.stringify(declaredPathOf(t)) === JSON.stringify(t.chainArrayPath);
+      const declared = targets.filter(isDeclared);
+      if (declared.length === 0) continue;
+      targets = targets.filter((t) => {
+        if (!onEndpoint(t) || isDeclared(t)) return true;
+        const declaredPath = declaredPathOf(t);
+        return !(
+          isDescendantArrayPath(declaredPath, t.chainArrayPath) ||
+          isDescendantArrayPath(t.chainArrayPath, declaredPath)
+        );
+      });
+    }
+    return targets.length === plan.targets.length ? plan : { ...plan, targets };
+  });
+}
+
+/**
+ * Replaces every capture matching an extra drill's endpoint (and not the
+ * primary spec's own) with an inert stand-in, preserving indices, so the
+ * primary's structural + declared resolution is exactly what it would be
+ * were the extra drills never captured.
+ */
+function maskExtraDrillActions<T extends { capture: Capture }>(
+  actions: readonly T[],
+  keepMatchers: readonly ((c: Capture) => boolean)[],
+  maskMatchers: readonly ((c: Capture) => boolean)[]
+): T[] {
+  return actions.map((action) => {
+    const c = action.capture;
+    if (keepMatchers.some((m) => m(c)) || !maskMatchers.some((m) => m(c))) return action;
+    return {
+      ...action,
+      capture: {
+        ...c,
+        url: "about:blank",
+        requestHeaders: {},
+        requestPostData: null,
+        responseHeaders: {},
+        responseBody: null,
+        query: null,
+        variables: null,
+        decodedParams: null,
+      },
+    };
+  });
+}
+
+function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipart: boolean }>(
+  actions: readonly T[],
+  primarySpec: FoldReturnSpec | null,
+  primaryIdentityAnchor: string | null,
+  extraDrillSpecs: readonly FoldReturnSpec[]
+): FoldPlan[] {
+  const extraMatchers = extraDrillSpecs.map((s) => compileFoldReturnEndpointMatcher(s));
+  const primaryMatcher = compileFoldReturnEndpointMatcher(primarySpec);
+  // 1. Primary plan: extra drills masked out.
+  const primaryPlans = resolveFoldPlan(
+    maskExtraDrillActions(actions, [primaryMatcher], extraMatchers),
+    primarySpec,
+    primaryIdentityAnchor,
+    // Explicit: the ambient default would re-enter this function forever.
+    []
+  );
+  if (primaryPlans.length === 0) return primaryPlans;
+  const result = primaryPlans.map((p) => ({ ...p, targets: [...p.targets] }));
+  // 2. Each extra drill resolved with every OTHER drill masked, then pinned
+  // to its own endpoint step as chain terminal.
+  extraDrillSpecs.forEach((extra, i) => {
+    const others = [primaryMatcher, ...extraMatchers.filter((_, j) => j !== i)];
+    const masked = maskExtraDrillActions(actions, [extraMatchers[i]!], others);
+    const extraPlans = resolveFoldPlan(masked, extra, primaryIdentityAnchor, []);
+    for (const extraPlan of extraPlans) {
+      const host = result.find(
+        (p) =>
+          p.primaryStepIndex === extraPlan.primaryStepIndex &&
+          JSON.stringify(p.primaryArrayPath) === JSON.stringify(extraPlan.primaryArrayPath)
+      );
+      const pinned = extraPlan.targets.flatMap((t) => {
+        const own = pinTargetToEndpointStep(actions, t, extra, extraMatchers[i]!);
+        return own === null ? [] : [own];
+      });
+      if (pinned.length === 0) continue;
+      if (host === undefined) result.push({ ...extraPlan, targets: pinned });
+      else host.targets.push(...pinned);
+    }
+  });
+  return collapseTargetsToDeclaredDrillPath(actions, result, [
+    ...(primarySpec === null ? [] : [primarySpec]),
+    ...extraDrillSpecs,
+  ]);
+}
+
+/** Pins a target's chain terminal to the chain step matching the spec's own
+ * endpointPattern — a later dependent hop must not displace it. */
+function pinTargetToEndpointStep<T extends { capture: Capture }>(
+  actions: readonly T[],
+  target: FoldTarget,
+  spec: FoldReturnSpec,
+  matches: (c: Capture) => boolean
+): FoldTarget | null {
+  const endpointSteps = target.chain.filter((i) => matches(actions[i]!.capture));
+  if (endpointSteps.length === 0) return null;
+  const terminal = endpointSteps[endpointSteps.length - 1]!;
+  const body = actions[terminal]!.capture.responseBody;
+  const arrayPath =
+    spec.drillResultsPath !== undefined
+      ? resolveDeclaredArrayPath(spec.drillResultsPath.split("."), body)
+      : terminal === target.chainTerminalIndex
+        ? target.chainArrayPath
+        : findObjectArrayFieldOrWholeObject(body)?.path;
+  if (arrayPath === undefined || !objectItemsAtPath(body, arrayPath)) return null;
+  return {
+    ...target,
+    chain: target.chain.filter((i) => i <= terminal),
+    chainTerminalIndex: terminal,
+    chainArrayPath: arrayPath,
+    ...(spec.attachAs !== undefined ? { attachAs: spec.attachAs } : {}),
+    ...(spec.payloadFlag !== undefined ? { payloadFlag: spec.payloadFlag } : {}),
+  };
 }
 
 /**
@@ -14246,15 +14752,24 @@ function replaceByReference(value: unknown, target: object, replacement: unknown
  * response content alone (as the representative branch's own `drillMatch`
  * fallback does when the response doesn't echo it) can't identify WHICH item
  * an absorbed occurrence belongs to in the first place. */
-function foldOneDrillOccurrence(
+export function foldOneDrillOccurrence(
   body: unknown,
   primaryArrayPath: readonly string[],
   joinFields: readonly string[],
   drillItems: readonly Record<string, unknown>[],
-  matchedItem: Record<string, unknown>
+  matchedItem: Record<string, unknown>,
+  wholeArrayKey: string | null = null
 ): unknown {
   const primaryItems = objectItemsAtPath(body, primaryArrayPath);
   if (!primaryItems) return body;
+  // Mirrors emitFoldMatchAndMergeLines: no row can be joined, so the whole
+  // array is attached under its key (never overriding an existing field).
+  if (wholeArrayKey !== null) {
+    return replaceByReference(body, matchedItem, {
+      [wholeArrayKey]: drillItems,
+      ...matchedItem,
+    });
+  }
   const drillMatch =
     drillItems.find((d) =>
       joinFields.every(
@@ -14285,7 +14800,8 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
             foldPlan.primaryArrayPath,
             target.joinFields,
             drillItems,
-            matchedItem
+            matchedItem,
+            wholeArrayAttachKey(target, drillBody, actionSteps[target.drillStepIndex]!.capture.url)
           );
     // Every absorbed occurrence of this SAME endpoint (a repeat raw capture
     // threaded from a DIFFERENT primary item — see FoldPlan.absorbedIndices)
@@ -14317,7 +14833,12 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
         foldPlan.primaryArrayPath,
         target.joinFields,
         absorbedDrillItems,
-        absorbedMatchedItem
+        absorbedMatchedItem,
+        wholeArrayAttachKey(
+          target,
+          absorbedCapture.responseBody,
+          actionSteps[target.drillStepIndex]!.capture.url
+        )
       );
     }, bodyAfterOwnDrill);
   }, initialBody);
@@ -14375,6 +14896,30 @@ function detectPaginationSignalFromSample(
 }
 
 /**
+ * The request parameters a capture recorded, as the object a paging signal is
+ * read from: its `variables`, else its decoded params. A GET records neither —
+ * its inputs live in the URL query — so the query is read instead, with
+ * numeric values coerced so a `limit=12&offset=0` pair is recognised as the
+ * page-size/skip container it is.
+ */
+export function captureRequestParams(capture: Capture | null | undefined): unknown {
+  if (!capture) return null;
+  const recorded = capture.variables ?? capture.decodedParams ?? null;
+  if (recorded !== null || capture.method !== "GET") return recorded;
+  let url: URL;
+  try {
+    url = new URL(capture.url);
+  } catch {
+    return null;
+  }
+  const params: Record<string, unknown> = {};
+  for (const [k, v] of url.searchParams) {
+    params[k] = /^\d+$/.test(v) ? Number(v) : v;
+  }
+  return Object.keys(params).length > 0 ? params : null;
+}
+
+/**
  * Detects whether a read-only GraphQL primary operation exposes a bounded
  * paging signal, per {@link detectPaginationSignalFromSample}. When present,
  * {@link emitContractTs} emits a paging loop instead of a single fixed page.
@@ -14389,7 +14934,7 @@ function detectPaginationSignalFromSample(
  * variables satisfy the check — real cross-capture proof, not a relaxed or
  * defaulted check on the primary sample itself.
  */
-function detectPaginationSignal(
+export function detectPaginationSignal(
   responseBody: unknown,
   gqlVariables: unknown,
   operationIdentity?: string | null,
@@ -14401,7 +14946,10 @@ function detectPaginationSignal(
   for (const capture of allCaptures) {
     if (capture.status < 200 || capture.status >= 300) continue;
     if (operationGroupKey(capture) !== operationIdentity) continue;
-    const siblingSignal = detectPaginationSignalFromSample(capture.responseBody, capture.variables);
+    const siblingSignal = detectPaginationSignalFromSample(
+      capture.responseBody,
+      captureRequestParams(capture)
+    );
     if (siblingSignal) return siblingSignal;
   }
   return null;
@@ -14524,7 +15072,7 @@ function buildGetRequestUrlExpr(
  * mutates its item in place (`Object.assign`), which is visible through
  * `itemsById`'s own stored references — no re-`set` needed.
  */
-function buildPaginatedFetchLoopExecuteHttpBody(opts: {
+export function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   pascal: string;
   gqlVariablesExpr: string;
   signal: PaginationSignal;
@@ -14581,8 +15129,12 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   // truncated=true" apart from "total=436, delivered=436, truncated=false".
   const withTotalOverrideExpr = `{ ...withItems, deliveredCount: itemsById.size, truncated }`;
 
-  return `    const baseVariables = ${gqlVariablesExpr};
-    const PAGE_SIZE = payload.pageSize ?? ${pageSizeDefault};
+  // A GET pages through its URL query, so there is no variables object to carry.
+  const baseVariablesLine =
+    fetchCall.kind === "rest" && fetchCall.getInputModel
+      ? ""
+      : `    const baseVariables = ${gqlVariablesExpr};\n`;
+  return `${baseVariablesLine}    const PAGE_SIZE = payload.pageSize ?? ${pageSizeDefault};
     // Bounded so a paging bug (a total that never converges) can't loop forever.
     const MAX_PAGES = payload.maxPages ?? 50;
     const itemsById = new Map<string, ${itemTypeExpr}>();
@@ -14995,7 +15547,7 @@ export function emitContractTsParts(opts: {
     gql,
     gqlQuery,
     endpointPath,
-    getInputModel = null,
+    getInputModel: derivedGetInputModel = null,
     gqlOperationName,
     gqlVariables,
     allCaptures = [],
@@ -15134,7 +15686,7 @@ export function emitContractTsParts(opts: {
   // the other sources unchanged.
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow) || getInputModel
+    : inputBody || (omitExecuteHttp && isSubmissionFlow) || derivedGetInputModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -15153,6 +15705,16 @@ export function emitContractTsParts(opts: {
     !multiStepBody && paginationOperationIdentity
       ? detectPaginationSignal(responseBody, gqlVariables, paginationOperationIdentity, allCaptures)
       : null;
+  // The paging loop owns the page-size and skip query keys, so they are not
+  // also caller-facing GET inputs (they would be declared in the schema, then
+  // overridden in the URL).
+  const getInputModel: GetInputModel | null =
+    paginationSignal && derivedGetInputModel
+      ? pruneGetInputModelKeys(derivedGetInputModel, [
+          paginationSignal.countKey,
+          paginationSignal.skipKey,
+        ])
+      : derivedGetInputModel;
   // A resolved drill-down fold plan on the single-primary getGql/httpClient
   // hot path (`multiStepBody` unset — see emitMultiStepExecuteHttp for the
   // multi-step equivalent) folds onto `data` in place, exactly as the
@@ -15524,7 +16086,9 @@ export function emitContractTsParts(opts: {
   // zod strips unknown keys, so without composing it every generated
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
-  const trackingMerge = ".merge(JobTrackingSchema)";
+  // A read-only GET flow has no submission step, so no tracking click fires.
+  const mergesTracking = !getInputModel;
+  const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
@@ -15546,7 +16110,9 @@ export function emitContractTsParts(opts: {
   // ApplicantContactSchema backs the job-application submission-flow payload
   // schema (see basePayloadSchemaExpr above); only referenced when
   // usesApplicantContactSchema is true.
-  const jobTrackingImport = `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`;
+  const jobTrackingImport = mergesTracking
+    ? `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`
+    : "";
   const applicantContactImport = usesApplicantContactSchema
     ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
@@ -15982,14 +16548,28 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         }
         const terminalStep = actionSteps[target.chainTerminalIndex];
         if (!terminalStep) continue;
+        const isolated = target.payloadFlag !== undefined || target.attachAs !== undefined;
         const matchLines = emitFoldMatchAndMergeLines(
           terminalStep,
           target,
           itemVar,
           suffix,
-          joinAccessor
+          joinAccessor,
+          wholeArrayAttachKey(
+            target,
+            terminalStep.capture.responseBody,
+            actionSteps[target.drillStepIndex]!.capture.url
+          )
         );
-        if (referencesItemVar) {
+        const drillName = drillLabel(actionSteps[target.drillStepIndex]!.capture.url);
+        if (isolated && target.chain[0] !== foldPlan.primaryStepIndex) {
+          // Fetch and merge travel together so a failure drops only this drill.
+          itemScopedLines.push(
+            ...wrapIsolatedDrillLines(target, drillName, itemVar, [...chainLines, ...matchLines])
+          );
+          if (chainLines.length > 0) hasItemScopedFetch = true;
+          if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
+        } else if (referencesItemVar) {
           itemScopedLines.push(...chainLines, ...matchLines);
           if (chainLines.length > 0) hasItemScopedFetch = true;
           if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
@@ -16165,7 +16745,11 @@ ${executeHttpBody}
 
 ${bottleneckImport}import { z } from "zod/v4";
 
-${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}
+${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}${
+  !omitExecuteHttp && /\bgetLogger\(/.test(executeHttpBody)
+    ? `\nimport { getLogger } from "${ENGINE_PKG}/lib/logging";`
+    : ""
+}
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { ${sitePluginImports} } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
@@ -16701,6 +17285,8 @@ export function emitConfigManifest(opts: {
   hasMultipartStep?: boolean;
   /** Browser-flow-only emit (no executeHttp); feeds {@link contractUsesApplicantContactSchema}. */
   browserFlowOnly?: boolean;
+  /** Read-only GET flow: no submission, so the request schema omits TrackingUrl (mirrors the .ts contract). */
+  readOnlyGet?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -16717,6 +17303,7 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow = false,
     hasMultipartStep = false,
     browserFlowOnly = false,
+    readOnlyGet = false,
     env = process.env,
   } = opts;
   // Raw (uncanonicalised) splice names are the evidence for a body-less flow;
@@ -16824,7 +17411,7 @@ export function emitConfigManifest(opts: {
   });
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
   // without it would drop the TrackingUrl the engine reads after submission.
-  requestProperties.TrackingUrl ??= { type: "string" };
+  if (!readOnlyGet) requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
@@ -16886,7 +17473,8 @@ function computeFlowPayloadFieldNames(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary | undefined,
   env: NodeJS.ProcessEnv,
-  canonicalise = false
+  canonicalise = false,
+  explicitFieldHonorsOptional = false
 ): { payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
   const payloadFieldNames = new Set<string>();
   // Widest wins: a field is only optional if EVERY step that registers it
@@ -16924,7 +17512,10 @@ function computeFlowPayloadFieldNames(
         // An explicitly declared payloadField is always required at the
         // schema level, independent of step.optional's execution-skip
         // semantics (which the browser-flow step record still honors as-is).
-        registerFieldOptionality(step.payloadField, false);
+        registerFieldOptionality(
+          step.payloadField,
+          explicitFieldHonorsOptional && step.optional === true
+        );
       }
       continue;
     }
@@ -16949,7 +17540,7 @@ function computeFlowPayloadFieldNames(
       // An explicit payloadField annotation is always required at the
       // schema level; only the vocabulary/composite-persona heuristic falls
       // back to step.optional's execution-skip semantics.
-      registerFieldOptionality(field, explicit ? false : optional);
+      registerFieldOptionality(field, explicit && !explicitFieldHonorsOptional ? false : optional);
     }
     if (composite !== null) {
       payloadFieldNames.add(composite.fieldA);
@@ -17023,11 +17614,15 @@ export function emitBrowserFlowTs(opts: {
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
+  // A read-only GET flow's declared facets are URL filters: an absent one
+  // means "no filter", so an explicit payloadField on an optional step stays
+  // optional in the schema instead of being forced required.
   const { payloadFieldNames, optionalPayloadFieldNames } = computeFlowPayloadFieldNames(
     flowSteps,
     vocabulary,
     env,
-    canonicalise
+    canonicalise,
+    readOnlyGetFlow
   );
   for (const field of capturedFallbackFields) {
     if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
@@ -17043,6 +17638,7 @@ export function emitBrowserFlowTs(opts: {
   let usesThrowawayPassword = false;
   let usesEmailStep = false;
 
+  let navigateBaselineHash: string | undefined;
   const stepLiterals = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
@@ -17059,7 +17655,16 @@ export function emitBrowserFlowTs(opts: {
     if (isObj && step.navigateTo !== undefined) {
       const optional = step.optional === true;
       const submitStep = step.submitStep === true;
-      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${JSON.stringify(step.navigateTo)} },`;
+      const navigateToExpr = buildNavigateToExpr(
+        step.navigateTo,
+        step.payloadField && !step.payloadFieldNone ? step.payloadField : null,
+        navigateBaselineHash,
+        optional,
+        readOnlyGetFlow
+      );
+      const hashAt = step.navigateTo.indexOf("#");
+      if (hashAt !== -1) navigateBaselineHash = step.navigateTo.slice(hashAt + 1);
+      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${navigateToExpr} },`;
     }
     if (isObj && step.emailStep === true) {
       usesEmailStep = true;
@@ -17260,6 +17865,43 @@ ${flowStepsBlock}
   }`;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
   return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
+}
+
+/**
+ * Emitted `navigateTo` expression. A step declaring `payloadField` has the hash
+ * value recon captured replaced by `payload.<field>` (URL-encoded), so the
+ * caller's value drives navigation. In a read-only GET flow the recon origin is
+ * also replaced by the `baseUrl` argument's origin. Otherwise a plain literal.
+ */
+function buildNavigateToExpr(
+  url: string,
+  field: string | null,
+  baselineHash: string | undefined,
+  optional: boolean,
+  rebaseOrigin: boolean
+): string {
+  const esc = (t: string) => t.replace(/[`\\$]/g, (c) => `\\${c}`);
+  let prefix = "";
+  let rest = url;
+  if (rebaseOrigin) {
+    const m = /^https?:\/\/[^/?#]+/i.exec(url);
+    if (m) {
+      prefix = "${new URL(baseUrl).origin}";
+      rest = url.slice(m[0].length);
+    }
+  }
+  const value = field !== null ? extractNavigateToHashFragmentValue(url, baselineHash) : null;
+  const hashAt = rest.indexOf("#");
+  const valueAt = value !== null && hashAt !== -1 ? rest.lastIndexOf(value) : -1;
+  if (field !== null && value !== null && valueAt > hashAt) {
+    const access = isValidJsIdentifier(field)
+      ? `payload.${field}`
+      : `payload[${JSON.stringify(field)}]`;
+    const read = `encodeURIComponent(${optional ? `${access} ?? ""` : `String(${access})`})`;
+    return `\`${prefix}${esc(rest.slice(0, valueAt))}\${${read}}${esc(rest.slice(valueAt + value.length))}\``;
+  }
+  if (prefix === "") return JSON.stringify(url);
+  return `\`${prefix}${esc(rest)}\``;
 }
 
 /** Emitted extract-prompt expression for a read-only GET browser fallback: binds
@@ -17683,14 +18325,18 @@ export function inferChainStepResponseSchema(
     }
     captures = index.get(restResponseIdentity(stepCapture.url)) ?? allCaptures;
   }
-  const samples = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
+  const gathered = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
+  const emptySamples = gathered
+    .map(emptyArrayOnlySample)
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+  const samples = emptySamples.length > 0 ? [...gathered, emptySamples[0]] : gathered;
   // Same verdict as the primary schema: no proof of more than one entity
   // means lenient leaves.
   const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
   const singleEntityEvidence = singleEntityVerdict(
     stepCapture,
     isGraphQL,
-    samples.length,
+    gathered.length,
     variance
   );
   return inferZodSchemaFromSamples(samples, 0, "", {
@@ -17819,7 +18465,9 @@ async function main(): Promise<void> {
     // Parsed off the raw bytes, independently of the steps shape below, so a
     // valid `foldReturn` still resolves when the rest of the flow file is
     // degenerate — the two declarations fail independently.
-    const foldReturnSpec = flowFileContents === null ? null : parseFoldReturnSpec(flowFileContents);
+    const allFoldSpecs = flowFileContents === null ? null : parseFoldReturnSpecs(flowFileContents);
+    const foldReturnSpec = allFoldSpecs === null ? null : allFoldSpecs[0]!;
+    ambientExtraDrillSpecs = allFoldSpecs === null ? [] : allFoldSpecs.slice(1);
     // Same independence rule as `foldReturnSpec` above: an empty spec
     // (missing/malformed declaration) is indistinguishable from "not
     // declared" and preserves today's byte-identical output.
@@ -18204,6 +18852,17 @@ async function main(): Promise<void> {
       );
     }
     const heuristicActionCaptures = patternedHeuristicActionCaptures;
+    if (foldReturnSpec !== null) {
+      const isDeclaredDrill = compileFoldReturnEndpointMatcher(foldReturnSpec);
+      const sawDrill = activeCaptures.some(
+        (c) => c.status >= 200 && c.status < 300 && isDeclaredDrill(c)
+      );
+      if (sawDrill && !heuristicActionCaptures.some((a) => isDeclaredDrill(a.capture))) {
+        logger.warn(
+          `declared foldReturn drill-down (endpointPattern: ${foldReturnSpec.endpointPattern}) matched captured traffic but is absent from the action sequence`
+        );
+      }
+    }
     const manifestActionCaptures = resolveManifestActionSequence(runRoot, activeCaptures);
     // A manifest only ever records submit-pattern matches, so it can never
     // carry a declared foldReturn drill-down the heuristic sequence found
@@ -18335,9 +18994,14 @@ async function main(): Promise<void> {
     // A declared submit pattern may select several same-route GET reads of the
     // winner as the "action sequence"; those are samples of one read, not steps.
     const readSiblings = readFlowWinner ? sameRouteGetSiblings(readFlowWinner, activeCaptures) : [];
+    // Recurring beacons (a bot-manager's sensor POSTs) in the action sequence are
+    // page chrome, not steps of the flow: they must not turn a read into a submission.
+    const isRecurringReadFlowBeacon = nonGetBeaconPredicate(activeCaptures);
     const actionSequenceIsReadSamples =
       compiledActionSteps.length === 0 ||
-      actionCaptures.every((a) => readSiblings.includes(a.capture));
+      actionCaptures.every(
+        (a) => readSiblings.includes(a.capture) || isRecurringReadFlowBeacon(a.capture)
+      );
     const isReadOnlyGetFlow =
       !gql &&
       actionSequenceIsReadSamples &&
@@ -18347,9 +19011,16 @@ async function main(): Promise<void> {
       readFlowCaptures.filter(
         (c) =>
           c.method !== "GET" &&
+          // A multi-step flow with a fold spec and a declared submit pattern:
+          // only non-GETs matching that pattern can be the submit.
+          (foldReturnSpec === null ||
+            submitPatterns === null ||
+            (submitPatterns.endpoint === null && submitPatterns.body === null) ||
+            matchesDeclaredSubmit(c)) &&
           c.status >= 200 &&
           c.status < 300 &&
           !isNoiseUrl(c.url) &&
+          !isRecurringReadFlowBeacon(c) &&
           (!(ownBackendHostnames.length > 0 || fallbackDomain !== null) ||
             isAllowedFixtureHost(
               captureHostname(c.url),
@@ -18616,6 +19287,7 @@ async function main(): Promise<void> {
           isSubmissionFlow,
           hasMultipartStep,
           browserFlowOnly,
+          readOnlyGet: isReadOnlyGetFlow,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
@@ -18686,7 +19358,15 @@ async function main(): Promise<void> {
       // single terminal capture -- the multi-sample evidence gathered above
       // describes the (possibly different) read-flow winning capture and
       // doesn't apply once a submission flow has picked its own return call.
-      responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
+      responseBodySamples: isSubmissionFlow
+        ? [effectiveResponseBody]
+        : effectiveResponseBody !== null &&
+            effectiveResponseBody !== undefined &&
+            !responseBodySamples.some(
+              (b) => JSON.stringify(b) === JSON.stringify(effectiveResponseBody)
+            )
+          ? [...responseBodySamples, effectiveResponseBody]
+          : responseBodySamples,
       // A submission flow validates its own lone terminal capture: one
       // sample proves nothing about which leaves another response carries.
       singleEntityEvidence: isSubmissionFlow
@@ -18712,7 +19392,7 @@ async function main(): Promise<void> {
       // detectPaginationSignal walks to find a skip/count container.
       gqlVariables:
         primaryGraphQLOperation?.capture.variables ??
-        (!gql ? (winningCapture?.variables ?? winningCapture?.decodedParams ?? null) : null),
+        (!gql ? captureRequestParams(winningCapture) : null),
       allCaptures: activeCaptures,
       auxFiles,
       multiStepBody,

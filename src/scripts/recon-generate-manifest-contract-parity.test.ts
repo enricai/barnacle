@@ -40,3 +40,17 @@ describe("emitConfigManifest matches the .ts contract's account-creation and tra
     expect(manifest.spec.request?.properties).toHaveProperty("TrackingUrl");
   });
 });
+
+describe("emitConfigManifest read-only GET flows", () => {
+  it("omits TrackingUrl from the request schema when readOnlyGet is set", () => {
+    const manifest = JSON.parse(
+      emitConfigManifest({
+        siteId: "test-site",
+        baseUrl: "https://example.org",
+        flowSteps: ["Click the Apply button"],
+        readOnlyGet: true,
+      })
+    ) as ManifestShape;
+    expect(manifest.spec.request?.properties ?? {}).not.toHaveProperty("TrackingUrl");
+  });
+});

@@ -22,6 +22,7 @@
  */
 
 import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
+import { shadowXpathLookupExpr } from "@/scraper/shadow-xpath";
 
 /**
  * Emits a browser-context statement block that activates the element bound to
@@ -304,8 +305,7 @@ export function buildMarkShadowInteractiveDescendantExpr(
   markerValue: string
 ): string {
   return `(() => {
-    const r = document.evaluate(${JSON.stringify(xpathBody)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const host = r.singleNodeValue;
+    const host = ${shadowXpathLookupExpr(xpathBody)};
     if (!host) return { found: false };
     const resolveShadowInteractiveDescendant = ${RESOLVE_SHADOW_INTERACTIVE_DESCENDANT_EXPR};
     const descendant = resolveShadowInteractiveDescendant(host);
@@ -330,8 +330,7 @@ export function buildUnmarkShadowDescendantExpr(
   markerValue: string
 ): string {
   return `(() => {
-    const r = document.evaluate(${JSON.stringify(xpathBody)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const host = r.singleNodeValue;
+    const host = ${shadowXpathLookupExpr(xpathBody)};
     if (!host || !host.shadowRoot) return;
     const marked = host.shadowRoot.querySelector(${JSON.stringify(`[${markerAttr}="${markerValue}"]`)});
     if (marked) marked.removeAttribute(${JSON.stringify(markerAttr)});

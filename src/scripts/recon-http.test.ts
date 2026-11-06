@@ -145,7 +145,7 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
       }),
     ];
 
-    const { targets } = selectRateLimitTargets(replays);
+    const { targets } = selectRateLimitTargets(replays, [], "example.com");
 
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
   });
@@ -157,7 +157,7 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
       replay({ url: "https://bat.bing.com/action/0" }),
     ];
 
-    const { targets } = selectRateLimitTargets(replays);
+    const { targets } = selectRateLimitTargets(replays, [], "example.com");
 
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
   });
@@ -171,7 +171,7 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
       }),
     ];
 
-    const { targets } = selectRateLimitTargets(replays);
+    const { targets } = selectRateLimitTargets(replays, [], "example.com");
 
     expect(targets.size).toBe(0);
   });
@@ -179,18 +179,24 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
 
 describe("selectRateLimitTargets — captured query string", () => {
   it("probes the captured request including its query string, not the bare path", () => {
-    const { targets } = selectRateLimitTargets([
-      replay({ url: "https://api.example.com/items?id=42&lang=en" }),
-    ]);
+    const { targets } = selectRateLimitTargets(
+      [replay({ url: "https://api.example.com/items?id=42&lang=en" })],
+      [],
+      "example.com"
+    );
 
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/items?id=42&lang=en"]);
   });
 
   it("keeps the query for a path ending in .json and probes each endpoint once", () => {
-    const { targets } = selectRateLimitTargets([
-      replay({ url: "https://api.example.com/v1/search.json?q=a" }),
-      replay({ url: "https://api.example.com/v1/search.json?q=b" }),
-    ]);
+    const { targets } = selectRateLimitTargets(
+      [
+        replay({ url: "https://api.example.com/v1/search.json?q=a" }),
+        replay({ url: "https://api.example.com/v1/search.json?q=b" }),
+      ],
+      [],
+      "example.com"
+    );
 
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/v1/search.json?q=a"]);
   });
@@ -499,13 +505,17 @@ describe("recon-http main() end to end", () => {
 
 describe("selectRateLimitTargets — fixture shape and safety", () => {
   it("probes real .json endpoints, skips fixtures and unsafe methods", () => {
-    const { targets } = selectRateLimitTargets([
-      replay({ url: "https://api.example.com/x/schedule.json" }),
-      replay({ url: "https://api.example.com/markets.json" }),
-      replay({ url: "https://api.example.com/config/app" }),
-      replay({ url: "https://api.example.com/locales/en" }),
-      replay({ url: "https://api.example.com/submit", method: "POST" }),
-    ]);
+    const { targets } = selectRateLimitTargets(
+      [
+        replay({ url: "https://api.example.com/x/schedule.json" }),
+        replay({ url: "https://api.example.com/markets.json" }),
+        replay({ url: "https://api.example.com/config/app" }),
+        replay({ url: "https://api.example.com/locales/en" }),
+        replay({ url: "https://api.example.com/submit", method: "POST" }),
+      ],
+      [],
+      "example.com"
+    );
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/x/schedule.json"]);
   });
 });

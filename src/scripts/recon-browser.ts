@@ -127,6 +127,7 @@ import {
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import {
+  isPassiveNoopInstruction,
   isPlausibleStepDestination,
   SIGN_IN_PATTERNS,
   splitIntoActionClauses,
@@ -563,7 +564,14 @@ function writeSubmitManifest(params: {
         status?: number;
       };
       if (typeof data.url !== "string") continue;
-      if (!isQualifyingSubmitCapture(data, { endpointRx, bodyRx, ownBackendHostnames })) continue;
+      if (
+        !isQualifyingSubmitCapture(data, {
+          endpointRx,
+          bodyRx,
+          ownBackendHostnames,
+        })
+      )
+        continue;
       if (data.method === "GET") {
         if (isSuccessStatus(data.status)) getMatched.push({ index, filename, url: data.url });
         continue;
@@ -706,6 +714,31 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  *
  * Both forms route through `parseReconFlow` into a shared internal record.
  */
+/**
+ * One `foldReturn` entry. Mirrors the keys `parseFoldReturnSpec` reads in
+ * recon-generate.ts. `resultsPath` is optional (later entries in an array may
+ * fold onto an earlier entry's results); `attachAs`, `payloadFlag` and
+ * `drillParamBindings` are generator-read keys that must survive validation.
+ */
+const RECON_FOLD_RETURN_ENTRY_SCHEMA = z.object({
+  endpointPattern: z.string().min(1),
+  resultsPath: z.string().min(1).optional(),
+  drillResultsPath: z.string().min(1).optional(),
+  joinFields: z.array(z.string().min(1)).min(1),
+  attachAs: z.string().min(1).optional(),
+  payloadFlag: z.string().min(1).optional(),
+  drillParamBindings: z
+    .record(
+      z.string(),
+      z.object({
+        payloadField: z.string().min(1),
+        type: z.enum(["int", "string", "boolean"]),
+        default: z.union([z.string(), z.number(), z.boolean()]),
+      })
+    )
+    .optional(),
+});
+
 export const RECON_FLOW_FILE_SCHEMA = z.union([
   RECON_FLOW_SCHEMA,
   z.object({
@@ -839,12 +872,7 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * heuristic can see structurally are applied.
      */
     foldReturn: z
-      .object({
-        endpointPattern: z.string().min(1),
-        resultsPath: z.string().min(1),
-        drillResultsPath: z.string().min(1).optional(),
-        joinFields: z.array(z.string().min(1)).min(1),
-      })
+      .union([RECON_FOLD_RETURN_ENTRY_SCHEMA, z.array(RECON_FOLD_RETURN_ENTRY_SCHEMA).min(1)])
       .optional(),
   }),
 ]);
@@ -1926,7 +1954,10 @@ async function readFailureDumpEvidence(
       : [];
 
     const [unfocusedList, invalidVerdict, errorVerdict] = await Promise.all([
-      renderUnfocusedObserve(dump.unfocusedObserve ?? [], { client, captureFn }),
+      renderUnfocusedObserve(dump.unfocusedObserve ?? [], {
+        client,
+        captureFn,
+      }),
       leafFields.length > 0
         ? Promise.resolve(null)
         : judgeInvalidFieldsWithLLM({
@@ -1970,7 +2001,13 @@ async function readFailureDumpEvidence(
       .filter((r): r is string => r.length > 0)
       .slice(-5);
 
-    return { bodyExcerpt, unfocusedList, invalidFieldList, errorTextList, recentFailureReasons };
+    return {
+      bodyExcerpt,
+      unfocusedList,
+      invalidFieldList,
+      errorTextList,
+      recentFailureReasons,
+    };
   } catch {
     // Swallowed by design: a missing dump must not fail the replan.
     return {
@@ -2034,7 +2071,10 @@ async function replanRemainingFlow(params: {
    * Helps the replanner avoid proposing regression steps when the form
    * has already advanced.
    */
-  trajectory?: readonly { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
+  trajectory?: readonly {
+    stepIndex: number;
+    verifiedBy: AttemptRecord["verifiedBy"];
+  }[];
   /**
    * Previous replans constructed for this run. Rendered into a PRIOR REPLAN
    * HISTORY section as graduated discouragement — re-proposing a sequence
@@ -2087,7 +2127,10 @@ async function replanRemainingFlow(params: {
     { timeout: STEP_WATCHDOG_MS },
     captureFn
   ).catch(() => [] as Action[]);
-  const candidateList = await renderUnfocusedObserve(candidates, { client, captureFn });
+  const candidateList = await renderUnfocusedObserve(candidates, {
+    client,
+    captureFn,
+  });
   const pageTitle = await withWatchdog(() => page.title(), {
     timeoutMs: config.scraper.frameEvaluateTimeoutMs,
     label: "replan: page title",
@@ -2163,8 +2206,12 @@ async function replanRemainingFlow(params: {
   const completedFillSteps = completedSteps
     .map((step) => ({ step, parsed: parseFillStep(step) }))
     .filter(
-      (entry): entry is { step: string; parsed: { fieldLabel: string; value: string } } =>
-        entry.parsed !== null
+      (
+        entry
+      ): entry is {
+        step: string;
+        parsed: { fieldLabel: string; value: string };
+      } => entry.parsed !== null
     );
   const fillReverificationCheck =
     completedFillSteps.length > 0
@@ -2916,6 +2963,7 @@ async function main(): Promise<void> {
     // rather than a previous attempt's partially-replanned plan.
     const plan: NormalizedStep[] = [];
     const replanEvents: ReplanEvent[] = [];
+    let runSucceeded = false;
     const transientStepRetries = new Map<string, number>();
     try {
       const stagehand = session.stagehand;
@@ -2956,7 +3004,10 @@ async function main(): Promise<void> {
       // established by the SPA probe below, and the flow steps fail loudly on
       // their own if the page really is unusable.
       try {
-        await page.goto(url, { waitUntil: GOTO_WAIT_UNTIL, timeoutMs: GOTO_TIMEOUT_MS });
+        await page.goto(url, {
+          waitUntil: GOTO_WAIT_UNTIL,
+          timeoutMs: GOTO_TIMEOUT_MS,
+        });
       } catch (err) {
         logger.warn(
           `navigation wait (${GOTO_WAIT_UNTIL}) did not settle: ${toErrorMessage(err)} — continuing; the SPA readiness probe below decides whether the page is usable`
@@ -3124,71 +3175,78 @@ async function main(): Promise<void> {
           // the current DOM, so it skips straight to executeNavigateStep
           // instead of the self-heal cascade.
           const stepPromise: Promise<"completed" | "skipped"> =
-            step.navigateTo !== undefined
-              ? executeNavigateStep({
-                  page,
-                  url: step.navigateTo,
-                  optional: step.optional,
-                  logger,
-                  waitUntil: GOTO_WAIT_UNTIL,
-                  timeoutMs: GOTO_TIMEOUT_MS,
-                })
-              : executeStepWithHealing({
-                  stagehand,
-                  page,
-                  onPageAdopted: (adopted) => {
-                    if (adopted === page) return;
-                    page = adopted;
-                    capture.adopt(adopted);
-                  },
-                  abortSignal: session.deathAbortSignal,
-                  frameTarget,
-                  step: step.instruction,
-                  optional: step.optional,
-                  upload: step.upload,
-                  submitStep: step.submitStep === true,
-                  captchaGated: step.captchaGated === true,
-                  emailStep: step.emailStep === true,
-                  emailStepConfig: step.emailStepConfig,
-                  allocatedInbox,
-                  flowHasSubmitSemantics: flowHasSubmitSemantics({
-                    steps: plan.map((s) => ({
-                      submitStep: s.submitStep === true,
-                      instruction: s.instruction,
-                    })),
+            step.navigateTo === undefined &&
+            step.upload === undefined &&
+            step.submitStep !== true &&
+            step.captchaGated !== true &&
+            step.emailStep !== true &&
+            isPassiveNoopInstruction(step.instruction)
+              ? Promise.resolve<"completed" | "skipped">("completed")
+              : step.navigateTo !== undefined
+                ? executeNavigateStep({
+                    page,
+                    url: step.navigateTo,
+                    optional: step.optional,
+                    logger,
+                    waitUntil: GOTO_WAIT_UNTIL,
+                    timeoutMs: GOTO_TIMEOUT_MS,
+                  })
+                : executeStepWithHealing({
+                    stagehand,
+                    page,
+                    onPageAdopted: (adopted) => {
+                      if (adopted === page) return;
+                      page = adopted;
+                      capture.adopt(adopted);
+                    },
+                    abortSignal: session.deathAbortSignal,
+                    frameTarget,
+                    step: step.instruction,
+                    optional: step.optional,
+                    upload: step.upload,
+                    submitStep: step.submitStep === true,
+                    captchaGated: step.captchaGated === true,
+                    emailStep: step.emailStep === true,
+                    emailStepConfig: step.emailStepConfig,
+                    allocatedInbox,
+                    flowHasSubmitSemantics: flowHasSubmitSemantics({
+                      steps: plan.map((s) => ({
+                        submitStep: s.submitStep === true,
+                        instruction: s.instruction,
+                      })),
+                      submitEndpointPattern,
+                      requireSubmitEndpointMatch,
+                    }),
+                    stepIndex: i,
+                    totalSteps: () => plan.length,
+                    phase: currentPhase,
+                    signalCounter,
+                    recentCaptures,
+                    recentCaptureMeta,
+                    anthropic,
+                    rephraseModel,
+                    logger,
+                    uploadFixture,
+                    isFinalStep: i === plan.length - 1,
                     submitEndpointPattern,
+                    submittedStateSelectors,
                     requireSubmitEndpointMatch,
-                  }),
-                  stepIndex: i,
-                  totalSteps: () => plan.length,
-                  phase: currentPhase,
-                  signalCounter,
-                  recentCaptures,
-                  recentCaptureMeta,
-                  anthropic,
-                  rephraseModel,
-                  logger,
-                  uploadFixture,
-                  isFinalStep: i === plan.length - 1,
-                  submitEndpointPattern,
-                  submittedStateSelectors,
-                  requireSubmitEndpointMatch,
-                  advanceTransitionBodyPattern,
-                  successUrlFragments,
-                  successPageTitleHints,
-                  ownBackendHostnames,
-                  knownErrorClassPrefixes,
-                  wizardExitButtonLabels,
-                  getSuppressedAisdkElementIdErrorCount:
-                    session.getSuppressedAisdkElementIdErrorCount,
-                  trajectory,
-                  captureFn,
-                  onStepFailure: dumpStepFailure,
-                  onStepHeal: dumpStepHeal,
-                  onElementStepStartBaseline: (snapshot) => {
-                    elementBaseline = snapshot;
-                  },
-                });
+                    advanceTransitionBodyPattern,
+                    successUrlFragments,
+                    successPageTitleHints,
+                    ownBackendHostnames,
+                    knownErrorClassPrefixes,
+                    wizardExitButtonLabels,
+                    getSuppressedAisdkElementIdErrorCount:
+                      session.getSuppressedAisdkElementIdErrorCount,
+                    trajectory,
+                    captureFn,
+                    onStepFailure: dumpStepFailure,
+                    onStepHeal: dumpStepHeal,
+                    onElementStepStartBaseline: (snapshot) => {
+                      elementBaseline = snapshot;
+                    },
+                  });
           // Races the step's own promise against the session's teardown death
           // signal (bugfix-003's raceAgainstTeardown): when Stagehand's CDP
           // transport is reaped mid-step, the in-flight promise above never
@@ -3317,7 +3375,10 @@ async function main(): Promise<void> {
                   },
                   stepStartSnapshot: baselineText,
                   midFlowSubmit,
-                  io: { settle: settleWithPageQuiescence, snapshot: snapshotPage },
+                  io: {
+                    settle: settleWithPageQuiescence,
+                    snapshot: snapshotPage,
+                  },
                 }).catch((err: unknown) => {
                   logger.warn(
                     `${formatStepPrefix(i, () => plan.length)} post-failure settle failed: ${err instanceof Error ? err.message : String(err)}; not crediting an unsettled read`
@@ -3444,6 +3505,19 @@ async function main(): Promise<void> {
               exitedViaTrailingGrace = true;
               break;
             }
+          }
+
+          // An optional step whose cascade is exhausted is conditional by the
+          // author's declaration: log and skip at ANY position (not only the
+          // trailing window) instead of replanning or aborting the run.
+          if (step.optional && err.kind === "cascade-exhausted") {
+            logger.warn(
+              `${formatStepPrefix(i, () => plan.length)} optional step cascade exhausted; logged and skipped (${step.instruction.slice(0, 60)})`
+            );
+            consecutiveStaleSkips = 0;
+            completedSteps.push(step.instruction);
+            session.recordStepCompleted?.();
+            continue;
           }
 
           if (!anthropic) throw err;
@@ -3792,6 +3866,7 @@ async function main(): Promise<void> {
         plan.length - 1
       );
 
+      runSucceeded = true;
       logger.info(`recon complete — ${counter.n} captures written to ${runDir.root}`);
       const bodyWarning = formatBodyUnavailableWarning(bodyUnavailableCounter.n);
       if (bodyWarning) logger.warn(bodyWarning);
@@ -3810,7 +3885,12 @@ async function main(): Promise<void> {
       // needs to fire on failure as much as on success. Skipped on
       // --no-save-replan (diagnostic dry-runs) and when --flow was used
       // inline (no file to write back to).
-      if (replanEvents.length > 0) {
+      if (replanEvents.length > 0 && !runSucceeded) {
+        // A failed run must leave the author's flow file byte-identical.
+        logger.info(
+          `run failed with ${replanEvents.length} replan event(s); not writing replan steps back over the flow file`
+        );
+      } else if (replanEvents.length > 0) {
         if (!saveReplan) {
           logger.info(
             `run done with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`

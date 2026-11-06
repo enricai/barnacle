@@ -189,6 +189,34 @@ export function splitIntoActionClauses(instruction: string): string[] {
 }
 
 /**
+ * True when a step instruction asks for no page interaction: after discarding
+ * negated verbs ("do not click anything"), no recognized imperative action verb
+ * remains. Such a step (e.g. "Do not click anything; simply wait for the page
+ * to settle") has nothing to act on, so it is a no-op success rather than a
+ * phantom click. Verb-based only; never inspects provider output.
+ */
+export function isPassiveNoopInstruction(instruction: string): boolean {
+  const text = normalizeForPatternMatch(instruction);
+  if (text.length === 0) return false;
+  const negated = new RegExp(
+    `\\b(?:do not|don't|dont|never|without|no need to)\\s+(?:\\w+\\s+){0,2}?(?:${STEP_ACTION_VERBS.join("|")})\\b`,
+    "g"
+  );
+  negated.lastIndex = 0;
+  const remaining = text.replace(negated, " ");
+  if (STEP_ACTION_VERB_PATTERN.test(remaining)) return false;
+  if (EXTRA_ACTION_VERB_PATTERN.test(remaining)) return false;
+  // Positive evidence required: a step whose verb is merely absent from the
+  // closed list (e.g. "Search for X") must still run, not be silently skipped.
+  negated.lastIndex = 0;
+  return negated.test(text) || PASSIVE_VERB_PATTERN.test(text);
+}
+
+const EXTRA_ACTION_VERB_PATTERN =
+  /\b(?:close|dismiss|search|sign|log|login|logout|go|add|save|apply|pick|set|hover|focus|next|view|run|start|begin|create|delete|remove|send|play|download|refresh|reload|visit|goto|reply|post|book|buy|pay|order|register|join|follow|search|find|look|use|try|retry|skip|back|cancel|ok|yes|no)\b/;
+const PASSIVE_VERB_PATTERN = /\b(?:wait|pause|observe|idle|settle|nothing|noop)\b/;
+
+/**
  * Gates whether a landed destination plausibly corroborates a step's own
  * instruction, so a URL change alone is never enough to credit advancement:
  * if the destination is sign-in-shaped but the step itself wasn't about
@@ -302,7 +330,11 @@ function isHeadSwapped(pre: string, post: string): boolean {
 
 type PageAdvanceKind = "none" | "header" | "body";
 
-const KIND_RANK: Record<PageAdvanceKind, number> = { none: 0, header: 1, body: 2 };
+const KIND_RANK: Record<PageAdvanceKind, number> = {
+  none: 0,
+  header: 1,
+  body: 2,
+};
 
 /** Head length the signature keeps; the excerpt tail starts past it. */
 const SIGNATURE_HEAD_CHARS = 200;

@@ -529,8 +529,13 @@ export function hasNoBusinessRelevantResponseState(capture: {
   const contentType = (
     Object.entries(headers).find(([key]) => key.toLowerCase() === "content-type")?.[1] ?? ""
   ).toLowerCase();
-  if (!contentType.includes("json")) return true;
   const body = capture.responseBody;
+  // A declared non-JSON type means the body is not business data; an ABSENT
+  // content-type says nothing, and a body already parsed to a structure was
+  // JSON on the wire, so only the declared type can rule it out.
+  const declaresNonJson = contentType !== "" && !contentType.includes("json");
+  if (declaresNonJson) return true;
+  if (contentType === "" && (body === null || typeof body !== "object")) return true;
   if (body === null || body === undefined) return true;
   if (typeof body !== "object") return false;
   if (Object.keys(body as Record<string, unknown>).length === 0) return true;
@@ -1316,9 +1321,15 @@ export function isZeroVarianceRepeatCapture(
     return matchCount >= 2 && matchCount > sameEndpointUrls.length / 2;
   });
   if (!hasFixedKey) return false;
-  const bodyIdentical = sameEndpoint.every((c) => c.requestPostData === candidate.requestPostData);
+  const bodyless = candidate.requestPostData === null || candidate.requestPostData === "";
+  // A bodyless request's only input is its URL, so body equality is vacuous:
+  // require whole-URL equality, else a varying search GET reads as a repeat.
+  const bodyIdentical = sameEndpoint.every(
+    (c) => c.requestPostData === candidate.requestPostData && (!bodyless || c.url === candidate.url)
+  );
   if (bodyIdentical) return true;
   if (hasNoBusinessRelevantResponseState(candidate)) return true;
+  if (bodyless) return false;
   if (hasStableOperationIdentity(candidate, sameEndpoint)) return false;
   return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
 }

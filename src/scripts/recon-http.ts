@@ -20,7 +20,7 @@
  *
  * Output lands under the run-scoped root resolved by `resolveReconRunDir()`
  * (`@/scripts/recon-shared`) — `/tmp/recon/<runId>/` by default, rooted
- * elsewhere via `--out-dir <path>` / `RECON_OUT_DIR`:
+ * elsewhere via `--out-dir <path>` / `RECON_OUT_DIR`; `--run-dir <path>` replays an existing run:
  *   replays/<filename>.json  — one replay result per unique capture
  *   aux/<basename>.json      — downloaded static fixture per auxiliary endpoint
  *   replays/rate-limit.json  — rate-limit probe findings
@@ -46,7 +46,11 @@ import {
 import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
-import { readOwnBackendHostnames, resolveReconRunDir } from "@/scripts/recon-shared";
+import {
+  adoptReconRunRoot,
+  readOwnBackendHostnames,
+  resolveLatestReconRunRoot,
+} from "@/scripts/recon-shared";
 
 configureHttpDispatcher();
 
@@ -76,7 +80,7 @@ interface Capture {
   variables: unknown;
 }
 
-interface ReplayResult {
+export interface ReplayResult {
   sourceCapture: string;
   url: string;
   method: string;
@@ -517,11 +521,22 @@ async function probeRateLimit(
  * earlier in the pipeline — the probe fires 60 requests per target, so a noise host reaching
  * this function must never silently slip through on a caller's say-so.
  */
-export function selectRateLimitTargets(replays: ReplayResult[]): {
+export function selectRateLimitTargets(
+  replays: ReplayResult[],
+  ownBackendHostnames: string[],
+  fallbackHost: string | null = null
+): {
   targets: Map<string, { method: string; body: string | null }>;
   skipped: number;
 } {
   const targets = new Map<string, { method: string; body: string | null }>();
+  const own = ownBackendHostnames.map((h) => h.toLowerCase());
+  const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
+  const isOwnHost = (hostname: string): boolean => {
+    const host = hostname.toLowerCase();
+    if (own.length > 0) return own.some((o) => host === o || host.endsWith(`.${o}`));
+    return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
+  };
   const seenEndpoints = new Set<string>();
   let skipped = 0;
   for (const replay of replays) {
@@ -534,6 +549,8 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
     try {
       const u = new URL(replay.url);
       if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      // Never probe third-party hosts: only the site's own hosts and subdomains.
+      if (!isOwnHost(u.hostname)) continue;
       const pathname = u.pathname.toLowerCase();
       // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
       if (isStaticFixturePath(pathname, true)) continue;
@@ -632,11 +649,16 @@ export function applyRobots<T extends { capture: Capture }>(
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  let runDirArg: string | undefined;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--out-dir" && args[i + 1]) process.env.RECON_OUT_DIR = args[++i]!;
+    else if (args[i] === "--run-dir" && args[i + 1]) runDirArg = args[++i]!;
   }
 
-  const runDir = resolveReconRunDir();
+  // recon-http replays what an earlier recon-browser run captured, so it reads
+  // that run (--run-dir, RECON_RUN_ID, else the newest) rather than minting a
+  // fresh empty run dir with nothing to replay.
+  const runDir = adoptReconRunRoot(resolveLatestReconRunRoot(runDirArg));
   let capturesDir = runDir.graphqlDir;
   let flowFile: string | null = null;
   let methods: Set<string> | null = null;
@@ -651,6 +673,12 @@ async function main(): Promise<void> {
 
   logger.info("=== PHASE 2: HTTP REPLAY ===");
   const all = loadCaptures(capturesDir);
+  if (all.length === 0) {
+    logger.error(
+      `recon-http: ${capturesDir} has no captures — nothing to replay (did recon-browser run first? pass --run-dir <path> to pick a run)`
+    );
+    process.exit(1);
+  }
   const unique = deduplicateCaptures(all);
   // Drop third-party asset/telemetry hosts and a site's own error sink before
   // replaying. Without this the probe replays and rate-limits every captured
@@ -716,7 +744,11 @@ async function main(): Promise<void> {
 
   // Rate-limit probe — runs last
   logger.info("=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===");
-  const { targets: probeTargets, skipped: skippedAsNoise } = selectRateLimitTargets(replays);
+  const { targets: probeTargets, skipped: skippedAsNoise } = selectRateLimitTargets(
+    replays,
+    ownBackendHostnames,
+    fallbackHost
+  );
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +
       (skippedAsNoise > 0 ? ` (${skippedAsNoise} skipped as noise)` : "")

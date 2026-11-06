@@ -71,6 +71,38 @@ export function buildUniqueEndpoints(captures: Capture[]): Map<string, EndpointT
   return uniqueEndpoints;
 }
 
+/** True when replays show a 403 or the rate-limit headers reveal a bot-manager edge (Akamai/Cloudflare). Shared by the Hazards list and the Summary row. */
+export function hasBotDetection(
+  replays: ReplayResult[],
+  rateLimitRaw: RateLimitFinding[]
+): boolean {
+  if (replays.some((r) => r.replayStatus === 403)) return true;
+  const hs = rateLimitRaw
+    .flatMap((f) => Object.keys(f.xRateLimitHeaders ?? {}))
+    .map((h) => h.toLowerCase());
+  return hs.some((h) => h.includes("akamai") || h.includes("cf-"));
+}
+
+/** Keeps only rate-limit findings whose endpoint host is one the replays targeted (own-host probes). */
+export function filterOwnHostRateLimits(
+  findings: RateLimitFinding[],
+  replays: ReplayResult[]
+): RateLimitFinding[] {
+  const host = (u: string): string | null => {
+    try {
+      return new URL(u).hostname;
+    } catch {
+      return null;
+    }
+  };
+  const own = new Set(replays.map((r) => host(r.url)).filter((h): h is string => h !== null));
+  if (own.size === 0) return findings;
+  return findings.filter((f) => {
+    const h = host(f.endpoint);
+    return h !== null && own.has(h);
+  });
+}
+
 /** Flags auth/bot-detection/edge-provider hazards from replay statuses and rate-limit header sniffing. */
 export function detectHazards(replays: ReplayResult[], rateLimitRaw: RateLimitFinding[]): string[] {
   const has401 = replays.some((r) => r.replayStatus === 401);
@@ -114,7 +146,7 @@ async function main(): Promise<void> {
     "rate-limit.json",
     "introspection-schema.json",
   ]);
-  const rateLimitRaw = (() => {
+  const rateLimitAll = (() => {
     try {
       return JSON.parse(
         readFileSync(join(replaysDir, "rate-limit.json"), "utf8")
@@ -123,6 +155,8 @@ async function main(): Promise<void> {
       return [] as RateLimitFinding[];
     }
   })();
+
+  const rateLimitRaw = filterOwnHostRateLimits(rateLimitAll, replays);
 
   const auxFiles = (() => {
     try {
@@ -153,7 +187,7 @@ async function main(): Promise<void> {
   const failed = replays.filter((r) => !r.success).length;
 
   const has401 = replays.some((r) => r.replayStatus === 401);
-  const has403 = replays.some((r) => r.replayStatus === 403);
+  const botDetected = hasBotDetection(replays, rateLimitRaw);
 
   const hazards = detectHazards(replays, rateLimitRaw);
 
@@ -194,7 +228,7 @@ async function main(): Promise<void> {
     `| Replay passed | ${passed} |`,
     `| Replay failed | ${failed} |`,
     `| Auth required | ${has401 ? "YES — see §Auth" : "No"} |`,
-    `| Bot detection | ${has403 ? "YES — see §Hazards" : "No"} |`,
+    `| Bot detection | ${botDetected ? "YES — see §Hazards" : "No"} |`,
     `| Auxiliary fixtures | ${auxFiles.length} |`,
     ``,
     `## Endpoints Found`,

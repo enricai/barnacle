@@ -10,6 +10,7 @@
 
 import { getLogger } from "@/lib/logging";
 import type { FrameTarget } from "@/scraper/frame-target";
+import { shadowXpathLookupExpr } from "@/scraper/shadow-xpath";
 
 const logger = getLogger({ name: "scraper/trusted-click" });
 
@@ -104,7 +105,7 @@ export function buildCentreAndHitTestFn(expectText?: string): string {
     : document.elementFromPoint(x, y);
   for (let node = hit; node; ) {
     if (node === el) return { state: "hit", x, y };
-    node = node.parentNode && node.parentNode.host ? node.parentNode.host : node.parentNode;
+    node = node.parentNode && node.parentNode.nodeType === 11 && node.parentNode.host ? node.parentNode.host : node.parentNode;
   }
   const tag = hit && hit.tagName ? hit.tagName.toLowerCase() : "none";
   const id = hit && hit.id ? "#" + hit.id : "";
@@ -237,7 +238,7 @@ function buildSelectorExpression(selector: string, expectText?: string): string 
   const stripped = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : selector;
   const isXpath = stripped.startsWith("/") || stripped.startsWith("(");
   const lookup = isXpath
-    ? `document.evaluate(${JSON.stringify(stripped)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue`
+    ? shadowXpathLookupExpr(stripped)
     : `document.querySelector(${JSON.stringify(selector)})`;
   return `(() => {
     const el = ${lookup};

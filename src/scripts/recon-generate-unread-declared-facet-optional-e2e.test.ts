@@ -155,8 +155,8 @@ describe("recon-generate CLI — declared facets with no request evidence", () =
     expect(browserFlow).toContain('payload.nights ?? "4"');
     expect(
       unreferencedDeclaredPayloadFields(contract, browserFlow, DECLARED_STEPS),
-      "navigateTo steps are never spliced into the browser flow, so only region stays unread; it is optional and warned"
-    ).toEqual(["region"]);
+      "navigateTo steps now splice their payloadField into the browser flow, so no declared facet is unreferenced"
+    ).toEqual([]);
     expect(
       unreferencedDeclaredPayloadFields(
         contract,

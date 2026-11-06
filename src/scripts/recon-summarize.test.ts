@@ -107,7 +107,9 @@ describe("detectHazards", () => {
 
   it("flags Akamai edge detection from rate-limit headers", () => {
     const findings = [
-      makeRateLimitFinding({ xRateLimitHeaders: { "X-Akamai-Session-Info": "1" } }),
+      makeRateLimitFinding({
+        xRateLimitHeaders: { "X-Akamai-Session-Info": "1" },
+      }),
     ];
     expect(detectHazards([], findings)).toEqual(["Akamai edge detected"]);
   });
