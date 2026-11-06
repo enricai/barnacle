@@ -113,4 +113,23 @@ describe("emitContractTs — POST drill hop", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting emitted source
     expect(contract).toContain('"qty":${payload.quantity ?? 1}');
   });
+
+  it("emitted hop body evaluates to valid JSON with the bound payload value or default", () => {
+    const actionSteps = buildActionSteps([
+      searchCapture(),
+      postDrill("sku-a", 2, "2024-01-01T00:00:01Z"),
+      postDrill("sku-b", 3, "2024-01-01T00:00:02Z"),
+    ]);
+    const contract = buildContract(actionSteps);
+    const m = contract.match(/body: `(\{[^`]*"qty":\$\{payload\.quantity \?\? 1\}[^`]*\})`/);
+    expect(m).not.toBeNull();
+    // Evaluate the emitted template literal as the contract would at runtime.
+    const evalBody = (payload: Record<string, unknown>): string =>
+      new Function("payload", "item", `return \`${(m as RegExpMatchArray)[1]}\`;`)(payload, {
+        sku: "sku-a",
+      });
+    expect(JSON.parse(evalBody({ quantity: 7 })).qty).toBe(7);
+    expect(JSON.parse(evalBody({ quantity: 7 })).sku).toBe("sku-a");
+    expect(JSON.parse(evalBody({})).qty).toBe(1);
+  });
 });
