@@ -220,4 +220,19 @@ describe("HTML-issued token emission", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(out).toContain("nonce=${nonceToken}");
   });
+  it("disambiguates two HTML tokens whose names derive the same variable", () => {
+    const T2 = "Zx3cV6bN1mAs8dFgHj5K";
+    const out = emit(
+      mk(
+        `<input type="hidden" name="x-id" value="${T}"><input type="hidden" name="x.id" value="${T2}">`,
+        `x-id=${T}&x.id=${T2}`,
+        ""
+      ),
+      true
+    );
+    expect(out).not.toContain(T);
+    expect(out).not.toContain(T2);
+    expect(out).toMatch(/const idToken\b/);
+    expect(out).toMatch(/const idToken2\b/);
+  });
 });
