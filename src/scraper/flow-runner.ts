@@ -7836,7 +7836,6 @@ async function resettleThroughHeaderOnlyFlip(
   io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   let current = post;
-  let heldStillThroughBudget = false;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
     const moved = hasVisibleTextChanged(pre, current);
     if (moved && hasPageBodySwapped(pre, current))
@@ -7862,9 +7861,11 @@ async function resettleThroughHeaderOnlyFlip(
     const next = await io.snapshot(target, signalCounter, page);
     const heldStill = !hasVisibleTextChanged(current, next);
     current = next;
-    heldStillThroughBudget = heldStill;
+    // Text held still across a full quiescence-gated settle: the page is
+    // quiescent, so decide settled now instead of spending the remaining rounds.
+    if (heldStill) return { ...current, settled: true };
   }
-  return heldStillThroughBudget ? { ...current, settled: true } : current;
+  return current;
 }
 
 /**
