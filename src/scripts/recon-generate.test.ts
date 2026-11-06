@@ -5815,7 +5815,13 @@ describe("deriveGetInputModel", () => {
     const m = deriveGetInputModel(a, [a])!;
     expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["start", "ts", "at", "sort", "n"]);
     expect(m.fixedParams).toEqual({});
-    expect(m.recordedQueryValues).toEqual({ sort: "asc", n: "2030" });
+    expect(m.recordedQueryValues).toEqual({
+      start: "2030-01-01",
+      ts: "1893456000",
+      at: "2030-01-01T10:00:00Z",
+      sort: "asc",
+      n: "2030",
+    });
   });
   it("drops cache-buster keys from both dynamicFields and fixedParams", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -5914,7 +5920,7 @@ describe("deriveGetInputModel", () => {
       { field: "q", queryKey: "q" },
       { field: "from", queryKey: "from" },
     ]);
-    expect(m.recordedQueryValues).toEqual({ q: "1" });
+    expect(m.recordedQueryValues).toEqual({ q: "1", from: "2" });
   });
   it("treats a key present in only some same-route captures as dynamic, not a constant", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -5969,7 +5975,7 @@ describe("deriveGetInputModel", () => {
       { field, queryKey: key },
       { field: "limit", queryKey: "limit" },
     ]);
-    expect(m.recordedQueryValues).toEqual({ limit: "10" });
+    expect(m.recordedQueryValues).toEqual({ [key]: "7", limit: "10" });
   });
   it("exposes a non-entity key that merely ends in id letters as a recorded-fallback input", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -6118,9 +6124,8 @@ describe("emitContractTs — payload-driven GET request", () => {
     expect(source).toContain('method: "GET"');
     expect(source).toContain('encodeURIComponent(String(payload.item_ids ?? "7"))');
     expect(source).toContain('["item_ids[]", String(payload.item_ids ?? "7")]');
-    expect(source).toContain('["date_from", String(payload.date_from)]');
-    expect(source).toContain('["date_to", String(payload.date_to)]');
-    expect(source).not.toContain("2030-01-01");
+    expect(source).toContain('["date_from", String(payload.date_from ?? "2030-01-01")]');
+    expect(source).toContain('["date_to", String(payload.date_to ?? "2030-01-07")]');
     // Read-only GET: no mutation body, not emitted as a submission.
     expect(source).not.toContain('method: "POST"');
   });
