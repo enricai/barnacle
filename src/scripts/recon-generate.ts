@@ -13403,10 +13403,13 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
   actions: readonly T[],
   primaryIndex: number,
   globallyConsumedIndices: ReadonlySet<number>,
-  requestStringValueIndex: ReadonlyMap<string, number[]>
+  requestStringValueIndex: ReadonlyMap<string, number[]>,
+  // See detectDrillDownFoldPlan's identical parameter.
+  allowSelfEndpointDrill = true
 ): PrimaryScanGroup[] {
   scanPrimaryCandidateGroupsCallCount++;
   const primary = actions[primaryIndex]!;
+  const primaryEndpointKey = endpointKey(primary.capture.url);
   const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
   if (primaryCandidates.length === 0) return [];
 
@@ -13438,6 +13441,22 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
     for (const drillIndex of candidateDrillIndices) {
       const drill = actions[drillIndex]!;
       if (drill === primary) continue;
+      // Excluding the primary by object identity alone is not enough when the
+      // flow declared no `foldReturn`: a search re-queried under a different
+      // facet is a DIFFERENT capture of the SAME endpoint, so it stays
+      // eligible and gets paired as a per-item drill whenever a facet value
+      // happens to equal one of the primary items' own field values. A
+      // carnival itinerary carries shipCode "CB", departurePortCode "MIA" and
+      // dur 7, and the flow's own facet steps request &shipcode=CB, &port=MIA
+      // and &durdays=7 — so the pairing looks plausible and a phantom
+      // self-fold on the search itself is invented, which then dies in
+      // assertNoFrozenVaryingDrillParams on the very facet variation the flow
+      // author deliberately recorded. A DECLARED self-fold is unaffected: it
+      // comes from buildFoldPlanFromSpec's `allowSelfFold` path, which the
+      // structural detector has no equivalent of.
+      if (!allowSelfEndpointDrill && endpointKey(drill.capture.url) === primaryEndpointKey) {
+        continue;
+      }
       if (consumedIndices.has(drillIndex)) continue;
       if (globallyConsumedIndices.has(drillIndex)) continue;
 
@@ -13566,7 +13585,20 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   // a DIFFERENT operation than the one already selected upstream as this
   // run's emitted primary. `null`/omitted preserves today's unconstrained,
   // order-dependent structural search for every other call site.
-  primaryIdentityAnchor: string | null = null
+  primaryIdentityAnchor: string | null = null,
+  /**
+   * Whether a capture of the SAME endpoint as the primary may become a
+   * per-item drill target.
+   *
+   * `true` (the default) preserves the existing structural search for every
+   * caller. Pass `false` when the flow declared NO `foldReturn`: there is then
+   * no author intent to fold anything, so a same-endpoint "drill" can only be
+   * a re-query of the search under a different facet — never a real per-item
+   * drill-down. Inventing one from that pairing is what makes
+   * `assertNoFrozenVaryingDrillParams` throw on a read-only GET search whose
+   * flow deliberately varies its facets.
+   */
+  allowSelfEndpointDrill = true
 ): FoldPlan[] {
   const plans: FoldPlan[] = [];
   // Spans every primary candidate, not just the current one's own drill
@@ -13596,7 +13628,8 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       actions,
       index,
       globallyConsumedIndices,
-      requestStringValueIndex
+      requestStringValueIndex,
+      allowSelfEndpointDrill
     );
     scanCache.set(index, result);
     scanCacheVersion.set(index, consumedVersion);
@@ -15324,7 +15357,7 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null
 ): Map<string, Set<Capture>> {
-  const structuralPlans = detectDrillDownFoldPlan(actions);
+  const structuralPlans = detectDrillDownFoldPlan(actions, null, foldReturnSpec !== null);
   const specPlan = foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec);
   const plans = structuralPlans.length > 0 ? structuralPlans : specPlan === null ? [] : [specPlan];
   const consumersByValue = new Map<string, Set<Capture>>();
@@ -15420,7 +15453,14 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
       extraDrillSpecs
     );
   }
-  const structuralPlans = detectDrillDownFoldPlan(actions, primaryIdentityAnchor);
+  // A flow that declared no foldReturn has no author intent to fold, so a
+  // same-endpoint pairing is a facet re-query, not a drill — see the parameter's
+  // docstring.
+  const structuralPlans = detectDrillDownFoldPlan(
+    actions,
+    primaryIdentityAnchor,
+    foldReturnSpec !== null
+  );
   const plans =
     structuralPlans.length > 0
       ? mergeSpecPlanOntoSamePrimary(
