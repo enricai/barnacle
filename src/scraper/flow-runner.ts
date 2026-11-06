@@ -4920,7 +4920,7 @@ function xpathTailForRetarget(xpath: string): string | null {
  * cannot hand back an element that is not the named target. An empty list, or
  * a match with no text at all, is unrestricted.
  */
-const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
+export const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
     const isNegative = ${NEGATIVE_TEXT_EXPR};
     const accessibleName = (el) =>
       (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
