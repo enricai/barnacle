@@ -444,4 +444,38 @@ describe("settleAfterClick", () => {
     expect(f.polls()).toBeGreaterThanOrEqual(30);
     expect(f.polls()).toBeLessThan(60);
   });
+
+  describe("holdUnmovedMs", () => {
+    const HOLD_MS = 60_000;
+    const q = async (): Promise<{ pending: number; mutations: number }> => ({
+      pending: 0,
+      mutations: 0,
+    });
+
+    it("keeps waiting through a long quiet gap after the header flip until the body lands", async () => {
+      const f = makeFake(() => {});
+      const text = (): string => (f.polls() >= 40 ? "body" : "header");
+      await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "pre", q, HOLD_MS);
+      expect(f.polls()).toBeGreaterThanOrEqual(40);
+    });
+
+    it("does not spend the rest of the allowance once the text moves again", async () => {
+      const f = makeFake(() => {});
+      const text = (): string => (f.polls() >= 20 ? "body" : "header");
+      await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "pre", q, HOLD_MS);
+      expect(f.polls()).toBeLessThan(HOLD_MS / 1000);
+    });
+
+    it("holds a header flip whose body never re-renders to the allowance", async () => {
+      const f = makeFake(() => {});
+      await settleAfterClick(f.page, f.counter, 0, true, async () => "header", "pre", q, HOLD_MS);
+      expect(f.polls()).toBe(HOLD_MS / 1000);
+    });
+
+    it("leaves a silent click on the quiescent no-op give-up", async () => {
+      const f = makeFake(() => {});
+      await settleAfterClick(f.page, f.counter, 0, true, async () => "pre", "pre", q, HOLD_MS);
+      expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
+    });
+  });
 });

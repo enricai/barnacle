@@ -1707,7 +1707,8 @@ export async function settleWithPageQuiescence(
   preNetworkCount: number,
   submitShaped: boolean,
   preVisibleTextSignature: string,
-  preVisibleTextDigest?: string
+  preVisibleTextDigest?: string,
+  holdUnmovedMs?: number
 ): Promise<void> {
   await settleAfterClick(
     page,
@@ -1716,7 +1717,8 @@ export async function settleWithPageQuiescence(
     submitShaped,
     () => readSettleTextSignature(target),
     settleTextKey(preVisibleTextSignature, preVisibleTextDigest),
-    () => readPageQuiescence(target)
+    () => readPageQuiescence(target),
+    holdUnmovedMs
   );
 }
 
@@ -7808,9 +7810,9 @@ const DEFAULT_POST_CLICK_SETTLE_IO: PostClickSettleIo = {
 
 /**
  * Re-settle rounds granted to a post-click page whose header flipped but whose
- * body has not re-rendered yet. Each round waits the settle's own idle
- * allowance, so the rounds together span the settle's MAX_MS ceiling rather
- * than a fixed guess.
+ * body has not re-rendered yet. Each round holds for up to the settle's own
+ * MAX_MS ceiling while the text stays still, so the rounds together cover a body
+ * that starts re-rendering minutes after the header flipped.
  */
 const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_UP_MS);
 
@@ -7822,10 +7824,11 @@ const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_
  * reads the header flip as the page's final state (`settled`) only after the
  * text holds still through the whole bounded budget; a single quiet round
  * cannot distinguish a finished page from a body that re-renders later.
- * Each round settles
- * against the pre-click text, so the header
- * flip stays movement and the quiet window, not the silent no-op give-up,
- * decides how long a body re-render is waited for. Bounded; a page whose body
+ * Each round settles against the pre-click text, so the header flip stays
+ * movement and the silent no-op give-up never applies, and holds for the
+ * settle's whole ceiling while the text stays still (a body re-render may start
+ * long after the header flipped), falling back to the ordinary quiet window once
+ * the text moves again. Bounded; a page whose body
  * already swapped returns at once, and one showing no change gets a single
  * probe round so a re-render that lands after the first snapshot is still seen.
  */
@@ -7859,7 +7862,8 @@ async function resettleThroughHeaderOnlyFlip(
       current.networkCount,
       true,
       pre.visibleTextSignature,
-      pre.visibleTextDigest
+      pre.visibleTextDigest,
+      SETTLE_MAX_MS
     );
     const next = await io.snapshot(target, signalCounter, page);
     const heldStill = !hasVisibleTextChanged(current, next);
@@ -7961,6 +7965,34 @@ export async function readMidFlowPostClickAdvance(args: {
     args.io ?? DEFAULT_POST_CLICK_SETTLE_IO
   );
   return { post, advanceBaseline, pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post) };
+}
+
+/**
+ * {@link readMidFlowPostClickAdvance} for the primary click of a mid-flow submit
+ * step. A silent click gives up at the quiescent no-op bound, which is shorter
+ * than an SPA can take to begin re-rendering after a click that records no
+ * network (a re-render started by a timer shows no pending request or mutation
+ * until it fires). A click that showed nothing at all (no text movement, no
+ * counted request, no URL change) therefore gets one more post-click pause and
+ * read before it is judged, so a late first change is credited by the attempt
+ * that clicked instead of being classified phantom and escalated into a second
+ * click. A click that showed any movement is not re-read: its settle already
+ * waited for it, and the no-op bound of the first read is unchanged.
+ */
+export async function readMidFlowSubmitPostClickAdvance(
+  args: Parameters<typeof readMidFlowPostClickAdvance>[0] & { page: Page }
+): ReturnType<typeof readMidFlowPostClickAdvance> {
+  const first = await readMidFlowPostClickAdvance(args);
+  const silent =
+    args.midFlowSubmit &&
+    (args.mayTriggerRoundTrip ?? true) &&
+    !first.pageAdvanced &&
+    !hasVisibleTextChanged(first.advanceBaseline, first.post) &&
+    first.post.networkCount === args.pre.networkCount &&
+    !hasOriginOrPathChanged(args.pre.url, first.post.url);
+  if (!silent) return first;
+  await args.page.waitForTimeout(STEP_PAUSE_MS);
+  return readMidFlowPostClickAdvance(args);
 }
 
 /**
@@ -15340,7 +15372,7 @@ export async function executeStepWithHealing(params: {
       post,
       advanceBaseline,
       pageAdvanced: settledPageAdvanced,
-    } = await readMidFlowPostClickAdvance({
+    } = await readMidFlowSubmitPostClickAdvance({
       target: frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,

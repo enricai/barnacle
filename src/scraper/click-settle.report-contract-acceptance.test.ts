@@ -55,17 +55,10 @@ function drivePage(visibleAt: (waited: number) => string): {
       formValueSignature: "",
     }) as Snap;
   const io = {
-    settle: async (): Promise<void> => {
-      const pre = await snapshot();
-      await settleAfterClick(
-        page,
-        { n: 0 },
-        0,
-        true,
-        read,
-        pre.visibleTextSignature,
-        idleQuiescence
-      );
+    settle: async (...args: unknown[]): Promise<void> => {
+      const baseline = args[5] as string;
+      const hold = args[7] as number | undefined;
+      await settleAfterClick(page, { n: 0 }, 0, true, read, baseline, idleQuiescence, hold);
     },
     snapshot,
   } as unknown as PostClickSettleIo;
@@ -108,6 +101,28 @@ describe("report contract: non-final submit-shaped click, header flips at once, 
         isMidFlowSubmitStep: true,
       })
     ).toBe("effective");
+  });
+
+  it.each([20_000, 60_000, 120_000])(
+    "is credited when the body re-renders %ims after the header flipped, with a quiet page in between",
+    async (delay) => {
+      const f = drivePage((w) =>
+        w >= 1000 + delay ? POST_TEXT : w >= 1000 ? HEADER_FLIPPED : PRE_TEXT
+      );
+      const r = await readAdvance(f.io);
+      expect(r.pageAdvanced).toBe(true);
+      expect(r.post.visibleTextSignature).toContain("Order summary");
+      expect(r.post.networkCount).toBe(0);
+    }
+  );
+
+  it("is credited when the body re-renders in two stages with a quiet gap between them", async () => {
+    const LOADING = "Skip to main content|Settings|Loading|Careers Home|";
+    const f = drivePage((w) =>
+      w >= 80_000 ? POST_TEXT : w >= 30_000 ? LOADING : w >= 1000 ? HEADER_FLIPPED : PRE_TEXT
+    );
+    const r = await readAdvance(f.io);
+    expect(r.pageAdvanced).toBe(true);
   });
 
   it("keeps a genuine no-op at the QUIESCENT_NO_OP_GIVE_UP_MS give-up and phantom", async () => {

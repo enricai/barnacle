@@ -47,6 +47,11 @@ export const MAX_MS = 60000;
  * any other click that shows no activity after one quiet poll gives up.
  * The probe is read once before the click (see snapshotPage) so early requests and
  * mutations are counted; settle ends on page quiescence, never on a content predicate.
+ * `holdUnmovedMs` serves a re-settle of a page whose header already flipped and whose body has
+ * not yet re-rendered: the text the call starts on is then not the finished page, so quiet alone
+ * cannot end the wait. While the text has not moved since the call began, the wait is held to
+ * that allowance instead of IDLE_GIVE_UP_MS; once the text moves again it falls back to the
+ * ordinary quiet window, so a body that lands mid-wait does not cost the rest of the allowance.
  */
 export async function settleAfterClick(
   page: SettlePage,
@@ -55,7 +60,8 @@ export async function settleAfterClick(
   submitShaped: boolean,
   readText?: () => Promise<string>,
   preText?: string,
-  readQuiescence?: () => Promise<PageQuiescence>
+  readQuiescence?: () => Promise<PageQuiescence>,
+  holdUnmovedMs?: number
 ): Promise<void> {
   const read = async (): Promise<string | undefined> => (readText ? readText() : undefined);
   const quiescence = async (): Promise<PageQuiescence | undefined> =>
@@ -67,6 +73,7 @@ export async function settleAfterClick(
   let textMoved = preText !== undefined && startText !== undefined && startText !== preText;
   let seen = counter.n > preCount || textMoved;
   let last = counter.n;
+  let movedSinceStart = false;
   let quiet = 0;
   let elapsed = 0;
   while (elapsed < MAX_MS) {
@@ -78,6 +85,7 @@ export async function settleAfterClick(
       textMoved = true;
       seen = true;
       quiet = 0;
+      if (text !== startText) movedSinceStart = true;
       continue;
     }
     const q = await quiescence();
@@ -102,7 +110,9 @@ export async function settleAfterClick(
         if (quiet >= QUIET_POLLS) return;
         continue;
       }
-      if (quiet >= TEXT_QUIET_POLLS && elapsed >= IDLE_GIVE_UP_MS) return;
+      const idleAllowanceMs =
+        holdUnmovedMs !== undefined && !movedSinceStart ? holdUnmovedMs : IDLE_GIVE_UP_MS;
+      if (quiet >= TEXT_QUIET_POLLS && elapsed >= idleAllowanceMs) return;
       continue;
     }
     if (!submitShaped) return;

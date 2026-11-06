@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-
-import type { PhantomClickAttempt } from "@/scraper/phantom-click";
 import { isClickViewSwapVerified } from "@/scraper/flow-runner";
+import type { PhantomClickAttempt } from "@/scraper/phantom-click";
 import {
   classifyPhantomClick,
   hasPageAdvanced,
