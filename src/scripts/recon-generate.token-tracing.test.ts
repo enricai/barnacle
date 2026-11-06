@@ -126,6 +126,7 @@ describe("HTML-issued tokens", () => {
     buildCapture({
       url: "https://shop.example.com/cart",
       method: "GET",
+      requestPostData: null,
       responseBody: html(),
       timestamp: "2024-01-01T00:00:00Z",
     }),
