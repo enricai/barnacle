@@ -4890,6 +4890,20 @@ function* walkAllPrimitiveLeaves(
  * inflate the index without contributing to state threading. */
 const MIN_STATE_VALUE_LENGTH = 8;
 
+/** True when `value` is or embeds the recorded origin. The origin is runtime
+ * context (`context.baseUrl`), never a caller payload field. */
+function embedsOrigin(value: string, baseUrl: string): boolean {
+  return baseUrl.length > 0 && value.includes(baseUrl);
+}
+
+/** Rewrite every occurrence of the recorded origin in `value` to the
+ * `context.baseUrl` template placeholder. Built by concatenation so Biome
+ * doesn't mistake it for a placeholder in this file's own source. */
+function substituteOrigin(value: string, baseUrl: string): string {
+  if (baseUrl.length === 0) return value;
+  return value.split(baseUrl).join(`$${"{"}context.baseUrl${"}"}`);
+}
+
 /**
  * Documented enum of common HTTP-API error-reporting key names. Closed set
  * (per the no-regex-open-sets feedback): when an API returns 200 with an
@@ -8723,7 +8737,7 @@ function bindLaterWriteScalarLeaves(
     if (typeof value !== "string" || value.length < 3) continue;
     if (path.length === 0 || path.some((seg) => /^\d+$/.test(seg))) continue;
     if (shieldedUuids.has(value) || boundValues.has(value) || /^\d+$/.test(value)) continue;
-    if (baseUrl.length > 0 && value.includes(baseUrl)) continue;
+    if (embedsOrigin(value, baseUrl)) continue;
     const literal = JSON.stringify(value);
     if (!result.includes(literal)) continue;
     let accessor = payloadAccessorByValue.get(value);
@@ -9450,7 +9464,7 @@ export function emitMultiStepExecuteHttp(
       // The recon origin is runtime context, never a caller payload field: a
       // leaf that is or embeds it must not mint a payload key (e.g. BaseUrl);
       // the origin substitution below rewrites it to `${context.baseUrl}`.
-      if (baseUrl.length > 0 && value.includes(baseUrl)) continue;
+      if (embedsOrigin(value, baseUrl)) continue;
       // An element of an array any call site's facet pass owns belongs to the
       // facet's payloadField (or stays literal), not to a by-index accessor
       // that would freeze the sibling elements' shape.
@@ -10092,9 +10106,8 @@ export function emitMultiStepExecuteHttp(
     // Emit "${context.baseUrl}" as a template-literal placeholder into the
     // generated plugin code. Built via concatenation so Biome doesn't mistake
     // it for a placeholder in THIS file's source.
-    const baseUrlPlaceholder = `$${"{"}context.baseUrl${"}"}`;
     for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-      perCallHeaders[headerName] = observedValue.split(baseUrl).join(baseUrlPlaceholder);
+      perCallHeaders[headerName] = substituteOrigin(observedValue, baseUrl);
     }
     // G2: emit tenant-subdomain headers per-call from caller payload field
     // (e.g. API-ShortName → ${payload.ApiShortName}). The discoveredFields
@@ -10769,9 +10782,8 @@ export function emitMultiStepExecuteHttp(
       // G1+G2: include tenant-derived headers in the multipart fetch too.
       // Build the placeholder via concatenation so Biome doesn't mistake it
       // for a template-literal in THIS file's source.
-      const baseUrlPlaceholder = `$${"{"}context.baseUrl${"}"}`;
       for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-        const v = observedValue.split(baseUrl).join(baseUrlPlaceholder);
+        const v = substituteOrigin(observedValue, baseUrl);
         perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`${v}\``);
       }
       for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
@@ -16815,10 +16827,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // ancestor scopes too is what lets a param that only lives on a
         // parent object (e.g. a group id) resolve at all.
         const parameterizeUrl = (rawUrl: string, chainCapture: Capture): string => {
-          const withBase =
-            baseUrl.length > 0
-              ? rawUrl.split(baseUrl).join(`$${"{"}context.baseUrl${"}"}`)
-              : rawUrl;
+          const withBase = substituteOrigin(rawUrl, baseUrl);
           const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
             ...findThreadedJoinFields(threadingScopes, chainCapture, allCaptures),
@@ -19608,7 +19617,7 @@ async function main(): Promise<void> {
     for (const [k, v] of Object.entries(baseHeaders)) {
       if (firstSubdomain.length > 0 && v === firstSubdomain) {
         tenantSubdomainHeaders.set(k, v);
-      } else if (baseUrl.length > 0 && v.includes(baseUrl)) {
+      } else if (embedsOrigin(v, baseUrl)) {
         baseUrlDerivedHeaders.set(k, v);
       } else {
         staticBaseHeaders[k] = v;
