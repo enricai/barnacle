@@ -241,6 +241,17 @@ const VARIANTS: { name: string; timing: Timing; step?: string }[] = [
     name: "body re-renders 30s after header flip",
     timing: { headerMs: 0, bodyMs: 30_000 },
   },
+  { name: "body re-renders 60s after header flip", timing: { headerMs: 0, bodyMs: 60_000 } },
+  { name: "body re-renders 120s after header flip", timing: { headerMs: 0, bodyMs: 120_000 } },
+  {
+    name: "header flips late and the body follows 1s later",
+    timing: { headerMs: 8000, bodyMs: 9000 },
+  },
+  { name: "header and body both land late together", timing: { headerMs: 10_000, bodyMs: 10_000 } },
+  {
+    name: "header flips late and the body follows 5s later",
+    timing: { headerMs: 9000, bodyMs: 14_000 },
+  },
   { name: "header and body land together", timing: { headerMs: 3000, bodyMs: 3000 } },
   { name: "header and body land immediately", timing: { headerMs: 0, bodyMs: 0 } },
   { name: "body lands first, header flips 6s later", timing: { headerMs: 6000, bodyMs: 0 } },
@@ -268,6 +279,10 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit credit timing m
     expect(world.act).toHaveBeenCalledTimes(1);
     expect(trajectory).toHaveLength(1);
     expect(logs().some((l) => /phantom-click-exhausted|replan/i.test(l))).toBe(false);
+    // Credited by the attempt's own verdict, not rescued after a phantom
+    // classification and cascade escalation.
+    expect(logs().some((l) => /phantom click detected|escalating attempt/i.test(l))).toBe(false);
+    expect(logs().some((l) => /succeeded on attempt 1/.test(l))).toBe(true);
   });
 
   it("gives up a genuine no-op click on the idle timeline and classifies it phantom", async () => {

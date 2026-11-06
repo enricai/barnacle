@@ -1707,7 +1707,8 @@ export async function settleWithPageQuiescence(
   preNetworkCount: number,
   submitShaped: boolean,
   preVisibleTextSignature: string,
-  preVisibleTextDigest?: string
+  preVisibleTextDigest?: string,
+  holdUnmovedMs?: number
 ): Promise<void> {
   await settleAfterClick(
     page,
@@ -1716,7 +1717,8 @@ export async function settleWithPageQuiescence(
     submitShaped,
     () => readSettleTextSignature(target),
     settleTextKey(preVisibleTextSignature, preVisibleTextDigest),
-    () => readPageQuiescence(target)
+    () => readPageQuiescence(target),
+    holdUnmovedMs
   );
 }
 
@@ -7808,22 +7810,25 @@ const DEFAULT_POST_CLICK_SETTLE_IO: PostClickSettleIo = {
 
 /**
  * Re-settle rounds granted to a post-click page whose header flipped but whose
- * body has not re-rendered yet. Each round waits the settle's own idle
- * allowance, so the rounds together span the settle's MAX_MS ceiling rather
- * than a fixed guess.
+ * body has not re-rendered yet. Each round holds for up to the settle's own
+ * MAX_MS ceiling while the text stays still, so the rounds together cover a body
+ * that starts re-rendering minutes after the header flipped.
  */
 const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_UP_MS);
 
 /**
  * Re-reads the post-click page while only its header has flipped. One
  * settle-then-snapshot moment can land between a header flip and the body
- * re-render that follows it, and a single quiet round cannot distinguish a
- * finished page from a body that re-renders later. So the verdict waits for the
- * body to swap, or for the text to hold still through the whole re-settle
- * budget, and only then reads the header flip as the page's final state
- * (`settled`). Each round settles against the pre-click text, so the header
- * flip stays movement and the quiet window, not the silent no-op give-up,
- * decides how long a body re-render is waited for. Bounded; a page whose body
+ * re-render that follows it. Each round is a quiescence-gated settle (text quiet
+ * for TEXT_QUIET_POLLS polls), so the verdict waits for the body to swap, or
+ * reads the header flip as the page's final state (`settled`) only after the
+ * text holds still through the whole bounded budget; a single quiet round
+ * cannot distinguish a finished page from a body that re-renders later.
+ * Each round settles against the pre-click text, so the header flip stays
+ * movement and the silent no-op give-up never applies, and holds for the
+ * settle's whole ceiling while the text stays still (a body re-render may start
+ * long after the header flipped), falling back to the ordinary quiet window once
+ * the text moves again. Bounded; a page whose body
  * already swapped returns at once, and one showing no change gets a single
  * probe round so a re-render that lands after the first snapshot is still seen.
  */
@@ -7857,7 +7862,8 @@ async function resettleThroughHeaderOnlyFlip(
       current.networkCount,
       true,
       pre.visibleTextSignature,
-      pre.visibleTextDigest
+      pre.visibleTextDigest,
+      SETTLE_MAX_MS
     );
     const next = await io.snapshot(target, signalCounter, page);
     const heldStill = !hasVisibleTextChanged(current, next);
@@ -7959,6 +7965,34 @@ export async function readMidFlowPostClickAdvance(args: {
     args.io ?? DEFAULT_POST_CLICK_SETTLE_IO
   );
   return { post, advanceBaseline, pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post) };
+}
+
+/**
+ * {@link readMidFlowPostClickAdvance} for the primary click of a mid-flow submit
+ * step. A silent click gives up at the quiescent no-op bound, which is shorter
+ * than an SPA can take to begin re-rendering after a click that records no
+ * network (a re-render started by a timer shows no pending request or mutation
+ * until it fires). A click that showed nothing at all (no text movement, no
+ * counted request, no URL change) therefore gets one more post-click pause and
+ * read before it is judged, so a late first change is credited by the attempt
+ * that clicked instead of being classified phantom and escalated into a second
+ * click. A click that showed any movement is not re-read: its settle already
+ * waited for it, and the no-op bound of the first read is unchanged.
+ */
+export async function readMidFlowSubmitPostClickAdvance(
+  args: Parameters<typeof readMidFlowPostClickAdvance>[0] & { page: Page }
+): ReturnType<typeof readMidFlowPostClickAdvance> {
+  const first = await readMidFlowPostClickAdvance(args);
+  const silent =
+    args.midFlowSubmit &&
+    (args.mayTriggerRoundTrip ?? true) &&
+    !first.pageAdvanced &&
+    !hasVisibleTextChanged(first.advanceBaseline, first.post) &&
+    first.post.networkCount === args.pre.networkCount &&
+    !hasOriginOrPathChanged(args.pre.url, first.post.url);
+  if (!silent) return first;
+  await args.page.waitForTimeout(STEP_PAUSE_MS);
+  return readMidFlowPostClickAdvance(args);
 }
 
 /**
@@ -15313,7 +15347,7 @@ export async function executeStepWithHealing(params: {
           !stepDeclaredNonSubmit &&
           submitShapeObservedBeforeClick.values().next().value === true;
     if (resolvedElementIsSubmitShaped) adoptElementStepStartBaseline();
-    const advanceBaseline = stepStartSnapshot ?? pre;
+    const stepStartBaseline = stepStartSnapshot ?? pre;
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
     const stepIsMidFlowSubmit = isMidFlowSubmitShapedStep({
@@ -15334,12 +15368,16 @@ export async function executeStepWithHealing(params: {
     // Re-settle is not gated on submit shape: an unflagged step or a no-action
     // act can still advance a page whose body re-renders late. Credit stays
     // gated on stepIsMidFlowSubmit, so the final step keeps its strictness.
-    const { post } = await readMidFlowPostClickAdvance({
+    const {
+      post,
+      advanceBaseline,
+      pageAdvanced: settledPageAdvanced,
+    } = await readMidFlowSubmitPostClickAdvance({
       target: frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
       pre,
-      stepStartSnapshot: advanceBaseline,
+      stepStartSnapshot: stepStartBaseline,
       midFlowSubmit: stepIsMidFlowSubmit,
       mayTriggerRoundTrip,
       waitForMutations: isSettleWaitStep || resolvedElementIsSubmitShaped,
@@ -15522,7 +15560,7 @@ export async function executeStepWithHealing(params: {
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausibleForPost,
       midFlowSubmit,
-      pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post),
+      pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
     });
     if (
@@ -15854,7 +15892,7 @@ export async function executeStepWithHealing(params: {
         signalAdvanced: clickViewSwapVerified,
         judgeUnavailable: judgeVerdict === null,
         networkAdvanced: networkIsRealAdvance,
-        pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post),
+        pageAdvanced: settledPageAdvanced,
         invalidMarkerCount,
       });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
@@ -16793,7 +16831,7 @@ export async function executeStepWithHealing(params: {
           !isGenuineFinalSubmit({
             isFinalStep,
             flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-          }) && hasSettledPageAdvanced(advanceBaseline, post),
+          }) && settledPageAdvanced,
       });
       if (earlyExit) {
         const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;

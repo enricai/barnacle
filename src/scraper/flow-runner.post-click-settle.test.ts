@@ -12,6 +12,7 @@ import {
 import {
   type PostClickSettleIo,
   readMidFlowPostClickAdvance,
+  readMidFlowSubmitPostClickAdvance,
   runHealingFlow,
   settleAndSnapshotPostClick,
 } from "@/scraper/flow-runner";
@@ -326,6 +327,20 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     expect(post.settled).toBe(true);
   });
 
+  it("holds each re-settle round to the settle ceiling, but not the first settle", async () => {
+    const holds: (number | undefined)[] = [];
+    const io: PostClickSettleIo = {
+      settle: (async (...args: unknown[]) => {
+        holds.push(args[7] as number | undefined);
+      }) as unknown as PostClickSettleIo["settle"],
+      snapshot: (async () => snap(FLIPPED_SIG)) as unknown as PostClickSettleIo["snapshot"],
+    };
+    await run(snap(PRE_SIG), io);
+    expect(holds[0]).toBeUndefined();
+    expect(holds.length).toBeGreaterThan(1);
+    for (const hold of holds.slice(1)) expect(hold).toBe(MAX_MS);
+  });
+
   it("keeps re-settling through a header flip that also shrank the text until the body lands", async () => {
     const wide = `996:Sign In|Create Account|${CHROME}`;
     const shrunkFlip = `300:My Account|Create Account|${CHROME}`;
@@ -444,5 +459,66 @@ describe("readMidFlowPostClickAdvance", () => {
     const r = await read(pre, snap(START_SIG), false, t.io);
     expect(r.advanceBaseline).toBe(pre);
     expect(r.pageAdvanced).toBe(false);
+  });
+
+  describe("readMidFlowSubmitPostClickAdvance", () => {
+    const pageWithWaits = (): { page: Page; waits: number[] } => {
+      const waits: number[] = [];
+      const page = {
+        waitForTimeout: async (ms: number): Promise<void> => {
+          waits.push(ms);
+        },
+      } as unknown as Page;
+      return { page, waits };
+    };
+    const readSubmit = (
+      pre: StepSnapshot,
+      midFlowSubmit: boolean,
+      io: PostClickSettleIo,
+      page: Page
+    ): ReturnType<typeof readMidFlowSubmitPostClickAdvance> =>
+      readMidFlowSubmitPostClickAdvance({
+        target: {} as never,
+        signalCounter: { n: 0 },
+        page,
+        pre,
+        stepStartSnapshot: pre,
+        midFlowSubmit,
+        io,
+      });
+
+    it("reads a silent click once more after a pause and credits a first change that lands then", async () => {
+      const t = makeIo([START_SIG, START_SIG, FLIPPED_SIG, BODY_SIG]);
+      const { page, waits } = pageWithWaits();
+      const r = await readSubmit(snap(START_SIG), true, t.io, page);
+      expect(r.pageAdvanced).toBe(true);
+      expect(r.post.visibleTextSignature).toBe(BODY_SIG);
+      expect(waits).toHaveLength(1);
+    });
+
+    it("gives a genuine no-op one extra look and still reports it unadvanced", async () => {
+      const t = makeIo([START_SIG]);
+      const { page, waits } = pageWithWaits();
+      const r = await readSubmit(snap(START_SIG), true, t.io, page);
+      expect(r.pageAdvanced).toBe(false);
+      expect(t.settles()).toBe(2);
+      expect(waits).toHaveLength(1);
+    });
+
+    it("does not re-read a click whose text moved", async () => {
+      const t = makeIo([FLIPPED_SIG, BODY_SIG]);
+      const { page, waits } = pageWithWaits();
+      const r = await readSubmit(snap(START_SIG), true, t.io, page);
+      expect(r.pageAdvanced).toBe(true);
+      expect(waits).toHaveLength(0);
+    });
+
+    it("does not re-read when the step is not a mid-flow submit", async () => {
+      const t = makeIo([START_SIG]);
+      const { page, waits } = pageWithWaits();
+      await readSubmit(snap(START_SIG), false, t.io, page);
+      expect(t.settles()).toBe(1);
+      expect(waits).toHaveLength(0);
+    });
   });
 });
