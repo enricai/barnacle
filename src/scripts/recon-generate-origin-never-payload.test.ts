@@ -31,8 +31,14 @@ describe("origin is runtime context, never a payload field or literal", () => {
   const entry = { returnUrl: `${DEEP_PAGE}?step=2`, label: "first-label-value" };
   const body = emitMultiStepExecuteHttp(
     [
-      step(0, "POST", `${ORIGIN}/api/cart`, { label: "first-label-value", returnUrl: `${DEEP_PAGE}?step=2` }),
-      step(1, "PUT", `${ORIGIN}/api/cart/items`, { label: "first-label-value", returnUrl: `${DEEP_PAGE}?step=2` }),
+      step(0, "POST", `${ORIGIN}/api/cart`, {
+        label: "first-label-value",
+        returnUrl: `${DEEP_PAGE}?step=2`,
+      }),
+      step(1, "PUT", `${ORIGIN}/api/cart/items`, {
+        label: "first-label-value",
+        returnUrl: `${DEEP_PAGE}?step=2`,
+      }),
     ] as never,
     entry,
     { stringMessageKey: null, nestedErrorPaths: [] },
