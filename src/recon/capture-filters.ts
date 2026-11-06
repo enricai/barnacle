@@ -269,6 +269,36 @@ function hasRepeatedMeaningfulSegment(path: string): boolean {
 }
 
 /**
+ * Meaningful parent-namespace segments of `path`: every meaningful segment
+ * except the last one, which is the endpoint's own leaf name.
+ *
+ * {@link pathStructuralTokens} deliberately ignores single-word segments
+ * because a shared *leaf* word (`search`, `detail`, `list`) recurs across
+ * unrelated families on one host. A shared single-word segment in a
+ * NON-TERMINAL position is different evidence: it is the resource namespace
+ * the site mounted both endpoints under, which is exactly what makes them
+ * siblings of one family. Keeping the two signals separate is what lets
+ * `/openings/roster-search/` and `/openings/applicant-detail/` be judged
+ * related (shared `openings` parent) without also relating a marketing
+ * `/promotions/search` to a booking `/v1/search` (nothing shared but a leaf).
+ */
+function parentPathSegments(path: string): string[] {
+  return meaningfulPathSegments(path).slice(0, -1);
+}
+
+/**
+ * True when `pathA` and `pathB` are mounted under a common meaningful parent
+ * namespace — a shared non-terminal segment ({@link parentPathSegments}).
+ * Used as a second relatedness signal alongside compound-segment token
+ * overlap, which cannot see a single-word parent namespace at all.
+ */
+function sharesParentNamespace(pathA: string, pathB: string): boolean {
+  const parentsB = new Set(parentPathSegments(pathB));
+  if (parentsB.size === 0) return false;
+  return parentPathSegments(pathA).some((segment) => parentsB.has(segment));
+}
+
+/**
  * True when `candidatePath` shares enough path-segment tokens with at least
  * one path in `referencePaths` to be judged part of the same endpoint
  * family, false when it is structurally unrelated to all of them.
@@ -280,14 +310,25 @@ function hasRepeatedMeaningfulSegment(path: string): boolean {
  * on segment words — ignoring short/generic tokens — catches that relation
  * while still rejecting a same-host capture that shares nothing but the
  * host (e.g. a marketing endpoint alongside a resolved booking flow).
+ *
+ * Token overlap alone misses a whole family shape, though: sibling endpoints
+ * mounted under a common single-word namespace (`/openings/roster-search/`
+ * and `/openings/applicant-detail/`) share no COMPOUND-segment token, since
+ * the only thing they have in common is the plain-word parent `openings`,
+ * which {@link pathStructuralTokens} drops by design. A shared parent
+ * namespace ({@link sharesParentNamespace}) is therefore accepted as a second,
+ * independent relatedness signal — it is positional, so it cannot be
+ * satisfied by the shared *leaf* word (`search`, `detail`) that the
+ * compound-only rule exists to reject.
  */
 export function isStructurallyRelevantCapture(
   candidatePath: string,
   referencePaths: readonly string[]
 ): boolean {
   const candidateTokens = pathStructuralTokens(candidatePath);
-  if (candidateTokens.size === 0) return false;
   return referencePaths.some((referencePath) => {
+    if (sharesParentNamespace(candidatePath, referencePath)) return true;
+    if (candidateTokens.size === 0) return false;
     const referenceTokens = pathStructuralTokens(referencePath);
     for (const token of candidateTokens) {
       if (referenceTokens.has(token)) return true;
