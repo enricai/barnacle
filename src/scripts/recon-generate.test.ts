@@ -4929,6 +4929,60 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
   }, 30_000);
 });
 
+describe("recon-generate CLI — main() classifies a GET-only archive as a read flow", () => {
+  const REPO_ROOT = join(__dirname, "..", "..");
+  const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+  const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
+  let workDir: string | null = null;
+  let siteOutDir: string | null = null;
+  afterEach(() => {
+    if (workDir) rmSync(workDir, { recursive: true, force: true });
+    if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
+    workDir = null;
+    siteOutDir = null;
+  });
+
+  it("emits a contract with no TrackingUrl and the recorded query fallback", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cli-read-flow-"));
+    const runRoot = join(workDir, "run");
+    for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(runRoot, d), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const mk = (n: number, room: string): Capture => ({
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action",
+      method: "GET",
+      url: `https://example.com/api/schedule.json?room_id=${room}&sort=asc`,
+      status: 200,
+      requestHeaders: {},
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { slots: [n] },
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    });
+    writeFileSync(join(runRoot, "graphql", "000-a.json"), JSON.stringify(mk(1, "5")));
+    writeFileSync(join(runRoot, "graphql", "001-b.json"), JSON.stringify(mk(2, "6")));
+    const siteId = "read-flow-cli-site";
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({ steps: [{ step: "view the schedule" }] })
+    );
+    const r = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
+    );
+    expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).not.toContain("TrackingUrl");
+    expect(contract).toContain("room_id");
+  }, 30_000);
+});
+
 describe("emitConfigManifest — a reserved RECON_PASSWORD env token never leaks as a literal", () => {
   const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
   const manifestStr = emitConfigManifest({
