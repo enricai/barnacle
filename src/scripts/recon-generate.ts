@@ -6593,12 +6593,19 @@ export function indexStateValues(
       for (let j = i + 1; j < captures.length && !reused; j++) {
         const later = captures[j]!;
         if (later.method === "GET" || later.status < 200 || later.status >= 300) continue;
-        reused = [later.url, later.requestPostData ?? "", ...Object.values(later.requestHeaders)].some(
-          (h) => h.includes(v)
-        );
+        reused = [
+          later.url,
+          later.requestPostData ?? "",
+          ...Object.values(later.requestHeaders),
+        ].some((h) => h.includes(v));
       }
       if (!reused) continue;
-      index.set(v, { value: v, originIndex: i, path: [], htmlOrigin: { element: t.element, name: t.name } });
+      index.set(v, {
+        value: v,
+        originIndex: i,
+        path: [],
+        htmlOrigin: { element: t.element, name: t.name },
+      });
     }
     for (const { value: rawValue, path } of walkAllPrimitiveLeaves(c.responseBody)) {
       if (rawValue === null) continue;
@@ -10787,6 +10794,7 @@ export function emitMultiStepExecuteHttp(
               chainUsesHeaderThreading = true;
               continue;
             }
+            if (p.kind === "html") continue;
             if (chainDeclared.has(p.name)) continue;
             if (!referencedNames.has(p.name)) continue;
             chainDeclared.add(p.name);
@@ -10864,7 +10872,7 @@ export function emitMultiStepExecuteHttp(
       // Header/cookie-origin produces never surface as a JS accessor —
       // createHttpClient's `bind` option (rendered once, above the steps)
       // captures and forwards the value internally.
-      if (p.kind === "header") continue;
+      if (p.kind !== "body") continue;
       if (declaredNames.has(p.name)) continue;
       if (!referencedNames.has(p.name)) continue;
       declaredNames.add(p.name);
@@ -10890,7 +10898,15 @@ export function emitMultiStepExecuteHttp(
       // HTML document is read from a direct fetch of the response text.
       const textVar = `text_${step.varName}`;
       lines.push(
-        ...emitHtmlFetchLines(r.method, r.url, r.headersExpr, r.bodyArg, textVar, step.varName, "    ")
+        ...emitHtmlFetchLines(
+          r.method,
+          r.url,
+          r.headersExpr,
+          r.bodyArg,
+          textVar,
+          step.varName,
+          "    "
+        )
       );
       for (const p of htmlProduces) {
         if (declaredNames.has(p.name)) continue;
