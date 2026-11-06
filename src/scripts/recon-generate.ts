@@ -3260,7 +3260,7 @@ export function truncateActionSequenceAtSubmitPattern(
   foldReturnSpec: FoldReturnSpec | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
-  const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+  const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
   let lastSubmitIndex = -1;
   let lastFoldIndex = -1;
   for (let i = 0; i < sequence.length; i++) {
@@ -3506,7 +3506,7 @@ export function extractActionSequence(
   // meant to isolate.
   primaryHost: string | null = null
 ): ActionCapture[] {
-  const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+  const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
   // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
   // case isAllowedFixtureHost would reject every candidate, so the gate
@@ -4085,7 +4085,7 @@ export function extractGraphQLActionSequence(
   primaryHost: string | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
-  const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+  const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
   const matchesFoldReturnResults = compileFoldReturnResultsMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
   // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
@@ -14563,6 +14563,20 @@ function compileFoldReturnEndpointMatcher(
 }
 
 /**
+ * Matches a capture of ANY declared drill-down: the primary spec's endpoint or
+ * an array-form `foldReturn` entry after it. Action-sequence admission must
+ * treat every declared drill as authoritative, or an extra drill's captures
+ * are dropped before the fold pipeline can resolve it.
+ */
+function compileDeclaredDrillMatcher(
+  spec: FoldReturnSpec | null,
+  extraDrillSpecs: readonly FoldReturnSpec[] = ambientExtraDrillSpecs
+): (capture: Capture) => boolean {
+  const matchers = [spec, ...extraDrillSpecs].map((s) => compileFoldReturnEndpointMatcher(s));
+  return (capture: Capture) => matchers.some((m) => m(capture));
+}
+
+/**
  * A capture predicate matching whichever capture actually holds
  * {@link FoldReturnSpec.resultsPath}'s object array — the flow's own PRIMARY
  * results source, as opposed to {@link compileFoldReturnEndpointMatcher}'s
@@ -15579,9 +15593,13 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
           );
           return specPlan === null ? [] : [specPlan];
         })();
-  return collapseTargetsToDeclaredDrillPath(
+  return stampDeclaredDrillAttributes(
     actions,
-    plans,
+    collapseTargetsToDeclaredDrillPath(
+      actions,
+      plans,
+      foldReturnSpec === null ? [] : [foldReturnSpec]
+    ),
     foldReturnSpec === null ? [] : [foldReturnSpec]
   ).flatMap((plan) => {
     const targets = plan.targets.filter(
@@ -15629,6 +15647,36 @@ function collapseTargetsToDeclaredDrillPath<T extends { capture: Capture }>(
     }
     return targets.length === plan.targets.length ? plan : { ...plan, targets };
   });
+}
+
+/**
+ * Carries a declared entry's `attachAs`/`payloadFlag` onto every target whose
+ * chain runs through that entry's endpoint, so a flagged or attached drill is
+ * gated and isolated whichever array-form position it was declared in — the
+ * first entry is as declarative as the rest.
+ */
+function stampDeclaredDrillAttributes<T extends { capture: Capture }>(
+  actions: readonly T[],
+  plans: readonly FoldPlan[],
+  specs: readonly FoldReturnSpec[]
+): FoldPlan[] {
+  const stamped = specs.filter((s) => s.attachAs !== undefined || s.payloadFlag !== undefined);
+  if (stamped.length === 0) return [...plans];
+  return plans.map((plan) => ({
+    ...plan,
+    targets: plan.targets.map((target) => {
+      const owner = stamped.find((spec) => {
+        const matches = compileFoldReturnEndpointMatcher(spec);
+        return target.chain.some((i) => matches(actions[i]!.capture));
+      });
+      if (owner === undefined) return target;
+      return {
+        ...target,
+        ...(owner.attachAs !== undefined ? { attachAs: owner.attachAs } : {}),
+        ...(owner.payloadFlag !== undefined ? { payloadFlag: owner.payloadFlag } : {}),
+      };
+    }),
+  }));
 }
 
 /**
@@ -16648,7 +16696,7 @@ export function emitContractTsParts(opts: {
     gql,
     gqlQuery,
     endpointPath,
-    getInputModel: derivedGetInputModel = null,
+    getInputModel: suppliedGetInputModel = null,
     gqlOperationName,
     gqlVariables,
     allCaptures = [],
@@ -16780,6 +16828,60 @@ export function emitContractTsParts(opts: {
   });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
+  // A resolved drill-down fold plan on the single-primary getGql/httpClient
+  // hot path (`multiStepBody` unset — see emitMultiStepExecuteHttp for the
+  // multi-step equivalent) folds onto `data` in place, exactly as the
+  // multi-step loop folds onto its own primary var: without this, a
+  // single-primary read flow with a declared `foldReturn` would silently
+  // drop the fold feature the flow author declared (see
+  // recon-generate-foldreturn-regresses-primary-op-and-payload-to-ats-submission-shape.md).
+  // Also threaded additively into `paginationSignal`'s fetch loop below (see
+  // buildPaginatedFetchLoopExecuteHttpBody) — the fold runs against the final
+  // assembled/de-duplicated page items, not just the first page's captured
+  // sample, so a paginated primary is no longer excluded from folding.
+  // Constrains the resolution below to the operation already selected as
+  // this run's emitted primary (gqlOperationName/gqlQuery, computed
+  // independently upstream) — see computeEmittedPrimaryAnchor. Without this,
+  // a fold plan's primaryStepIndex was resolved purely structurally (does
+  // the declared resultsPath resolve to an object array on that capture),
+  // with no anchor to the emitted primary, so it could resolve onto a
+  // DIFFERENT operation than the one `data` holds at runtime. Scoped to gql:
+  // REST fold-plan/emitted-primary drift is a distinct, undocumented concern
+  // out of scope here.
+  const emittedPrimaryAnchor = computeEmittedPrimaryAnchor(
+    gql,
+    endpointPath,
+    gqlOperationName,
+    gqlQuery
+  );
+  const singlePrimaryFoldPlans = resolveApplicableFoldPlans(
+    actionSteps,
+    foldReturnSpec,
+    multiStepBody,
+    emittedPrimaryAnchor
+  );
+  // A GraphQL primary with a resolved drill-down fold has no other REST
+  // client to issue the drill request(s) with — getGql only ever speaks
+  // GraphQL to the primary endpoint.
+  const needsFoldHttpClient = isGqlEmission && singlePrimaryFoldPlans.length > 0;
+  // A declared fold's primary that was captured as a GET is a URL-shaped read:
+  // its request is rebuilt from the capture's own query/path inputs, never
+  // invented as a POST carrying a `{ query }` body the endpoint never took.
+  const foldPrimaryCapture =
+    gql || multiStepBody || singlePrimaryFoldPlans.length === 0
+      ? null
+      : (actionSteps[singlePrimaryFoldPlans[0]!.primaryStepIndex]?.capture ?? null);
+  const derivedGetInputModel: GetInputModel | null =
+    suppliedGetInputModel ??
+    (foldPrimaryCapture !== null &&
+    safeUrlPathname(foldPrimaryCapture.url) === endpointPath &&
+    getInputsAreUrlShaped(foldPrimaryCapture)
+      ? deriveGetInputModel(
+          foldPrimaryCapture,
+          allCaptures.length > 0 ? allCaptures : actionSteps.map((s) => s.capture),
+          [...(payloadFieldNames ?? []), ...optionalPayloadFieldNames]
+        )
+      : null);
   // A missing inputBody, or one with no ApplicantContactSchema evidence,
   // means this is not a job-application submission flow. The former keeps
   // its own read-flow `{ query }` contract untouched; the latter (a body WAS
@@ -16817,42 +16919,6 @@ export function emitContractTsParts(opts: {
           paginationSignal.skipKey,
         ])
       : derivedGetInputModel;
-  // A resolved drill-down fold plan on the single-primary getGql/httpClient
-  // hot path (`multiStepBody` unset — see emitMultiStepExecuteHttp for the
-  // multi-step equivalent) folds onto `data` in place, exactly as the
-  // multi-step loop folds onto its own primary var: without this, a
-  // single-primary read flow with a declared `foldReturn` would silently
-  // drop the fold feature the flow author declared (see
-  // recon-generate-foldreturn-regresses-primary-op-and-payload-to-ats-submission-shape.md).
-  // Also threaded additively into `paginationSignal`'s fetch loop below (see
-  // buildPaginatedFetchLoopExecuteHttpBody) — the fold runs against the final
-  // assembled/de-duplicated page items, not just the first page's captured
-  // sample, so a paginated primary is no longer excluded from folding.
-  // Constrains the resolution below to the operation already selected as
-  // this run's emitted primary (gqlOperationName/gqlQuery, computed
-  // independently upstream) — see computeEmittedPrimaryAnchor. Without this,
-  // a fold plan's primaryStepIndex was resolved purely structurally (does
-  // the declared resultsPath resolve to an object array on that capture),
-  // with no anchor to the emitted primary, so it could resolve onto a
-  // DIFFERENT operation than the one `data` holds at runtime. Scoped to gql:
-  // REST fold-plan/emitted-primary drift is a distinct, undocumented concern
-  // out of scope here.
-  const emittedPrimaryAnchor = computeEmittedPrimaryAnchor(
-    gql,
-    endpointPath,
-    gqlOperationName,
-    gqlQuery
-  );
-  const singlePrimaryFoldPlans = resolveApplicableFoldPlans(
-    actionSteps,
-    foldReturnSpec,
-    multiStepBody,
-    emittedPrimaryAnchor
-  );
-  // A GraphQL primary with a resolved drill-down fold has no other REST
-  // client to issue the drill request(s) with — getGql only ever speaks
-  // GraphQL to the primary endpoint.
-  const needsFoldHttpClient = isGqlEmission && singlePrimaryFoldPlans.length > 0;
   // Every field source below (the base extend's own keys, form-schema
   // discovery, browser-flow splicing, option/raw-option enums, additional
   // body keys, and structured keys) is merged into a SINGLE `.extend({...})`
@@ -16934,6 +17000,22 @@ export function emitContractTsParts(opts: {
   ].sort()) {
     if (isReservedByApplicantContactSchema(flag)) continue;
     addExtendField(flag, `  ${flag}: z.boolean().optional(),`);
+  }
+
+  // A declared payloadFlag gates its drill at runtime through
+  // `payload[flag]`; the payload schema strips undeclared keys, so without a
+  // declaration here the flag is dropped before the hop can ever run.
+  const declaredDrillFlags = new Set(
+    (multiStepBody ? resolveFoldPlan(actionSteps, foldReturnSpec) : singlePrimaryFoldPlans)
+      .flatMap((plan) => plan.targets)
+      .flatMap((target) => (target.payloadFlag === undefined ? [] : [target.payloadFlag]))
+  );
+  for (const flag of [...declaredDrillFlags].sort()) {
+    if (isReservedByApplicantContactSchema(flag)) continue;
+    addExtendField(
+      flag,
+      `  ${isValidJsIdentifier(flag) ? flag : JSON.stringify(flag)}: z.boolean().optional(),`
+    );
   }
 
   // Multi-step flows that include a multipart upload need the binary asset
@@ -19921,12 +20003,31 @@ async function main(): Promise<void> {
       : null;
     const gqlQuery =
       primaryGraphQLOperation?.capture.query ?? fallbackGraphQLCapture?.query ?? null;
+    // A declared drill-down is the flow author's own statement that the
+    // capture is a per-item read of the primary, whatever its method: it is
+    // neither a sample of the read nor a submission step, and it is never the
+    // flow's primary endpoint while another capture carries the declared
+    // results array (a drill POST would otherwise outrank the GET search).
+    const isDeclaredDrillCapture = compileDeclaredDrillMatcher(foldReturnSpec);
+    const primaryPoolCaptures = ((): Capture[] => {
+      if (foldReturnSpec === null) return activeCaptures;
+      const holdsResults = compileFoldReturnResultsMatcher(foldReturnSpec);
+      const declaresSubmit = submitPatterns.endpoint !== null || submitPatterns.body !== null;
+      const matchesSubmitPattern = compileSubmitMatcher(submitPatterns);
+      // A drill the flow also declared as its submit is the submission, not a read.
+      const nonDrill = activeCaptures.filter(
+        (c) => !isDeclaredDrillCapture(c) || (declaresSubmit && matchesSubmitPattern(c))
+      );
+      return nonDrill.some((c) => c.status >= 200 && c.status < 300 && holdsResults(c))
+        ? nonDrill
+        : activeCaptures;
+    })();
     const endpointPath =
       primaryGraphQLOperation?.endpointPath ??
       (fallbackGraphQLCapture
         ? safeUrlPathname(fallbackGraphQLCapture.url)
         : firstEndpointPath(
-            activeCaptures,
+            primaryPoolCaptures,
             ownBackendHostnames,
             fallbackDomain,
             submitPatterns,
@@ -19940,7 +20041,7 @@ async function main(): Promise<void> {
       primaryGraphQLOperation?.capture ??
       fallbackGraphQLCapture ??
       firstEndpointCapture(
-        activeCaptures,
+        primaryPoolCaptures,
         ownBackendHostnames,
         fallbackDomain,
         submitPatterns,
@@ -20195,7 +20296,7 @@ async function main(): Promise<void> {
     // that matches only the GET reads must not be vetoed by an unrelated
     // same-host non-GET (visit beacon) that merely falls back into the pool.
     const matchesDeclaredSubmit = compileSubmitMatcher(submitPatterns);
-    const readFlowCaptures = activeCaptures.filter(
+    const readFlowCaptures = primaryPoolCaptures.filter(
       (c) => c.method === "GET" || matchesDeclaredSubmit(c)
     );
     const readFlowWinner = firstEndpointCapture(
@@ -20214,7 +20315,10 @@ async function main(): Promise<void> {
     const actionSequenceIsReadSamples =
       compiledActionSteps.length === 0 ||
       actionCaptures.every(
-        (a) => readSiblings.includes(a.capture) || isRecurringReadFlowBeacon(a.capture)
+        (a) =>
+          readSiblings.includes(a.capture) ||
+          isRecurringReadFlowBeacon(a.capture) ||
+          isDeclaredDrillCapture(a.capture)
       );
     const isReadOnlyGetFlow =
       !gql &&
@@ -20225,6 +20329,7 @@ async function main(): Promise<void> {
       readFlowCaptures.filter(
         (c) =>
           c.method !== "GET" &&
+          !isDeclaredDrillCapture(c) &&
           // A multi-step flow with a fold spec and a declared submit pattern:
           // only non-GETs matching that pattern can be the submit.
           (foldReturnSpec === null ||
@@ -20244,12 +20349,17 @@ async function main(): Promise<void> {
             ))
       ).length === 0 &&
       getInputsAreUrlShaped(readFlowWinner);
-    const actionSteps = isReadOnlyGetFlow ? [] : compiledActionSteps;
+    // The read samples are not steps, but a declared drill-down still needs
+    // its action step so the fold resolves onto the read.
+    const readFlowHasDeclaredDrill =
+      isReadOnlyGetFlow && compiledActionSteps.some((s) => isDeclaredDrillCapture(s.capture));
+    const actionSteps = isReadOnlyGetFlow && !readFlowHasDeclaredDrill ? [] : compiledActionSteps;
     const noReplayableActionFlow =
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isSubmissionFlow =
       noReplayableActionFlow ||
-      (actionSteps.length > 1 &&
+      (!isReadOnlyGetFlow &&
+        actionSteps.length > 1 &&
         (!gql
           ? // A read flow whose manifest holds only GET captures is not a submission.
             actionCaptures.some((a) => (a.capture.method ?? "").toUpperCase() !== "GET")

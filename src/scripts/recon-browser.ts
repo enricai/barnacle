@@ -39,7 +39,10 @@
  *   # on a navigateTo step pins the payload field the generator threads into the
  *   # navigated URL/body, and survives write-back. `foldReturn` takes one object
  *   # or a non-empty array (attachAs, payloadFlag, drillParamBindings; later
- *   # entries may omit resultsPath).
+ *   # entries may omit resultsPath). Every entry, first included, may carry
+ *   # attachAs/payloadFlag: a flagged drill runs only when the caller sets that
+ *   # (generated, boolean) payload field, and any attached or flagged drill
+ *   # fails alone, dropping only its own key.
  *
  *   # Landing-page-only reconnaissance: captures every network response with no
  *   # flow steps — no URL-shape filtering. Requires --allow-empty-flow, since a
