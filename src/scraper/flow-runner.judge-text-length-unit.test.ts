@@ -48,6 +48,7 @@ function run(body: string, pre: string): ReturnType<typeof judgeStepOutcome> {
     signalCounter: { n: 0 },
     preNetworkCount: 0,
     preVisibleTextSignature: pre,
+    settledPostVisibleText: body,
     submitInput: SUBMIT_INPUT,
   });
 }

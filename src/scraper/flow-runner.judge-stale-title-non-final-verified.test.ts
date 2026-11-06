@@ -51,7 +51,8 @@ function judgeTarget(read: () => string): {
 function run(
   isFinalStep: boolean,
   read: () => string,
-  waits: number[] = []
+  waits: number[] = [],
+  settled?: string
 ): ReturnType<typeof judgeStepOutcome> {
   return judgeStepOutcome({
     client: {} as never,
@@ -68,6 +69,7 @@ function run(
     signalCounter: { n: 0 },
     preNetworkCount: 0,
     preVisibleTextSignature: `${BEFORE_TEXT.length}:${BEFORE_TEXT}`,
+    settledPostVisibleText: settled ?? read(),
     preVisibleText: BEFORE_TEXT,
     submitInput: SUBMIT_INPUT,
   });
@@ -91,12 +93,18 @@ describe("judgeStepOutcome stale title", () => {
     expect(v).toMatchObject({ verified: true });
   });
 
-  it("judges the body re-rendered after a header-only flip, with no fixed rejudge delay", async () => {
+  it("judges the handed settled text and never re-reads or waits itself", async () => {
     stepJudge.mockResolvedValue({ advanced: true, reason: "late render" });
     const waits: number[] = [];
-    let reads = 0;
-    const v = await run(false, () => (reads++ < 1 ? "Sign In" : AFTER_TEXT), waits);
-    expect(waits).not.toContain(5000);
+    const v = await run(
+      false,
+      () => {
+        throw new Error("judgeStepOutcome must not probe the page itself");
+      },
+      waits,
+      AFTER_TEXT
+    );
+    expect(waits).toEqual([]);
     expect(stepJudge).toHaveBeenCalledTimes(1);
     expect(stepJudge.mock.calls[0]?.[0].input.afterText).toBe(AFTER_TEXT);
     expect(v).toMatchObject({ verified: true });
@@ -130,6 +138,7 @@ describe("judgeStepOutcome stale title", () => {
       signalCounter: { n: 0 },
       preNetworkCount: 0,
       preVisibleTextSignature: `996:${pre}`,
+      settledPostVisibleText: post,
       preVisibleText: pre,
       submitInput: SUBMIT_INPUT,
     });
@@ -169,6 +178,7 @@ describe("judgeStepOutcome stale title", () => {
       signalCounter: { n: 0 },
       preNetworkCount: 0,
       preVisibleTextSignature: `${BEFORE_TEXT.length}:${BEFORE_TEXT}`,
+      settledPostVisibleText: FULL,
       preVisibleText: BEFORE_TEXT,
       submitInput: SUBMIT_INPUT,
     });

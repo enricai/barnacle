@@ -7667,7 +7667,9 @@ describe("recon-browser/step-start baseline wiring", () => {
   });
 
   it("passes the settled read into the trailing-grace judge", () => {
-    expect(source).toContain("settledPostVisibleText: settledAdvance?.post.visibleText,");
+    expect(source).toContain(
+      'settledPostVisibleText: trailingGraceSettled?.post.visibleText ?? "",'
+    );
   });
 });
 

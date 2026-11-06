@@ -3765,7 +3765,8 @@ export async function judgeStepOutcome(params: {
   /**
    * Visible text of the settled post-click snapshot from the shared advance
    * read. When present the non-final path judges it as-is instead of settling
-   * and re-probing a second time.
+   * and re-probing a second time; a caller without that read leaves it unset
+   * and the judge settles through the same shared reader itself.
    */
   settledPostVisibleText?: string;
   submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;

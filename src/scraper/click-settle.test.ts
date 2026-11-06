@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { settleAfterClick } from "@/scraper/click-settle";
+import { QUIESCENT_NO_OP_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
+
+const idleQuiescence = async (): Promise<{ pending: number; mutations: number }> => ({
+  pending: 0,
+  mutations: 0,
+});
 
 function makeFake(onPoll: (polls: number, counter: { n: number }) => void): {
   page: { waitForTimeout: (ms: number) => Promise<void> };
@@ -22,7 +27,10 @@ describe("settleAfterClick", () => {
     const f = makeFake((p, c) => {
       if (p === 6) c.n += 1;
     });
-    await settleAfterClick(f.page, f.counter, 0, true);
+    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, async () => ({
+      pending: f.polls() < 6 ? 1 : 0,
+      mutations: 0,
+    }));
     expect(f.polls()).toBe(15);
   });
 
@@ -30,35 +38,38 @@ describe("settleAfterClick", () => {
     const f = makeFake((p, c) => {
       if (p === 11) c.n += 1;
     });
-    await settleAfterClick(f.page, f.counter, 0, true);
+    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, async () => ({
+      pending: f.polls() < 11 ? 1 : 0,
+      mutations: 0,
+    }));
     expect(f.polls()).toBe(20);
   });
 
   it("gives up when no activity ever appears", async () => {
     const f = makeFake(() => {});
-    await settleAfterClick(f.page, f.counter, 0, true);
-    expect(f.polls()).toBe(14);
+    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, idleQuiescence);
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("stops at the max on a continuous stream", async () => {
     const f = makeFake((_, c) => {
       c.n += 1;
     });
-    await settleAfterClick(f.page, f.counter, 0, true);
+    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, idleQuiescence);
     expect(f.polls()).toBe(60);
   });
 
   it("counts activity already present versus preCount as seen", async () => {
     const f = makeFake(() => {});
     f.counter.n = 5;
-    await settleAfterClick(f.page, f.counter, 2, true);
+    await settleAfterClick(f.page, f.counter, 2, true, undefined, undefined, idleQuiescence);
     expect(f.polls()).toBe(14);
   });
 
   it("keeps the short quiet exit for a non-submit click that saw network", async () => {
     const f = makeFake(() => {});
     f.counter.n = 5;
-    await settleAfterClick(f.page, f.counter, 2, false);
+    await settleAfterClick(f.page, f.counter, 2, false, undefined, undefined, idleQuiescence);
     expect(f.polls()).toBe(3);
   });
 
@@ -67,47 +78,95 @@ describe("settleAfterClick", () => {
       if (p === 1) c.n += 1;
     });
     const text = (): string => (f.polls() >= 10 ? "step 2" : "step 1");
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "step 1");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "step 1",
+      idleQuiescence
+    );
     expect(f.polls()).toBeGreaterThanOrEqual(19);
   });
 
   it("waits for a text-only re-render in a checkout wizard that moves no counter", async () => {
     const f = makeFake(() => {});
     const text = (): string => (f.polls() >= 8 ? "step 3" : f.polls() >= 1 ? "step 2" : "step 1");
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text());
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      undefined,
+      idleQuiescence
+    );
     expect(f.polls()).toBe(17);
   });
 
-  it("still gives up at 14 polls when text never changes", async () => {
+  it("still gives up at the quiescent no-op bound when text never changes", async () => {
     const f = makeFake(() => {});
-    await settleAfterClick(f.page, f.counter, 0, true, async () => "same");
-    expect(f.polls()).toBe(14);
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => "same",
+      undefined,
+      idleQuiescence
+    );
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("stops at the max when text changes continuously", async () => {
     const f = makeFake(() => {});
-    await settleAfterClick(f.page, f.counter, 0, true, async () => `t${f.polls()}`);
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => `t${f.polls()}`,
+      undefined,
+      idleQuiescence
+    );
     expect(f.polls()).toBe(60);
   });
 
   it("counts a flip before settle start and waits for a later body re-render", async () => {
     const f = makeFake(() => {});
     const text = (): string => (f.polls() >= 9 ? "body" : "header");
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "example.com pre",
+      idleQuiescence
+    );
     expect(f.polls()).toBeGreaterThan(9);
   });
 
-  it("still gives up at 14 polls when text matches the pre-click baseline", async () => {
+  it("still gives up at the quiescent no-op bound when text matches the pre-click baseline", async () => {
     const f = makeFake(() => {});
-    await settleAfterClick(f.page, f.counter, 0, true, async () => "same", "same");
-    expect(f.polls()).toBe(14);
+    await settleAfterClick(f.page, f.counter, 0, true, async () => "same", "same", idleQuiescence);
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("does not return between a header flip and a later body re-render", async () => {
     const f = makeFake(() => {});
     const text = (): string =>
       f.polls() >= 8 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "example.com pre",
+      idleQuiescence
+    );
     expect(f.polls()).toBe(17);
   });
 
@@ -119,7 +178,8 @@ describe("settleAfterClick", () => {
       0,
       true,
       async () => "example.com after",
-      "example.com pre"
+      "example.com pre",
+      idleQuiescence
     );
     expect(f.polls()).toBe(14);
   });
@@ -128,34 +188,50 @@ describe("settleAfterClick", () => {
     const f = makeFake(() => {});
     const text = (): string =>
       f.polls() >= 9 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "example.com pre",
+      idleQuiescence
+    );
     expect(f.polls()).toBe(18);
   });
 
   it("awaits a re-render landing past the old 15s total while activity continues", async () => {
     const f = makeFake(() => {});
     const text = (): string => (f.polls() >= 20 ? "body" : `header ${f.polls()}`);
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "example.com pre",
+      idleQuiescence
+    );
     expect(f.polls()).toBe(29);
   });
 
   it("gives up after one poll for a non-submit click with no activity", async () => {
     const f = makeFake(() => {});
-    await settleAfterClick(f.page, f.counter, 0, false);
+    await settleAfterClick(f.page, f.counter, 0, false, undefined, undefined, idleQuiescence);
     expect(f.polls()).toBe(1);
   });
 
   it("still waits the full idle window for a submit-shaped click", async () => {
     const f = makeFake(() => {});
-    await settleAfterClick(f.page, f.counter, 0, true);
-    expect(f.polls()).toBe(14);
+    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, idleQuiescence);
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("keeps activity-driven quiet logic for a non-submit click", async () => {
     const f = makeFake((p, c) => {
       if (p === 1) c.n += 1;
     });
-    await settleAfterClick(f.page, f.counter, 0, false);
+    await settleAfterClick(f.page, f.counter, 0, false, undefined, undefined, idleQuiescence);
     expect(f.polls()).toBe(4);
   });
 
@@ -200,10 +276,10 @@ describe("settleAfterClick", () => {
     expect(f.polls()).toBe(60);
   });
 
-  it("gives up at 14 polls when the text never moved", async () => {
+  it("gives up at the quiescent no-op bound when the text never moved", async () => {
     const f = makeFake(() => {});
-    await settleAfterClick(f.page, f.counter, 0, true, async () => "same", "same");
-    expect(f.polls()).toBe(14);
+    await settleAfterClick(f.page, f.counter, 0, true, async () => "same", "same", idleQuiescence);
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("ends only after a body re-render following a header flip when the probe sees mutations", async () => {
@@ -225,7 +301,15 @@ describe("settleAfterClick", () => {
     const f = makeFake(() => {});
     const text = (): string =>
       f.polls() >= 10 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "example.com pre",
+      idleQuiescence
+    );
     expect(f.polls()).toBeGreaterThanOrEqual(19);
     expect(f.polls()).toBeLessThan(60);
   });
@@ -234,7 +318,15 @@ describe("settleAfterClick", () => {
     const f = makeFake(() => {});
     const text = (): string =>
       f.polls() === 0 ? "example.com pre" : `header${"x".repeat(Math.min(f.polls(), 12))}`;
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "example.com pre",
+      idleQuiescence
+    );
     expect(f.polls()).toBeGreaterThan(12);
     expect(f.polls()).toBeLessThan(60);
   });
@@ -243,14 +335,30 @@ describe("settleAfterClick", () => {
     const f = makeFake(() => {});
     const text = (): string =>
       f.polls() >= 11 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "example.com pre",
+      idleQuiescence
+    );
     expect(f.polls()).toBe(20);
   });
 
   it("holds a non-submit click whose text moved to the idle allowance before giving up", async () => {
     const f = makeFake(() => {});
     const text = (): string => (f.polls() >= 1 ? "header" : "example.com pre");
-    await settleAfterClick(f.page, f.counter, 0, false, async () => text(), "example.com pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      false,
+      async () => text(),
+      "example.com pre",
+      idleQuiescence
+    );
     expect(f.polls()).toBe(14);
   });
 
@@ -266,7 +374,8 @@ describe("settleAfterClick", () => {
         0,
         submitShaped,
         async () => text(),
-        "example.com pre"
+        "example.com pre",
+        idleQuiescence
       );
       expect(f.polls()).toBeGreaterThanOrEqual(22);
     }
@@ -276,7 +385,15 @@ describe("settleAfterClick", () => {
     const f = makeFake(() => {});
     const text = (): string =>
       f.polls() >= 3 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
-    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "example.com pre",
+      idleQuiescence
+    );
     expect(f.polls()).toBe(14);
   });
 
@@ -285,7 +402,15 @@ describe("settleAfterClick", () => {
       const f = makeFake(() => {});
       const text = (): string =>
         f.polls() >= at ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
-      await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+      await settleAfterClick(
+        f.page,
+        f.counter,
+        0,
+        true,
+        async () => text(),
+        "example.com pre",
+        idleQuiescence
+      );
       expect(f.polls()).toBe(at + 9);
     });
 

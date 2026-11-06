@@ -634,17 +634,34 @@ describe("scraper/phantom-click advance predicate on literal signatures", () => 
     ).toBe("phantom");
   });
 
-  it("treats a shrinking body swap as a finished swap", () => {
-    expect(hasPageBodySwapped(snap(half), snap(finished))).toBe(true);
+  it("does not read a header flip that also shrank the text by a body's worth as finished", () => {
+    expect(hasPageAdvanced(snap(half), snap(finished))).toBe(true);
+    expect(hasPageBodySwapped(snap(half), snap(finished))).toBe(false);
+    expect(hasSettledPageAdvanced(snap(half), snap(finished))).toBe(false);
+  });
+
+  it("reads a shrunken header flip as finished once the text has held still", () => {
+    expect(hasSettledPageAdvanced(snap(half), { ...snap(finished), settled: true })).toBe(true);
+  });
+
+  it("still treats a shrinking page whose copy was wholly replaced as a finished swap", () => {
+    expect(
+      hasPageBodySwapped(snap(half), snap("588:Welcome aboard|verify your inbox|to continue"))
+    ).toBe(true);
   });
 
   it("treats a growing body swap as a finished swap", () => {
     expect(hasPageBodySwapped(snap(`588:Sign In|${chrome}`), snap(grown))).toBe(true);
   });
 
-  it("credits a finished swap and a growth swap on a mid-flow submit step", () => {
+  it("credits a settled shrunken flip and a growth swap on a mid-flow submit step", () => {
     expect(
       classifyPhantomClick(makeAttempt({ pre: snap(half), post: snap(finished), ...midFlow }))
+    ).toBe("phantom");
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ pre: snap(half), post: { ...snap(finished), settled: true }, ...midFlow })
+      )
     ).toBe("effective");
     expect(
       classifyPhantomClick(makeAttempt({ pre: snap(finished), post: snap(grown), ...midFlow }))

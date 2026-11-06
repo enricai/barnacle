@@ -156,6 +156,7 @@ describe("report contract: stale title contradicting visible text", () => {
       signalCounter: { n: 0 },
       preNetworkCount: 0,
       preVisibleTextSignature: `${PRE_TEXT.length}:${PRE_TEXT}`,
+      settledPostVisibleText: POST_TEXT,
       preVisibleText: PRE_TEXT,
       submitInput: SUBMIT_INPUT,
     });

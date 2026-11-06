@@ -207,13 +207,13 @@ describe("settleAfterClick: bounded give-up is counted in polls", () => {
     }
   );
 
-  it("gives the same bound without a text or quiescence reader", async () => {
+  it("gives the same bound without a text reader", async () => {
     const quick = makeIdlePage();
-    await settleAfterClick(quick.page, { n: 0 }, 0, false);
+    await settleAfterClick(quick.page, { n: 0 }, 0, false, undefined, undefined, idleQuiescence);
     expect(quick.waited()).toBe(1000);
     const slow = makeIdlePage();
-    await settleAfterClick(slow.page, { n: 0 }, 0, true);
-    expect(slow.waited()).toBe(IDLE_GIVE_UP_MS);
+    await settleAfterClick(slow.page, { n: 0 }, 0, true, undefined, undefined, idleQuiescence);
+    expect(slow.waited()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS);
   });
 
   it("still waits past the silent bound when text moves late on a submit-shaped click", async () => {

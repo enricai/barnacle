@@ -4,7 +4,11 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
 import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
-import { IDLE_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
+import {
+  IDLE_GIVE_UP_MS,
+  QUIESCENT_NO_OP_GIVE_UP_MS,
+  settleAfterClick,
+} from "@/scraper/click-settle";
 import {
   type PostClickSettleIo,
   readMidFlowPostClickAdvance,
@@ -13,6 +17,11 @@ import {
 } from "@/scraper/flow-runner";
 import { hasPageBodySwapped, hasSettledPageAdvanced } from "@/scraper/phantom-click";
 import type { Logger } from "@/types/logging";
+
+const idleQuiescence = async (): Promise<{ pending: number; mutations: number }> => ({
+  pending: 0,
+  mutations: 0,
+});
 
 vi.mock("@/lib/llm/judges/verify-submit", () => ({
   verifySubmitWithLLM: vi.fn(async () => ({ verified: true, reason: "confirmation visible" })),
@@ -48,7 +57,7 @@ function makeClock(onTick: (nowMs: number, counter: { n: number }) => void): {
 describe("settleAfterClick virtual clock", () => {
   it("returns well before the max when no activity is ever observed", async () => {
     const c = makeClock(() => {});
-    await settleAfterClick(c.page, c.counter, 0, true);
+    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, idleQuiescence);
     expect(c.now()).toBeGreaterThan(0);
     expect(c.now()).toBeLessThan(MAX_MS);
   });
@@ -57,7 +66,7 @@ describe("settleAfterClick virtual clock", () => {
     const c = makeClock((_, counter) => {
       counter.n += 1;
     });
-    await settleAfterClick(c.page, c.counter, 0, true);
+    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, idleQuiescence);
     expect(c.now()).toBe(MAX_MS);
   });
 
@@ -65,7 +74,10 @@ describe("settleAfterClick virtual clock", () => {
     const c = makeClock((now, counter) => {
       if (now === 6000) counter.n += 1;
     });
-    await settleAfterClick(c.page, c.counter, 0, true);
+    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, async () => ({
+      pending: c.now() < 6000 ? 1 : 0,
+      mutations: 0,
+    }));
     expect(c.now()).toBeGreaterThan(6000);
     expect(c.now()).toBeLessThan(MAX_MS);
   });
@@ -74,14 +86,14 @@ describe("settleAfterClick virtual clock", () => {
 describe("settleAfterClick no-op click give-up bound", () => {
   it("gives up after one quiet poll for a silent non-submit click", async () => {
     const c = makeClock(() => {});
-    await settleAfterClick(c.page, c.counter, 0, false);
+    await settleAfterClick(c.page, c.counter, 0, false, undefined, undefined, idleQuiescence);
     expect(c.now()).toBe(1000);
   });
 
   it("gives up a silent submit-shaped click at the idle allowance, far below the max", async () => {
     const c = makeClock(() => {});
-    await settleAfterClick(c.page, c.counter, 0, true);
-    expect(c.now()).toBe(14000);
+    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, idleQuiescence);
+    expect(c.now()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS);
     expect(c.now()).toBeLessThan(MAX_MS);
   });
 });
@@ -314,6 +326,16 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     expect(post.settled).toBe(true);
   });
 
+  it("keeps re-settling through a header flip that also shrank the text until the body lands", async () => {
+    const wide = `996:Sign In|Create Account|${CHROME}`;
+    const shrunkFlip = `300:My Account|Create Account|${CHROME}`;
+    const t = makeIo([shrunkFlip, shrunkFlip, shrunkFlip, BODY_SIG]);
+    const pre = snap(wide);
+    const post = await run(pre, t.io);
+    expect(post.visibleTextSignature).toBe(BODY_SIG);
+    expect(hasPageBodySwapped(pre, post)).toBe(true);
+  });
+
   it("never credits a no-op click", async () => {
     const t = makeIo([PRE_SIG]);
     const pre = snap(PRE_SIG);
@@ -333,6 +355,24 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     const t = makeIo([PRE_SIG]);
     await run(snap(PRE_SIG), t.io);
     expect(t.settles()).toBe(1);
+  });
+});
+
+describe("settleAfterClick without a quiescence probe", () => {
+  it("waits the idle allowance for a silent submit-shaped click, so a late re-render is seen", async () => {
+    const c = makeClock(() => {});
+    await settleAfterClick(c.page, c.counter, 0, true);
+    expect(c.now()).toBe(IDLE_GIVE_UP_MS);
+  });
+
+  it("settles through a body-only re-render that lands within the idle allowance", async () => {
+    let text = "20:Create account form";
+    const c = makeClock((now) => {
+      if (now >= 9000) text = "30:Tell us about your work";
+    });
+    await settleAfterClick(c.page, c.counter, 0, true, async () => text, text);
+    expect(text).toBe("30:Tell us about your work");
+    expect(c.now()).toBeGreaterThan(9000);
   });
 });
 

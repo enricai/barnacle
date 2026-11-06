@@ -67,6 +67,7 @@ function run(opts: {
     signalCounter: { n: 0 },
     preNetworkCount: 0,
     preVisibleTextSignature: `${BEFORE_TEXT.length}:${BEFORE_TEXT}`,
+    settledPostVisibleText: AFTER_TEXT,
     preVisibleText: BEFORE_TEXT,
     submitInput: SUBMIT_INPUT,
   });

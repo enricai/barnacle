@@ -67,6 +67,7 @@ function params(isFinalStep: boolean, reads: string[]): Parameters<typeof judgeS
     signalCounter: { n: 0 },
     preNetworkCount: 0,
     preVisibleTextSignature: "12:Create account",
+    settledPostVisibleText: reads[reads.length - 1] ?? "",
     submitInput: SUBMIT_INPUT,
   };
 }
@@ -117,6 +118,7 @@ describe("judgeStepOutcome", () => {
     ): Parameters<typeof judgeStepOutcome>[0] {
       return {
         ...params(false, []),
+        settledPostVisibleText: reads[0] ?? "",
         page: { waitForTimeout: async (ms: number) => void waits.push(ms) },
         target: judgeTarget(
           () => reads[Math.min(stepJudge.mock.calls.length, reads.length - 1)] ?? ""
@@ -150,12 +152,30 @@ describe("judgeStepOutcome", () => {
   });
 });
 
-describe("judgeStepOutcome non-final settle baseline", () => {
-  it("seeds the settle with the pre-click signature", async () => {
+describe("judgeStepOutcome without a handed settled read", () => {
+  it("settles itself and judges the settled text, seeding the settle with the pre-click signature", async () => {
+    settle.mockClear();
+    stepJudge.mockClear();
+    submitJudge.mockClear();
+    stepJudge.mockResolvedValue({ advanced: true, reason: "ok" });
+    const { settledPostVisibleText: _handed, ...unsettled } = params(false, [
+      "Create account",
+      "Create account",
+      "Loading",
+      "Shipping",
+      "Shipping",
+    ]);
+    await judgeStepOutcome(unsettled);
+    expect(settle.mock.calls[0]?.[5]).toBe("12:Create account");
+    expect(submitJudge).not.toHaveBeenCalled();
+    expect(stepJudge.mock.calls[0]?.[0].input.afterText).toBeTruthy();
+  });
+
+  it("does not settle when the caller hands over its settled read", async () => {
     settle.mockClear();
     stepJudge.mockResolvedValue({ advanced: true, reason: "ok" });
-    await judgeStepOutcome(params(false, ["a", "b", "b"]));
-    expect(settle.mock.calls[0]?.[5]).toBe("12:Create account");
+    await judgeStepOutcome(params(false, ["Shipping"]));
+    expect(settle).not.toHaveBeenCalled();
   });
 });
 
