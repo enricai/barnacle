@@ -6074,8 +6074,6 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
       }
     }
     const coveredByAncestorField = coveringAncestorLen > 0;
-    // Only a direct child of the registered ancestor has a one-hop accessor.
-    if (coveredByAncestorField && valuePath.length - coveringAncestorLen !== 1) continue;
     // Schema registration and the wholesale text-swallow below are
     // independent concerns: this field's inferred Zod shape is correct
     // regardless of whether any of the exclusion/guard checks below skip
@@ -6190,9 +6188,12 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
     if (result.slice(spanStart, spanEnd).includes("${payload.")) continue;
     // A value nested in an already-registered ancestor field is read from that
     // field's content instead of being frozen as the recorded literal.
-    const valueExpr = coveredByAncestorField
-      ? `(payload.${pathToPayloadFieldName(valuePath.slice(0, coveringAncestorLen))} as Record<string, unknown>)[${JSON.stringify(key)}]`
-      : `payload.${fieldName}`;
+    // Descendants at any depth below the ancestor are read hop by hop.
+    let ancestorExpr = `payload.${pathToPayloadFieldName(valuePath.slice(0, coveringAncestorLen))}`;
+    for (const seg of valuePath.slice(coveringAncestorLen)) {
+      ancestorExpr = `(${ancestorExpr} as Record<string, unknown>)[${JSON.stringify(seg)}]`;
+    }
+    const valueExpr = coveredByAncestorField ? ancestorExpr : `payload.${fieldName}`;
     const replacement = `$${"{"}JSON.stringify(${valueExpr})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
