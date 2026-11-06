@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { PhantomClickAttempt } from "@/scraper/phantom-click";
+import { isClickViewSwapVerified } from "@/scraper/flow-runner";
 import {
   classifyPhantomClick,
   hasPageAdvanced,
@@ -935,5 +936,59 @@ describe("scraper/phantom-click header-only resettle shares one baseline across 
     expect(hasSubmitStepDomAdvanced(false, stepStart, unsettled)).toBe(false);
     expect(hasSubmitStepDomAdvanced(false, stepStart, header("Sign In", true))).toBe(false);
     expect(hasSubmitStepDomAdvanced(true, stepStart, settled)).toBe(false);
+  });
+});
+
+describe("scraper/phantom-click settled mid-flow header flip with no network", () => {
+  const pre = {
+    networkCount: 0,
+    url: URL,
+    bodyHtmlLength: 1000,
+    visibleTextSignature: "996:Skip to main content|Sign In|Careers Home|Search|Help|Privacy|Terms",
+  };
+  const post = {
+    ...pre,
+    visibleTextSignature:
+      "588:Skip to main content|Settings|user@example.com|Careers Home|Search|Help|Privacy|Terms",
+  };
+  const settledPost = { ...post, settled: true };
+  const midFlow = { isSubmitShapedStep: true, isMidFlowSubmitStep: true };
+  const verify = (advanced: boolean, midFlowSubmit: boolean): boolean =>
+    isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: true,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 0,
+      textChanged: true,
+      midFlowSubmit,
+      pageAdvanced: advanced,
+      actSucceeded: true,
+    });
+
+  it("is effective and view-swap verified when settled", () => {
+    expect(classifyPhantomClick(makeAttempt({ pre, post: settledPost, ...midFlow }))).toBe(
+      "effective"
+    );
+    expect(verify(hasSettledPageAdvanced(pre, settledPost), true)).toBe(true);
+  });
+
+  it("keeps the unsettled variant phantom and unverified", () => {
+    expect(classifyPhantomClick(makeAttempt({ pre, post, ...midFlow }))).toBe("phantom");
+    expect(verify(hasSettledPageAdvanced(pre, post), true)).toBe(false);
+  });
+
+  it("keeps the final step phantom and unverified without network or URL proof", () => {
+    expect(
+      classifyPhantomClick(
+        makeAttempt({
+          pre,
+          post: settledPost,
+          isSubmitShapedStep: true,
+          isMidFlowSubmitStep: false,
+        })
+      )
+    ).toBe("phantom");
+    expect(verify(hasSettledPageAdvanced(pre, settledPost), false)).toBe(false);
   });
 });
