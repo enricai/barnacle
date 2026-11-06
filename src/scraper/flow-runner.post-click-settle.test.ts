@@ -311,33 +311,29 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     expect(hasSettledPageAdvanced(pre, post)).toBe(true);
   });
 
-  it("returns settled as soon as the text holds still, without spending further rounds", async () => {
+  it("does not read a header flip as settled after one quiet round: a body landing later in the budget is picked up", async () => {
     const t = makeIo([FLIPPED_SIG, FLIPPED_SIG, FLIPPED_SIG, BODY_SIG]);
-    const post = await run(snap(PRE_SIG), t.io);
-    expect(t.settles()).toBe(2);
-    expect(post.visibleTextSignature).toBe(FLIPPED_SIG);
-    expect(post.settled).toBe(true);
-  });
-
-  it("picks up a body that lands in a later round while the text is still moving", async () => {
-    const wide = `996:Sign In|Create Account|${CHROME}`;
-    const shrunkFlip = `300:My Account|Create Account|${CHROME}`;
-    const t = makeIo([shrunkFlip, `300:My Account|Loading|${CHROME}`, BODY_SIG]);
-    const pre = snap(wide);
+    const pre = snap(PRE_SIG);
     const post = await run(pre, t.io);
     expect(post.visibleTextSignature).toBe(BODY_SIG);
     expect(hasPageBodySwapped(pre, post)).toBe(true);
   });
 
-  it("returns the last snapshot unsettled when the text never holds still within the budget", async () => {
-    const timeline = Array.from(
-      { length: 200 },
-      (_, i) => `300:My Account|Tick ${i}|${CHROME}`
-    );
-    const t = makeIo(timeline);
+  it("spends the whole re-settle budget before reading a header-only flip as settled", async () => {
+    const t = makeIo([FLIPPED_SIG]);
     const post = await run(snap(PRE_SIG), t.io);
     expect(t.settles()).toBe(1 + Math.floor(MAX_MS / IDLE_GIVE_UP_MS));
-    expect(post.settled).not.toBe(true);
+    expect(post.settled).toBe(true);
+  });
+
+  it("keeps re-settling through a header flip that also shrank the text until the body lands", async () => {
+    const wide = `996:Sign In|Create Account|${CHROME}`;
+    const shrunkFlip = `300:My Account|Create Account|${CHROME}`;
+    const t = makeIo([shrunkFlip, shrunkFlip, shrunkFlip, BODY_SIG]);
+    const pre = snap(wide);
+    const post = await run(pre, t.io);
+    expect(post.visibleTextSignature).toBe(BODY_SIG);
+    expect(hasPageBodySwapped(pre, post)).toBe(true);
   });
 
   it("never credits a no-op click", async () => {
@@ -448,15 +444,5 @@ describe("readMidFlowPostClickAdvance", () => {
     const r = await read(pre, snap(START_SIG), false, t.io);
     expect(r.advanceBaseline).toBe(pre);
     expect(r.pageAdvanced).toBe(false);
-  });
-
-  it("exits the resettle early and marks settled when the text holds still after a header flip", async () => {
-    const t = makeIo([FLIPPED_SIG, FLIPPED_SIG, BODY_SIG]);
-    const start = snap(START_SIG);
-    const r = await read(snap(FLIPPED_SIG, 3), start, true, t.io);
-    expect(t.settles()).toBe(2);
-    expect(r.post.visibleTextSignature).toBe(FLIPPED_SIG);
-    expect(r.post.settled).toBe(true);
-    expect(r.pageAdvanced).toBe(true);
   });
 });
