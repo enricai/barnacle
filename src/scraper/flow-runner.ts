@@ -2024,14 +2024,14 @@ export const ERROR_SUMMARY_EXPR = `(() => {
 
 /** Verbs that make a step an action on the page (checked after negated clauses are removed). */
 const ACTIONABLE_STEP_VERB =
-  /\b(?:click|tap|press|select|choose|pick|fill|type|enter|input|check|uncheck|tick|toggle|upload|attach|submit|open|expand|collapse|scroll|navigate|go to|visit|hover|drag|drop|focus|search|close|dismiss|accept|decline|log ?in|sign ?in|sign ?up|set|clear|apply|save|continue|advance|proceed|next|finish|done)\b/i;
+  /\b(?:click|tap|press|select|choose|pick|fill|type|enter|input|check|uncheck|tick|toggle|upload|attach|submit|open|expand|collapse|scroll|navigate|go to|visit|hover|drag|drop|focus|search|close|dismiss|accept|decline|log ?in|sign ?in|sign ?up|set|clear|apply|save|continue|advance|proceed|next|finish|done|sort|answer|mark|add|remove|agree|confirm|change|switch|filter|book|buy|reply|write|checkbox|radio|dropdown|button|link|field)\b/i;
 
 /** Markers that a step only asks to wait/observe/leave the page alone. */
 const PASSIVE_STEP_MARKER =
   /\b(?:wait|observe|watch|settle|do nothing|nothing|no action|no-op|leave (?:it|the page) (?:as is|alone)|pause)\b|\b(?:do not|don't|dont|never|must not|should not|shouldn't|avoid|refrain from)\b/i;
 
 const NEGATED_ACTION_CLAUSE =
-  /\b(?:do not|don't|dont|never|must not|should not|shouldn't|does not|doesn't|avoid|refrain from|without)\b[^.;\n]*/gi;
+  /\b(?:do not|don't|dont|never|must not|should not|shouldn't|does not|doesn't|avoid|refrain from|without)\b[^.;,?!\n]*/gi;
 
 /**
  * Is this step purely passive ("Do not click anything; just wait for the list
@@ -2044,6 +2044,7 @@ export function isPassiveNoopStep(instruction: string | null | undefined): boole
   if (!instruction || !instruction.trim()) return false;
   if (!PASSIVE_STEP_MARKER.test(instruction)) return false;
   const positive = instruction.replace(NEGATED_ACTION_CLAUSE, " ");
+  if (/["'\u2018\u201c]\w/.test(positive.replace(/\b\w+'\w+\b/g, " "))) return false;
   return !ACTIONABLE_STEP_VERB.test(positive);
 }
 
