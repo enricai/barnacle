@@ -14794,15 +14794,8 @@ export function emitContractTs(opts: Parameters<typeof emitContractTsParts>[0]):
   return emitContractTsParts(opts).code;
 }
 
-/** The payload schema as structured data: the exact expression written as
- * `const <X>PayloadSchema = ...` plus each top-level extension field's name and
- * optionality, so guards never re-parse emitted source. */
-export interface PayloadSchemaParts {
-  expr: string;
-  fields: ReadonlyArray<{ name: string; optional: boolean }>;
-}
-
-/** Same as {@link emitContractTs} but also hands out the payload schema as {@link PayloadSchemaParts}. */
+/** Same as {@link emitContractTs} but also hands out the exact expression
+ * written as `const <X>PayloadSchema = ...`, so callers never re-parse emitted source. */
 export function emitContractTsParts(opts: {
   siteId: string;
   /**
@@ -14961,7 +14954,7 @@ export function emitContractTsParts(opts: {
    * output byte-for-byte: no `browserFallbackGate` meta field, and
    * `createHttpClient(...)` unchanged. */
   fallbackGateSpec?: FallbackGateSpec;
-}): { code: string; payloadSchema: PayloadSchemaParts } {
+}): { code: string; payloadSchemaExpr: string } {
   const {
     siteId,
     displayName,
@@ -15508,15 +15501,6 @@ export function emitContractTsParts(opts: {
   // rather than a second extend keeps the schema to a single `.extend()`.
   const trackingMerge = ".merge(JobTrackingSchema)";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
-  const payloadFields = [...extendFields].map(([name, line]) => ({
-    name,
-    optional: line
-      .split("\n")
-      .filter((l) => !/^\s*\/\*\*.*\*\/\s*$/.test(l))
-      .join("\n")
-      .trimEnd()
-      .endsWith(".optional(),"),
-  }));
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
   // (usesApplicantContactSchema); multipartBoolean() is only imported when a
@@ -16207,7 +16191,7 @@ ${executeDocComment}  async execute(
 // through to \`m.default\` (the response schema above) and 404 at runtime.
 export { ${camel}Plugin as plugin };
 `;
-  return { code, payloadSchema: { expr: payloadSchemaExpr, fields: payloadFields } };
+  return { code, payloadSchemaExpr };
 }
 
 /**
@@ -16229,19 +16213,144 @@ export { ${camel}Plugin as plugin };
 export function unreferencedRequiredUrlFields(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchema: PayloadSchemaParts
+  payloadSchemaExpr?: string
 ): string[] {
-  // Judge only the payload schema's own field data: a response schema's
-  // required `*Url` leaf is output, not caller input.
+  // Judge only the payload schema: a response schema's required `*Url` leaf is
+  // output, not caller input. A contract with no payload-schema declaration has
+  // no caller-supplied fields to judge.
+  const span = payloadSchemaExpr === undefined ? payloadSchemaSpan(contractCode) : null;
+  const scanned = payloadSchemaExpr ?? (span ? contractCode.slice(span.start, span.end) : "");
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
-  return payloadSchema.fields
-    .filter((field) => !field.optional && URL_FIELD_NAME_PATTERN.test(field.name))
-    .map((field) => field.name)
+  return [...scanned.matchAll(URL_FIELD_LINE_PATTERN)]
+    .filter((match) => !isOptionalFieldEntry(scanned, match.index))
+    .map((match) => match[1])
+    .filter((name): name is string => name !== undefined)
     .filter((name) => !emittedCode.includes(`payload.${name}`));
 }
 
-const URL_FIELD_NAME_PATTERN = /^\w*Url\w*$/;
+/**
+ * Whether the field entry a {@link URL_FIELD_LINE_PATTERN} match opens is
+ * optional. An entry runs to the `,` that closes it at its own bracket depth
+ * (or to the enclosing schema's closer), and may span several lines, so it is
+ * optional only through its own trailing call, never through a nested field.
+ */
+function isOptionalFieldEntry(schemaText: string, matchStart: number): boolean {
+  let end = schemaText.length;
+  walkCode(schemaText, matchStart, (ch, i, depth) => {
+    if (depth === 0 && /[,)\]}]/.test(ch)) {
+      end = i;
+      return true;
+    }
+    return false;
+  });
+  return /\.optional\(\)\s*$/.test(schemaText.slice(matchStart, end));
+}
+
 const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
+
+/**
+ * Character span of the payload schema expression inside `contractCode`.
+ * When the emitter's own expression is supplied it is located verbatim;
+ * otherwise the `[export] const <X>PayloadSchema = <expr>` declaration is read
+ * by walking its bracket-balanced expression to the terminating `;` (or to the
+ * next top-level statement when the `;` is absent), so declaration order,
+ * `export`, and a following response schema never move the boundary. Null when
+ * the contract has no payload-schema declaration.
+ */
+function payloadSchemaSpan(
+  contractCode: string,
+  payloadSchemaExpr?: string
+): { start: number; end: number } | null {
+  if (payloadSchemaExpr !== undefined) {
+    const at = payloadSchemaExpr ? contractCode.indexOf(payloadSchemaExpr) : -1;
+    return at < 0 ? null : { start: at, end: at + payloadSchemaExpr.length };
+  }
+  const declaration = /^(?:export\s+)?const\s+\w*PayloadSchema\b[^=\n]*=/m.exec(contractCode);
+  if (!declaration) return null;
+  const start = declaration.index + declaration[0].length;
+  let end = contractCode.length;
+  walkCode(contractCode, start, (ch, i, depth) => {
+    if (depth === 0 && ch === ";") {
+      end = i;
+      return true;
+    }
+    if (
+      depth === 0 &&
+      ch === "\n" &&
+      /^\s*(?:export|const|let|type|function|interface|import)\s/.test(contractCode.slice(i + 1))
+    ) {
+      end = i;
+      return true;
+    }
+    return false;
+  });
+  return { start, end };
+}
+
+/**
+ * Visits each significant character of `code` from `start` — skipping string,
+ * template and regex literals and comments, whose contents are never brackets
+ * or terminators — with the bracket depth before it. Stops when `visit` returns
+ * true. A `/` opens a regex literal where an operand is expected, otherwise it
+ * divides.
+ */
+function walkCode(
+  code: string,
+  start: number,
+  visit: (ch: string, index: number, depth: number) => boolean
+): void {
+  let depth = 0;
+  let prev = "=";
+  for (let i = start; i < code.length; i++) {
+    const ch = code[i] as string;
+    if (ch === '"' || ch === "'" || ch === "`") {
+      i = skipStringLiteral(code, i);
+      prev = ch;
+    } else if (ch === "/" && code[i + 1] === "/") {
+      const eol = code.indexOf("\n", i);
+      i = eol < 0 ? code.length : eol - 1;
+    } else if (ch === "/" && code[i + 1] === "*") {
+      const close = code.indexOf("*/", i + 2);
+      i = close < 0 ? code.length : close + 1;
+    } else if (ch === "/" && REGEX_PRECEDING_CHARS.includes(prev)) {
+      i = skipRegexLiteral(code, i);
+      prev = ch;
+    } else {
+      if (visit(ch, i, depth)) return;
+      if (ch === "(" || ch === "[" || ch === "{") depth++;
+      else if (ch === ")" || ch === "]" || ch === "}") depth--;
+      if (!/\s/.test(ch)) prev = ch;
+    }
+  }
+}
+
+/** Characters after which a `/` opens a regex literal rather than dividing. */
+const REGEX_PRECEDING_CHARS = "=(,:[{};!&|?+-*%<>~^";
+
+/** Index of the closing `/` of the regex literal opening at `open`: a `/` or a
+ * quote inside a `[...]` class or after a `\` escape does not end or open anything. */
+function skipRegexLiteral(code: string, open: number): number {
+  let inClass = false;
+  for (let i = open + 1; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === "\n") return i;
+    if (ch === "\\") i++;
+    else if (ch === "[") inClass = true;
+    else if (ch === "]") inClass = false;
+    else if (ch === "/" && !inClass) return i;
+  }
+  return code.length;
+}
+
+/** Index of the closing quote of the string literal opening at `open`. */
+function skipStringLiteral(code: string, open: number): number {
+  const quote = code[open];
+  for (let i = open + 1; i < code.length; i++) {
+    if (code[i] === "\\") i++;
+    else if (code[i] === quote) return i;
+  }
+  return code.length;
+}
 
 /**
  * `*Url` leaves outside the payload schema that nothing reads and that the
@@ -16252,12 +16361,11 @@ const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
 export function unreadRelaxedResponseUrlFields(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchema: PayloadSchemaParts
+  payloadSchemaExpr?: string
 ): string[] {
-  const at = payloadSchema.expr ? contractCode.indexOf(payloadSchema.expr) : -1;
-  if (at < 0) return [];
-  const outsidePayload =
-    contractCode.slice(0, at) + contractCode.slice(at + payloadSchema.expr.length);
+  const span = payloadSchemaSpan(contractCode, payloadSchemaExpr);
+  if (!span) return [];
+  const outsidePayload = contractCode.slice(0, span.start) + contractCode.slice(span.end);
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
   return [...outsidePayload.matchAll(URL_FIELD_LINE_PATTERN)]
     .filter((match) => match[0].includes(".nullable().optional("))
@@ -16269,9 +16377,13 @@ export function unreadRelaxedResponseUrlFields(
 export function assertRequiredUrlFieldsReferenced(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchema: PayloadSchemaParts
+  payloadSchemaExpr?: string
 ): void {
-  const unreferenced = unreferencedRequiredUrlFields(contractCode, browserFlowCode, payloadSchema);
+  const unreferenced = unreferencedRequiredUrlFields(
+    contractCode,
+    browserFlowCode,
+    payloadSchemaExpr
+  );
   if (unreferenced.length === 0) return;
   throw new Error(
     `recon-generate: required URL field(s) ${unreferenced.join(", ")} declared on the payload schema ` +
@@ -17276,8 +17388,8 @@ async function resolveValueConstraints(specifier: string): Promise<ReconValueCon
  * capture(s) to exclude on a narrowed retry. */
 interface TsGenerationResult {
   contractCode: string;
-  /** The payload schema as emitted in `const <X>PayloadSchema = ...`, with its field data. */
-  payloadSchema: PayloadSchemaParts;
+  /** The exact expression emitted as `const <X>PayloadSchema = ...`. */
+  payloadSchemaExpr: string;
   contractOpts: Parameters<typeof emitContractTs>[0];
   browserFlow: ReturnType<typeof emitBrowserFlowTs>;
   auxFiles: Array<{ filename: string; url: string }>;
@@ -17422,7 +17534,7 @@ function healUnreferencedUrlFieldsOnce(
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
     firstAttempt.browserFlow.code,
-    firstAttempt.payloadSchema
+    firstAttempt.payloadSchemaExpr
   );
   // Only unread PAYLOAD `*Url` fields attribute noise captures. Response-schema
   // `*Url` leaves are output, never an input the caller must supply, so they
@@ -17473,7 +17585,7 @@ function healUnreferencedUrlFieldsOnce(
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
     retried.browserFlow.code,
-    retried.payloadSchema
+    retried.payloadSchemaExpr
   );
   if (stillOffending.length > 0) {
     throw new Error(
@@ -18676,7 +18788,7 @@ async function main(): Promise<void> {
             browserFlow,
             contractOpts,
             contractCode: firstContractCode,
-            payloadSchema: firstContract.payloadSchema,
+            payloadSchemaExpr: firstContract.payloadSchemaExpr,
           }
         : (() => {
             const fallbackBrowserFlow = emitBrowserFlowTs({
@@ -18695,12 +18807,12 @@ async function main(): Promise<void> {
               browserFlow: fallbackBrowserFlow,
               contractOpts: optionalized,
               contractCode: regenerated.code,
-              payloadSchema: regenerated.payloadSchema,
+              payloadSchemaExpr: regenerated.payloadSchemaExpr,
             };
           })();
     return {
       contractCode: settled.contractCode,
-      payloadSchema: settled.payloadSchema,
+      payloadSchemaExpr: settled.payloadSchemaExpr,
       contractOpts: settled.contractOpts,
       browserFlow: settled.browserFlow,
       auxFiles,

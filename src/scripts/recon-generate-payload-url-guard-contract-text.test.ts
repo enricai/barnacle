@@ -1,57 +1,92 @@
 import { describe, expect, it } from "vitest";
 import {
   assertRequiredUrlFieldsReferenced,
-  type PayloadSchemaParts,
   unreadRelaxedResponseUrlFields,
   unreferencedRequiredUrlFields,
 } from "./recon-generate.js";
 
-const parts = (...fields: Array<[string, boolean]>): PayloadSchemaParts => ({
-  expr: "z.object({})",
-  fields: fields.map(([name, optional]) => ({ name, optional })),
-});
+const payload = (fields: string) => `const ExamplePayloadSchema = z.object({\n${fields}\n});\n`;
 const response = `const ExampleResponseSchema = z.object({\n  data: z.object({\n    mapUrl: z.string(),\n  }),\n});\n`;
-const payloadDecl = (p: PayloadSchemaParts) => `const ExamplePayloadSchema = ${p.expr};\n`;
 
-describe("required-URL guard on the emitter's payload field data", () => {
+describe("required-URL guard on contract text alone", () => {
   it("ignores a required response *Url leaf declared after the payload schema", () => {
-    const p = parts(["q", false]);
-    const code = payloadDecl(p) + response;
-    expect(unreferencedRequiredUrlFields(code, "", p)).toEqual([]);
-    expect(() => assertRequiredUrlFieldsReferenced(code, "", p)).not.toThrow();
+    const code = payload("  q: z.string(),") + response;
+    expect(unreferencedRequiredUrlFields(code, "")).toEqual([]);
+    expect(() => assertRequiredUrlFieldsReferenced(code, "")).not.toThrow();
   });
 
   it("ignores a response *Url leaf when the response schema precedes the payload schema", () => {
-    const p = parts(["q", false]);
-    expect(unreferencedRequiredUrlFields(response + payloadDecl(p), "", p)).toEqual([]);
+    const code = response + payload("  q: z.string(),");
+    expect(unreferencedRequiredUrlFields(code, "")).toEqual([]);
   });
 
-  it("reports nothing when there are no payload fields (no payload declaration)", () => {
-    expect(unreferencedRequiredUrlFields(response, "", { expr: "", fields: [] })).toEqual([]);
+  it("ignores a response *Url leaf when the payload schema is exported", () => {
+    const code = `export ${payload("  q: z.string(),")}${response}`;
+    expect(unreferencedRequiredUrlFields(code, "")).toEqual([]);
   });
 
   it("reports only the payload's own unread required *Url field", () => {
-    const p = parts(["siteUrl", false]);
-    const code = payloadDecl(p) + response;
-    expect(unreferencedRequiredUrlFields(code, "", p)).toEqual(["siteUrl"]);
-    expect(() => assertRequiredUrlFieldsReferenced(code, "", p)).toThrow(/siteUrl/);
+    const code = `export ${payload("  siteUrl: z.string(),")}${response}`;
+    expect(unreferencedRequiredUrlFields(code, "")).toEqual(["siteUrl"]);
+    expect(() => assertRequiredUrlFieldsReferenced(code, "")).toThrow(/siteUrl/);
   });
 
   it("does not flag an optional or a read payload *Url field", () => {
-    expect(unreferencedRequiredUrlFields(response, "", parts(["siteUrl", true]))).toEqual([]);
     expect(
-      unreferencedRequiredUrlFields(response, "fetch(payload.siteUrl)", parts(["siteUrl", false]))
+      unreferencedRequiredUrlFields(payload("  siteUrl: z.string().optional(),") + response, "")
+    ).toEqual([]);
+    expect(
+      unreferencedRequiredUrlFields(
+        payload("  siteUrl: z.string(),") + response,
+        "fetch(payload.siteUrl)"
+      )
     ).toEqual([]);
   });
 
+  it("does not let a payload schema containing a string with brackets move the boundary", () => {
+    const code =
+      payload('  q: z.string().describe("a ; ) } b"),\n  siteUrl: z.string(),') + response;
+    expect(unreferencedRequiredUrlFields(code, "")).toEqual(["siteUrl"]);
+  });
+
   it("attributes only response-side relaxed *Url leaves", () => {
-    const p: PayloadSchemaParts = {
-      expr: "z.object({\n  logoUrl: z.string().nullable().optional(),\n})",
-      fields: [{ name: "logoUrl", optional: true }],
-    };
     const relaxed = `const ExampleResponseSchema = z.object({\n  logoUrl: z.string().nullable().optional(),\n});\n`;
-    const code = `const ExamplePayloadSchema = ${p.expr};\n${relaxed}`;
-    expect(unreadRelaxedResponseUrlFields(code, "", p)).toEqual(["logoUrl"]);
-    expect(unreadRelaxedResponseUrlFields(`const P = ${p.expr};\n`, "", p)).toEqual([]);
+    const code = payload("  logoUrl: z.string().nullable().optional(),") + relaxed;
+    expect(unreadRelaxedResponseUrlFields(code, "")).toEqual(["logoUrl"]);
+    expect(unreadRelaxedResponseUrlFields(payload("  q: z.string(),"), "")).toEqual([]);
+  });
+});
+
+describe("required-URL guard: payload span survives regex literals and multi-line entries", () => {
+  const flow = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
+  const responseOnly = `export const ExampleResponseSchema = z.object({\n  mapUrl: z.string(),\n}).loose();\n`;
+
+  it.each([
+    ["a quote", '/^[a-z"]+$/'],
+    ["an unbalanced paren", "/^(a|b$/"],
+    ["a closing brace inside a character class", "/^[}]+$/"],
+    ["a bracket", "/^\\[a\\]$/"],
+  ])("a payload regex literal holding %s does not widen the scan into the response", (_n, re) => {
+    const code = `const ExamplePayloadSchema = z.object({\n  code: z.string().regex(${re}),\n  date: z.string(),\n});\n\n${responseOnly}`;
+    expect(unreferencedRequiredUrlFields(code, flow)).toEqual([]);
+  });
+
+  it("still reports an unread required payload field after a regex literal", () => {
+    const code = `const ExamplePayloadSchema = z.object({\n  code: z.string().regex(/^[}"(]+$/),\n  siteUrl: z.string(),\n});\n\n${responseOnly}`;
+    expect(unreferencedRequiredUrlFields(code, flow)).toEqual(["siteUrl"]);
+  });
+
+  it("reports nothing for a response-only contract with no payload declaration", () => {
+    expect(unreferencedRequiredUrlFields(responseOnly, flow)).toEqual([]);
+  });
+
+  it("treats a multi-line entry ending in .optional() as optional", () => {
+    const code = `const ExamplePayloadSchema = z.object({\n  siteUrl: z.string()\n    .describe("where to start")\n    .optional(),\n});\n`;
+    expect(unreferencedRequiredUrlFields(code, flow)).toEqual([]);
+  });
+
+  it("does not treat a nested .optional() as making a multi-line entry optional", () => {
+    const code = `const ExamplePayloadSchema = z.object({\n  siteUrl: z.object({\n    a: z.string().optional(),\n  }),\n});\n`;
+    expect(unreferencedRequiredUrlFields(code, flow)).toEqual(["siteUrl"]);
   });
 });

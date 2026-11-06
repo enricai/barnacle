@@ -5359,72 +5359,8 @@ describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated v
     const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
     expect(() =>
-      assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, {
-        expr: contractCode,
-        fields: [{ name: "TrackingUrl", optional: false }],
-      })
+      assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
     ).toThrow(/required URL field.*TrackingUrl/);
-  });
-});
-
-describe("assertRequiredUrlFieldsReferenced — response-schema *Url leaves are output, not payload input", () => {
-  const flow = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
-  const reportContract =
-    "const XPayloadSchema = z.object({}).extend({\n  date: z.string().optional(),\n});\n\nexport const XResponseSchema = z.object({\n  location: z.object({\n    mapUrl: z.string(),\n  }).loose(),\n}).loose();";
-  const dateOnly = {
-    expr: "z.object({}).extend({\n  date: z.string().optional(),\n})",
-    fields: [{ name: "date", optional: true }],
-  };
-
-  it("does not flag a nested required response mapUrl (report contract verbatim)", () => {
-    expect(unreferencedRequiredUrlFields(reportContract, flow, dateOnly)).toEqual([]);
-    expect(() => assertRequiredUrlFieldsReferenced(reportContract, flow, dateOnly)).not.toThrow();
-  });
-
-  it("does not flag top-level and array-element response leaves, response declared first", () => {
-    const contract =
-      "export const XResponseSchema = z.object({\n  mapUrl: z.string(),\n  items: z.array(z.object({\n    itemUrl: z.string(),\n  })),\n}).loose();\n\nconst XPayloadSchema = z.object({\n  date: z.string(),\n});";
-    expect(() =>
-      assertRequiredUrlFieldsReferenced(contract, flow, {
-        expr: "z.object({\n  date: z.string(),\n})",
-        fields: [{ name: "date", optional: false }],
-      })
-    ).not.toThrow();
-  });
-
-  it("does not flag anything for an empty or absent payload declaration", () => {
-    expect(unreferencedRequiredUrlFields(reportContract, flow, { expr: "", fields: [] })).toEqual([]);
-    expect(
-      unreferencedRequiredUrlFields(reportContract, flow, { expr: "z.object({})", fields: [] })
-    ).toEqual([]);
-  });
-
-  it("is unaffected by payload fields containing regex literals with quotes, parens, braces or brackets", () => {
-    const expr = 'z.object({\n  code: z.string().regex(/^["\'(){}[\\]]+$/),\n  date: z.string(),\n})';
-    const contract = `const XPayloadSchema = ${expr};\n\nexport const XResponseSchema = z.object({\n  mapUrl: z.string(),\n}).loose();`;
-    expect(
-      unreferencedRequiredUrlFields(contract, flow, {
-        expr,
-        fields: [
-          { name: "code", optional: false },
-          { name: "date", optional: false },
-        ],
-      })
-    ).toEqual([]);
-  });
-
-  it("still flags a genuine unread required payload homeUrl alongside a response leaf", () => {
-    const contract =
-      "const XPayloadSchema = z.object({\n  homeUrl: z.string(),\n});\n\nexport const XResponseSchema = z.object({\n  mapUrl: z.string(),\n}).loose();";
-    const ps = {
-      expr: "z.object({\n  homeUrl: z.string(),\n})",
-      fields: [{ name: "homeUrl", optional: false }],
-    };
-    expect(unreferencedRequiredUrlFields(contract, flow, ps)).toEqual(["homeUrl"]);
-    expect(() => assertRequiredUrlFieldsReferenced(contract, flow, ps)).toThrow(
-      /required URL field.*homeUrl/
-    );
-    expect(unreferencedRequiredUrlFields(contract, "await page.goto(payload.homeUrl);", ps)).toEqual([]);
   });
 });
 
@@ -5637,18 +5573,20 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
     `export const XResponseSchema = z.object({\n${resp}\n});\n\nexport type XResponse = z.infer<typeof XResponseSchema>;\n\nconst XPayloadSchema = z.object({\n${pay}\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n`;
   it("ignores a required response *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "", {
-        expr: "z.object({\n  q: z.string(),\n})",
-        fields: [{ name: "q", optional: false }],
-      })
+      unreferencedRequiredUrlFields(
+        mk("  resultUrl: z.string(),", "  q: z.string(),"),
+        "",
+        "z.object({\n  q: z.string(),\n})"
+      )
     ).toEqual([]);
   });
   it("still flags an unreferenced required payload *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"), "", {
-        expr: "z.object({\n  ClickUrl: z.string(),\n})",
-        fields: [{ name: "ClickUrl", optional: false }],
-      })
+      unreferencedRequiredUrlFields(
+        mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
+        "",
+        "z.object({\n  ClickUrl: z.string(),\n})"
+      )
     ).toEqual(["ClickUrl"]);
   });
 });
@@ -5658,10 +5596,11 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
     "const XPayloadSchema = z.object({}).extend({\n  date: z.string().optional(),\n});\n\nexport const XResponseSchema = z.object({\n  location: z.object({\n    mapUrl: z.string(),\n  }).loose(),\n}).loose();\n";
   it("does not flag a required nested response *Url leaf", () => {
     expect(
-      unreferencedRequiredUrlFields(src, "", {
-        expr: "z.object({}).extend({\n  date: z.string().optional(),\n})",
-        fields: [{ name: "date", optional: true }],
-      })
+      unreferencedRequiredUrlFields(
+        src,
+        "",
+        "z.object({}).extend({\n  date: z.string().optional(),\n})"
+      )
     ).toEqual([]);
   });
   it("still flags a required unread payload *Url field", () => {
@@ -5670,13 +5609,11 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
       "date: z.string().optional(),\n  homeUrl: z.string(),"
     );
     expect(
-      unreferencedRequiredUrlFields(withUrl, "", {
-        expr: "z.object({}).extend({\n  date: z.string().optional(),\n  homeUrl: z.string(),\n})",
-        fields: [
-          { name: "date", optional: true },
-          { name: "homeUrl", optional: false },
-        ],
-      })
+      unreferencedRequiredUrlFields(
+        withUrl,
+        "",
+        "z.object({}).extend({\n  date: z.string().optional(),\n  homeUrl: z.string(),\n})"
+      )
     ).toEqual(["homeUrl"]);
   });
 });
