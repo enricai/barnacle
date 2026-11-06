@@ -3506,6 +3506,34 @@ export function extractActionSequence(
   // run tens of millions of URL parses and stall for minutes.
   const hostGatedPaths = hostGated.map(({ capture }) => safeUrlPathname(capture.url));
   const hostGatedSegments = hostGatedPaths.map((path) => path.split("/").filter(Boolean));
+  // Producer/consumer sets for the data-dependency exemption below, extracted
+  // once per capture rather than once per candidate/target PAIR: the pass is
+  // already O(n^2) over the pool, and re-walking both JSON bodies inside it
+  // cost 160s on a 4.7k-capture archive whose captures all match the declared
+  // pattern. Only declared targets can be consumers, so only they need a
+  // consumed set; produced sets are filled lazily since most candidates are
+  // exempted by a cheaper check before this one runs.
+  const declaredTargetConsumers = hostGated
+    .map((entry, j) => ({ entry, j }))
+    .filter(
+      ({ entry }) =>
+        matchesDeclaredSubmitEndpoint(entry.capture) ||
+        matchesFoldReturn(entry.capture) ||
+        matchesDeclaredSubmitBody(entry.capture)
+    )
+    .map(({ entry, j }) => ({
+      j,
+      index: entry.index,
+      consumed: captureConsumedValues(entry.capture),
+    }));
+  const producedCache = new Map<number, Set<string>>();
+  const producedValuesAt = (j: number): Set<string> => {
+    const cached = producedCache.get(j);
+    if (cached !== undefined) return cached;
+    const computed = capturesProducedValues(hostGated[j]!.capture);
+    producedCache.set(j, computed);
+    return computed;
+  };
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
       ? hostGated.filter(({ capture, index }, i) => {
@@ -3581,14 +3609,11 @@ export function extractActionSequence(
           // against captures the flow author named (the declared submit /
           // foldReturn targets) — incidental same-host noise never earns the
           // exemption by coincidentally echoing some unrelated capture.
-          const feedsDeclaredTarget = hostGated.some(
-            ({ capture: other, index: otherIndex }, j) =>
-              j !== i &&
-              otherIndex > index &&
-              (matchesDeclaredSubmitEndpoint(other) ||
-                matchesFoldReturn(other) ||
-                matchesDeclaredSubmitBody(other)) &&
-              producesValueConsumedBy(capture, other)
+          const feedsDeclaredTarget = declaredTargetConsumers.some(
+            (target) =>
+              target.j !== i &&
+              target.index > index &&
+              producedValueIsConsumed(producedValuesAt(i), target.consumed)
           );
           return (
             matchesFoldReturn(capture) ||
@@ -3650,38 +3675,73 @@ export function extractActionSequence(
  * indistinguishable by path, but only the genuine pair actually passes a
  * value from one call's response into the next call's request.
  */
-function producesValueConsumedBy(producer: Capture, consumer: Capture): boolean {
-  if (producer.responseBody === null || producer.responseBody === undefined) return false;
+function capturesProducedValues(producer: Capture): Set<string> {
   const produced = new Set<string>();
+  if (producer.responseBody === null || producer.responseBody === undefined) return produced;
   for (const { value } of walkAllPrimitiveLeaves(producer.responseBody)) {
     if (typeof value !== "string" && typeof value !== "number") continue;
     const text = String(value);
     if (text.length < 2 || text.length > ISSUED_TOKEN_MAX_LENGTH) continue;
     produced.add(text);
   }
-  if (produced.size === 0) return false;
-  const consumedValues: string[] = [];
+  return produced;
+}
+
+/**
+ * Values a capture's request SENDS — its URL path segments and query values
+ * plus, when the body parses as JSON, every primitive leaf of it. The raw
+ * body is returned alongside for the non-JSON case, where containment is the
+ * only check available.
+ *
+ * Split out from {@link capturesProducedValues} so both sides of the
+ * producer/consumer comparison are extracted ONCE per capture. The isolation
+ * pass that uses them is already O(n^2) over the pool, so doing this work per
+ * PAIR instead cost 160s on a 4.7k-capture archive whose captures all match
+ * the declared pattern.
+ */
+function captureConsumedValues(consumer: Capture): {
+  values: Set<string>;
+  rawBody: string | null;
+} {
+  const values = new Set<string>();
   try {
     const url = new URL(consumer.url);
-    consumedValues.push(...url.pathname.split("/").map(decodePathSegment));
-    consumedValues.push(...url.searchParams.values());
+    for (const segment of url.pathname.split("/")) values.add(decodePathSegment(segment));
+    for (const value of url.searchParams.values()) values.add(value);
   } catch {
-    // An unparseable consumer URL still has a body worth checking below.
+    // An unparseable consumer URL still has a body worth collecting below.
   }
-  const body = consumer.requestPostData;
-  if (body !== null && body !== undefined && body.length > 0) {
-    try {
-      for (const { value } of walkAllPrimitiveLeaves(JSON.parse(body) as unknown)) {
-        if (typeof value === "string" || typeof value === "number") {
-          consumedValues.push(String(value));
-        }
-      }
-    } catch {
-      // Non-JSON body: fall back to substring containment below.
-      return [...produced].some((v) => v.length >= 3 && body.includes(v));
+  const body = consumer.requestPostData ?? null;
+  if (body === null || body.length === 0) return { values, rawBody: null };
+  try {
+    for (const { value } of walkAllPrimitiveLeaves(JSON.parse(body) as unknown)) {
+      if (typeof value === "string" || typeof value === "number") values.add(String(value));
     }
+    return { values, rawBody: null };
+  } catch {
+    return { values, rawBody: body };
   }
-  return consumedValues.some((v) => v.length >= 2 && produced.has(v));
+}
+
+/**
+ * True when `produced` (a producer response's leaves) and `consumed` (a later
+ * request's sent values) share a value — i.e. the producer's call minted
+ * something the consumer's call sends.
+ */
+function producedValueIsConsumed(
+  produced: ReadonlySet<string>,
+  consumed: { values: Set<string>; rawBody: string | null }
+): boolean {
+  if (produced.size === 0) return false;
+  for (const value of consumed.values) {
+    if (value.length >= 2 && produced.has(value)) return true;
+  }
+  const rawBody = consumed.rawBody;
+  if (rawBody === null) return false;
+  for (const value of produced) {
+    if (value.length >= 3 && rawBody.includes(value)) return true;
+  }
+  return false;
 }
 
 /**
