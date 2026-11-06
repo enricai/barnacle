@@ -7403,7 +7403,10 @@ export function compileActionSteps(
     const isCrossDomain = lastHost !== null && currentHost !== null && lastHost !== currentHost;
     lastHost = currentHost;
 
-    return { capture, varName, produces, isMultipart, isCrossDomain };
+    // Multipart steps are emitted through a path that cannot read the HTML
+    // text, so an html produce there would be interpolated but never declared.
+    const finalProduces = isMultipart ? produces.filter((q) => q.kind !== "html") : produces;
+    return { capture, varName, produces: finalProduces, isMultipart, isCrossDomain };
   });
 }
 
