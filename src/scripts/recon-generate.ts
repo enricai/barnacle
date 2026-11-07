@@ -9382,6 +9382,12 @@ export function emitFoldMatchAndMergeLines(
   joinAccessor: (field: string) => string,
   wholeArrayKey: string | null = null
 ): string[] {
+  // A declared `attachAs` publishes the matched answer under that key (never
+  // overriding an existing field); an undeclared drill flat-merges its fields.
+  const attachOrMerge = (sfx: string): string =>
+    target.attachAs !== undefined
+      ? `      if (foldMatch${sfx} != null && !(${JSON.stringify(target.attachAs)} in ${itemVar})) Object.assign(${itemVar}, { [${JSON.stringify(target.attachAs)}]: foldMatch${sfx} });`
+      : `      Object.assign(${itemVar}, Object.fromEntries(Object.entries(foldMatch${sfx} ?? {}).filter(([k]) => !(k in ${itemVar}))));`;
   // An array-root terminal (the response body IS the row array) is cast via
   // `unknown` — an array is not a `Record<string, unknown>`.
   const isArrayRoot =
@@ -9396,7 +9402,7 @@ export function emitFoldMatchAndMergeLines(
   if (target.chainArrayPath.length === 0 && !isArrayRoot) {
     return [
       `      const foldMatch${suffix} = ${terminalStep.varName} as Record<string, unknown>;`,
-      `      Object.assign(${itemVar}, Object.fromEntries(Object.entries(foldMatch${suffix} ?? {}).filter(([k]) => !(k in ${itemVar}))));`,
+      attachOrMerge(suffix),
     ];
   }
   // A wildcard-free chainArrayPath can land on a flat object rather than an
@@ -9467,7 +9473,7 @@ export function emitFoldMatchAndMergeLines(
   return [
     `      const foldMatches${suffix} = ${foldMatchesExpr};`,
     `      const foldMatch${suffix} = foldMatches${suffix}.length === 1 && ${soleCandidateFieldsAbsent} ? foldMatches${suffix}[0] : foldMatches${suffix}.find((m) => ${joinCondition});`,
-    `      Object.assign(${itemVar}, Object.fromEntries(Object.entries(foldMatch${suffix} ?? {}).filter(([k]) => !(k in ${itemVar}))));`,
+    attachOrMerge(suffix),
   ];
 }
 
@@ -15924,7 +15930,8 @@ export function foldOneDrillOccurrence(
   joinFields: readonly string[],
   drillItems: readonly Record<string, unknown>[],
   matchedItem: Record<string, unknown>,
-  wholeArrayKey: string | null = null
+  wholeArrayKey: string | null = null,
+  matchAttachKey: string | null = null
 ): unknown {
   const primaryItems = objectItemsAtPath(body, primaryArrayPath);
   if (!primaryItems) return body;
@@ -15945,6 +15952,11 @@ export function foldOneDrillOccurrence(
       )
     ) ?? drillItems[0];
   if (!drillMatch) return body;
+  // Mirrors emitFoldMatchAndMergeLines: a declared attach key carries the
+  // matched answer as one value instead of flat-merging its fields.
+  if (matchAttachKey !== null) {
+    return replaceByReference(body, matchedItem, { [matchAttachKey]: drillMatch, ...matchedItem });
+  }
   return replaceByReference(body, matchedItem, { ...drillMatch, ...matchedItem });
 }
 
@@ -15967,7 +15979,8 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
             target.joinFields,
             drillItems,
             matchedItem,
-            wholeArrayAttachKey(target, drillBody, actionSteps[target.drillStepIndex]!.capture.url)
+            wholeArrayAttachKey(target, drillBody, actionSteps[target.drillStepIndex]!.capture.url),
+            target.attachAs ?? null
           );
     // Every absorbed occurrence of this SAME endpoint (a repeat raw capture
     // threaded from a DIFFERENT primary item — see FoldPlan.absorbedIndices)
@@ -16004,7 +16017,8 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
           target,
           absorbedCapture.responseBody,
           actionSteps[target.drillStepIndex]!.capture.url
-        )
+        ),
+        target.attachAs ?? null
       );
     }, bodyAfterOwnDrill);
   }, initialBody);
