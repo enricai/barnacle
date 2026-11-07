@@ -730,7 +730,18 @@ describe("recon-generate whole cart-then-update flow with csrf header and sessio
     mkdirSync(siteOutDir, { recursive: true });
     const result = spawnSync(
       process.execPath,
-      ["--import", "tsx", GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      [
+        "--import",
+        "tsx",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ],
       {
         cwd: RECON_GENERATE_CWD,
         encoding: "utf8",
