@@ -1,6 +1,6 @@
-import Fastify from "fastify";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
 import requestContextPlugin from "@/api/plugins/request-context";
