@@ -2182,7 +2182,7 @@ export function isGraphQL(
   });
   const nonGetEndpointCounts = scoped.reduce((counts, c) => {
     if (c.method.toUpperCase() === "GET") return counts;
-    const key = `${c.method.toUpperCase()} ${endpointTemplateKey(c.url)}`;
+    const key = endpointTemplateKey(c.url);
     counts.set(key, (counts.get(key) ?? 0) + 1);
     return counts;
   }, new Map<string, number>());
@@ -2190,7 +2190,7 @@ export function isGraphQL(
     c.requestPostData !== null &&
     c.requestPostData !== REQUEST_BODY_UNAVAILABLE &&
     c.requestPostData !== "" &&
-    (nonGetEndpointCounts.get(`${c.method.toUpperCase()} ${endpointTemplateKey(c.url)}`) ?? 0) >= 2;
+    (nonGetEndpointCounts.get(endpointTemplateKey(c.url)) ?? 0) >= 2;
   const restAntiVoteCandidates = scoped.filter(
     (c) =>
       !c.query &&
