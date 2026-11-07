@@ -15603,15 +15603,11 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
           );
           return specPlan === null ? [] : [specPlan];
         })();
-  return dedupeTargetsPerDeclaredDrill(
+  return stampDeclaredDrillAttributes(
     actions,
-    stampDeclaredDrillAttributes(
+    collapseTargetsToDeclaredDrillPath(
       actions,
-      collapseTargetsToDeclaredDrillPath(
-        actions,
-        plans,
-        foldReturnSpec === null ? [] : [foldReturnSpec]
-      ),
+      plans,
       foldReturnSpec === null ? [] : [foldReturnSpec]
     ),
     foldReturnSpec === null ? [] : [foldReturnSpec]
@@ -15620,34 +15616,6 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
       (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
     );
     return targets.length === 0 ? [] : [{ ...plan, targets }];
-  });
-}
-
-/**
- * One declared drill is one hop: a spec's endpoint captured once per item
- * (or re-captured) resolves one structural target per capture, but the
- * emitted per-item loop must issue that drill exactly once. Keeps the first
- * target per (declared spec, folded array, attach key) and leaves undeclared targets
- * untouched.
- */
-function dedupeTargetsPerDeclaredDrill<T extends { capture: Capture }>(
-  actions: readonly T[],
-  plans: readonly FoldPlan[],
-  specs: readonly FoldReturnSpec[]
-): FoldPlan[] {
-  if (specs.length === 0) return [...plans];
-  const matchers = specs.map((s) => compileFoldReturnEndpointMatcher(s));
-  return plans.map((plan) => {
-    const seen = new Set<string>();
-    const targets = plan.targets.filter((target) => {
-      const owner = matchers.findIndex((m) => m(actions[target.chainTerminalIndex]!.capture));
-      if (owner < 0) return true;
-      const key = `${owner}\u0000${target.chainArrayPath.join(".")}\u0000${target.attachAs ?? ""}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    return targets.length === plan.targets.length ? plan : { ...plan, targets };
   });
 }
 
@@ -15800,12 +15768,10 @@ function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipar
       if (added) break;
     }
   });
-  const allSpecs = [...(primarySpec === null ? [] : [primarySpec]), ...extraDrillSpecs];
-  return dedupeTargetsPerDeclaredDrill(
-    actions,
-    collapseTargetsToDeclaredDrillPath(actions, result, allSpecs),
-    allSpecs
-  );
+  return collapseTargetsToDeclaredDrillPath(actions, result, [
+    ...(primarySpec === null ? [] : [primarySpec]),
+    ...extraDrillSpecs,
+  ]);
 }
 
 /** Pins a target's chain terminal to the chain step matching the spec's own
@@ -17587,6 +17553,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       const hoistedChainLines: string[] = [];
       // Terminals already fetched and kept bound at item scope in this loop.
       const itemScopedBoundSteps = new Set<number>();
+      const emittedHopSignatures = new Set<string>();
       // Every target's join/merge — plus any non-hoistable target's own
       // chain fetch — goes here, spliced inside the item loop.
       const itemScopedLines: string[] = [];
@@ -17890,6 +17857,15 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             actionSteps[target.drillStepIndex]!.capture.url
           )
         );
+        // One drill is one hop: a drill endpoint captured once per item
+        // resolves one target per capture, and each renders to the same
+        // per-item request. Only the first of identical renderings is kept.
+        const renderedSignature = [...chainLines, ...matchLines]
+          .join("\n")
+          .replace(/\bfoldMatch(es)?\d*\b/g, "foldMatch$1")
+          .replace(/\br\d+\b/g, "rN");
+        if (emittedHopSignatures.has(renderedSignature)) continue;
+        emittedHopSignatures.add(renderedSignature);
         const drillName = drillLabel(actionSteps[target.drillStepIndex]!.capture.url);
         if (isolated && target.chain[0] !== foldPlan.primaryStepIndex) {
           // Fetch and merge travel together so a failure drops only this drill.
