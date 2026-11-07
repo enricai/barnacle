@@ -63,6 +63,16 @@ async function requestContextPlugin(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // Client disconnected before the response finished. Emit a completed-
+  // equivalent line carrying reqId so aborted requests stay correlatable.
+  // INFO, never ERROR: a client hang-up is not a server fault.
+  app.addHook("onRequestAbort", async (request: FastifyRequest) => {
+    request.log.info(
+      { reqId: request.id, aborted: true, method: request.method, url: request.url },
+      "request aborted",
+    );
+  });
+
   app.addHook("onSend", async (request, reply) => {
     reply.header(REQUEST_ID_HEADER, request.id);
     if (request.correlationId) {
