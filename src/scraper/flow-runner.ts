@@ -7839,7 +7839,7 @@ async function resettleThroughHeaderOnlyFlip(
       current = probe;
       continue;
     }
-    const outcome = await io.settle(
+    await io.settle(
       page,
       target,
       signalCounter,
@@ -7852,9 +7852,6 @@ async function resettleThroughHeaderOnlyFlip(
     const next = await io.snapshot(target, signalCounter, page);
     const heldStill = !hasVisibleTextChanged(current, next);
     current = next;
-    // The settle observed the page quiet and the text did not move: the header
-    // flip is the page's final state, so stop instead of re-holding every round.
-    if (outcome === "quiescent" && heldStill) return { ...current, settled: true };
     heldStillThroughBudget = heldStill;
   }
   return heldStillThroughBudget ? { ...current, settled: true } : current;
