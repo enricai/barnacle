@@ -7943,6 +7943,9 @@ function keysCorrelate(sourceName: string, targetKey: string): boolean {
   const b = normalizeCorrelationToken(targetKey);
   if (a.length === 0 || b.length === 0) return false;
   if (a === b) return true;
+  // A record's own bare `id` names no entity; it correlates with any target
+  // whose last word is `id` (`orderId`, `order_id`), as in keyNamesCorrelate.
+  if (a === "id" && endsWithIdentifierWord(targetKey)) return true;
   const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
   return shorter.length >= 3 && longer.includes(shorter);
 }
@@ -7962,7 +7965,29 @@ function findEnclosingJsonKey(text: string, matchStart: number): string | null {
     lastKey = m[1] ?? null;
     lastValueStart = m.index + m[0].length;
   }
-  return lastValueStart <= matchStart ? lastKey : null;
+  if (lastKey !== null && lastValueStart <= matchStart) return lastKey;
+  return findEnclosingFormKey(text, matchStart);
+}
+
+/** The field name governing the value at `matchStart` in a form-urlencoded body
+ * template (`orderId=…&note=…`, or Rails-style `order[contact][name]=…`, with
+ * the key percent-encoded or not): the last bracket segment of the key of the
+ * `&`-delimited pair containing the match. Null for a JSON-shaped template or
+ * a match that is not in a pair's value. */
+function findEnclosingFormKey(text: string, matchStart: number): string | null {
+  if (/^\s*[{[]/.test(text)) return null;
+  const pairStart = text.lastIndexOf("&", matchStart - 1) + 1;
+  const before = text.slice(pairStart, matchStart);
+  const eq = before.indexOf("=");
+  if (eq <= 0) return null;
+  const rawKey = before.slice(0, eq);
+  const key = safeDecodeOnce(rawKey.replace(/\+/g, " ")) ?? rawKey;
+  return (
+    key
+      .split(/\[|\]\[|\]/)
+      .filter((segment) => segment.length > 0)
+      .at(-1) ?? null
+  );
 }
 
 /**
