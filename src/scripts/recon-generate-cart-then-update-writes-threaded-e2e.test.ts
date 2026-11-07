@@ -687,3 +687,77 @@ describe("recon-generate cart-then-update flow, structural contracts", () => {
     expect(contract.split(ORIGIN).length - 1).toBe(1);
   }, 60_000);
 });
+
+describe("recon-generate whole cart-then-update flow with csrf header and session cookie", () => {
+  it("emits both writes with one order array, threaded id, contact inputs and session-bound csrf/cookie", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-whole-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const CSRF = "csrf_a1b2c3d4e5f6a7b8";
+    const SESS = "sess_9f8e7d6c5b4a";
+    const lines = [{ sku: "SKU-1", qty: 1 }];
+    const post: Capture = {
+      ...create,
+      requestPostData: JSON.stringify({ order: lines }),
+      responseHeaders: {
+        "content-type": "application/json",
+        "set-cookie": `sid=${SESS}; Path=/; HttpOnly`,
+        "x-csrf-token": CSRF,
+      },
+    };
+    const put: Capture = {
+      ...update,
+      requestHeaders: {
+        "content-type": "application/json",
+        "x-csrf-token": CSRF,
+        cookie: `sid=${SESS}`,
+      },
+      requestPostData: JSON.stringify({
+        order: lines,
+        id: ORDER_ID,
+        contact: { name: "Jane Roe", email: "jane.roe@mail.example.org" },
+      }),
+    };
+    [post, put].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
+    const siteId = `recon-cart-update-whole-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+        env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+      }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).not.toMatch(/\bBaseUrl\b/);
+    expect(contract).toContain('method: "POST"');
+    expect(contract).toContain('method: "PUT"');
+    expect(contract).toContain("const id = (r0 as { id: string }).id;");
+    expect(contract).toMatch(
+      /contact: multipartJsonObject\(z\.object\(\{\s*name: z\.string\(\),\s*email: z\.string\(\)/
+    );
+    expect(contract).toContain(
+      '{ sourceHeader: "set-cookie", cookieName: "sid", targetHeader: "cookie" }'
+    );
+    expect(contract).toContain('{ sourceHeader: "x-csrf-token", targetHeader: "x-csrf-token" }');
+    const schema = contract.slice(
+      contract.indexOf("PayloadSchema = "),
+      contract.indexOf(".merge(JobTrackingSchema)")
+    );
+    expect(schema.match(/^ {2}order: /gm)).toHaveLength(1);
+    expect(contract).not.toContain(CSRF);
+    expect(contract).not.toContain(SESS);
+    expect(contract).not.toContain(ORDER_ID);
+    expect(contract).not.toContain("Jane Roe");
+  }, 60_000);
+});
