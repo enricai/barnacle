@@ -1,8 +1,5 @@
 import Fastify from "fastify";
-import {
-  serializerCompiler,
-  validatorCompiler,
-} from "fastify-type-provider-zod";
+import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 
@@ -15,11 +12,7 @@ import {
   UrlLockedError,
 } from "@/api/errors";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
-import {
-  CaptchaError,
-  SelectorFailureError,
-  SessionTimeoutError,
-} from "@/scraper/errors";
+import { CaptchaError, SelectorFailureError, SessionTimeoutError } from "@/scraper/errors";
 
 /**
  * Narrow tests for the error handler plugin — spin up a minimal Fastify
@@ -102,9 +95,7 @@ async function makeApp() {
     // Selector failures are the most common Stagehand failure mode.
     // They must surface as SCRAPE_FAILURE (2003) so clients can
     // distinguish scrape failures from target-site failures.
-    throw new SelectorFailureError(
-      "could not find .result-item after 3 retries",
-    );
+    throw new SelectorFailureError("could not find .result-item after 3 retries");
   });
   app.get("/throw/scraper-session-timeout", async () => {
     throw new SessionTimeoutError();
@@ -116,7 +107,7 @@ async function makeApp() {
         body: z.object({ name: z.string().min(3) }),
       },
     },
-    async () => ({ ok: true }),
+    async () => ({ ok: true })
   );
 
   await app.ready();
@@ -216,9 +207,7 @@ describe("error-handler plugin", () => {
     const body = response.json();
     expect(body.status.details[0].code).toBe(2004);
     expect(body.status.details[0].codeDescription).toBe("CAPTCHA_ENCOUNTERED");
-    expect(body.status.details[0].message).toBe(
-      "hCaptcha challenge encountered",
-    );
+    expect(body.status.details[0].message).toBe("hCaptcha challenge encountered");
   });
 
   it("maps scraper SelectorFailureError to code 2003 envelope", async () => {
@@ -230,9 +219,7 @@ describe("error-handler plugin", () => {
     const body = response.json();
     expect(body.status.details[0].code).toBe(2003);
     expect(body.status.details[0].codeDescription).toBe("SCRAPE_FAILURE");
-    expect(body.status.details[0].message).toMatch(
-      /could not find .result-item/,
-    );
+    expect(body.status.details[0].message).toMatch(/could not find .result-item/);
   });
 
   it("maps scraper SessionTimeoutError to code 2003 envelope", async () => {
@@ -251,9 +238,7 @@ describe("error-handler plugin", () => {
     expect(body.status.details[0].code).toBe(1008);
     expect(body.status.details[0].message).toBe("internal server error");
     // critical: raw internal details must NOT reach the client
-    expect(JSON.stringify(body)).not.toContain(
-      "internal detail that should not leak",
-    );
+    expect(JSON.stringify(body)).not.toContain("internal detail that should not leak");
   });
 
   it("converts Zod validation failures into 400 + 1002 FIELD_VIOLATION", async () => {
@@ -354,11 +339,7 @@ describe("error handler — caller disconnect", () => {
       send: vi.fn().mockReturnThis(),
     };
     // biome-ignore lint/suspicious/noExplicitAny: stubbed request/reply
-    (app.errorHandler as any)(
-      error,
-      { log, raw, method: "GET", url: "/x" },
-      reply,
-    );
+    (app.errorHandler as any)(error, { log, raw, method: "GET", url: "/x" }, reply);
     await app.close();
     return { log, reply };
   }
@@ -366,23 +347,18 @@ describe("error handler — caller disconnect", () => {
   const prematureClose = (message = "Premature close") =>
     Object.assign(new Error(message), { code: "ERR_STREAM_PREMATURE_CLOSE" });
 
-  it.each([
-    {},
-    { aborted: true },
-    { destroyed: true },
-    { socket: { destroyed: true } },
-  ])(
+  it.each([{}, { aborted: true }, { destroyed: true }, { socket: { destroyed: true } }])(
     "logs WARN caller-disconnect, no ERROR, for ERR_STREAM_PREMATURE_CLOSE with raw %o",
     async (raw) => {
       const { log, reply } = await run(prematureClose(), raw);
       expect(log.warn).toHaveBeenCalledTimes(1);
       expect(log.warn.mock.calls[0]?.[1]).toContain(
-        "client disconnected before the response was written",
+        "client disconnected before the response was written"
       );
       expect(log.warn.mock.calls[0]?.[1]).toContain("run outcome unaffected");
       expect(log.error).not.toHaveBeenCalled();
       expect(reply.status).not.toHaveBeenCalledWith(500);
-    },
+    }
   );
 
   it.each([400, 408, 499])(
@@ -392,13 +368,13 @@ describe("error handler — caller disconnect", () => {
       const { log } = await run(err, {});
       expect(log.warn).toHaveBeenCalledTimes(1);
       expect(log.warn.mock.calls[0]?.[1]).toContain(
-        "client disconnected before the response was written",
+        "client disconnected before the response was written"
       );
       expect(log.warn.mock.calls[0]?.[0]).toMatchObject({
         code: "ERR_STREAM_PREMATURE_CLOSE",
       });
       expect(log.error).not.toHaveBeenCalled();
-    },
+    }
   );
 
   it("classifies on the code, not the message text", async () => {
@@ -409,11 +385,7 @@ describe("error handler — caller disconnect", () => {
     expect(log.error).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { aborted: true },
-    { destroyed: true },
-    { socket: { destroyed: true } },
-  ])(
+  it.each([{ aborted: true }, { destroyed: true }, { socket: { destroyed: true } }])(
     "a plain error on a request with raw %o is still an unhandled ERROR",
     async (raw) => {
       const { log, reply } = await run(new Error("boom"), raw);
@@ -421,7 +393,7 @@ describe("error handler — caller disconnect", () => {
       expect(log.error.mock.calls[0]?.[1]).toBe("unhandled error");
       expect(log.warn).not.toHaveBeenCalled();
       expect(reply.status).toHaveBeenCalledWith(500);
-    },
+    }
   );
 
   it("still logs ERROR and replies 500 for a generic error", async () => {
