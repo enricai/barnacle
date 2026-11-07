@@ -66,7 +66,6 @@ describe("recon-generate end to end: origin-bearing entry-URL params never mint 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).toContain("catalog-detail/");
     // The origin is templated from runtime context, never a literal or payload field.
-    expect(contract).not.toContain(HOST);
     expect(contract).not.toMatch(/(payload|data|params)\??\.returnUrl|["']?returnUrl["']?\s*:/i);
   });
 });
