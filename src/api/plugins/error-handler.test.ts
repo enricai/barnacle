@@ -395,7 +395,7 @@ describe("error handler — caller disconnect", () => {
         "client disconnected before the response was written",
       );
       expect(log.warn.mock.calls[0]?.[0]).toMatchObject({
-        reqId: expect.anything(),
+        code: "ERR_STREAM_PREMATURE_CLOSE",
       });
       expect(log.error).not.toHaveBeenCalled();
     },
