@@ -1,5 +1,8 @@
 import Fastify from "fastify";
-import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 
@@ -12,7 +15,11 @@ import {
   UrlLockedError,
 } from "@/api/errors";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
-import { CaptchaError, SelectorFailureError, SessionTimeoutError } from "@/scraper/errors";
+import {
+  CaptchaError,
+  SelectorFailureError,
+  SessionTimeoutError,
+} from "@/scraper/errors";
 
 /**
  * Narrow tests for the error handler plugin — spin up a minimal Fastify
@@ -55,7 +62,9 @@ async function makeApp() {
     // Simulate a generic Fastify error with a 4xx status that isn't 429
     // and isn't an ApiError — e.g. @fastify/helmet content-security-policy
     // rejections surface this way.
-    const err = new Error("unprocessable request") as Error & { statusCode: number };
+    const err = new Error("unprocessable request") as Error & {
+      statusCode: number;
+    };
     err.statusCode = 422;
     throw err;
   });
@@ -93,7 +102,9 @@ async function makeApp() {
     // Selector failures are the most common Stagehand failure mode.
     // They must surface as SCRAPE_FAILURE (2003) so clients can
     // distinguish scrape failures from target-site failures.
-    throw new SelectorFailureError("could not find .result-item after 3 retries");
+    throw new SelectorFailureError(
+      "could not find .result-item after 3 retries",
+    );
   });
   app.get("/throw/scraper-session-timeout", async () => {
     throw new SessionTimeoutError();
@@ -105,7 +116,7 @@ async function makeApp() {
         body: z.object({ name: z.string().min(3) }),
       },
     },
-    async () => ({ ok: true })
+    async () => ({ ok: true }),
   );
 
   await app.ready();
@@ -129,7 +140,10 @@ describe("error-handler plugin", () => {
   });
 
   it("emits 401 + code 1004 envelope for UnauthorizedError", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/unauthorized" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/unauthorized",
+    });
     expect(response.statusCode).toBe(401);
     const body = response.json();
     expect(body.status.httpStatus).toBe("UNAUTHORIZED");
@@ -138,7 +152,10 @@ describe("error-handler plugin", () => {
   });
 
   it("emits 400 + code 1002 envelope for FieldViolationError", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/field-violation" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/field-violation",
+    });
     expect(response.statusCode).toBe(400);
     const body = response.json();
     expect(body.status.details[0].code).toBe(1002);
@@ -146,19 +163,28 @@ describe("error-handler plugin", () => {
   });
 
   it("emits 500 + code 2003 envelope for ScrapeFailureError", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/scrape-failure" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/scrape-failure",
+    });
     expect(response.statusCode).toBe(500);
     expect(response.json().status.details[0].code).toBe(2003);
   });
 
   it("emits 500 + code 2004 envelope for CaptchaEncounteredError", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/captcha" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/captcha",
+    });
     expect(response.statusCode).toBe(500);
     expect(response.json().status.details[0].code).toBe(2004);
   });
 
   it("emits 429 + code 1010 envelope for ThrottledRequestError", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/rate-limit" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/rate-limit",
+    });
     expect(response.statusCode).toBe(429);
     expect(response.json().status.details[0].code).toBe(1010);
   });
@@ -168,7 +194,10 @@ describe("error-handler plugin", () => {
     // non-2003 code and non-500 status so a caller can distinguish it from a
     // generic scrape failure and choose "retry later" instead of
     // browser-fallback.
-    const response = await app().inject({ method: "GET", url: "/throw/url-locked" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/url-locked",
+    });
     expect(response.statusCode).toBe(429);
     const body = response.json();
     expect(body.status.httpStatus).toBe("TOO_MANY_REQUESTS");
@@ -179,25 +208,38 @@ describe("error-handler plugin", () => {
   });
 
   it("maps scraper CaptchaError (not ApiError) to code 2004 envelope", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/scraper-captcha" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/scraper-captcha",
+    });
     expect(response.statusCode).toBe(500);
     const body = response.json();
     expect(body.status.details[0].code).toBe(2004);
     expect(body.status.details[0].codeDescription).toBe("CAPTCHA_ENCOUNTERED");
-    expect(body.status.details[0].message).toBe("hCaptcha challenge encountered");
+    expect(body.status.details[0].message).toBe(
+      "hCaptcha challenge encountered",
+    );
   });
 
   it("maps scraper SelectorFailureError to code 2003 envelope", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/scraper-selector" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/scraper-selector",
+    });
     expect(response.statusCode).toBe(500);
     const body = response.json();
     expect(body.status.details[0].code).toBe(2003);
     expect(body.status.details[0].codeDescription).toBe("SCRAPE_FAILURE");
-    expect(body.status.details[0].message).toMatch(/could not find .result-item/);
+    expect(body.status.details[0].message).toMatch(
+      /could not find .result-item/,
+    );
   });
 
   it("maps scraper SessionTimeoutError to code 2003 envelope", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/scraper-session-timeout" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/scraper-session-timeout",
+    });
     expect(response.statusCode).toBe(500);
     expect(response.json().status.details[0].code).toBe(2003);
   });
@@ -209,7 +251,9 @@ describe("error-handler plugin", () => {
     expect(body.status.details[0].code).toBe(1008);
     expect(body.status.details[0].message).toBe("internal server error");
     // critical: raw internal details must NOT reach the client
-    expect(JSON.stringify(body)).not.toContain("internal detail that should not leak");
+    expect(JSON.stringify(body)).not.toContain(
+      "internal detail that should not leak",
+    );
   });
 
   it("converts Zod validation failures into 400 + 1002 FIELD_VIOLATION", async () => {
@@ -231,7 +275,10 @@ describe("error-handler plugin", () => {
   });
 
   it("wraps a generic Fastify 4xx error in GENERIC_ERROR (1008) + passes through the status", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/fastify-4xx" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/fastify-4xx",
+    });
     expect(response.statusCode).toBe(422);
     const body = response.json();
     expect(body.status.details[0].code).toBe(1008);
@@ -240,7 +287,10 @@ describe("error-handler plugin", () => {
   });
 
   it("converts a directly-thrown ZodError into 400 + 1002 FIELD_VIOLATION", async () => {
-    const response = await app().inject({ method: "GET", url: "/throw/zod-direct" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/zod-direct",
+    });
     expect(response.statusCode).toBe(400);
     const body = response.json();
     expect(body.status.details[0].code).toBe(1002);
@@ -252,7 +302,10 @@ describe("error-handler plugin", () => {
     // top-level primitive is parsed with the wrong schema, Zod emits
     // an issue with path=[] which would otherwise serialize as an
     // empty string prefix.
-    const response = await app().inject({ method: "GET", url: "/throw/zod-root" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/zod-root",
+    });
     expect(response.statusCode).toBe(400);
     const body = response.json();
     expect(body.status.details[0].message).toContain("body");
@@ -263,7 +316,10 @@ describe("error-handler plugin", () => {
     // Fastify rate-limit plugin sometimes throws with a populated
     // message; other 429 sources may not — either way the envelope
     // should carry a human-readable detail.
-    const response = await app().inject({ method: "GET", url: "/throw/fastify-429-no-message" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/fastify-429-no-message",
+    });
     expect(response.statusCode).toBe(429);
     const body = response.json();
     expect(body.status.details[0].code).toBe(1010);
@@ -273,7 +329,10 @@ describe("error-handler plugin", () => {
   it("uses the default message when a generic 4xx Fastify error has no body", async () => {
     // Covers the `err.message || 'request failed'` fallback for the
     // generic-4xx branch.
-    const response = await app().inject({ method: "GET", url: "/throw/fastify-4xx-no-message" });
+    const response = await app().inject({
+      method: "GET",
+      url: "/throw/fastify-4xx-no-message",
+    });
     expect(response.statusCode).toBe(422);
     const body = response.json();
     expect(body.status.details[0].code).toBe(1008);
@@ -295,7 +354,11 @@ describe("error handler — caller disconnect", () => {
       send: vi.fn().mockReturnThis(),
     };
     // biome-ignore lint/suspicious/noExplicitAny: stubbed request/reply
-    (app.errorHandler as any)(error, { log, raw, method: "GET", url: "/x" }, reply);
+    (app.errorHandler as any)(
+      error,
+      { log, raw, method: "GET", url: "/x" },
+      reply,
+    );
     await app.close();
     return { log, reply };
   }
@@ -303,27 +366,54 @@ describe("error handler — caller disconnect", () => {
   const prematureClose = (message = "Premature close") =>
     Object.assign(new Error(message), { code: "ERR_STREAM_PREMATURE_CLOSE" });
 
-  it.each([{}, { aborted: true }, { destroyed: true }, { socket: { destroyed: true } }])(
+  it.each([
+    {},
+    { aborted: true },
+    { destroyed: true },
+    { socket: { destroyed: true } },
+  ])(
     "logs WARN caller-disconnect, no ERROR, for ERR_STREAM_PREMATURE_CLOSE with raw %o",
     async (raw) => {
       const { log, reply } = await run(prematureClose(), raw);
       expect(log.warn).toHaveBeenCalledTimes(1);
       expect(log.warn.mock.calls[0]?.[1]).toContain(
-        "client disconnected before the response was written"
+        "client disconnected before the response was written",
       );
       expect(log.warn.mock.calls[0]?.[1]).toContain("run outcome unaffected");
       expect(log.error).not.toHaveBeenCalled();
       expect(reply.status).not.toHaveBeenCalledWith(500);
-    }
+    },
+  );
+
+  it.each([400, 408, 499])(
+    "premature close carrying statusCode %i is still a WARN caller-disconnect",
+    async (statusCode) => {
+      const err = Object.assign(prematureClose(), { statusCode });
+      const { log } = await run(err, {});
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn.mock.calls[0]?.[1]).toContain(
+        "client disconnected before the response was written",
+      );
+      expect(log.warn.mock.calls[0]?.[0]).toMatchObject({
+        reqId: expect.anything(),
+      });
+      expect(log.error).not.toHaveBeenCalled();
+    },
   );
 
   it("classifies on the code, not the message text", async () => {
-    const { log } = await run(prematureClose("something else entirely"), { aborted: true });
+    const { log } = await run(prematureClose("something else entirely"), {
+      aborted: true,
+    });
     expect(log.warn).toHaveBeenCalledTimes(1);
     expect(log.error).not.toHaveBeenCalled();
   });
 
-  it.each([{ aborted: true }, { destroyed: true }, { socket: { destroyed: true } }])(
+  it.each([
+    { aborted: true },
+    { destroyed: true },
+    { socket: { destroyed: true } },
+  ])(
     "a plain error on a request with raw %o is still an unhandled ERROR",
     async (raw) => {
       const { log, reply } = await run(new Error("boom"), raw);
@@ -331,7 +421,7 @@ describe("error handler — caller disconnect", () => {
       expect(log.error.mock.calls[0]?.[1]).toBe("unhandled error");
       expect(log.warn).not.toHaveBeenCalled();
       expect(reply.status).toHaveBeenCalledWith(500);
-    }
+    },
   );
 
   it("still logs ERROR and replies 500 for a generic error", async () => {
@@ -346,11 +436,16 @@ describe("error handler — caller disconnect through a real route", () => {
   it("completes the reply, warns with reqId and never logs ERROR", async () => {
     const lines: Array<Record<string, unknown>> = [];
     const stream = { write: (l: string) => lines.push(JSON.parse(l)) };
-    const app = Fastify({ logger: { level: "info", stream }, genReqId: () => "req-1qp7" });
+    const app = Fastify({
+      logger: { level: "info", stream },
+      genReqId: () => "req-1qp7",
+    });
     await app.register(errorHandlerPlugin);
     app.get("/d", async (request) => {
       request.raw.aborted = true;
-      throw Object.assign(new Error("Premature close"), { code: "ERR_STREAM_PREMATURE_CLOSE" });
+      throw Object.assign(new Error("Premature close"), {
+        code: "ERR_STREAM_PREMATURE_CLOSE",
+      });
     });
     const res = await app.inject({ method: "GET", url: "/d" });
     await app.close();
