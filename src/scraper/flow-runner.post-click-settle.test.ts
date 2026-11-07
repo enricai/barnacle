@@ -445,6 +445,19 @@ describe("readMidFlowPostClickAdvance", () => {
     expect(r.post.visibleTextSignature).toBe(BODY_SIG);
   });
 
+  it("credits the registration submit when the header flips at once and the body re-renders later with no counted network", async () => {
+    const PRE = "996:Skip to main content|Sign In|Careers Home|Back to Job Posting|Apply";
+    const FLIP = "588:Skip to main content|Settings|user@example.test|Careers Home|Candidate Home|Apply";
+    const BODY = "588:Skip to main content|Settings|user@example.test|Careers Home|Candidate Home|My Applications";
+    const t = makeIo([FLIP, FLIP, BODY]);
+    const start = snap(PRE, 0);
+    const r = await read(snap(FLIP, 0), start, true, t.io);
+    expect(r.pageAdvanced).toBe(true);
+    expect(r.advanceBaseline.visibleTextSignature).toBe(PRE);
+    expect(r.advanceBaseline.networkCount).toBe(0);
+    expect(r.post.visibleTextSignature).toBe(BODY);
+  });
+
   it("does not credit a no-op click and adds no extra settle wait", async () => {
     const t = makeIo([START_SIG]);
     const start = snap(START_SIG);
