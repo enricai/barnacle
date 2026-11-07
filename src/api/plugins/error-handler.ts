@@ -111,6 +111,25 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
       return;
     }
 
+    // A caller that hung up mid-write (ERR_STREAM_PREMATURE_CLOSE from the
+    // @fastify/compress pipeline) is not a server fault: the run already
+    // succeeded and only the HTTP response was lost. Discriminate on the error
+    // code — never the message text — and require it: an aborted/destroyed
+    // request alone does not make an unrelated error a disconnect, so a plain
+    // error on an aborted request is still logged as unhandled. The socket may
+    // be dead, so close out the reply with 499 (client closed request) rather
+    // than a misleading 500; Fastify swallows writes to a destroyed socket.
+    if ((error as { code?: string }).code === "ERR_STREAM_PREMATURE_CLOSE") {
+      request.log.warn(
+        { reqId: request.id, code: "ERR_STREAM_PREMATURE_CLOSE", aborted: true },
+        "client disconnected before the response was written (run outcome unaffected)"
+      );
+      if (!reply.sent) {
+        replyWithError(reply, ERROR_CODES.GENERIC_ERROR, "client disconnected", undefined, 499);
+      }
+      return;
+    }
+
     request.log.error({ err }, "unhandled error");
     replyWithError(
       reply,

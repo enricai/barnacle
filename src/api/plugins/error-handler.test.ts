@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 
 import {
@@ -278,5 +278,86 @@ describe("error-handler plugin", () => {
     const body = response.json();
     expect(body.status.details[0].code).toBe(1008);
     expect(body.status.details[0].message).toBe("request failed");
+  });
+});
+
+describe("error handler — caller disconnect", () => {
+  async function run(error: Error, raw: Record<string, unknown>) {
+    const app = Fastify({ logger: false });
+    await app.register(errorHandlerPlugin);
+    await app.ready();
+    const log = { warn: vi.fn(), error: vi.fn() };
+    const reply = {
+      status: vi.fn().mockReturnThis(),
+      code: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      header: vi.fn().mockReturnThis(),
+      send: vi.fn().mockReturnThis(),
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: stubbed request/reply
+    (app.errorHandler as any)(error, { log, raw, method: "GET", url: "/x" }, reply);
+    await app.close();
+    return { log, reply };
+  }
+
+  const prematureClose = (message = "Premature close") =>
+    Object.assign(new Error(message), { code: "ERR_STREAM_PREMATURE_CLOSE" });
+
+  it.each([{}, { aborted: true }, { destroyed: true }, { socket: { destroyed: true } }])(
+    "logs WARN caller-disconnect, no ERROR, for ERR_STREAM_PREMATURE_CLOSE with raw %o",
+    async (raw) => {
+      const { log, reply } = await run(prematureClose(), raw);
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn.mock.calls[0]?.[1]).toContain(
+        "client disconnected before the response was written"
+      );
+      expect(log.warn.mock.calls[0]?.[1]).toContain("run outcome unaffected");
+      expect(log.error).not.toHaveBeenCalled();
+      expect(reply.status).not.toHaveBeenCalledWith(500);
+    }
+  );
+
+  it("classifies on the code, not the message text", async () => {
+    const { log } = await run(prematureClose("something else entirely"), { aborted: true });
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it.each([{ aborted: true }, { destroyed: true }, { socket: { destroyed: true } }])(
+    "a plain error on a request with raw %o is still an unhandled ERROR",
+    async (raw) => {
+      const { log, reply } = await run(new Error("boom"), raw);
+      expect(log.error).toHaveBeenCalledTimes(1);
+      expect(log.error.mock.calls[0]?.[1]).toBe("unhandled error");
+      expect(log.warn).not.toHaveBeenCalled();
+      expect(reply.status).toHaveBeenCalledWith(500);
+    }
+  );
+
+  it("still logs ERROR and replies 500 for a generic error", async () => {
+    const { log, reply } = await run(new Error("boom"), {});
+    expect(log.error).toHaveBeenCalledTimes(1);
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(reply.send).toHaveBeenCalled();
+  });
+});
+
+describe("error handler — caller disconnect through a real route", () => {
+  it("completes the reply, warns with reqId and never logs ERROR", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const stream = { write: (l: string) => lines.push(JSON.parse(l)) };
+    const app = Fastify({ logger: { level: "info", stream }, genReqId: () => "req-1qp7" });
+    await app.register(errorHandlerPlugin);
+    app.get("/d", async (request) => {
+      request.raw.aborted = true;
+      throw Object.assign(new Error("Premature close"), { code: "ERR_STREAM_PREMATURE_CLOSE" });
+    });
+    const res = await app.inject({ method: "GET", url: "/d" });
+    await app.close();
+    expect(res.statusCode).not.toBe(500);
+    const warn = lines.find((l) => l.level === 40);
+    expect(warn?.reqId).toBe("req-1qp7");
+    expect(String(warn?.msg)).toContain("run outcome unaffected");
+    expect(lines.some((l) => l.level === 50)).toBe(false);
   });
 });

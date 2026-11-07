@@ -1,3 +1,5 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
@@ -171,5 +173,50 @@ describe("api/plugins/request-context", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it("logs one aborted:true line with the reqId when the client aborts mid-flight; none on normal completion", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const app = Fastify({
+      logger: {
+        level: "info",
+        stream: { write: (m: string) => lines.push(JSON.parse(m)) },
+      },
+    });
+    await app.register(requestContextPlugin);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    app.get("/slow", async () => {
+      await gate;
+      return { ok: true };
+    });
+    app.get("/fast", async () => ({ ok: true }));
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const port = (app.server.address() as AddressInfo).port;
+
+    const ok = await app.inject({ method: "GET", url: "/fast" });
+    expect(ok.statusCode).toBe(200);
+
+    const req = http.get({
+      host: "127.0.0.1",
+      port,
+      path: "/slow",
+      headers: { "x-request-id": "abort-me-1" },
+    });
+    req.on("error", () => {});
+    await new Promise((r) => setTimeout(r, 100));
+    const closed = new Promise<void>((r) => req.on("close", () => r()));
+    req.destroy();
+    await closed;
+    await new Promise((r) => setTimeout(r, 100));
+    release();
+    await app.close();
+
+    const aborted = lines.filter((l) => l.aborted === true);
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0]?.reqId).toBe("abort-me-1");
+    expect(aborted[0]?.level).toBeLessThan(50);
   });
 });
