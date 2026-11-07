@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   extractGraphQLActionSequence,
   type FoldReturnSpec,
-  isDeclaredAuthoritativeCapture,
   type SubmitPatterns,
 } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
@@ -50,11 +49,5 @@ describe("declared foldReturn drill survives the mutation-path structural filter
     ).map((a) => a.capture.url);
     expect(out).toContain(`https://${HOST}/reviews`);
     expect(out).not.toContain(`https://${HOST}/unrelated`);
-  });
-
-  it("predicate is true only for declared matchers", () => {
-    const c = cap("/x", false, null);
-    expect(isDeclaredAuthoritativeCapture(c, [() => false])).toBe(false);
-    expect(isDeclaredAuthoritativeCapture(c, [() => false, () => true])).toBe(true);
   });
 });

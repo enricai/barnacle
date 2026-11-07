@@ -3673,6 +3673,13 @@ export function extractActionSequence(
     producedCache.set(j, computed);
     return computed;
   };
+  const isJoinedDeclaredDrill = compileJoinedDeclaredDrillMatcher(
+    captures,
+    hostGated.map(({ capture }) => capture),
+    foldReturnSpec,
+    matchesFoldReturn,
+    true
+  );
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
       ? hostGated.filter(({ capture, index }, i) => {
@@ -3733,12 +3740,13 @@ export function extractActionSequence(
             if (!vouchesFor(j)) continue;
             otherPaths.push(hostGatedPaths[j]!);
           }
-          // A capture admitted via the flow's own declared foldReturnSpec
-          // endpointPattern (the drill-down target), or matching the flow's
-          // own declared submitEndpointPattern, is authoritative by
-          // construction — the flow author named it explicitly — so both are
-          // exempt from token-overlap isolation, which exists to catch
-          // INCIDENTAL same-host captures the flow never declared.
+          // A capture matching the flow's own declared submitEndpointPattern
+          // is authoritative by construction, so it is exempt from
+          // token-overlap isolation, which exists to catch INCIDENTAL
+          // same-host captures. A declared foldReturn drill is exempt only
+          // once it is also joined to the flow's items (see
+          // compileJoinedDeclaredDrillMatcher): an endpoint match alone can
+          // be the very same-host coincidence this pass exists to catch.
           // A capture that PRODUCES a value a later author-declared capture
           // CONSUMES is a genuine step of this flow, whatever its path looks
           // like. Path shape cannot decide this: a paged listing and the
@@ -3755,7 +3763,7 @@ export function extractActionSequence(
               producedValueIsConsumed(producedValuesAt(i), target.consumed)
           );
           return (
-            matchesFoldReturn(capture) ||
+            isJoinedDeclaredDrill(capture, index) ||
             matchesDeclaredSubmitEndpoint(capture) ||
             matchesDeclaredSubmitBody(capture) ||
             feedsDeclaredTarget ||
@@ -3778,11 +3786,11 @@ export function extractActionSequence(
     .map(({ capture }) => safeUrlPathname(capture.url));
   if (referencePaths.length === 0) return structurallyGated;
 
-  // A declared foldReturn drill-down is author-declared and authoritative, the
-  // same as the submit endpoint: it may share no path token with the submit
-  // endpoint, so structural relevance must not drop it. Neither may it drop
-  // the earlier call that MINTED the id the drill is keyed by (e.g. a POST
-  // whose response carries the id in the drill's path/query).
+  // A declared foldReturn drill-down joined to the flow's items survives here
+  // under the same predicate as the isolation pass above: it may share no path
+  // token with the submit endpoint, so structural relevance must not drop it.
+  // Neither may it drop the earlier call that MINTED the id the drill is keyed
+  // by (e.g. a POST whose response carries the id in the drill's path/query).
   const drillCaptures = structurallyGated.filter(({ capture }) => matchesFoldReturn(capture));
   const mintsDrillId = ({ capture, index }: { capture: Capture; index: number }): boolean =>
     drillCaptures.some(
@@ -3790,10 +3798,8 @@ export function extractActionSequence(
     );
   return structurallyGated.filter(
     (entry) =>
-      isDeclaredAuthoritativeCapture(entry.capture, [
-        matchesDeclaredSubmitEndpoint,
-        matchesFoldReturn,
-      ]) ||
+      matchesDeclaredSubmitEndpoint(entry.capture) ||
+      isJoinedDeclaredDrill(entry.capture, entry.index) ||
       mintsDrillId(entry) ||
       isStructurallyRelevantCapture(safeUrlPathname(entry.capture.url), referencePaths)
   );
@@ -3965,16 +3971,111 @@ function isOpaqueJoinValue(value: string): boolean {
 }
 
 /**
- * True when the flow's declared intent (submit endpoint, foldReturn drill or
- * results) names this capture. Declared captures are author-authoritative and
- * must survive every structural-relevance filter, even when their path shares
- * no token with the reference paths. Shared by both read-flow filters.
+ * Object items a capture's response holds under `resultsPath`, resolved the
+ * same way the fold plan resolves a primary's results array.
  */
-export function isDeclaredAuthoritativeCapture(
+function itemsAtResultsPath(
   capture: Capture,
-  matchers: Array<(c: Capture) => boolean>
-): boolean {
-  return matchers.some((m) => m(capture));
+  resultsPath: readonly string[]
+): Record<string, unknown>[] | null {
+  return objectItemsAtPath(
+    capture.responseBody,
+    resolveDeclaredArrayPath(resultsPath, capture.responseBody)
+  );
+}
+
+/**
+ * value -> index of the earliest 2xx capture whose response minted it (and
+ * whose own request did not already send it), memoized per capture list:
+ * every structural filter of one generation run asks about the same archive.
+ */
+const firstMintedIndexCache = new WeakMap<readonly Capture[], Map<string, number>>();
+
+function firstMintedIndex(captures: readonly Capture[]): Map<string, number> {
+  const cached = firstMintedIndexCache.get(captures);
+  if (cached) return cached;
+  const built = new Map<string, number>();
+  captures.forEach((producer, index) => {
+    if (producer.status < 200 || producer.status >= 300) return;
+    const echoed = collectRequestValuesIncludingHeaders(producer);
+    for (const value of collectResponseLeafValues(producer)) {
+      if (value.length < MIN_MINTED_LITERAL_LENGTH || !isMintedDependencyValue(value)) continue;
+      if (echoed.has(value) || built.has(value)) continue;
+      built.set(value, index);
+    }
+  });
+  firstMintedIndexCache.set(captures, built);
+  return built;
+}
+
+/**
+ * Builds the exemption every structural-relevance filter grants a declared
+ * foldReturn drill. Matching the declared endpoint is not enough on its own: a
+ * same-host marketing query can match it by coincidence, so the drill must also
+ * be joined to the flow, either by result (its items share a `joinFields` value
+ * with another capture's primary results, the fold's own join) or by request
+ * (it sends a value an earlier response minted, under the same length/header
+ * rules the drill emitter threads by). Every filter of one extractor uses this
+ * one predicate so they can never disagree about which declared drill survives.
+ *
+ * `allowSoleResultsSource` admits a single-capture self-fold: the declared
+ * capture IS the flow's only results source, so it is the fold's primary and
+ * has nothing else to join to. Only the REST extractor sets it, because REST
+ * picks its primary excluding fold-matching captures, leaving a self-fold no
+ * other way in; GraphQL admits its results source separately and anchors on
+ * the mutation family instead.
+ */
+function compileJoinedDeclaredDrillMatcher(
+  captures: readonly Capture[],
+  pool: readonly Capture[],
+  foldReturnSpec: FoldReturnSpec | null,
+  matchesDeclaredDrill: (capture: Capture) => boolean,
+  allowSoleResultsSource: boolean
+): (capture: Capture, index: number) => boolean {
+  if (foldReturnSpec === null) return () => false;
+  const resultsPath = foldReturnSpec.resultsPath.split(".");
+  const joinFields = foldReturnSpec.joinFields;
+  // value -> how many pool captures' primary results carry it, so a
+  // candidate's own results can be discounted without an O(n^2) rescan.
+  const primaryJoinValueCounts = new Map<string, number>();
+  const primaryJoinValuesOf = new Map<Capture, Set<string>>();
+  for (const capture of pool) {
+    const items = itemsAtResultsPath(capture, resultsPath);
+    if (items === null) continue;
+    const values = collectPrimaryJoinValues(items, joinFields);
+    primaryJoinValuesOf.set(capture, values);
+    for (const value of values) {
+      primaryJoinValueCounts.set(value, (primaryJoinValueCounts.get(value) ?? 0) + 1);
+    }
+  }
+  const joinedByResult = (capture: Capture): boolean => {
+    const items =
+      itemsAtResultsPath(capture, resultsPath) ??
+      findObjectArrayFieldOrWholeObject(capture.responseBody)?.items ??
+      null;
+    if (items === null) return false;
+    const own = primaryJoinValuesOf.get(capture);
+    for (const value of collectPrimaryJoinValues(items, joinFields)) {
+      const others = (primaryJoinValueCounts.get(value) ?? 0) - (own?.has(value) ? 1 : 0);
+      if (others > 0) return true;
+    }
+    return false;
+  };
+  const isSoleResultsSource = (capture: Capture): boolean =>
+    allowSoleResultsSource && primaryJoinValuesOf.size === 1 && primaryJoinValuesOf.has(capture);
+  const joinedByRequest = (capture: Capture, index: number): boolean => {
+    const headerValues = new Set(Object.values(capture.requestHeaders));
+    const minted = firstMintedIndex(captures);
+    for (const value of collectRequestStringValues(capture)) {
+      if (value.length < MIN_MINTED_LITERAL_LENGTH || headerValues.has(value)) continue;
+      const producedAt = minted.get(value);
+      if (producedAt !== undefined && producedAt < index) return true;
+    }
+    return false;
+  };
+  return (capture, index) =>
+    matchesDeclaredDrill(capture) &&
+    (isSoleResultsSource(capture) || joinedByResult(capture) || joinedByRequest(capture, index));
 }
 
 /**
@@ -4036,9 +4137,11 @@ function capturePathAndQueryValuesAppearIn(drill: Capture, body: unknown): boole
  * available, a non-mutation capture admitted only via the fold-return
  * matchers is kept only when its path shares structural tokens with at
  * least one admitted mutation's path — mutations are always genuine flow
- * steps, so they anchor what "this flow's family" means. When no mutation
- * was admitted there is nothing to anchor against, so the fold-return
- * admissions above stand unnarrowed.
+ * steps, so they anchor what "this flow's family" means. A declared
+ * fold-return drill also survives once it is joined to the flow's items (see
+ * compileJoinedDeclaredDrillMatcher); an endpoint match alone does not. When
+ * no mutation was admitted there is nothing to anchor against, so the
+ * fold-return admissions above stand unnarrowed.
  *
  * Exported for tests: this predicate decides what a generated GraphQL plugin
  * will send at a live site.
@@ -4123,10 +4226,17 @@ export function extractGraphQLActionSequence(
     .map(({ capture }) => capturePathname(capture.url));
   if (mutationPaths.length === 0) return admitted;
 
+  const isJoinedDeclaredDrill = compileJoinedDeclaredDrillMatcher(
+    captures,
+    admitted.map(({ capture }) => capture),
+    foldReturnSpec,
+    matchesFoldReturn,
+    false
+  );
   return admitted.filter(
-    ({ capture }) =>
+    ({ capture, index }) =>
       isMutation(capture) ||
-      isDeclaredAuthoritativeCapture(capture, [matchesFoldReturn, matchesFoldReturnResults]) ||
+      isJoinedDeclaredDrill(capture, index) ||
       isStructurallyRelevantCapture(capturePathname(capture.url), mutationPaths)
   );
 }
@@ -11145,7 +11255,7 @@ export function emitMultiStepExecuteHttp(
         const drillName = drillLabel(actions[target.drillStepIndex]!.capture.url);
         if (mintsAttachedValues) {
           for (const p of terminalStep.produces) {
-            if (p.kind === "header" || !referencedNames.has(p.name)) continue;
+            if (p.kind !== "body" || !referencedNames.has(p.name)) continue;
             if (!attachedMintedValues.has(p.name)) {
               attachedMintedValues.set(p.name, unknownValueAccessor(itemVar, p.path));
             }
@@ -17787,7 +17897,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             .slice(target.chain.indexOf(chainIndex) + 1)
             .flatMap((j) => (actionSteps[j] ? [actionSteps[j]!.capture] : []));
           const mintedProduces = chainStep.produces.flatMap((p) => {
-            if (p.kind === "header" || mintedLiterals.has(p.name)) return [];
+            if (p.kind !== "body" || mintedLiterals.has(p.name)) return [];
             const raw = readValueAtPath(chainStep.capture.responseBody, p.path);
             const literal = typeof raw === "string" ? raw : null;
             if (literal === null || literal.length < MIN_MINTED_LITERAL_LENGTH) return [];
