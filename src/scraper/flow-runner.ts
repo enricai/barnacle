@@ -9938,6 +9938,18 @@ async function tryPromptSelectorPrimitive(params: {
     // its label (the layered shape), so the rendered control becomes the widget.
     const allWidgets = widgets.slice();
     const labelOf0 = (o) => norm(widgetLabel(o)) !== "";
+    // Explicit labelling only (not the ancestor-text last resort widgetLabel
+    // falls back to, which is non-empty for every element).
+    const hasOwnLabel = (w) => {
+      if (w.getAttribute("aria-labelledby")) return true;
+      const al = w.getAttribute("aria-label");
+      if (al && !emptyRx.test(al.replace(/\\s*required\\s*$/i, ""))) return true;
+      const ids = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
+      return ids.some((id) => {
+        const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
+        return !!(lab && lab.textContent.trim());
+      });
+    };
     const hiddenLabels = new Set(widgets.filter((w) => !rendered(w)).map((w) => norm(widgetLabel(w))).filter(Boolean));
     if (hiddenLabels.size > 0) {
       for (const a of document.querySelectorAll("[role='combobox']")) {
@@ -9947,7 +9959,7 @@ async function tryPromptSelectorPrimitive(params: {
         // covered select, not the anchor). Within a small shared field wrapper
         // that holds exactly one rendered combobox and unrendered openers, the
         // anchor inherits the openers' label.
-        if (labelOf0(a)) continue;
+        if (hasOwnLabel(a)) continue;
         let wrap = a.parentElement;
         for (let d = 0; d < 4 && wrap; d++, wrap = wrap.parentElement) {
           const hid = widgets.filter((o) => !rendered(o) && wrap.contains(o) && labelOf0(o));
