@@ -79,9 +79,9 @@ import {
   QUIESCENCE_PROBE_EXPR,
   IDLE_GIVE_UP_MS as SETTLE_IDLE_GIVE_UP_MS,
   MAX_MS as SETTLE_MAX_MS,
+  type SettleOutcome,
   type SettlePage,
   settleAfterClick,
-  type SettleOutcome,
   settleTextKey,
 } from "@/scraper/click-settle";
 import {
@@ -7802,19 +7802,20 @@ const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_
 /**
  * Re-reads the post-click page while only its header has flipped. One
  * settle-then-snapshot moment can land between a header flip and the body
- * re-render that follows it. Each round is a quiescence-gated settle (text quiet
- * for TEXT_QUIET_POLLS polls), so the verdict waits for the body to swap, or
- * reads the header flip as the page's final state (`settled`) as soon as a round
- * ends quiescent (page observed quiet) with the text unmoved. A round that hits
- * the settle ceiling while the page is still moving is not quiet, so a page that
- * never quiets stays unsettled after the bounded budget.
+ * re-render that follows it, so a header-only read is not a verdict yet. It
+ * becomes the page's final state (`settled`) on the evidence of a settle, never
+ * on the clock: a settle that saw the text change again after its first change
+ * and then go quiet (`rerendered`) has watched the later stage land; a re-settle
+ * round that ends quiescent with the text unmoved has watched the page hold
+ * still. A round that hits the settle ceiling while the page is still moving is
+ * not quiet, so a page that never quiets stays unsettled after the bounded budget.
  * Each round settles against the pre-click text, so the header flip stays
  * movement and the silent no-op give-up never applies, and holds for the
  * settle's whole ceiling while the text stays still (a body re-render may start
  * long after the header flipped), falling back to the ordinary quiet window once
- * the text moves again. Bounded; a page whose body
- * already swapped returns at once, and one showing no change gets a single
- * probe round so a re-render that lands after the first snapshot is still seen.
+ * the text moves again. Bounded; a page whose body already swapped returns at
+ * once, and one showing no change gets a single probe round so a re-render that
+ * lands after the first snapshot is still seen.
  */
 async function resettleThroughHeaderOnlyFlip(
   page: Page,
@@ -7822,10 +7823,10 @@ async function resettleThroughHeaderOnlyFlip(
   signalCounter: { n: number },
   pre: StepSnapshot,
   post: StepSnapshot,
-  io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
+  io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO,
+  firstSettle?: SettleOutcome
 ): Promise<StepSnapshot> {
   let current = post;
-  let heldStillThroughBudget = false;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
     const moved = hasVisibleTextChanged(pre, current);
     if (moved && hasPageBodySwapped(pre, current))
@@ -7839,7 +7840,8 @@ async function resettleThroughHeaderOnlyFlip(
       current = probe;
       continue;
     }
-    await io.settle(
+    if (round === 0 && firstSettle === "rerendered") return { ...current, settled: true };
+    const outcome = await io.settle(
       page,
       target,
       signalCounter,
@@ -7852,9 +7854,10 @@ async function resettleThroughHeaderOnlyFlip(
     const next = await io.snapshot(target, signalCounter, page);
     const heldStill = !hasVisibleTextChanged(current, next);
     current = next;
-    heldStillThroughBudget = heldStill;
+    if (outcome !== "ceiling" && (heldStill || outcome === "rerendered"))
+      return { ...current, settled: true };
   }
-  return heldStillThroughBudget ? { ...current, settled: true } : current;
+  return current;
 }
 
 /**
@@ -7882,19 +7885,21 @@ async function settleSnapshotAndResettle(
   waitForMutations: boolean,
   io: PostClickSettleIo
 ): Promise<StepSnapshot> {
-  if (page && mayTriggerRoundTrip)
-    await io.settle(
-      page,
-      target,
-      signalCounter,
-      pre.networkCount,
-      waitForMutations,
-      pre.visibleTextSignature,
-      pre.visibleTextDigest
-    );
+  const firstSettle =
+    page && mayTriggerRoundTrip
+      ? await io.settle(
+          page,
+          target,
+          signalCounter,
+          pre.networkCount,
+          waitForMutations,
+          pre.visibleTextSignature,
+          pre.visibleTextDigest
+        )
+      : undefined;
   const post = await io.snapshot(target, signalCounter, page);
   return page && mayTriggerRoundTrip
-    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post, io)
+    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post, io, firstSettle)
     : post;
 }
 

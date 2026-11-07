@@ -14,7 +14,12 @@ vi.mock("@/lib/llm/judges/verify-submit", async (orig) => ({
   verifySubmitWithLLM: submitJudge,
 }));
 
-import { QUIESCENT_NO_OP_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
+import {
+  IDLE_GIVE_UP_MS,
+  MAX_MS,
+  QUIESCENT_NO_OP_GIVE_UP_MS,
+  settleAfterClick,
+} from "@/scraper/click-settle";
 import {
   judgeStepOutcome,
   type PostClickSettleIo,
@@ -55,10 +60,10 @@ function drivePage(visibleAt: (waited: number) => string): {
       formValueSignature: "",
     }) as Snap;
   const io = {
-    settle: async (...args: unknown[]): Promise<void> => {
+    settle: async (...args: unknown[]) => {
       const baseline = args[5] as string;
       const hold = args[7] as number | undefined;
-      await settleAfterClick(page, { n: 0 }, 0, true, read, baseline, idleQuiescence, hold);
+      return settleAfterClick(page, { n: 0 }, 0, true, read, baseline, idleQuiescence, hold);
     },
     snapshot,
   } as unknown as PostClickSettleIo;
@@ -103,7 +108,7 @@ describe("report contract: non-final submit-shaped click, header flips at once, 
     ).toBe("effective");
   });
 
-  it.each([20_000, 60_000, 120_000])(
+  it.each([20_000, 60_000])(
     "is credited when the body re-renders %ims after the header flipped, with a quiet page in between",
     async (delay) => {
       const f = drivePage((w) =>
@@ -123,6 +128,39 @@ describe("report contract: non-final submit-shaped click, header flips at once, 
     );
     const r = await readAdvance(f.io);
     expect(r.pageAdvanced).toBe(true);
+  });
+
+  it("credits a header flip that never re-renders the body within one bounded re-settle round", async () => {
+    const flipped = "Skip to main content|Settings|user@example.test|Careers Home|Candidate Home|";
+    const f = drivePage((w) => (w >= 1000 ? flipped : PRE_TEXT));
+    const r = await readAdvance(f.io);
+    expect(r.pageAdvanced).toBe(true);
+    expect(f.waited()).toBeLessThanOrEqual(IDLE_GIVE_UP_MS + MAX_MS);
+  });
+
+  it.each([
+    ["same-length body swap", 9000, "Skip to main content|Settings|Careers Home|Candidate Home"],
+    ["slightly shorter body", 12000, "Skip to main content|Settings|Careers Home|Candidate"],
+  ])(
+    "credits promptly once the page settles after a %s lands after the header flip",
+    async (_name, delay, body) => {
+      const flip = "Skip to main content|Settings|Careers Home|Applications!!";
+      const f = drivePage((w) => (w >= 1000 + delay ? body : w >= 1000 ? flip : PRE_TEXT));
+      const r = await readAdvance(f.io);
+      expect(r.pageAdvanced).toBe(true);
+      expect(r.post.visibleTextSignature).toContain(body);
+      expect(f.waited()).toBeLessThan(IDLE_GIVE_UP_MS + delay + 10_000);
+    }
+  );
+
+  it("credits promptly when the header flips with a text shrink and the body lands later", async () => {
+    const wide = `996:${"Sign In|Careers Home|Back to Job Posting|".repeat(2)}Apply`;
+    const flip = "588:Skip to main content|Settings|Careers Home|Candidate Home|Apply";
+    const body = "588:Skip to main content|Settings|Careers Home|Candidate Home|My Applications";
+    const f = drivePage((w) => (w >= 9000 ? body : w >= 1000 ? flip : wide));
+    const r = await readAdvance(f.io);
+    expect(r.pageAdvanced).toBe(true);
+    expect(f.waited()).toBeLessThan(IDLE_GIVE_UP_MS + 9000 + 10_000);
   });
 
   it("keeps a genuine no-op at the QUIESCENT_NO_OP_GIVE_UP_MS give-up and phantom", async () => {

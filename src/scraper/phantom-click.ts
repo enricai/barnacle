@@ -19,7 +19,8 @@ export interface PhantomClickSnapshot {
   /** Digest of the whole normalised visible text, so a change beyond the head or excerpt is still seen. */
   visibleTextDigest?: string;
   /**
-   * True when this snapshot was re-read after a re-settle round that ended
+   * True when the settle that produced this snapshot ended on observed evidence: the
+   * text changed again after its first change and went quiet, or a re-settle round ended
    * quiescent (page observed quiet) with the visible text unmoved, so a header flip that has not been followed by
    * a body swap is the page's final state rather than a transition in flight.
    */

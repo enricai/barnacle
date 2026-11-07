@@ -15,21 +15,20 @@ export interface PageQuiescence {
  * Folds the whole-page text digest into the signature settle compares, so a
  * re-render that keeps the length and the 200-char head still counts as movement.
  */
-export function settleTextKey(
-  visibleTextSignature: string,
-  visibleTextDigest?: string,
-): string {
-  return visibleTextDigest
-    ? `${visibleTextSignature}#${visibleTextDigest}`
-    : visibleTextSignature;
+export function settleTextKey(visibleTextSignature: string, visibleTextDigest?: string): string {
+  return visibleTextDigest ? `${visibleTextSignature}#${visibleTextDigest}` : visibleTextSignature;
 }
 
 /**
  * How a settle ended. `quiescent`: the page was observed quiet (no pending
  * request, no mutation, text stable for the quiet window, or the silent give-up).
+ * `rerendered`: quiescent, and the visible text was seen to change at least twice
+ * from the baseline (a first change, then a later render that landed during the
+ * wait), so the page the settle returned is the end of a transition whose later
+ * stage was observed rather than guessed at.
  * `ceiling`: the MAX_MS ceiling elapsed while the page was still moving.
  */
-export type SettleOutcome = "quiescent" | "ceiling";
+export type SettleOutcome = "quiescent" | "rerendered" | "ceiling";
 
 const POLL_MS = 1000;
 const QUIET_POLLS = 3;
@@ -59,6 +58,8 @@ export const MAX_MS = 60000;
  * any other click that shows no activity after one quiet poll gives up.
  * The probe is read once before the click (see snapshotPage) so early requests and
  * mutations are counted; settle ends on page quiescence, never on a content predicate.
+ * The returned outcome says whether the wait itself watched a later render land (`rerendered`),
+ * which lets the caller treat a header-only read as final without waiting out a further hold.
  * `holdUnmovedMs` serves a re-settle of a page whose header already flipped and whose body has
  * not yet re-rendered: the text the call starts on is then not the finished page, so quiet alone
  * cannot end the wait. While the text has not moved since the call began, the wait is held to
@@ -75,18 +76,21 @@ export async function settleAfterClick(
   readText?: () => Promise<string>,
   preText?: string,
   readQuiescence?: () => Promise<PageQuiescence>,
-  holdUnmovedMs?: number,
+  holdUnmovedMs?: number
 ): Promise<SettleOutcome> {
-  const read = async (): Promise<string | undefined> =>
-    readText ? readText() : undefined;
+  const read = async (): Promise<string | undefined> => (readText ? readText() : undefined);
   const quiescence = async (): Promise<PageQuiescence | undefined> =>
     readQuiescence ? readQuiescence() : undefined;
   const startQ = await quiescence();
   let lastMutations = startQ?.mutations;
   const startText = await read();
   let lastText = preText ?? startText;
-  let textMoved =
-    preText !== undefined && startText !== undefined && startText !== preText;
+  let textMoved = preText !== undefined && startText !== undefined && startText !== preText;
+  // Distinct text changes seen from the baseline: the one the call starts on (if any), plus
+  // each render that lands while it waits.
+  let textChanges = textMoved ? 1 : 0;
+  let countedText = startText;
+  const quiescentOutcome = (): SettleOutcome => (textChanges >= 2 ? "rerendered" : "quiescent");
   let seen = counter.n > preCount || textMoved;
   let last = counter.n;
   let movedSinceStart = false;
@@ -100,6 +104,10 @@ export async function settleAfterClick(
     if (text !== undefined && lastText !== undefined && text !== lastText) {
       lastText = text;
       textMoved = true;
+      if (text !== countedText) {
+        textChanges += 1;
+        countedText = text;
+      }
       seen = true;
       quiet = 0;
       if (text !== startText) movedSinceStart = true;
@@ -108,8 +116,7 @@ export async function settleAfterClick(
     const q = await quiescence();
     const pageBusy =
       q !== undefined &&
-      (q.pending > 0 ||
-        (lastMutations !== undefined && q.mutations !== lastMutations));
+      (q.pending > 0 || (lastMutations !== undefined && q.mutations !== lastMutations));
     if (q !== undefined) lastMutations = q.mutations;
     if (pageBusy) {
       probeSawActivity = true;
@@ -126,7 +133,7 @@ export async function settleAfterClick(
     if (seen) {
       quiet += 1;
       if (!textMoved && !submitShaped) {
-        if (quiet >= QUIET_POLLS) return "quiescent";
+        if (quiet >= QUIET_POLLS) return quiescentOutcome();
         continue;
       }
       const idleAllowanceMs =
@@ -135,14 +142,11 @@ export async function settleAfterClick(
             ? 0
             : holdUnmovedMs
           : IDLE_GIVE_UP_MS;
-      if (quiet >= TEXT_QUIET_POLLS && elapsed >= idleAllowanceMs)
-        return "quiescent";
+      if (quiet >= TEXT_QUIET_POLLS && elapsed >= idleAllowanceMs) return quiescentOutcome();
       continue;
     }
     if (!submitShaped) return "quiescent";
-    const giveUpMs = readQuiescence
-      ? QUIESCENT_NO_OP_GIVE_UP_MS
-      : IDLE_GIVE_UP_MS;
+    const giveUpMs = readQuiescence ? QUIESCENT_NO_OP_GIVE_UP_MS : IDLE_GIVE_UP_MS;
     if (elapsed >= giveUpMs) return "quiescent";
   }
   return "ceiling";
@@ -201,9 +205,7 @@ export interface SettleSnapshotTarget<
  */
 export async function settleAndSnapshot<
   S extends { networkCount: number; visibleTextSignature: string },
->(
-  target: SettleSnapshotTarget<S>,
-): Promise<{ snapshot: S; outcome: SettleOutcome }> {
+>(target: SettleSnapshotTarget<S>): Promise<{ snapshot: S; outcome: SettleOutcome }> {
   const outcome = await settleAfterClick(
     target.page,
     target.counter,
@@ -211,7 +213,7 @@ export async function settleAndSnapshot<
     target.submitShaped,
     async () => (await target.snapshot(false)).visibleTextSignature,
     target.pre.visibleTextSignature,
-    target.readQuiescence,
+    target.readQuiescence
   );
   return { snapshot: await target.snapshot(true), outcome };
 }

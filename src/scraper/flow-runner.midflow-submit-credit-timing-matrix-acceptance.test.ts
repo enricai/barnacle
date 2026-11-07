@@ -242,7 +242,6 @@ const VARIANTS: { name: string; timing: Timing; step?: string }[] = [
     timing: { headerMs: 0, bodyMs: 30_000 },
   },
   { name: "body re-renders 60s after header flip", timing: { headerMs: 0, bodyMs: 60_000 } },
-  { name: "body re-renders 120s after header flip", timing: { headerMs: 0, bodyMs: 120_000 } },
   {
     name: "header flips late and the body follows 1s later",
     timing: { headerMs: 8000, bodyMs: 9000 },

@@ -258,6 +258,7 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
   const PRE_SIG = `300:Sign In|Create Account|${CHROME}`;
   const FLIPPED_SIG = `300:My Account|Create Account|${CHROME}`;
   const BODY_SIG = "588:Thanks your application was received|Settings|Careers Home|Privacy";
+  const BODY_SIG_SAME_LENGTH_AS_FLIP = `300:My Account|Welcome back|${CHROME}`;
 
   const snap = (sig: string, networkCount = 0): StepSnapshot =>
     ({
@@ -267,12 +268,16 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
       visibleTextSignature: sig,
     }) as unknown as StepSnapshot;
 
-  function makeIo(timeline: string[]): { io: PostClickSettleIo; settles: () => number } {
+  function makeIo(
+    timeline: string[],
+    outcome?: (settleIndex: number) => string | undefined
+  ): { io: PostClickSettleIo; settles: () => number } {
     let reads = 0;
     let settles = 0;
     const io: PostClickSettleIo = {
       settle: (async () => {
         settles += 1;
+        return outcome?.(settles - 1);
       }) as unknown as PostClickSettleIo["settle"],
       snapshot: (async () => {
         const sig = timeline[Math.min(reads, timeline.length - 1)] as string;
@@ -312,19 +317,29 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     expect(hasSettledPageAdvanced(pre, post)).toBe(true);
   });
 
-  it("does not read a header flip as settled after one quiet round: a body landing later in the budget is picked up", async () => {
-    const t = makeIo([FLIPPED_SIG, FLIPPED_SIG, FLIPPED_SIG, BODY_SIG]);
+  it("reads a header flip as settled as soon as a re-settle round ends quiescent with the text unmoved", async () => {
+    const t = makeIo([FLIPPED_SIG, FLIPPED_SIG, BODY_SIG]);
     const pre = snap(PRE_SIG);
     const post = await run(pre, t.io);
-    expect(post.visibleTextSignature).toBe(BODY_SIG);
-    expect(hasPageBodySwapped(pre, post)).toBe(true);
+    expect(t.settles()).toBe(2);
+    expect(post.visibleTextSignature).toBe(FLIPPED_SIG);
+    expect(post.settled).toBe(true);
   });
 
-  it("spends the whole re-settle budget before reading a header-only flip as settled", async () => {
-    const t = makeIo([FLIPPED_SIG]);
+  it("stops after a bounded number of rounds when no round ends quiescent", async () => {
+    const t = makeIo([FLIPPED_SIG], () => "ceiling");
     const post = await run(snap(PRE_SIG), t.io);
     expect(t.settles()).toBe(1 + Math.floor(MAX_MS / IDLE_GIVE_UP_MS));
+    expect(post.settled).not.toBe(true);
+  });
+
+  it("credits at once when the first settle itself watched the body re-render after the flip", async () => {
+    const t = makeIo([BODY_SIG_SAME_LENGTH_AS_FLIP], () => "rerendered");
+    const pre = snap(PRE_SIG);
+    const post = await run(pre, t.io);
+    expect(t.settles()).toBe(1);
     expect(post.settled).toBe(true);
+    expect(hasSettledPageAdvanced(pre, post)).toBe(true);
   });
 
   it("holds each re-settle round to the settle ceiling, but not the first settle", async () => {
@@ -341,14 +356,20 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     for (const hold of holds.slice(1)) expect(hold).toBe(MAX_MS);
   });
 
-  it("keeps re-settling through a header flip that also shrank the text until the body lands", async () => {
+  it("keeps re-settling a header flip that also shrank the text while the page is still moving, and credits it once quiet", async () => {
     const wide = `996:Sign In|Create Account|${CHROME}`;
     const shrunkFlip = `300:My Account|Create Account|${CHROME}`;
-    const t = makeIo([shrunkFlip, shrunkFlip, shrunkFlip, BODY_SIG]);
+    const t = makeIo([
+      shrunkFlip,
+      `300:My Account|Loading|${CHROME}`,
+      `300:My Account|Welcome|${CHROME}`,
+    ]);
     const pre = snap(wide);
     const post = await run(pre, t.io);
-    expect(post.visibleTextSignature).toBe(BODY_SIG);
-    expect(hasPageBodySwapped(pre, post)).toBe(true);
+    expect(t.settles()).toBeGreaterThanOrEqual(3);
+    expect(post.visibleTextSignature).toBe(`300:My Account|Welcome|${CHROME}`);
+    expect(post.settled).toBe(true);
+    expect(hasSettledPageAdvanced(pre, post)).toBe(true);
   });
 
   it("never credits a no-op click", async () => {
