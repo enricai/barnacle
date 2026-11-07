@@ -300,32 +300,64 @@ describe("error handler — caller disconnect", () => {
     return { log, reply };
   }
 
-  it("logs WARN, no ERROR and no reply for ERR_STREAM_PREMATURE_CLOSE", async () => {
-    const err = Object.assign(new Error("Premature close"), { code: "ERR_STREAM_PREMATURE_CLOSE" });
-    const { log, reply } = await run(err, {});
+  const prematureClose = (message = "Premature close") =>
+    Object.assign(new Error(message), { code: "ERR_STREAM_PREMATURE_CLOSE" });
+
+  it.each([{}, { aborted: true }, { destroyed: true }, { socket: { destroyed: true } }])(
+    "logs WARN caller-disconnect, no ERROR, for ERR_STREAM_PREMATURE_CLOSE with raw %o",
+    async (raw) => {
+      const { log, reply } = await run(prematureClose(), raw);
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn.mock.calls[0]?.[1]).toContain(
+        "client disconnected before the response was written"
+      );
+      expect(log.warn.mock.calls[0]?.[1]).toContain("run outcome unaffected");
+      expect(log.error).not.toHaveBeenCalled();
+      expect(reply.status).not.toHaveBeenCalledWith(500);
+    }
+  );
+
+  it("classifies on the code, not the message text", async () => {
+    const { log } = await run(prematureClose("something else entirely"), { aborted: true });
     expect(log.warn).toHaveBeenCalledTimes(1);
-    expect(log.warn.mock.calls[0]?.[1]).toContain("client disconnected before the response was written");
     expect(log.error).not.toHaveBeenCalled();
-    expect(reply.send).not.toHaveBeenCalled();
   });
 
-  it.each([{ aborted: true }, { socket: { destroyed: true } }])("treats raw %o as a disconnect", async (raw) => {
-    const { log, reply } = await run(new Error("boom"), raw);
-    expect(log.warn).toHaveBeenCalledTimes(1);
-    expect(log.error).not.toHaveBeenCalled();
-    expect(reply.send).not.toHaveBeenCalled();
-  });
-
-  it("does not treat a destroyed-after-body request as a disconnect", async () => {
-    const { log, reply } = await run(new Error("boom"), { destroyed: true, socket: { destroyed: false } });
-    expect(log.error).toHaveBeenCalledTimes(1);
-    expect(reply.send).toHaveBeenCalled();
-  });
+  it.each([{ aborted: true }, { destroyed: true }, { socket: { destroyed: true } }])(
+    "a plain error on a request with raw %o is still an unhandled ERROR",
+    async (raw) => {
+      const { log, reply } = await run(new Error("boom"), raw);
+      expect(log.error).toHaveBeenCalledTimes(1);
+      expect(log.error.mock.calls[0]?.[1]).toBe("unhandled error");
+      expect(log.warn).not.toHaveBeenCalled();
+      expect(reply.status).toHaveBeenCalledWith(500);
+    }
+  );
 
   it("still logs ERROR and replies 500 for a generic error", async () => {
     const { log, reply } = await run(new Error("boom"), {});
     expect(log.error).toHaveBeenCalledTimes(1);
     expect(log.warn).not.toHaveBeenCalled();
     expect(reply.send).toHaveBeenCalled();
+  });
+});
+
+describe("error handler — caller disconnect through a real route", () => {
+  it("completes the reply, warns with reqId and never logs ERROR", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const stream = { write: (l: string) => lines.push(JSON.parse(l)) };
+    const app = Fastify({ logger: { level: "info", stream }, genReqId: () => "req-1qp7" });
+    await app.register(errorHandlerPlugin);
+    app.get("/d", async (request) => {
+      request.raw.aborted = true;
+      throw Object.assign(new Error("Premature close"), { code: "ERR_STREAM_PREMATURE_CLOSE" });
+    });
+    const res = await app.inject({ method: "GET", url: "/d" });
+    await app.close();
+    expect(res.statusCode).not.toBe(500);
+    const warn = lines.find((l) => l.level === 40);
+    expect(warn?.reqId).toBe("req-1qp7");
+    expect(String(warn?.msg)).toContain("run outcome unaffected");
+    expect(lines.some((l) => l.level === 50)).toBe(false);
   });
 });
