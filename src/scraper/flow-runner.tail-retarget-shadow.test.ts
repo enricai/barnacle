@@ -38,12 +38,21 @@ describe("tail-retarget resolver uses the shadow-aware snapshot resolver", () =>
     ]);
     const evaluate = (expr: string, ctx: N) => {
       const hits = table.get(`${expr}@${ctx.id}`) ?? [];
-      return { singleNodeValue: hits[0] ?? null, snapshotLength: hits.length, snapshotItem: (i: number) => hits[i] };
+      return {
+        singleNodeValue: hits[0] ?? null,
+        snapshotLength: hits.length,
+        snapshotItem: (i: number) => hits[i],
+      };
     };
-    const fn = new Function("document", "XPathResult", `return ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC};`)(
-      { ...doc, evaluate },
-      { FIRST_ORDERED_NODE_TYPE: 9, ORDERED_NODE_SNAPSHOT_TYPE: 7 }
-    ) as (t: string, p: boolean, ph: string[]) => N | null;
+    const fn = new Function(
+      "document",
+      "XPathResult",
+      `return ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC};`
+    )({ ...doc, evaluate }, { FIRST_ORDERED_NODE_TYPE: 9, ORDERED_NODE_SNAPSHOT_TYPE: 7 }) as (
+      t: string,
+      p: boolean,
+      ph: string[]
+    ) => N | null;
     // Native "//my-app//button" finds nothing; the shadow walk must.
     expect(fn("my-app//button", false, [])?.id).toBe("go");
     expect(fn("my-app//button", false, ["continue"])?.id).toBe("go");

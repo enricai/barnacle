@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   extractGraphQLActionSequence,
-  isDeclaredAuthoritativeCapture,
   type FoldReturnSpec,
+  isDeclaredAuthoritativeCapture,
   type SubmitPatterns,
 } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";

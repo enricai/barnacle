@@ -37,10 +37,7 @@ const FOLD = {
 describe("final anchor narrowing keeps declared authoritative captures", () => {
   it("keeps a declared foldReturn drill sharing no token with the submit endpoint", () => {
     const out = extractActionSequence(
-      [
-        cap("POST", "/catalog/search", { items: [{ id: 1 }] }),
-        cap("GET", "/reviews", [{ id: 1 }]),
-      ],
+      [cap("POST", "/catalog/search", { items: [{ id: 1 }] }), cap("GET", "/reviews", [{ id: 1 }])],
       SUBMIT,
       FOLD,
       [HOST]

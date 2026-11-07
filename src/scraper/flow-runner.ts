@@ -2041,7 +2041,7 @@ const NEGATED_ACTION_CLAUSE =
  * is never passive. Pure.
  */
 export function isPassiveNoopStep(instruction: string | null | undefined): boolean {
-  if (!instruction || !instruction.trim()) return false;
+  if (!instruction?.trim()) return false;
   if (!PASSIVE_STEP_MARKER.test(instruction)) return false;
   const positive = instruction.replace(NEGATED_ACTION_CLAUSE, " ");
   if (/["'\u2018\u201c]\w/.test(positive.replace(/\b\w+'\w+\b/g, " "))) return false;

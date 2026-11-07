@@ -5474,7 +5474,10 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       null
     );
 
-    expect(kept.map((a) => a.capture.operationName)).toEqual(["PromotionsWidgetSearch", "SubmitBookingavailVas"]);
+    expect(kept.map((a) => a.capture.operationName)).toEqual([
+      "PromotionsWidgetSearch",
+      "SubmitBookingavailVas",
+    ]);
   });
 
   it("drops a minority own-backend host's mutation that coincidentally matches the declared submitEndpointPattern when primaryHost narrows to the dominant host", () => {

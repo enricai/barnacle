@@ -26,11 +26,13 @@ const buildResolverSrc = (snapshot: boolean): string => `((xpath) => {
     } catch (e) { /* invalid expression: no matches */ }
     return out;
   };
-  ${snapshot
-    ? `const native = all(xpath, document);
+  ${
+    snapshot
+      ? `const native = all(xpath, document);
   if (native.length > 0 || xpath.indexOf("//") < 0) return native;`
-    : `const native = first(xpath, document);
-  if (native || xpath.indexOf("//") < 0) return native;`}
+      : `const native = first(xpath, document);
+  if (native || xpath.indexOf("//") < 0) return native;`
+  }
   const parts = [];
   let depth = 0, quote = "", cur = "";
   for (let i = 0; i < xpath.length; i++) {
@@ -79,9 +81,11 @@ const buildResolverSrc = (snapshot: boolean): string => `((xpath) => {
     if (next.length === 0) return ${snapshot ? "[]" : "null"};
     ctxs = next;
   }
-  ${snapshot
-    ? "return ctxs.filter((n) => n !== document);"
-    : "return ctxs[0] === document ? null : ctxs[0];"}
+  ${
+    snapshot
+      ? "return ctxs.filter((n) => n !== document);"
+      : "return ctxs[0] === document ? null : ctxs[0];"
+  }
 })`;
 
 export const SHADOW_XPATH_RESOLVER_SRC = buildResolverSrc(false);

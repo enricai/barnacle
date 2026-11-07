@@ -76,12 +76,18 @@ describe("shadow-aware xpath resolver", () => {
       ["//shop-app@doc", [host]],
       ['.//button[@id="buy"]@section', [button]],
     ]);
-    const all = resolver(table, doc, SHADOW_XPATH_ALL_RESOLVER_SRC) as unknown as (x: string) => Node[];
+    const all = resolver(table, doc, SHADOW_XPATH_ALL_RESOLVER_SRC) as unknown as (
+      x: string
+    ) => Node[];
     expect(all('//shop-app//button[@id="buy"]').map((n) => n.id)).toEqual(["buy"]);
     expect(all("//nope//x")).toEqual([]);
     const a = node("a");
     const b = node("b");
-    const light = resolver(new Map([["//button@doc", [a, b]]]), node("doc", 9), SHADOW_XPATH_ALL_RESOLVER_SRC) as unknown as (x: string) => Node[];
+    const light = resolver(
+      new Map([["//button@doc", [a, b]]]),
+      node("doc", 9),
+      SHADOW_XPATH_ALL_RESOLVER_SRC
+    ) as unknown as (x: string) => Node[];
     expect(light("//button")).toEqual([a, b]);
   });
 });

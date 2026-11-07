@@ -1,12 +1,5 @@
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -41,8 +34,7 @@ describe("recon-generate CLI — minted value threads from the attached drill re
   it("reads the fare id off the item for the seat drill, never a literal or the out-of-scope local", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-minted-attached-"));
     const root = join(workDir, "run");
-    for (const d of ["graphql", "replays", "aux"])
-      mkdirSync(join(root, d), { recursive: true });
+    for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(root, d), { recursive: true });
     writeFileSync(join(root, "replays", "rate-limit.json"), "[]");
     const caps = [
       buildCapture({
@@ -75,12 +67,9 @@ describe("recon-generate CLI — minted value threads from the attached drill re
         timestamp: "2026-01-01T00:00:03Z",
       }),
     ];
-    caps.forEach((c, i) =>
-      writeFileSync(
-        join(root, "graphql", `00${i}-capture.json`),
-        JSON.stringify(c),
-      ),
-    );
+    for (const [i, c] of caps.entries()) {
+      writeFileSync(join(root, "graphql", `00${i}-capture.json`), JSON.stringify(c));
+    }
     const siteId = `minted-attached-drill-e2e-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
@@ -115,27 +104,18 @@ describe("recon-generate CLI — minted value threads from the attached drill re
             attachAs: "seats",
           },
         ],
-      }),
+      })
     );
     const result = spawnSync(
       TSX_BIN,
-      [
-        GENERATE_SCRIPT,
-        "--site-id",
-        siteId,
-        "--run-dir",
-        root,
-        "--emit",
-        "ts",
-        "--force",
-      ],
-      { cwd: RECON_GENERATE_CWD, encoding: "utf8" },
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", root, "--emit", "ts", "--force"],
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     const seats = contract.match(/flights\/seats\/[\s\S]*?body:\s*`([^`]*)`/);
     expect(seats, contract).not.toBeNull();
-    expect(seats![1]).toContain('"fareId":"${item.fareId}"');
+    expect(seats![1]).toContain(`"fareId":"\${item.fareId}"`);
     expect(seats![1]).not.toContain(FARE);
     expect(contract).not.toContain(`"fareId":"\${fareId}"`);
     // The quote drill still fails in isolation, dropping only its own key.
@@ -147,8 +127,7 @@ describe("recon-generate in-process — minted value threads from the attached d
   it("(in-process) reads the fare id off the item for the seat drill, never a literal or the out-of-scope local", async () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-minted-attached-"));
     const root = join(workDir, "run");
-    for (const d of ["graphql", "replays", "aux"])
-      mkdirSync(join(root, d), { recursive: true });
+    for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(root, d), { recursive: true });
     writeFileSync(join(root, "replays", "rate-limit.json"), "[]");
     const caps = [
       buildCapture({
@@ -181,12 +160,9 @@ describe("recon-generate in-process — minted value threads from the attached d
         timestamp: "2026-01-01T00:00:03Z",
       }),
     ];
-    caps.forEach((c, i) =>
-      writeFileSync(
-        join(root, "graphql", `00${i}-capture.json`),
-        JSON.stringify(c),
-      ),
-    );
+    for (const [i, c] of caps.entries()) {
+      writeFileSync(join(root, "graphql", `00${i}-capture.json`), JSON.stringify(c));
+    }
     const siteId = `minted-attached-drill-e2e-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
@@ -221,13 +197,11 @@ describe("recon-generate in-process — minted value threads from the attached d
             attachAs: "seats",
           },
         ],
-      }),
+      })
     );
     const origArgv = process.argv;
     const origCwd = process.cwd();
-    const exitSpy = vi
-      .spyOn(process, "exit")
-      .mockImplementation((() => undefined) as never);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const contractPath = join(siteOutDir, "contract.ts");
     try {
       process.chdir(RECON_GENERATE_CWD);
@@ -257,7 +231,7 @@ describe("recon-generate in-process — minted value threads from the attached d
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     const seats = contract.match(/flights\/seats\/[\s\S]*?body:\s*`([^`]*)`/);
     expect(seats, contract).not.toBeNull();
-    expect(seats![1]).toContain('"fareId":"${item.fareId}"');
+    expect(seats![1]).toContain(`"fareId":"\${item.fareId}"`);
     expect(seats![1]).not.toContain(FARE);
     expect(contract).not.toContain(`"fareId":"\${fareId}"`);
     // The quote drill still fails in isolation, dropping only its own key.
