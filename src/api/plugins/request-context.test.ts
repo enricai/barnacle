@@ -1,5 +1,4 @@
 import Fastify from "fastify";
-import { once } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
@@ -208,8 +207,9 @@ describe("api/plugins/request-context", () => {
     });
     req.on("error", () => {});
     await new Promise((r) => setTimeout(r, 100));
+    const closed = new Promise<void>((r) => req.on("close", () => r()));
     req.destroy();
-    await once(req, "close");
+    await closed;
     await new Promise((r) => setTimeout(r, 100));
     release();
     await app.close();
