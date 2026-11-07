@@ -111,6 +111,23 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
       return;
     }
 
+    // A caller that hung up mid-write (e.g. ERR_STREAM_PREMATURE_CLOSE from
+    // the @fastify/compress pipeline) is not a server fault: the run outcome
+    // is unaffected and the socket is dead, so log WARN and send nothing.
+    // Discriminate on the error code / socket state, never the message text.
+    const rawReq = request.raw as { aborted?: boolean; destroyed?: boolean } | undefined;
+    if (
+      (error as { code?: string }).code === "ERR_STREAM_PREMATURE_CLOSE" ||
+      rawReq?.aborted === true ||
+      rawReq?.destroyed === true
+    ) {
+      request.log.warn(
+        { code: (error as { code?: string }).code },
+        "client disconnected before the response was written (run outcome unaffected)"
+      );
+      return;
+    }
+
     request.log.error({ err }, "unhandled error");
     replyWithError(
       reply,

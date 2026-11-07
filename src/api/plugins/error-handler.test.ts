@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 
 import {
@@ -278,5 +278,48 @@ describe("error-handler plugin", () => {
     const body = response.json();
     expect(body.status.details[0].code).toBe(1008);
     expect(body.status.details[0].message).toBe("request failed");
+  });
+});
+
+describe("error handler — caller disconnect", () => {
+  async function run(error: Error, raw: Record<string, unknown>) {
+    const app = Fastify({ logger: false });
+    await app.register(errorHandlerPlugin);
+    await app.ready();
+    const log = { warn: vi.fn(), error: vi.fn() };
+    const reply = {
+      status: vi.fn().mockReturnThis(),
+      code: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      header: vi.fn().mockReturnThis(),
+      send: vi.fn().mockReturnThis(),
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: stubbed request/reply
+    (app.errorHandler as any)(error, { log, raw, method: "GET", url: "/x" }, reply);
+    await app.close();
+    return { log, reply };
+  }
+
+  it("logs WARN, no ERROR and no reply for ERR_STREAM_PREMATURE_CLOSE", async () => {
+    const err = Object.assign(new Error("Premature close"), { code: "ERR_STREAM_PREMATURE_CLOSE" });
+    const { log, reply } = await run(err, {});
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn.mock.calls[0]?.[1]).toContain("client disconnected before the response was written");
+    expect(log.error).not.toHaveBeenCalled();
+    expect(reply.send).not.toHaveBeenCalled();
+  });
+
+  it.each([{ aborted: true }, { destroyed: true }])("treats raw %o as a disconnect", async (raw) => {
+    const { log, reply } = await run(new Error("boom"), raw);
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.error).not.toHaveBeenCalled();
+    expect(reply.send).not.toHaveBeenCalled();
+  });
+
+  it("still logs ERROR and replies 500 for a generic error", async () => {
+    const { log, reply } = await run(new Error("boom"), {});
+    expect(log.error).toHaveBeenCalledTimes(1);
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(reply.send).toHaveBeenCalled();
   });
 });
