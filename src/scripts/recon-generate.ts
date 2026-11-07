@@ -9273,7 +9273,16 @@ export function wholeArrayAttachKey(
   drillUrl: string
 ): string | null {
   const rows = objectItemsAtPath(terminalBody, target.chainArrayPath);
-  if (!rows || rows.length < 2) return null;
+  if (!rows) return null;
+  // A DECLARED `attachAs` is the author stating where this drill's result
+  // belongs, so it is honoured before the gates below. Those gates are the
+  // heuristic for INFERRING a key when none was declared ("several rows and not
+  // one carrying any join field… so the array itself belongs on the item"), and
+  // applying them to a declaration discarded it: a drill answering with a
+  // single object or one row got flat-merged onto the item instead of nested
+  // under its key — a silent response-shape change.
+  if (target.attachAs !== undefined) return target.attachAs;
+  if (rows.length < 2) return null;
   const carriesJoinField = rows.some((row) =>
     target.joinFields.some((f) => {
       const segments = f.split(".");
@@ -9284,7 +9293,6 @@ export function wholeArrayAttachKey(
     })
   );
   if (carriesJoinField) return null;
-  if (target.attachAs !== undefined) return target.attachAs;
   let pathname: string;
   try {
     pathname = new URL(drillUrl).pathname;
@@ -10926,7 +10934,7 @@ export function emitMultiStepExecuteHttp(
           }
           const result = substituteThreadedValues(swapped, filteredValueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
-            foldReturnSpec,
+            specForTarget(target, foldReturnSpec),
             chainCapture,
             result
           );
@@ -12219,6 +12227,18 @@ export interface FoldTarget {
   attachAs?: string;
   /** Caller payload flag gating this drill; also isolates its failures. */
   payloadFlag?: string;
+  /**
+   * `endpointPattern` of the declared `foldReturn` entry this target came from,
+   * when it came from a non-primary one (array form).
+   *
+   * Without it a target carries `attachAs`/`payloadFlag` but no way back to its
+   * own spec, so the emitters fall back to the PRIMARY spec — and
+   * {@link applyDrillParamBindings} then rejects the capture on its own endpoint
+   * matcher and silently emits a frozen literal instead of the declared
+   * binding. Unset means "the primary spec", which is every object-form flow and
+   * the first array entry, so existing behaviour is unchanged.
+   */
+  drillSpecKey?: string;
 }
 
 /** Every string and numeric value present in a capture's outbound request —
@@ -15433,6 +15453,28 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
  */
 let ambientExtraDrillSpecs: readonly FoldReturnSpec[] = [];
 
+/**
+ * The declared `foldReturn` entry a fold target came from.
+ *
+ * Array-form `foldReturn` resolves each extra entry as its own target, but the
+ * emitters only ever had the PRIMARY spec in hand — so a non-first entry's
+ * `drillParamBindings` were handed to {@link applyDrillParamBindings} alongside
+ * the wrong spec, rejected by that spec's own endpoint matcher, and silently
+ * emitted as the recorded frozen literal. Resolving by
+ * {@link FoldTarget.drillSpecKey} binds each target to its own entry.
+ *
+ * Falls back to `primary` when the target carries no key (object form, and the
+ * first array entry), so every pre-existing flow emits exactly as before.
+ */
+export function specForTarget(
+  target: Pick<FoldTarget, "drillSpecKey">,
+  primary: FoldReturnSpec | null,
+  extras: readonly FoldReturnSpec[] = ambientExtraDrillSpecs
+): FoldReturnSpec | null {
+  if (target.drillSpecKey === undefined) return primary;
+  return extras.find((s) => s.endpointPattern === target.drillSpecKey) ?? primary;
+}
+
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null = null,
@@ -15641,6 +15683,9 @@ function pinTargetToEndpointStep<T extends { capture: Capture }>(
     chainArrayPath: arrayPath,
     ...(spec.attachAs !== undefined ? { attachAs: spec.attachAs } : {}),
     ...(spec.payloadFlag !== undefined ? { payloadFlag: spec.payloadFlag } : {}),
+    // Carries this target back to the spec that declared it — see
+    // FoldTarget.drillSpecKey. Only extra (non-primary) specs reach here.
+    drillSpecKey: spec.endpointPattern,
   };
 }
 
@@ -16526,6 +16571,12 @@ export function emitContractTsParts(opts: {
    * the single-primary path can never disagree with the inferred shape on
    * whether a fold applies. */
   foldReturnSpec?: FoldReturnSpec | null;
+  /** The declared `foldReturn` entries AFTER the primary one (array form).
+   * Their `drillParamBindings` and `payloadFlag`s belong in the payload schema
+   * just as the primary's do — see {@link FoldTarget.drillSpecKey}. Defaults to
+   * the ambient set `main` parsed, so existing callers are unchanged; passed
+   * explicitly by tests and by any caller that already holds the specs. */
+  extraFoldSpecs?: readonly FoldReturnSpec[];
   /** Optional recon-flow.json-declared hot-path gating — see
    * {@link parseFallbackGateSpec}. Absent (or an empty `{}`) emits today's
    * output byte-for-byte: no `browserFallbackGate` meta field, and
@@ -16560,6 +16611,7 @@ export function emitContractTsParts(opts: {
     hasMultipartStep = false,
     actionSteps = [],
     foldReturnSpec = null,
+    extraFoldSpecs = ambientExtraDrillSpecs,
     discoveredFormFields,
     fieldOptionsMap,
     discoveredOptionFields,
@@ -16793,9 +16845,20 @@ export function emitContractTsParts(opts: {
   // and supplying it lets the caller drive the drill request. Sorted by
   // payloadField for the same deterministic-output ordering the other
   // discovered-field loops already keep.
-  const drillParamBindingEntries = Object.values(foldReturnSpec?.drillParamBindings ?? {}).sort(
-    (a, b) => a.payloadField.localeCompare(b.payloadField)
-  );
+  //
+  // Every declared entry's bindings, not just the primary's: an array-form
+  // `foldReturn` resolves each extra entry as its own drill (see
+  // FoldTarget.drillSpecKey), so a binding declared on a non-first entry is as
+  // caller-driven as one on the first. Reading only the primary left those
+  // fields undeclared while the emitted drill bound them, so the caller had no
+  // documented way to supply the value.
+  const allDeclaredFoldSpecs = [
+    ...(foldReturnSpec === null ? [] : [foldReturnSpec]),
+    ...extraFoldSpecs,
+  ];
+  const drillParamBindingEntries = allDeclaredFoldSpecs
+    .flatMap((spec) => Object.values(spec.drillParamBindings ?? {}))
+    .sort((a, b) => a.payloadField.localeCompare(b.payloadField));
   for (const binding of drillParamBindingEntries) {
     if (isReservedByApplicantContactSchema(binding.payloadField)) continue;
     const zod =
@@ -16805,6 +16868,22 @@ export function emitContractTsParts(opts: {
           ? `z.coerce.boolean().optional().default(${JSON.stringify(binding.default)})`
           : `z.string().optional().default(${JSON.stringify(binding.default)})`;
     addExtendField(binding.payloadField, `  ${binding.payloadField}: ${zod},`);
+  }
+  // A declared `payloadFlag` gates its drill at runtime via a cast
+  // (`(payload as Record<string, unknown>)[flag]`), so the flow worked for a
+  // caller who knew the name — but the field was absent from the payload
+  // schema, leaving it undocumented and strippable before `executeHttp` sees
+  // it. Declared optional (never defaulted) so omitting it keeps the drill off,
+  // which is the pre-existing behaviour.
+  for (const flag of [
+    ...new Set(
+      allDeclaredFoldSpecs.flatMap((spec) =>
+        spec.payloadFlag === undefined ? [] : [spec.payloadFlag]
+      )
+    ),
+  ].sort()) {
+    if (isReservedByApplicantContactSchema(flag)) continue;
+    addExtendField(flag, `  ${flag}: z.boolean().optional(),`);
   }
 
   // Multi-step flows that include a multipart upload need the binary asset
@@ -17476,7 +17555,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           }
           const result = substituteThreadedValues(withBase, filteredValueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
-            foldReturnSpec,
+            specForTarget(target, foldReturnSpec),
             chainCapture,
             result
           );
