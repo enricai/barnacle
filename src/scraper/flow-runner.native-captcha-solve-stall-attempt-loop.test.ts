@@ -136,4 +136,60 @@ describe("flow-runner/executeStepWithHealing — stalled native captcha solve", 
       vi.useRealTimers();
     }
   });
+
+  it("control: a finished solve is not reported as stalled", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, emit } = stalledPage();
+      emit("browserbase-solving-started");
+      emit("browserbase-solving-finished");
+      const attemptsByFailure: AttemptRecord[][] = [];
+      const p = executeStepWithHealing({
+        stagehand: {} as unknown as Stagehand,
+        page,
+        step: APPLY_STEP,
+        optional: false,
+        upload: false,
+        submitStep: false,
+        stepIndex: 0,
+        totalSteps: () => 1,
+        phase: "flow",
+        signalCounter: { n: 0 },
+        recentCaptures: [],
+        recentCaptureMeta: [],
+        anthropic: null,
+        rephraseModel: null,
+        logger: testLogger,
+        uploadFixture: null,
+        isFinalStep: false,
+        submitEndpointPattern: null,
+        submittedStateSelectors: [],
+        requireSubmitEndpointMatch: false,
+        advanceTransitionBodyPattern: null,
+        successUrlFragments: [],
+        successPageTitleHints: [],
+        ownBackendHostnames: [],
+        knownErrorClassPrefixes: [],
+        wizardExitButtonLabels: [],
+        onStepFailure: ({ attempts }: { attempts: AttemptRecord[] }) => {
+          attemptsByFailure.push(attempts);
+          return null;
+        },
+      } as never);
+      const settled = p.then(
+        () => null,
+        (e: unknown) => e as Error
+      );
+      await vi.advanceTimersByTimeAsync(31_000);
+      const err = await settled;
+      void err;
+      expect(
+        (testLogger.warn as ReturnType<typeof vi.fn>).mock.calls.some((c) =>
+          String(c[0]).includes("native-captcha-solve-stalled")
+        )
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
