@@ -15593,11 +15593,15 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
           );
           return specPlan === null ? [] : [specPlan];
         })();
-  return stampDeclaredDrillAttributes(
+  return dedupeTargetsPerDeclaredDrill(
     actions,
-    collapseTargetsToDeclaredDrillPath(
+    stampDeclaredDrillAttributes(
       actions,
-      plans,
+      collapseTargetsToDeclaredDrillPath(
+        actions,
+        plans,
+        foldReturnSpec === null ? [] : [foldReturnSpec]
+      ),
       foldReturnSpec === null ? [] : [foldReturnSpec]
     ),
     foldReturnSpec === null ? [] : [foldReturnSpec]
@@ -15606,6 +15610,34 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
       (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
     );
     return targets.length === 0 ? [] : [{ ...plan, targets }];
+  });
+}
+
+/**
+ * One declared drill is one hop: a spec's endpoint captured once per item
+ * (or re-captured) resolves one structural target per capture, but the
+ * emitted per-item loop must issue that drill exactly once. Keeps the first
+ * target per (declared spec, folded array, attach key) and leaves undeclared targets
+ * untouched.
+ */
+function dedupeTargetsPerDeclaredDrill<T extends { capture: Capture }>(
+  actions: readonly T[],
+  plans: readonly FoldPlan[],
+  specs: readonly FoldReturnSpec[]
+): FoldPlan[] {
+  if (specs.length === 0) return [...plans];
+  const matchers = specs.map((s) => compileFoldReturnEndpointMatcher(s));
+  return plans.map((plan) => {
+    const seen = new Set<string>();
+    const targets = plan.targets.filter((target) => {
+      const owner = matchers.findIndex((m) => m(actions[target.chainTerminalIndex]!.capture));
+      if (owner < 0) return true;
+      const key = `${owner}\u0000${target.chainArrayPath.join(".")}\u0000${target.attachAs ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return targets.length === plan.targets.length ? plan : { ...plan, targets };
   });
 }
 
@@ -15749,10 +15781,12 @@ function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipar
       else host.targets.push(...pinned);
     }
   });
-  return collapseTargetsToDeclaredDrillPath(actions, result, [
-    ...(primarySpec === null ? [] : [primarySpec]),
-    ...extraDrillSpecs,
-  ]);
+  const allSpecs = [...(primarySpec === null ? [] : [primarySpec]), ...extraDrillSpecs];
+  return dedupeTargetsPerDeclaredDrill(
+    actions,
+    collapseTargetsToDeclaredDrillPath(actions, result, allSpecs),
+    allSpecs
+  );
 }
 
 /** Pins a target's chain terminal to the chain step matching the spec's own
