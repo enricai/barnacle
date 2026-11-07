@@ -309,11 +309,17 @@ describe("error handler — caller disconnect", () => {
     expect(reply.send).not.toHaveBeenCalled();
   });
 
-  it.each([{ aborted: true }, { destroyed: true }])("treats raw %o as a disconnect", async (raw) => {
+  it.each([{ aborted: true }, { socket: { destroyed: true } }])("treats raw %o as a disconnect", async (raw) => {
     const { log, reply } = await run(new Error("boom"), raw);
     expect(log.warn).toHaveBeenCalledTimes(1);
     expect(log.error).not.toHaveBeenCalled();
     expect(reply.send).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a destroyed-after-body request as a disconnect", async () => {
+    const { log, reply } = await run(new Error("boom"), { destroyed: true, socket: { destroyed: false } });
+    expect(log.error).toHaveBeenCalledTimes(1);
+    expect(reply.send).toHaveBeenCalled();
   });
 
   it("still logs ERROR and replies 500 for a generic error", async () => {
