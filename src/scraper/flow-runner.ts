@@ -7804,9 +7804,10 @@ const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_
  * settle-then-snapshot moment can land between a header flip and the body
  * re-render that follows it. Each round is a quiescence-gated settle (text quiet
  * for TEXT_QUIET_POLLS polls), so the verdict waits for the body to swap, or
- * reads the header flip as the page's final state (`settled`) only after the
- * text holds still through the whole bounded budget; a single quiet round
- * cannot distinguish a finished page from a body that re-renders later.
+ * reads the header flip as the page's final state (`settled`) as soon as a round
+ * ends quiescent (page observed quiet) with the text unmoved. A round that hits
+ * the settle ceiling while the page is still moving is not quiet, so a page that
+ * never quiets stays unsettled after the bounded budget.
  * Each round settles against the pre-click text, so the header flip stays
  * movement and the silent no-op give-up never applies, and holds for the
  * settle's whole ceiling while the text stays still (a body re-render may start
@@ -7838,7 +7839,7 @@ async function resettleThroughHeaderOnlyFlip(
       current = probe;
       continue;
     }
-    await io.settle(
+    const outcome = await io.settle(
       page,
       target,
       signalCounter,
@@ -7851,6 +7852,9 @@ async function resettleThroughHeaderOnlyFlip(
     const next = await io.snapshot(target, signalCounter, page);
     const heldStill = !hasVisibleTextChanged(current, next);
     current = next;
+    // The settle observed the page quiet and the text did not move: the header
+    // flip is the page's final state, so stop instead of re-holding every round.
+    if (outcome === "quiescent" && heldStill) return { ...current, settled: true };
     heldStillThroughBudget = heldStill;
   }
   return heldStillThroughBudget ? { ...current, settled: true } : current;

@@ -19,8 +19,8 @@ export interface PhantomClickSnapshot {
   /** Digest of the whole normalised visible text, so a change beyond the head or excerpt is still seen. */
   visibleTextDigest?: string;
   /**
-   * True when this snapshot was re-read after the re-settle rounds and the visible
-   * text held still across the last of them, so a header flip that has not been followed by
+   * True when this snapshot was re-read after a re-settle round that ended
+   * quiescent (page observed quiet) with the visible text unmoved, so a header flip that has not been followed by
    * a body swap is the page's final state rather than a transition in flight.
    */
   settled?: boolean;
@@ -407,7 +407,7 @@ function fullTextAdvanceKind(
  * A header that flipped over retained chrome while the text shrank by a body's
  * worth is a body that was cleared or is loading, not a next step that has
  * rendered: the length drop proves content left, never that new copy arrived.
- * It therefore stays a header-only flip until the text holds still.
+ * It therefore stays a header-only flip until the page is observed quiet (`settled`).
  */
 function isHeaderFlipThatShrank(preSig: string, postSig: string): boolean {
   const preLen = textLengthOf(preSig);
@@ -501,8 +501,8 @@ export function hasPageBodySwapped(pre: PhantomClickSnapshot, post: PhantomClick
 
 /**
  * Decides whether a mid-flow submit's page advanced, judged on the settled
- * page: a replaced body always counts, and a replaced header counts once the
- * text has held still across the whole re-settle budget, because by then nothing is left
+ * page: a replaced body always counts, and a replaced header counts once a
+ * re-settle round ended with the page quiet and the text unmoved, because by then nothing is left
  * to re-render. Before that point a header-only flip stays unfinished, since
  * the body usually re-renders after it. A page with no visible-text change
  * never counts, so a no-op click keeps its give-up.
