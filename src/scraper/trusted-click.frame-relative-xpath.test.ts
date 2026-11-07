@@ -9,14 +9,17 @@ import {
 
 const COMPOSITE =
   "/html[1]/body[1]/main[1]/div[1]/div[1]/span[1]/iframe[1]/html[1]/body[1]/div[2]/div[3]/div[1]/div[1]/form[1]/div[1]/div[1]/div[1]/a[1]";
-const FRAME_RELATIVE = "/html[1]/body[1]/div[2]/div[3]/div[1]/div[1]/form[1]/div[1]/div[1]/div[1]/a[1]";
+const FRAME_RELATIVE =
+  "/html[1]/body[1]/div[2]/div[3]/div[1]/div[1]/form[1]/div[1]/div[1]/div[1]/a[1]";
 
 function fakeTarget(frameSelector: string | null): FrameTarget {
   return {
     frame: null,
     frameSelector,
     evaluate: vi.fn(async () => ({ state: "hit" })) as unknown as FrameTarget["evaluate"],
-    locator: vi.fn(() => ({ click: async (): Promise<void> => {} })) as unknown as FrameTarget["locator"],
+    locator: vi.fn(() => ({
+      click: async (): Promise<void> => {},
+    })) as unknown as FrameTarget["locator"],
     url: async () => "https://example.com",
     title: async () => "",
   };

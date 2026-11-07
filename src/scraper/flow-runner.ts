@@ -114,6 +114,7 @@ import {
   readCurrentFrameUrl,
   resolveFrameTarget,
   sleep,
+  toFrameRelativeXpath,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import {
@@ -176,9 +177,8 @@ import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/t
 import type { Logger } from "@/types/logging";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 
-import { toFrameRelativeXpath } from "@/scraper/frame-target";
-export { toFrameRelativeXpath };
 export { waitForSpaReady } from "@/scraper/spa-readiness";
+export { toFrameRelativeXpath };
 
 const logger = getLogger({ name: "scraper/flow-runner" });
 
@@ -10021,15 +10021,17 @@ async function tryPromptSelectorPrimitive(params: {
     // Several fuzzy matches ('Country' vs 'Country Code'): an exact
     // (case/whitespace-insensitive) label equality breaks the tie when unique.
     const exactNorm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-    const exactMatches = labelMatches.filter((c) => exactNorm(c.label) === exactNorm(questionLabel ?? ""));
+    const exactMatches = labelMatches.filter(
+      (c) => exactNorm(c.label) === exactNorm(questionLabel ?? "")
+    );
     const chosen =
       labelMatches.length === 1
         ? labelMatches[0]
         : labelMatches.length > 1 && exactMatches.length === 1
           ? exactMatches[0]
           : !questionLabel && candidates.length === 1
-          ? candidates[0]
-          : null;
+            ? candidates[0]
+            : null;
     if (!chosen) {
       logger.info(
         `prompt-selector primitive: no unambiguous widget match for ${optLabel}; falling through to cascade`
