@@ -336,6 +336,7 @@ export function wireSignalCapture(
       headers: Record<string, string>;
       postData?: string;
       hasPostData?: boolean;
+      postDataEntries?: Array<{ bytes?: string }>;
     };
   };
   type ResponseReceivedEvent = {
@@ -359,6 +360,23 @@ export function wireSignalCapture(
   const isBodyCapable = (method: string, hasPostData: boolean | undefined): boolean =>
     /^(POST|PUT|PATCH)$/i.test(method) || hasPostData === true;
 
+  // CDP delivers a request body in one of three shapes: inline text (`postData`),
+  // base64 chunks (`postDataEntries[].bytes`), or a lazy `getRequestPostData`
+  // reply that is base64 when `base64Encoded` is set. Every shape reduces here to
+  // the text the page sent; bytes that are not valid UTF-8 are not representable
+  // as a recorded text body and yield null (the caller settles on the marker).
+  const decodeBodyBytes = (bytes: Buffer): string | null => {
+    const text = bytes.toString("utf8");
+    return Buffer.from(text, "utf8").equals(bytes) ? text : null;
+  };
+  const bodyFromEntries = (entries: Array<{ bytes?: string }> | undefined): string | null => {
+    if (!entries?.length) return null;
+    const joined = Buffer.concat(
+      entries.map((e) => Buffer.from(typeof e.bytes === "string" ? e.bytes : "", "base64"))
+    );
+    return joined.length > 0 ? decodeBodyBytes(joined) : null;
+  };
+
   // One resolver for request and loadingFinished: fetch the body while none is
   // held, and settle on the explicit marker (never null) when nothing is found.
   const resolveBody = async (
@@ -369,11 +387,15 @@ export function wireSignalCapture(
     if (!isBodyCapable(entry.method, hasPostData)) return;
     if (entry.requestPostData && entry.requestPostData !== REQUEST_BODY_UNAVAILABLE) return;
     try {
-      const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
-        requestId,
-      });
+      const res = await page.sendCDP<{ postData?: string; base64Encoded?: boolean }>(
+        "Network.getRequestPostData",
+        { requestId }
+      );
       if (typeof res?.postData === "string" && res.postData.length > 0) {
-        entry.requestPostData = res.postData;
+        const text = res.base64Encoded
+          ? decodeBodyBytes(Buffer.from(res.postData, "base64"))
+          : res.postData;
+        if (text) entry.requestPostData = text;
       }
     } catch {
       // fall through to the explicit marker
@@ -383,7 +405,7 @@ export function wireSignalCapture(
 
   const onRequest = (params: RequestWillBeSentEvent): void => {
     const prior = inFlight.get(params.requestId);
-    const inline = params.request.postData;
+    const inline = params.request.postData || bodyFromEntries(params.request.postDataEntries);
     const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
     const mayHaveBody = isBodyCapable(params.request.method, params.request.hasPostData);
     const entry: InFlightRequest = {

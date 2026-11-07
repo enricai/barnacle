@@ -3681,6 +3681,16 @@ export function extractActionSequence(
     matchesFoldReturn,
     true
   );
+  // What each pool member SENDS, extracted lazily and once: only a candidate the
+  // path-token check below reads as isolated ever needs it.
+  const consumedCache = new Map<number, ReturnType<typeof captureConsumedValues>>();
+  const consumedValuesAt = (j: number): ReturnType<typeof captureConsumedValues> => {
+    const cached = consumedCache.get(j);
+    if (cached !== undefined) return cached;
+    const computed = captureConsumedValues(hostGated[j]!.capture);
+    consumedCache.set(j, computed);
+    return computed;
+  };
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
       ? hostGated.filter(({ capture, index }, i) => {
@@ -3768,7 +3778,18 @@ export function extractActionSequence(
             matchesDeclaredSubmitEndpoint(capture) ||
             matchesDeclaredSubmitBody(capture) ||
             feedsDeclaredTarget ||
-            !isStructurallyIsolatedCapture(path, otherPaths)
+            !isStructurallyIsolatedCapture(path, otherPaths) ||
+            // A write keyed by a value an EARLIER pool member's response minted
+            // (a created resource's id in its URL or body) is a genuine step of
+            // that chain. The minted id is data, yet its separators tokenize it
+            // as a compound path word (`ord_8f3a91`) that no sibling path shares,
+            // so path shape alone would read the update as isolated noise.
+            hostGated.some(
+              (producer, j) =>
+                j !== i &&
+                producer.index < index &&
+                producedValueIsConsumed(producedValuesAt(j), consumedValuesAt(i))
+            )
           );
         })
       : hostGated;
