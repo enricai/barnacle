@@ -66,11 +66,25 @@ async function requestContextPlugin(app: FastifyInstance): Promise<void> {
   // Client disconnected before the response finished. Emit a completed-
   // equivalent line carrying reqId so aborted requests stay correlatable.
   // INFO, never ERROR: a client hang-up is not a server fault.
-  app.addHook("onRequestAbort", async (request: FastifyRequest) => {
+  // Fastify only fires onRequestAbort when req.aborted is set, which Node skips
+  // once the body was fully read (e.g. POST /run). Also watch the raw close
+  // event and treat an unfinished response as an abort; log once per request.
+  const logAbort = (request: FastifyRequest): void => {
+    if (loggedAbort.has(request)) return;
+    loggedAbort.add(request);
     request.log.info(
       { reqId: request.id, aborted: true, method: request.method, url: request.url },
       "request aborted"
     );
+  };
+  const loggedAbort = new WeakSet<FastifyRequest>();
+  app.addHook("onRequestAbort", async (request: FastifyRequest) => {
+    logAbort(request);
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    request.raw.once("close", () => {
+      if (!reply.raw.writableFinished) logAbort(request);
+    });
   });
 
   app.addHook("onSend", async (request, reply) => {
