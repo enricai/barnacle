@@ -9947,6 +9947,7 @@ async function tryPromptSelectorPrimitive(params: {
         // covered select, not the anchor). Within a small shared field wrapper
         // that holds exactly one rendered combobox and unrendered openers, the
         // anchor inherits the openers' label.
+        if (labelOf0(a)) continue;
         let wrap = a.parentElement;
         for (let d = 0; d < 4 && wrap; d++, wrap = wrap.parentElement) {
           const hid = widgets.filter((o) => !rendered(o) && wrap.contains(o) && labelOf0(o));
@@ -10005,10 +10006,16 @@ async function tryPromptSelectorPrimitive(params: {
     const labelMatches = questionLabel
       ? candidates.filter((c) => c.label !== "" && widgetLabelMatches(c.label, questionLabel))
       : [];
+    // Several fuzzy matches ('Country' vs 'Country Code'): an exact
+    // (case/whitespace-insensitive) label equality breaks the tie when unique.
+    const exactNorm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+    const exactMatches = labelMatches.filter((c) => exactNorm(c.label) === exactNorm(questionLabel ?? ""));
     const chosen =
       labelMatches.length === 1
         ? labelMatches[0]
-        : !questionLabel && candidates.length === 1
+        : labelMatches.length > 1 && exactMatches.length === 1
+          ? exactMatches[0]
+          : !questionLabel && candidates.length === 1
           ? candidates[0]
           : null;
     if (!chosen) {
