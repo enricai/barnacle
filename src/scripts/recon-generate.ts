@@ -7376,6 +7376,29 @@ function emitItemLoopLines(
 }
 
 /**
+ * Leaves of a `application/x-www-form-urlencoded` body as `{value, path}`, the
+ * shape {@link walkAllPrimitiveLeaves} yields for JSON. A bracketed key
+ * (`order[contact][name]`, percent-encoded or not) splits into its path
+ * segments, so `path.at(-1)` is the field name either way. Returns `[]` for a
+ * body that is not plain `key=value` pairs (multipart, opaque text).
+ */
+function formEncodedBodyLeaves(raw: string): { value: string; path: string[] }[] {
+  const text = raw.trim();
+  if (text.length === 0 || /[\r\n{}]/.test(text) || !text.includes("=")) return [];
+  const leaves: { value: string; path: string[] }[] = [];
+  try {
+    for (const [name, value] of new URLSearchParams(text)) {
+      const path = name.split(/\[|\]\[|\]/).filter((segment) => segment.length > 0);
+      if (path.length === 0) continue;
+      leaves.push({ value, path });
+    }
+  } catch {
+    return [];
+  }
+  return leaves;
+}
+
+/**
  * Short identifier values (below {@link MIN_STATE_VALUE_LENGTH}, e.g. a
  * six-digit numeric record id) that an earlier response mints under an
  * identifier-named key and a LATER non-GET/HEAD request re-sends as a bare URL
@@ -7444,9 +7467,17 @@ function collectMutationIdentifierThreadedValues(
       try {
         parsed = JSON.parse(consumer.requestPostData);
       } catch {
-        continue;
+        // A form-encoded write re-sends the id the same way a JSON one does:
+        // flat (`orderId=514391`) or Rails-style bracketed (`order[id]=514391`).
+        // The key's last bracket segment is the field name, matching the JSON
+        // leaf's `path.at(-1)`.
+        parsed = undefined;
       }
-      for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
+      const leaves =
+        parsed !== undefined
+          ? walkAllPrimitiveLeaves(parsed)
+          : formEncodedBodyLeaves(consumer.requestPostData);
+      for (const { value, path } of leaves) {
         const targetKey = path.at(-1);
         if (value === null || !isIdentifierKey(targetKey)) continue;
         const text = String(value);
