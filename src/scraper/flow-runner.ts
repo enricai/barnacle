@@ -15434,6 +15434,9 @@ export async function executeStepWithHealing(params: {
       resolvedAction === null
         ? record.actResultSuccess === true
         : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
+    // A stalled solve is only this step's concern if the action could have
+    // started it; fill/select steps must still heal through the full cascade.
+    if (!mayTriggerRoundTrip) nativeSolveStalled = false;
     // Re-settle is not gated on submit shape: an unflagged step or a no-action
     // act can still advance a page whose body re-renders late. Credit stays
     // gated on stepIsMidFlowSubmit, so the final step keeps its strictness.
