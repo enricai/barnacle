@@ -6820,6 +6820,10 @@ interface HtmlProduce {
 
 type Produce = BodyProduce | HeaderProduce | HtmlProduce;
 
+/** Shortest response-minted string a later hop's request may be rewritten
+ * to read back; shorter values collide with unrelated text. */
+const MIN_MINTED_LITERAL_LENGTH = 6;
+
 interface ActionStep {
   /** The capture this step corresponds to. */
   capture: Capture;
@@ -15769,22 +15773,31 @@ function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipar
   // 2. Each extra drill resolved with every OTHER drill masked, then pinned
   // to its own endpoint step as chain terminal.
   extraDrillSpecs.forEach((extra, i) => {
-    const others = [primaryMatcher, ...extraMatchers.filter((_, j) => j !== i)];
-    const masked = maskExtraDrillActions(actions, [extraMatchers[i]!], others);
-    const extraPlans = resolveFoldPlan(masked, extra, primaryIdentityAnchor, []);
-    for (const extraPlan of extraPlans) {
-      const host = result.find(
-        (p) =>
-          p.primaryStepIndex === extraPlan.primaryStepIndex &&
-          JSON.stringify(p.primaryArrayPath) === JSON.stringify(extraPlan.primaryArrayPath)
-      );
-      const pinned = extraPlan.targets.flatMap((t) => {
-        const own = pinTargetToEndpointStep(actions, t, extra, extraMatchers[i]!);
-        return own === null ? [] : [own];
-      });
-      if (pinned.length === 0) continue;
-      if (host === undefined) result.push({ ...extraPlan, targets: pinned });
-      else host.targets.push(...pinned);
+    const otherExtras = extraMatchers.filter((_, j) => j !== i);
+    // First with every OTHER drill masked; a drill keyed by a value minted by
+    // the primary's own drill (a POST taking a package id an offers drill
+    // returned) only threads when that drill stays visible, so retry with
+    // only the other EXTRA drills masked.
+    for (const others of [[primaryMatcher, ...otherExtras], otherExtras]) {
+      const masked = maskExtraDrillActions(actions, [extraMatchers[i]!], others);
+      const extraPlans = resolveFoldPlan(masked, extra, primaryIdentityAnchor, []);
+      let added = false;
+      for (const extraPlan of extraPlans) {
+        const host = result.find(
+          (p) =>
+            p.primaryStepIndex === extraPlan.primaryStepIndex &&
+            JSON.stringify(p.primaryArrayPath) === JSON.stringify(extraPlan.primaryArrayPath)
+        );
+        const pinned = extraPlan.targets.flatMap((t) => {
+          const own = pinTargetToEndpointStep(actions, t, extra, extraMatchers[i]!);
+          return own === null ? [] : [own];
+        });
+        if (pinned.length === 0) continue;
+        added = true;
+        if (host === undefined) result.push({ ...extraPlan, targets: pinned });
+        else host.targets.push(...pinned);
+      }
+      if (added) break;
     }
   });
   const allSpecs = [...(primarySpec === null ? [] : [primarySpec]), ...extraDrillSpecs];
@@ -17572,6 +17585,8 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       // every descendant item's join/merge, mirroring
       // emitMultiStepExecuteHttp's identical hoist (see its own comment).
       const hoistedChainLines: string[] = [];
+      // Terminals already fetched and kept bound at item scope in this loop.
+      const itemScopedBoundSteps = new Set<number>();
       // Every target's join/merge — plus any non-hoistable target's own
       // chain fetch — goes here, spliced inside the item loop.
       const itemScopedLines: string[] = [];
@@ -17753,6 +17768,15 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           return withDrillParamBindings;
         };
         const chainLines: string[] = [];
+        // literal minted by an earlier hop's response -> its local name
+        const mintedLiterals = new Map<string, string>();
+        const threadMinted = (text: string): string => {
+          let out = text;
+          for (const [name, literal] of mintedLiterals) {
+            out = out.split(literal).join(`\${${name}}`);
+          }
+          return out;
+        };
         // True once any chain step's parameterized URL actually ends up
         // referencing `itemVar`, off the SAME `parameterizeUrl` call the
         // request literally interpolates — see emitMultiStepExecuteHttp's
@@ -17790,11 +17814,39 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // (e.g. it sets server-side state via a threaded header) has no
           // reader for its own response, so binding it to a local declares a
           // variable nothing references (Biome noUnusedVariables).
-          const bindsChainResponse = chainIndex === target.chainTerminalIndex;
+          // A value this hop's response minted (an id a later hop's request
+          // carries) is read off the response at runtime, never frozen.
+          const laterHops = target.chain
+            .slice(target.chain.indexOf(chainIndex) + 1)
+            .flatMap((j) => (actionSteps[j] ? [actionSteps[j]!.capture] : []));
+          const mintedProduces = chainStep.produces.flatMap((p) => {
+            if (p.kind === "header" || mintedLiterals.has(p.name)) return [];
+            const raw = readValueAtPath(chainStep.capture.responseBody, p.path);
+            const literal = typeof raw === "string" ? raw : null;
+            if (literal === null || literal.length < MIN_MINTED_LITERAL_LENGTH) return [];
+            const used = laterHops.some(
+              (c) => c.url.includes(literal) || (c.requestPostData ?? "").includes(literal)
+            );
+            return used ? [{ p, literal }] : [];
+          });
+          // An earlier target of this loop already fetched this hop at item
+          // scope and kept its response bound: read the minted value off it
+          // instead of issuing the same request a second time.
+          if (itemScopedBoundSteps.has(chainIndex) && chainIndex !== target.chainTerminalIndex) {
+            for (const { p, literal } of mintedProduces) {
+              mintedLiterals.set(p.name, literal);
+              chainLines.push(
+                `      const ${p.name} = (${chainStep.varName} as ${pathToAssertionType(p.path, p.leafType)})${pathToAccessor(p.path, { assertNonNull: false })};`
+              );
+            }
+            continue;
+          }
+          const bindsChainResponse =
+            chainIndex === target.chainTerminalIndex || mintedProduces.length > 0;
           chainLines.push(
             bindsChainResponse
-              ? `      const ${chainStep.varName} = (await httpClient(\`${url}\`, {`
-              : `      await httpClient(\`${url}\`, {`,
+              ? `      const ${chainStep.varName} = (await httpClient(\`${threadMinted(url)}\`, {`
+              : `      await httpClient(\`${threadMinted(url)}\`, {`,
             `        method: ${JSON.stringify(chainStep.capture.method)},`
           );
           // A captured POST/PUT/PATCH drill hop must carry its body and
@@ -17808,13 +17860,20 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             const ct = ctHeader?.[1] ?? "application/json";
             chainLines.push(
               `        headers: { "content-type": ${JSON.stringify(ct)} },`,
-              `        body: \`${parameterizeUrl(escapeForTemplateLiteral(hopBody), chainStep.capture)}\`,`
+              `        body: \`${threadMinted(parameterizeUrl(escapeForTemplateLiteral(hopBody), chainStep.capture))}\`,`
             );
           }
           chainLines.push(`        schema: ${schemaExpr},`);
           chainLines.push(
             bindsChainResponse ? `      })) as Record<string, unknown>;` : `      });`
           );
+          for (const { p, literal } of mintedProduces) {
+            const assertion = pathToAssertionType(p.path, p.leafType);
+            mintedLiterals.set(p.name, literal);
+            chainLines.push(
+              `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+            );
+          }
         }
         const terminalStep = actionSteps[target.chainTerminalIndex];
         if (!terminalStep) continue;
@@ -17841,6 +17900,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
         } else if (referencesItemVar) {
           itemScopedLines.push(...chainLines, ...matchLines);
+          itemScopedBoundSteps.add(target.chainTerminalIndex);
           if (chainLines.length > 0) hasItemScopedFetch = true;
           if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
         } else {
@@ -20364,7 +20424,10 @@ async function main(): Promise<void> {
       compiledActionSteps.length === 0 ||
       actionCaptures.every(
         (a) =>
-          readSiblings.includes(a.capture) ||
+          readSiblings.some(
+            (r) =>
+              r === a.capture || (r.url === a.capture.url && r.timestamp === a.capture.timestamp)
+          ) ||
           isRecurringReadFlowBeacon(a.capture) ||
           isDeclaredDrillCapture(a.capture)
       );
