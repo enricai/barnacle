@@ -3,37 +3,37 @@ import { detectDrillDownFoldPlan } from "@/scripts/recon-generate";
 import { buildStep, type MulticallFixtureStep } from "@/scripts/recon-generate-multicall-fixture";
 
 /**
- * A read-only GET search re-queried under a different facet, carnival-shaped.
+ * A read-only GET search re-queried under a different facet.
  *
  * Both captures hit the SAME endpoint; only the query differs. The search's own
- * results carry `shipCode` and `dur` values that the facet re-query then sends
- * as `shipcode`/`durdays`, which is what makes the structural detector pair
+ * results carry `brandCode` and `size` values that the facet re-query then
+ * sends as `brand`/`size`, which is what makes the structural detector pair
  * them as a per-item drill-down. The flow declares no `foldReturn`, so that
- * pairing is a phantom self-fold, and emitting it would freeze `numadults`/
- * `dest` — the facet variation the flow author deliberately recorded.
+ * pairing is a phantom self-fold, and emitting it would freeze `qty`/`region`
+ * — the facet variation the flow author deliberately recorded.
  */
 function buildFacetRequeriedSearchSteps(): MulticallFixtureStep[] {
   const search = (query: string, timestamp: string): MulticallFixtureStep =>
     buildStep(`r${timestamp.slice(-1)}`, {
-      url: `https://www.carnival.com/cruisesearch/api/search?${query}`,
+      url: `https://api.example.com/catalog/search?${query}`,
       requestPostData: null,
       method: "GET",
       timestamp,
       responseBody: {
         results: {
-          itineraries: [
-            { id: "I1", shipCode: "CB", departurePortCode: "MIA", dur: 7 },
-            { id: "I2", shipCode: "VI", departurePortCode: "PCN", dur: 5 },
+          items: [
+            { id: "I1", brandCode: "CB", originCode: "MIA", size: 7 },
+            { id: "I2", brandCode: "VI", originCode: "PCN", size: 5 },
           ],
         },
       },
     });
 
   return [
-    search("numadults=2&dest=C", "2026-11-02T12:00:01.000Z"),
+    search("qty=2&region=C", "2026-11-02T12:00:01.000Z"),
     // The facet re-query: same endpoint, threads "CB" and "7" from the first
-    // response's own items, and varies numadults/dest at the same time.
-    search("numadults=3&dest=A&shipcode=CB&durdays=7", "2026-11-02T12:00:02.000Z"),
+    // response's own items, and varies qty/region at the same time.
+    search("qty=3&region=A&brand=CB&size=7", "2026-11-02T12:00:02.000Z"),
   ];
 }
 
