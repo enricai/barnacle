@@ -449,7 +449,7 @@ describe("readMidFlowPostClickAdvance", () => {
     const PRE = "996:Skip to main content|Sign In|Careers Home|Back to Job Posting|Apply";
     const FLIP = "588:Skip to main content|Settings|user@example.test|Careers Home|Candidate Home|Apply";
     const BODY = "588:Skip to main content|Settings|user@example.test|Careers Home|Candidate Home|My Applications";
-    const t = makeIo([FLIP, FLIP, BODY]);
+    const t = makeIo([FLIP, BODY]);
     const start = snap(PRE, 0);
     const r = await read(snap(FLIP, 0), start, true, t.io);
     expect(r.pageAdvanced).toBe(true);
