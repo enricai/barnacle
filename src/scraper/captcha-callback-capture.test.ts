@@ -319,12 +319,12 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     });
   });
 
-  it("wraps render when hCaptcha's own api.js redefines window.hcaptcha via a getter, mirroring the recon's ICIMS_IFRAME probe", () => {
+  it("wraps render when hCaptcha's own api.js redefines window.hcaptcha via a getter, inside an iframe probe", () => {
     const sandbox = makeFakeWindow();
     runScript(sandbox);
 
     const originalRender = (_container: string, _config: Record<string, unknown>): string =>
-      "widget-icims";
+      "widget-example";
     (sandbox as Record<string, unknown>).__originalRender = originalRender;
     vm.runInContext(
       `Object.defineProperty(window, "hcaptcha", { configurable: true, get: () => ({ render: __originalRender }) });`,
@@ -342,13 +342,13 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     const callback = (): void => undefined;
     const widgetId = hcaptcha.render("h-captcha", { sitekey: "site-i", callback });
 
-    expect(widgetId).toBe("widget-icims");
+    expect(widgetId).toBe("widget-example");
     const registry = (sandbox.window as Record<string, unknown>)[
       HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
     ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
-    expect(registry["site-i::widget-icims"]).toEqual({
+    expect(registry["site-i::widget-example"]).toEqual({
       sitekey: "site-i",
-      widgetId: "widget-icims",
+      widgetId: "widget-example",
       callback,
     });
   });

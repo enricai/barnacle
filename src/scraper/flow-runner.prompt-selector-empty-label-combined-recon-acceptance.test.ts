@@ -49,7 +49,7 @@ const CONSENT_FORM_HTML = `
           aria-owns="consent-panel" aria-activedescendant=""
           aria-labelledby="consent-label" tabindex="0"><span></span></span>
     <select id="consent-hidden" name="rcf-consent"
-            class="iCIMS_Forms_RequiredField form-control dropdown-hide" aria-required="true">
+            class="Forms_RequiredField form-control dropdown-hide" aria-required="true">
       <option value="">Select</option>
       <option value="">Yes</option>
       <option value="">No</option>
@@ -64,7 +64,7 @@ const CONSENT_FORM_HTML = `
           aria-owns="preference-panel" aria-activedescendant=""
           aria-labelledby="preference-label" tabindex="0"><span></span></span>
     <select id="preference-hidden" name="rcf-preference"
-            class="iCIMS_Forms_RequiredField form-control dropdown-hide" aria-required="true">
+            class="Forms_RequiredField form-control dropdown-hide" aria-required="true">
       <option value="">Select</option>
       <option value="">Email</option>
       <option value="">Phone</option>

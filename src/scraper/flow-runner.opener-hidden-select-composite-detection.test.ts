@@ -94,7 +94,7 @@ function buildOpenerHiddenSelectWidget(params: {
             aria-activedescendant=""
             tabindex="0"><span></span></span>
       <select id="rcf${fieldId}" name="rcf${fieldId}"
-              class="iCIMS_Forms_RequiredField form-control dropdown-hide" aria-required="true">
+              class="Forms_RequiredField form-control dropdown-hide" aria-required="true">
         <option value="">Select</option>
         ${optionsHtml}
       </select>

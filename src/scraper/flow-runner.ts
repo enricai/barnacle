@@ -114,6 +114,7 @@ import {
   readCurrentFrameUrl,
   resolveFrameTarget,
   sleep,
+  toFrameRelativeXpath,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import {
@@ -177,6 +178,7 @@ import type { Logger } from "@/types/logging";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 
 export { waitForSpaReady } from "@/scraper/spa-readiness";
+export { toFrameRelativeXpath };
 
 const logger = getLogger({ name: "scraper/flow-runner" });
 
@@ -1084,6 +1086,7 @@ const PROMPT_RENDERED_EXPR = `((el) => {
     const cs = getComputedStyle(n);
     if (cs.display === "none") return false;
     if (n === el && (cs.visibility === "hidden" || cs.visibility === "collapse")) return false;
+    if (n === el && cs.width === "0px" && cs.height === "0px") return false;
     const own = (n.style && n.style.visibility) || "";
     if (visibility === "" && own !== "" && own !== "inherit") visibility = own;
   }
@@ -4857,27 +4860,6 @@ const STATE_CLASS_METHODS = new Set([
 function xpathBody(selector: string, target?: FrameTarget): string | null {
   const body = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
   return body === null ? null : toFrameRelativeXpath(body, target);
-}
-
-/**
- * Stagehand resolves xpaths in the TOP-document coordinate system, so an
- * element inside an iframe looks like
- * `/html[1]/body[1]/main[1]/iframe[1]/html[1]/body[1]/div[2]/a[1]`
- * (e.g. an iframe on an example.com page). `FrameTarget.evaluate` and the
- * baseline map ({@link SELECTION_STATE_MAP_EXPR}) run inside the frame's own
- * document, where that path is `/html[1]/body[1]/div[2]/a[1]`. This strips
- * the prefix up to the last `/iframe[n]` hop so lookup keys and in-frame
- * `document.evaluate` agree. Main-document targets (no resolved frame and no
- * frame selector) and xpaths with no iframe hop are returned unchanged.
- */
-export function toFrameRelativeXpath(xpath: string, target?: FrameTarget): string {
-  if (!target || (!target.frame && !target.frameSelector)) return xpath;
-  const re = /\/i?frame(?:\[\d+\])?(\/html(?:\[\d+\])?(?:\/|$))/gi;
-  const hops = Array.from(xpath.matchAll(re));
-  const last = hops[hops.length - 1];
-  return last === undefined
-    ? xpath
-    : xpath.slice(last.index + last[0].length - (last[1] ?? "").length);
 }
 
 /**
@@ -9890,7 +9872,9 @@ async function tryPromptSelectorPrimitive(params: {
     const widgets = resolved.filter((w) => !resolved.some((o) => o !== w && o.contains(w)));
     if (widgets.length === 0) return { widgetPresent: false };
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
+    const labelOverride = new Map();
     const widgetLabel = (w) => {
+      if (labelOverride.has(w)) return labelOverride.get(w);
       // Standard first: aria-labelledby, aria-label, then a <label for=id>
       // referencing the widget or a control inside it, then a labelled group
       // ancestor (role=group[aria-labelledby] / fieldset<legend>), then the
@@ -9953,11 +9937,38 @@ async function tryPromptSelectorPrimitive(params: {
     // outside the trigger union; adopt it when an unrendered union opener shares
     // its label (the layered shape), so the rendered control becomes the widget.
     const allWidgets = widgets.slice();
+    const labelOf0 = (o) => norm(widgetLabel(o)) !== "";
+    // Explicit labelling only (not the ancestor-text last resort widgetLabel
+    // falls back to, which is non-empty for every element).
+    const hasOwnLabel = (w) => {
+      if (w.getAttribute("aria-labelledby")) return true;
+      const al = w.getAttribute("aria-label");
+      if (al && !emptyRx.test(al.replace(/\\s*required\\s*$/i, ""))) return true;
+      const ids = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
+      return ids.some((id) => {
+        const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
+        return !!(lab && lab.textContent.trim());
+      });
+    };
     const hiddenLabels = new Set(widgets.filter((w) => !rendered(w)).map((w) => norm(widgetLabel(w))).filter(Boolean));
     if (hiddenLabels.size > 0) {
       for (const a of document.querySelectorAll("[role='combobox']")) {
         if (allWidgets.includes(a) || !rendered(a) || allWidgets.some((o) => o.contains(a) || a.contains(o))) continue;
-        if (hiddenLabels.has(norm(widgetLabel(a)))) allWidgets.push(a);
+        if (hiddenLabels.has(norm(widgetLabel(a)))) { allWidgets.push(a); continue; }
+        // The anchor itself may be unlabeled (its <label for> names the paired
+        // covered select, not the anchor). Within a small shared field wrapper
+        // that holds exactly one rendered combobox and unrendered openers, the
+        // anchor inherits the openers' label.
+        if (hasOwnLabel(a)) continue;
+        let wrap = a.parentElement;
+        for (let d = 0; d < 4 && wrap; d++, wrap = wrap.parentElement) {
+          const hid = widgets.filter((o) => !rendered(o) && wrap.contains(o) && labelOf0(o));
+          if (hid.length === 0) continue;
+          const combos = Array.from(wrap.querySelectorAll("[role='combobox']")).filter((c) => rendered(c));
+          const labs = new Set(hid.map((o) => norm(widgetLabel(o))));
+          if (combos.length === 1 && labs.size === 1) { labelOverride.set(a, widgetLabel(hid[0])); allWidgets.push(a); }
+          break;
+        }
       }
     }
     widgets.length = 0;
@@ -10007,12 +10018,20 @@ async function tryPromptSelectorPrimitive(params: {
     const labelMatches = questionLabel
       ? candidates.filter((c) => c.label !== "" && widgetLabelMatches(c.label, questionLabel))
       : [];
+    // Several fuzzy matches ('Country' vs 'Country Code'): an exact
+    // (case/whitespace-insensitive) label equality breaks the tie when unique.
+    const exactNorm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+    const exactMatches = labelMatches.filter(
+      (c) => exactNorm(c.label) === exactNorm(questionLabel ?? "")
+    );
     const chosen =
       labelMatches.length === 1
         ? labelMatches[0]
-        : !questionLabel && candidates.length === 1
-          ? candidates[0]
-          : null;
+        : labelMatches.length > 1 && exactMatches.length === 1
+          ? exactMatches[0]
+          : !questionLabel && candidates.length === 1
+            ? candidates[0]
+            : null;
     if (!chosen) {
       logger.info(
         `prompt-selector primitive: no unambiguous widget match for ${optLabel}; falling through to cascade`
@@ -10043,6 +10062,21 @@ async function tryPromptSelectorPrimitive(params: {
       let scope = scopeOf(w);
       // A rendered anchor without its own popup link borrows its collapsed
       // layered openers' link (the visible widget's own list).
+      // A rendered anchor with no popup link of its own but whose own field
+      // wrapper holds the real option list (and no other widget) owns that list;
+      // prefer it over a hidden opener's aria-owns/aria-controls panel, which may
+      // be an empty shell.
+      if (scope === document && mates.length > 0) {
+        // Smallest ancestor holding the anchor and every collapsed opener: the
+        // field's own wrapper. Never climb past it into the surrounding form.
+        let wrap = w.parentElement;
+        while (wrap && wrap !== document.body && !mates.every((m) => wrap.contains(m))) wrap = wrap.parentElement;
+        if (wrap && wrap !== document.body && wrap.querySelector(optionSel)) {
+          const others = Array.from(wrap.querySelectorAll(triggerSel + ",[role='combobox']"))
+            .filter((o) => o !== w && !w.contains(o) && !o.contains(w) && !mates.some((m) => m === o || m.contains(o) || o.contains(m)));
+          if (others.length === 0) scope = wrap;
+        }
+      }
       if (scope === document) for (const m of mates) { const sc = scopeOf(m); if (sc !== document) { scope = sc; break; } }
       // Under the document fallback, ownership is structural: content is foreign
       // when, climbing from it WITHOUT passing through this widget, some ancestor

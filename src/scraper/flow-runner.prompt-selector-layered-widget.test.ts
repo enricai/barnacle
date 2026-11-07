@@ -148,3 +148,55 @@ describe("flow-runner layered custom-select widget (real DOM)", () => {
     }
   });
 });
+
+describe("flow-runner layered widget: hidden opener aria-owns an empty panel", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const LAYERED = `
+<form>
+  <div id="field-wrap">
+    <label for="cc-select">Country Code</label>
+    <div id="cc-opener" aria-haspopup="listbox" aria-owns="cc-empty-panel" aria-label="Country Code" style="width:0;height:0;overflow:hidden">Select</div>
+    <select id="cc-select" aria-label="Country Code" style="display:none"><option value=""></option></select>
+    <div id="cc-wrapper">
+      <div id="cc-anchor" role="combobox" tabindex="0">Select</div>
+      <div role="listbox"><div role="option">Norway</div><div role="option">Sweden</div></div>
+    </div>
+  </div>
+  <div id="cc-empty-panel" role="listbox"><div role="option"></div></div>
+</form>`;
+
+  async function run(step: string) {
+    const h = buildPromptWidgetHarness({
+      html: LAYERED,
+      popupByWidgetId: { "cc-anchor": { options: ["Norway", "Sweden"] } },
+    });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step,
+    };
+    const r = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).catch(() => "failed");
+    return { h, r };
+  }
+
+  it("clicks the rendered control and never the hidden opener or its empty panel", async () => {
+    const { h } = await run("for 'Country Code' select 'Norway'");
+    // Options come from the visible widget's own list: a click lands (on an
+    // option or the rendered anchor), never on the opener or its empty panel.
+    expect(h.clicks.length).toBeGreaterThan(0);
+    expect(h.clicks.some((c) => c.includes("cc-opener"))).toBe(false);
+    expect(h.clicks.some((c) => c.includes("cc-empty-panel"))).toBe(false);
+  });
+
+  it("resolves the paired select's label and does not enumerate duplicate widgets", async () => {
+    const { h } = await run("for 'Country Code' select 'Sweden'");
+    const widgetClicks = new Set(h.clicks.filter((c) => c.includes("data-bcl-prompt-idx")));
+    expect(widgetClicks.size).toBeLessThanOrEqual(1);
+    expect(h.clicks.some((c) => c.includes("cc-select"))).toBe(false);
+  });
+});

@@ -36,7 +36,7 @@ const STATE_FIELD_HTML = `
           aria-owns="state-panel" aria-activedescendant=""
           aria-labelledby="state-label" tabindex="0"><span></span></span>
     <select id="state-hidden" name="rcf-state"
-            class="iCIMS_Forms_RequiredField form-control dropdown-hide" aria-required="true">
+            class="Forms_RequiredField form-control dropdown-hide" aria-required="true">
       <option value="">Select</option>
       <option value="alabama">Alabama</option>
       <option value="alaska">Alaska</option>
