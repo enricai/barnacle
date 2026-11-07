@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { emitMultiStepExecuteHttp, partitionBaseHeaders } from "@/scripts/recon-generate";
+import {
+  deriveProducerBoundaryBindings,
+  emitMultiStepExecuteHttp,
+  extractEntryUrlParams,
+  partitionBaseHeaders,
+} from "@/scripts/recon-generate";
 
 const ORIGIN = "https://shop.example.com";
 const DEEP_PAGE = `${ORIGIN}/cart/items/checkout`;
@@ -219,5 +224,23 @@ describe.each([
     );
     expect(body).not.toContain(encodeURIComponent(origin));
     expect(body).toContain("$" + "{encodeURIComponent(context.baseUrl)}");
+  });
+});
+
+describe("key-minting helpers skip origin-bearing values", () => {
+  it("extractEntryUrlParams mints no key for an origin-bearing query value", () => {
+    const url = `${ORIGIN}/start?returnUrl=${encodeURIComponent(`${DEEP_PAGE}?step=2`)}&jobRef=job-reference-1234`;
+    const params = extractEntryUrlParams(url, ORIGIN);
+    expect([...params.values()]).toEqual(["payload.jobRef"]);
+  });
+
+  it("deriveProducerBoundaryBindings mints no field for an origin-bearing produced value", () => {
+    const first = step(0, "POST", `${ORIGIN}/api/cart`, { next: `${DEEP_PAGE}?step=2` });
+    first.capture.responseBody = { next: `${DEEP_PAGE}?step=2`, cartId: "cart-identifier-12345" } as never;
+    (first as { produces: unknown }).produces = [
+      { kind: "body", name: "next", path: ["next"], leafType: "string" },
+    ];
+    expect(deriveProducerBoundaryBindings([first] as never, new Map(), ORIGIN).size).toBe(0);
+    expect(deriveProducerBoundaryBindings([first] as never, new Map()).size).toBe(1);
   });
 });

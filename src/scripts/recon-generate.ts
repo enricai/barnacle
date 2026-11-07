@@ -1952,7 +1952,7 @@ function firstCaptureOrigin(captures: Capture[]): string {
  * param knowledge. Downstream, `interpolateStateValues`' length-descending pass
  * composes embedded substrings (a jobId inside a longer jobSeqNo) automatically.
  */
-export function extractEntryUrlParams(entryUrl: string): Map<string, string> {
+export function extractEntryUrlParams(entryUrl: string, baseUrl = ""): Map<string, string> {
   const params = new Map<string, string>();
   let u: URL;
   try {
@@ -1964,6 +1964,7 @@ export function extractEntryUrlParams(entryUrl: string): Map<string, string> {
     if (value.length < MIN_STATE_VALUE_LENGTH) continue;
     if (CACHE_BUSTER_QUERY_KEYS.has(key)) continue;
     if (!isValidJsIdentifier(key)) continue;
+    if (embedsOrigin(value, baseUrl)) continue;
     if (!params.has(value)) params.set(value, `payload.${key}`);
   }
   return params;
@@ -8243,7 +8244,8 @@ interface ProducerBoundaryBinding {
  */
 export function deriveProducerBoundaryBindings(
   actions: ActionStep[],
-  alreadyBound: ReadonlyMap<string, string>
+  alreadyBound: ReadonlyMap<string, string>,
+  baseUrl = ""
 ): Map<string, ProducerBoundaryBinding> {
   const bindings = new Map<string, ProducerBoundaryBinding>();
   for (let i = 0; i < actions.length; i++) {
@@ -8253,6 +8255,7 @@ export function deriveProducerBoundaryBindings(
       if (p.kind !== "body") continue;
       const value = resolveResponsePathValue(step.capture.responseBody, p.path);
       if (value === null || value.length < MIN_STATE_VALUE_LENGTH) continue;
+      if (embedsOrigin(value, baseUrl)) continue;
       if (bindings.has(value)) continue;
       // A UUID re-sent across steps is never a stable caller coordinate — it's a
       // per-call volatile id or the threaded transaction id (which the server may
@@ -10166,7 +10169,8 @@ export function emitMultiStepExecuteHttp(
   // var would otherwise fragment. `bindsWithoutCollision`-guarded like personas.
   const producerBoundaryBindings = deriveProducerBoundaryBindings(
     actions,
-    new Map(payloadAccessorByValue)
+    new Map(payloadAccessorByValue),
+    baseUrl
   );
   for (const [value, { accessor, field }] of producerBoundaryBindings) {
     // Always declare: the whole-value pass binds this value's own JSON slot on
@@ -20449,7 +20453,7 @@ async function main(): Promise<void> {
     // consumer vocabulary, job coordinates from the entry URL's own query keys.
     warnUnmatchedFillSteps(flowSteps, vocabulary, (msg) => logger.warn(msg));
     const personaBindings = harvestPersonaBindings(flowSteps, vocabulary, process.env);
-    const entryUrlParams = extractEntryUrlParams(activeCaptures[0]?.url ?? "");
+    const entryUrlParams = extractEntryUrlParams(activeCaptures[0]?.url ?? "", baseUrl);
     // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
     // action sequence at the position observed during recon, so the existing
     // state-threading machinery can produce its FormHistoryId / section UUIDs /
