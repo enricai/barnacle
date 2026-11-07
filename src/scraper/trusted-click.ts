@@ -9,7 +9,7 @@
  */
 
 import { getLogger } from "@/lib/logging";
-import type { FrameTarget } from "@/scraper/frame-target";
+import { type FrameTarget, toFrameRelativeXpath } from "@/scraper/frame-target";
 import { shadowXpathLookupExpr } from "@/scraper/shadow-xpath";
 
 const logger = getLogger({ name: "scraper/trusted-click" });
@@ -196,7 +196,7 @@ export async function probeClickPoint(
   target: FrameTarget,
   sel: string
 ): Promise<CentredHitTestResult | null> {
-  const expression = buildSelectorExpression(sel);
+  const expression = buildSelectorExpression(target, sel);
   return await target.evaluate<CentredHitTestResult>(expression).catch(() => null);
 }
 
@@ -234,11 +234,15 @@ export async function clickAfterCentredHitTest(
  * Builds the in-frame expression resolving `selector` (css, or `xpath=` /
  * bare xpath beginning with `/` or `(`) and applying the centring function.
  */
-function buildSelectorExpression(selector: string, expectText?: string): string {
+function buildSelectorExpression(
+  target: FrameTarget,
+  selector: string,
+  expectText?: string
+): string {
   const stripped = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : selector;
   const isXpath = stripped.startsWith("/") || stripped.startsWith("(");
   const lookup = isXpath
-    ? shadowXpathLookupExpr(stripped)
+    ? shadowXpathLookupExpr(toFrameRelativeXpath(stripped, target))
     : `document.querySelector(${JSON.stringify(selector)})`;
   return `(() => {
     const el = ${lookup};
@@ -266,7 +270,7 @@ export async function clickCentredTrusted(
   selector: string,
   opts: CentredTrustedClickOptions = {}
 ): Promise<void> {
-  const expression = buildSelectorExpression(selector, opts.expectText);
+  const expression = buildSelectorExpression(target, selector, opts.expectText);
   await clickAfterCentredHitTest(
     firstMatchClickable(target.locator(selector)),
     () => target.evaluate<CentredHitTestResult>(expression),
@@ -283,7 +287,7 @@ export async function centreSelectorForClick(
   selector: string,
   opts: CentredTrustedClickOptions = {}
 ): Promise<void> {
-  const expression = buildSelectorExpression(selector, opts.expectText);
+  const expression = buildSelectorExpression(target, selector, opts.expectText);
   await centreAndHitTest(() => target.evaluate<CentredHitTestResult>(expression), {
     label: selector,
     ...opts,
