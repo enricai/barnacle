@@ -73,7 +73,8 @@ describe("recon-generate main() in-process: origin-bearing entry param", () => {
       "ts",
       "--force",
     ];
-    await import("@/scripts/recon-generate");
+    // Variable specifier: recon-generate.ts is outside the tsc project, so a literal path fails TS2307.
+    await import(/* @vite-ignore */ SCRIPT);
     const contractPath = join(siteOutDir, "contract.ts");
     await vi.waitFor(() => expect(existsSync(contractPath)).toBe(true), { timeout: 20000 });
     await new Promise((r) => setTimeout(r, 500));
