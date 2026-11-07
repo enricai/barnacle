@@ -428,3 +428,28 @@ describe("error handler — caller disconnect through a real route", () => {
     expect(lines.some((l) => l.level === 50)).toBe(false);
   });
 });
+
+describe("error handler — premature close with statusCode through a real route", () => {
+  it("warns with reqId and never logs ERROR when the error carries a 4xx statusCode", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const stream = { write: (l: string) => lines.push(JSON.parse(l)) };
+    const app = Fastify({
+      logger: { level: "info", stream },
+      genReqId: () => "req-4xx",
+    });
+    await app.register(errorHandlerPlugin);
+    app.get("/d", async () => {
+      throw Object.assign(new Error("Premature close"), {
+        code: "ERR_STREAM_PREMATURE_CLOSE",
+        statusCode: 400,
+      });
+    });
+    await app.inject({ method: "GET", url: "/d" });
+    await app.close();
+    const warn = lines.find((l) => l.level === 40);
+    expect(warn?.reqId).toBe("req-4xx");
+    expect(warn?.code).toBe("ERR_STREAM_PREMATURE_CLOSE");
+    expect(String(warn?.msg)).toContain("run outcome unaffected");
+    expect(lines.some((l) => l.level === 50)).toBe(false);
+  });
+});
