@@ -67,8 +67,12 @@ async function requestContextPlugin(app: FastifyInstance): Promise<void> {
   // equivalent line carrying reqId so aborted requests stay correlatable.
   // INFO, never ERROR: a client hang-up is not a server fault.
   // Fastify only fires onRequestAbort when req.aborted is set, which Node skips
-  // once the body was fully read (e.g. POST /run). Also watch the raw close
-  // event and treat an unfinished response as an abort; log once per request.
+  // once the body was fully read (e.g. POST /run). Watch the response close,
+  // not the request close: the request emits close as soon as a fully-read
+  // body is consumed, long before the reply. writableEnded (Fastify's own
+  // reply.sent signal) rather than writableFinished, because inject's null
+  // socket flushes asynchronously and would read every reply as unfinished.
+  // Log once per request.
   const logAbort = (request: FastifyRequest): void => {
     if (loggedAbort.has(request)) return;
     loggedAbort.add(request);
@@ -82,8 +86,8 @@ async function requestContextPlugin(app: FastifyInstance): Promise<void> {
     logAbort(request);
   });
   app.addHook("onRequest", async (request, reply) => {
-    request.raw.once("close", () => {
-      if (!reply.raw.writableFinished) logAbort(request);
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableEnded) logAbort(request);
     });
   });
 

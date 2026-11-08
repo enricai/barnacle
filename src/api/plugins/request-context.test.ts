@@ -219,4 +219,71 @@ describe("api/plugins/request-context", () => {
     expect(aborted[0]?.reqId).toBe("abort-me-1");
     expect(aborted[0]?.level).toBeLessThan(50);
   });
+
+  it("logs no abort for a completed POST with a body over a real socket; exactly one when destroyed mid-flight", async () => {
+    // app.inject has no socket, so it cannot see that IncomingMessage emits
+    // "close" as soon as a fully-read body is consumed — long before the reply.
+    const lines: Array<Record<string, unknown>> = [];
+    const app = Fastify({
+      logger: {
+        level: "info",
+        stream: { write: (m: string) => lines.push(JSON.parse(m)) },
+      },
+    });
+    await app.register(requestContextPlugin);
+    // Destroy only once the handler is running: a fixed delay can race routing
+    // on a slow runner, and a request killed before onRequest is never watched.
+    const entryWaiters: Array<() => void> = [];
+    const nextEntry = (): Promise<void> => new Promise((r) => entryWaiters.push(r));
+    app.post("/work", async () => {
+      entryWaiters.shift()?.();
+      await new Promise((r) => setTimeout(r, 100));
+      return { ok: true };
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const port = (app.server.address() as AddressInfo).port;
+    const body = JSON.stringify({ hello: "world" });
+    const post = (requestId: string): http.ClientRequest =>
+      http.request({
+        host: "127.0.0.1",
+        port,
+        path: "/work",
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+          "x-request-id": requestId,
+        },
+      });
+
+    try {
+      const status = await new Promise<number | undefined>((resolve, reject) => {
+        const req = post("complete-1");
+        req.on("error", reject);
+        req.on("response", (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode));
+        });
+        req.end(body);
+      });
+      expect(status).toBe(200);
+      expect(lines.filter((l) => l.aborted === true)).toHaveLength(0);
+
+      const entered = nextEntry();
+      const req = post("abort-me-2");
+      req.on("error", () => {});
+      req.end(body);
+      await entered;
+      const closed = new Promise<void>((r) => req.on("close", () => r()));
+      req.destroy();
+      await closed;
+      await new Promise((r) => setTimeout(r, 150));
+    } finally {
+      await app.close();
+    }
+
+    const aborted = lines.filter((l) => l.aborted === true);
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0]?.reqId).toBe("abort-me-2");
+  });
 });
