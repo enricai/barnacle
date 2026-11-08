@@ -9886,7 +9886,7 @@ async function tryPromptSelectorPrimitive(params: {
       if (!al) return "";
       const bare = al.replace(/\\s*required\\s*$/i, "");
       if (emptyRx.test(bare)) return "";
-      return al.replace(/\\s+/g, " ").trim().replace(trailingEmptyRx, "").trim() || "";
+      return bare.replace(/\\s+/g, " ").trim().replace(trailingEmptyRx, "").trim() || "";
     };
     const triggers = Array.from(document.querySelectorAll(triggerSel));
     if (triggers.length === 0) return { widgetPresent: false };
