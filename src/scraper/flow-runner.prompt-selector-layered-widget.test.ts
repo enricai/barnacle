@@ -200,3 +200,46 @@ describe("flow-runner layered widget: hidden opener aria-owns an empty panel", (
     expect(h.clicks.some((c) => c.includes("cc-select"))).toBe(false);
   });
 });
+
+describe("flow-runner layered widget: placeholder-labelled anchor, 0x0 opener, covered rendered select", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SHAPE = `
+<form>
+  <div id="field-wrap">
+    <label for="cc-select">Country Code</label>
+    <div id="cc-opener" aria-haspopup="listbox" aria-owns="cc-empty-panel" aria-label="Country Code" style="width:0;height:0;overflow:hidden">Select</div>
+    <select id="cc-select" role="combobox" aria-controls="cc-empty-panel"><option value=""></option></select>
+    <div id="cc-wrapper">
+      <a id="cc-anchor" role="combobox" tabindex="0" aria-label="Select an option">Select</a>
+      <div role="listbox"><div role="option">Norway</div><div role="option">Sweden</div></div>
+    </div>
+  </div>
+  <div id="cc-empty-panel" role="listbox"><div role="option"></div></div>
+</form>`;
+
+  it("enumerates one widget, clicks the anchor, and never clicks the opener or select", async () => {
+    const h = buildPromptWidgetHarness({
+      html: SHAPE,
+      popupByWidgetId: { "cc-anchor": { options: ["Norway", "Sweden"] } },
+    });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step: "for 'Country Code' select 'Sweden'",
+    };
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).catch(() => "failed");
+    void result;
+    // The anchor's wrapper holds the real list: its option is clicked (the
+    // wrapper list is already rendered), never the opener, select or empty panel.
+    expect(h.clicks.some((c) => c.includes("data-bcl-prompt-opt-idx"))).toBe(true);
+    expect(h.clicks.some((c) => c.includes("cc-opener"))).toBe(false);
+    expect(h.clicks.some((c) => c.includes("cc-select"))).toBe(false);
+    expect(h.clicks.some((c) => c.includes("cc-empty-panel"))).toBe(false);
+    expect(h.window.document.querySelectorAll("[data-bcl-prompt-idx]").length).toBeLessThanOrEqual(1);
+  });
+});

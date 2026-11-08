@@ -9996,14 +9996,36 @@ async function tryPromptSelectorPrimitive(params: {
         }
       }
     }
+    // A rendered native select (a covered form control) sharing a field wrapper
+    // with a rendered combobox anchor that is not itself a widget (its own
+    // aria-label is only a placeholder) is the SAME field as that anchor: the
+    // anchor is the rendered trigger and inherits the select's label.
+    const coveredSelects = new Map();
+    for (const sel of widgets) {
+      if (sel.tagName !== "SELECT" || !rendered(sel) || allWidgets.some((o) => o !== sel && o.contains(sel))) continue;
+      let wrap = sel.parentElement;
+      for (let d = 0; d < 4 && wrap; d++, wrap = wrap.parentElement) {
+        const combos = Array.from(wrap.querySelectorAll("[role='combobox']")).filter((c) => c !== sel && !c.matches("select") && rendered(c));
+        if (combos.length === 0) continue;
+        const a = combos[0];
+        if (combos.length === 1 && !allWidgets.includes(a) && !a.contains(sel) && !sel.contains(a)) {
+          labelOverride.set(a, widgetLabel(sel));
+          allWidgets.push(a);
+          coveredSelects.set(sel, a);
+        }
+        break;
+      }
+    }
     widgets.length = 0;
     widgets.push(...allWidgets);
     const labelOf = new Map(widgets.map((w) => [w, norm(widgetLabel(w))]));
     const collapsed = new Map();
     for (const w of widgets) {
       const l = labelOf.get(w);
-      if (!l || rendered(w)) continue;
-      const vis = widgets.filter((o) => labelOf.get(o) === l && rendered(o));
+      if (!l) continue;
+      if (coveredSelects.has(w)) { collapsed.set(w, coveredSelects.get(w)); continue; }
+      if (rendered(w)) continue;
+      const vis = widgets.filter((o) => labelOf.get(o) === l && rendered(o) && !coveredSelects.has(o));
       if (vis.length === 1) collapsed.set(w, vis[0]);
     }
     const candidates = [];
