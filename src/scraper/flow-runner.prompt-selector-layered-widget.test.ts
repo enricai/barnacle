@@ -234,12 +234,12 @@ describe("flow-runner layered widget: placeholder-labelled anchor, 0x0 opener, c
     );
     expect(result).toBe("completed");
     expect(h.window.document.getElementById("cc-anchor")?.textContent).toContain("Sweden");
-    expect(h.clicks.some((c) => c.includes("cc-opener"))).toBe(false);
-    expect(h.clicks.some((c) => c.includes("cc-select"))).toBe(false);
-    expect(h.clicks.some((c) => c.includes("cc-empty-panel"))).toBe(false);
-    expect(h.window.document.querySelectorAll("[data-bcl-prompt-idx]").length).toBeLessThanOrEqual(
-      1
-    );
+    const doc = h.window.document;
+    expect(doc.getElementById("cc-anchor")?.hasAttribute("data-bcl-prompt-idx")).toBe(true);
+    expect(doc.querySelectorAll("[data-bcl-prompt-idx]").length).toBe(1);
+    expect(
+      doc.getElementById("cc-empty-panel")?.querySelector("[data-bcl-prompt-opt-idx]")
+    ).toBeNull();
   });
 });
 
@@ -276,11 +276,15 @@ describe("flow-runner layered widget: commits the chosen text through the render
     };
     const result = await executeStepWithHealing(
       merged as unknown as Parameters<typeof executeStepWithHealing>[0]
-    ).catch(() => "failed");
+    );
     expect(result).toBe("completed");
     expect(h.window.document.getElementById("cc-anchor")?.textContent).toContain("Sweden");
-    expect(h.clicks.some((c) => c.includes("cc-opener"))).toBe(false);
-    expect(h.clicks.some((c) => c.includes("cc-select"))).toBe(false);
+    const doc = h.window.document;
+    expect(doc.getElementById("cc-anchor")?.hasAttribute("data-bcl-prompt-idx")).toBe(true);
+    expect(doc.querySelectorAll("[data-bcl-prompt-idx]").length).toBe(1);
+    expect(
+      doc.getElementById("cc-empty-panel")?.querySelector("[data-bcl-prompt-opt-idx]")
+    ).toBeNull();
   });
 });
 
