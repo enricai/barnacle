@@ -114,6 +114,7 @@ import {
   readCurrentFrameUrl,
   resolveFrameTarget,
   sleep,
+  toFrameRelativeSelector,
   toFrameRelativeXpath,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
@@ -716,7 +717,10 @@ const PROMPT_INTERACTIVE_CONTROL_SELECTORS = "button,[role='combobox'],[role='bu
  * logic (the site-agnostic guard trips on the latter, allows this curated list).
  *
  * Members: ARIA combobox / listbox-owning triggers (`role=combobox`,
- * `aria-haspopup=listbox`, `aria-controls`/`aria-owns`→listbox); and the
+ * `aria-haspopup=listbox`, `aria-controls`/`aria-owns`→listbox, or a bare
+ * `aria-expanded` — a combobox declaring an expansion state is a popup trigger
+ * even when it names no popup element, e.g. an anchor toggling a sibling
+ * list); and the
  * `data-uxi-widget-type` / `data-automation-id` prompt family emitted by the
  * Canvas/UXI widget kit some ATS front-ends build on (verified on a real
  * capture: the trigger is an `<input data-uxi-widget-type="selectinput"
@@ -727,6 +731,7 @@ const PROMPT_TRIGGER_SELECTORS = [
   "[role='combobox'][aria-haspopup='listbox']",
   "[role='combobox'][aria-controls]",
   "[role='combobox'][aria-owns]",
+  "[role='combobox'][aria-expanded]",
   "[aria-haspopup='listbox']",
   "[data-uxi-widget-type='selectinput']",
   "[data-uxi-widget-type='multiselect']",
@@ -11276,9 +11281,12 @@ export async function verifyDomEffect(
   action: Action,
   preSelectionState: Record<string, ElementSelectionFingerprint> = {}
 ): Promise<boolean> {
-  const selector = action.selector;
   const method = action.method;
-  if (!selector || !method) return false;
+  if (!action.selector || !method) return false;
+  // Stagehand resolves in the top-document coordinate system; every read and
+  // locator below runs inside the frame's own document. Re-anchor once here so
+  // the locator, the fill read-back, and each element-scoped reader agree.
+  const selector = toFrameRelativeSelector(action.selector, target);
   try {
     const locator = target.locator(selector).first();
     switch (method) {
@@ -12131,9 +12139,10 @@ async function deepLocatorCandidatesAsActions(
  * flow marked it optional. Fill/select/prompt-selector steps never qualify.
  */
 export function isConditionalClickStep(step: string): boolean {
-  const m = /^\s*if\b.*?\b(?:(?:is|are)\s+(?:visible|present|shown|displayed|showing|open)|appears?)\b[^,]*?(?:,\s*|\s+)(?:then\s+)?((?:click|tap|press|dismiss|close)\b.*)$/is.exec(
-    step
-  );
+  const m =
+    /^\s*if\b.*?\b(?:(?:is|are)\s+(?:visible|present|shown|displayed|showing|open)|appears?)\b[^,]*?(?:,\s*|\s+)(?:then\s+)?((?:click|tap|press|dismiss|close)\b.*)$/is.exec(
+      step
+    );
   if (!m) return false;
   if (parsePromptSelectorStep(step) !== null) return false;
   return /^(?:click|tap|press|dismiss|close)\b/i.test(m[1] ?? "");

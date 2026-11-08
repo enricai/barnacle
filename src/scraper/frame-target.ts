@@ -570,3 +570,16 @@ export function toFrameRelativeXpath(xpath: string, target?: FrameTarget): strin
     ? xpath
     : xpath.slice(last.index + last[0].length - (last[1] ?? "").length);
 }
+
+/**
+ * Selector-level companion to {@link toFrameRelativeXpath}: re-anchors an
+ * `xpath=`-prefixed selector (or a bare xpath) at the frame's `<html>`, keeping
+ * the prefix so the result still feeds `FrameTarget.locator`. Non-xpath
+ * selectors (css, text, deep-locator hop notation) pass through untouched.
+ */
+export function toFrameRelativeSelector(selector: string, target?: FrameTarget): string {
+  if (selector.startsWith("xpath=")) {
+    return `xpath=${toFrameRelativeXpath(selector.slice("xpath=".length), target)}`;
+  }
+  return selector.startsWith("/") ? toFrameRelativeXpath(selector, target) : selector;
+}

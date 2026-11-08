@@ -67,6 +67,21 @@ describe("label matching tolerates quote delimiters and code-style variants", ()
   ])("does not bind a phone country-code control to Country: %s", (step) => {
     expect(resolveStepPayloadField(step, undefined, false, phoneVocabulary)).toBeNull();
   });
+  // A step that already carries a payload accessor must be judged by its control
+  // NAME: the field name inside the accessor is the value, not the label.
+  const countryToken = `'$${"{payload.Country}"}'`;
+  it.each([
+    `Select ${countryToken} in the 'Country Code' dropdown`,
+    `Select ${countryToken} in the 'Phone Country Code' dropdown`,
+    `Select ${countryToken} in the Country dialing code dropdown`,
+  ])("does not rebind a payload-token step on a code-style control: %s", (step) => {
+    expect(resolveStepPayloadField(step, undefined, false, phoneVocabulary)).toBeNull();
+    expect(harvestPersonaBindings([step], phoneVocabulary, {}).size).toBe(0);
+  });
+  it("still binds a payload-token step on the plain Country control", () => {
+    const step = `Select ${countryToken} in the 'Country' dropdown`;
+    expect(resolveStepPayloadField(step, undefined, false, phoneVocabulary)).toBe("Country");
+  });
   it("leaves a label-derived free-text fill literal without a persona leak", () => {
     const { code } = emitBrowserFlowTs({
       siteId: "test-agency",

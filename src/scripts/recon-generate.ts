@@ -328,11 +328,21 @@ export function resolveStepPayloadField(
  * ("candidate's") is not a delimiter and is kept.
  */
 function labelMatchText(instruction: string): string {
-  return instruction.replace(
-    /(?<![\p{L}\p{N}])['"\u2018\u2019\u201C\u201D]|['"\u2018\u2019\u201C\u201D](?![\p{L}\p{N}])/gu,
-    ""
-  );
+  return instruction
+    .replace(PAYLOAD_TOKEN, " ")
+    .replace(
+      /(?<![\p{L}\p{N}])['"\u2018\u2019\u201C\u201D]|['"\u2018\u2019\u201C\u201D](?![\p{L}\p{N}])/gu,
+      ""
+    );
 }
+
+/**
+ * A spliced `${payload.<Field>}` accessor. It is the step's VALUE, never part of
+ * the control's name, so a vocabulary row (`/\bcountry\b/`) must not match the
+ * field name inside it — that match would sit before the real label and hide a
+ * code-style control name ("Country Code") that follows.
+ */
+const PAYLOAD_TOKEN = /\$\{\s*payload\.[^}]*\}/g;
 
 /** Words that qualify a trailing "code"/"id" as a code-style control name. */
 const CODE_STYLE_TAIL =
