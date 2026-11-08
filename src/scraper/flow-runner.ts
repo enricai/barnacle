@@ -14146,6 +14146,9 @@ export async function executeStepWithHealing(params: {
     return true;
   };
   let phantomClickAfterAttempt1 = false;
+  // Set when the post-click native captcha solve was still unfinished after its
+  // bound: the click's outcome is unknown, so it must not be judged phantom or re-clicked.
+  let nativeSolveStalled = false;
   let attempt1UnreachableViaLightDom = false;
   // Attempt 1 resolved no candidate at all and was skipped before any verdict,
   // so it never reached the "unresolved" escalation a judged attempt 1 takes.
@@ -15424,13 +15427,16 @@ export async function executeStepWithHealing(params: {
       elementSubmitShaped: resolvedElementIsSubmitShaped,
     });
     await page.waitForTimeout(STEP_PAUSE_MS);
-    await awaitNativeCaptchaSolve(page);
+    nativeSolveStalled = (await awaitNativeCaptchaSolve(page)) === "stalled";
     // A successful act that reported no actions still ran a click-class action;
     // judging it before its round-trip lands would cascade onto the advanced page.
     const mayTriggerRoundTrip =
       resolvedAction === null
         ? record.actResultSuccess === true
         : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
+    // A stalled solve is only this step's concern if the action could have
+    // started it; fill/select steps must still heal through the full cascade.
+    if (!mayTriggerRoundTrip) nativeSolveStalled = false;
     // Re-settle is not gated on submit shape: an unflagged step or a no-action
     // act can still advance a page whose body re-renders late. Credit stays
     // gated on stepIsMidFlowSubmit, so the final step keeps its strictness.
@@ -15803,6 +15809,11 @@ export async function executeStepWithHealing(params: {
       advanceBaseline,
       destinationPlausible: midFlowDestinationPlausibleForPost,
     });
+    // A click whose native solve never finished has an unknown outcome: only a
+    // positive effect may stand; a zero-effect reading is not evidence of a no-op.
+    if (nativeSolveStalled && record.phantomClickVerdict !== "effective") {
+      record.phantomClickVerdict = null;
+    }
     // An `"effective"` verdict driven purely by the page-wide byte-delta
     // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
     // here: `clickViewSwapVerified`/`formValueVerified` already own that
@@ -16203,7 +16214,7 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
-          await awaitNativeCaptchaSolve(page);
+          if ((await awaitNativeCaptchaSolve(page)) === "stalled") nativeSolveStalled = true;
           const { midFlowSubmit: retryMidFlowSubmit, advanceBaseline: retryAdvanceBaseline } =
             deriveMidFlowJudgement(retryResolvedElementIsSubmitShaped, pre);
           const { post: retryPost, pageAdvanced: retryPageAdvanced } =
@@ -16790,6 +16801,15 @@ export async function executeStepWithHealing(params: {
     logger.warn(
       `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
     );
+    // The native captcha solve was still unfinished after its bound, so the
+    // missing effect is unverified, not a no-op: a re-click would restart the
+    // solve. End the step with a distinct reason instead of escalating.
+    if (nativeSolveStalled) {
+      const exitReason = `native-captcha-solve-stalled: the click's native captcha solve was still unfinished after the wait bound, so its outcome is unverified; not re-clicking (a re-click would restart the solve)`;
+      failureReasons.push(exitReason);
+      logger.warn(`${formatStepPrefix(stepIndex, totalSteps)} ${exitReason}`);
+      break;
+    }
 
     // One additive strategy among many: when a click on a final-step
     // submit/continue button fails AND the page surfaces a visible
