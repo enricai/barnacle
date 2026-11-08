@@ -243,3 +243,44 @@ describe("flow-runner layered widget: placeholder-labelled anchor, 0x0 opener, c
     expect(h.window.document.querySelectorAll("[data-bcl-prompt-idx]").length).toBeLessThanOrEqual(1);
   });
 });
+
+describe("flow-runner layered widget: commits the chosen text through the rendered anchor", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Same layered shape as above, but the inline list is tagged as the anchor's
+  // popup so the harness models an option click committing into the anchor.
+  const COLLAPSED = `
+<form>
+  <div id="field-wrap">
+    <label for="cc-select">Country Code</label>
+    <div id="cc-opener" aria-haspopup="listbox" aria-owns="cc-empty-panel" aria-label="Country Code" style="width:0;height:0;overflow:hidden">Select</div>
+    <select id="cc-select" role="combobox" aria-controls="cc-empty-panel"><option value=""></option></select>
+    <div id="cc-wrapper">
+      <a id="cc-anchor" role="combobox" tabindex="0" aria-label="Select an option">Select</a>
+      <div data-test-popup-for="cc-anchor" role="listbox"><div role="option">Norway</div><div role="option">Sweden</div></div>
+    </div>
+  </div>
+  <div id="cc-empty-panel" role="listbox"><div role="option"></div></div>
+</form>`;
+
+  it("commits 'Sweden' into the rendered anchor, not the opener or covered select", async () => {
+    const h = buildPromptWidgetHarness({
+      html: COLLAPSED,
+      popupByWidgetId: { "cc-anchor": { options: ["Norway", "Sweden"] } },
+    });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step: "for 'Country Code' select 'Sweden'",
+    };
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).catch(() => "failed");
+    expect(result).toBe("completed");
+    expect(h.window.document.getElementById("cc-anchor")?.textContent).toContain("Sweden");
+    expect(h.clicks.some((c) => c.includes("cc-opener"))).toBe(false);
+    expect(h.clicks.some((c) => c.includes("cc-select"))).toBe(false);
+  });
+});
