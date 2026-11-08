@@ -63,4 +63,9 @@ describe("probeStepBeforeAttempts optional click-shaped step", () => {
       await run("If the newsletter dialog is visible, fill in the 'Email' field with 'a@b.co'", false)
     ).toBe("present");
   });
+
+  it("conditional click step with quoted target, optional=false -> absent after one observe", async () => {
+    expect(await run("If the newsletter dialog is visible, click 'Close'", false)).toBe("absent");
+    expect(guardedObserve).toHaveBeenCalledTimes(1);
+  });
 });
