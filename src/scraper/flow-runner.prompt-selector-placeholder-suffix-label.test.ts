@@ -1,7 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { executeStepWithHealing, verifyPromptSelectorCommitted } from "@/scraper/flow-runner";
+import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
 
