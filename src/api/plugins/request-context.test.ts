@@ -231,7 +231,12 @@ describe("api/plugins/request-context", () => {
       },
     });
     await app.register(requestContextPlugin);
+    // Destroy only once the handler is running: a fixed delay can race routing
+    // on a slow runner, and a request killed before onRequest is never watched.
+    const entryWaiters: Array<() => void> = [];
+    const nextEntry = (): Promise<void> => new Promise((r) => entryWaiters.push(r));
     app.post("/work", async () => {
+      entryWaiters.shift()?.();
       await new Promise((r) => setTimeout(r, 100));
       return { ok: true };
     });
@@ -264,10 +269,11 @@ describe("api/plugins/request-context", () => {
       expect(status).toBe(200);
       expect(lines.filter((l) => l.aborted === true)).toHaveLength(0);
 
+      const entered = nextEntry();
       const req = post("abort-me-2");
       req.on("error", () => {});
       req.end(body);
-      await new Promise((r) => setTimeout(r, 50));
+      await entered;
       const closed = new Promise<void>((r) => req.on("close", () => r()));
       req.destroy();
       await closed;
