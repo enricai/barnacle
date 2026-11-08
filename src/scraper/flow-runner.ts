@@ -12136,7 +12136,7 @@ export function isConditionalClickStep(step: string): boolean {
   );
   if (!m) return false;
   if (parsePromptSelectorStep(step) !== null) return false;
-  return /^(?:click|tap|press|dismiss|close)\b/i.test(m[1]);
+  return /^(?:click|tap|press|dismiss|close)\b/i.test(m[1] ?? "");
 }
 
 /**
