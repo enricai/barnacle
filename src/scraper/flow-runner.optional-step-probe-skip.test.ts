@@ -69,3 +69,16 @@ describe("probeStepBeforeAttempts optional click-shaped step", () => {
     expect(guardedObserve).toHaveBeenCalledTimes(1);
   });
 });
+
+import { isConditionalClickStep as __isCond } from "./flow-runner";
+import { it as __it, expect as __expect } from "vitest";
+__it("isConditionalClickStep accepts comma-lists, comma-less and 'appears' wordings", () => {
+  __expect(
+    [
+      "If a cookie consent, GDPR notice, or privacy banner is visible, click the button",
+      "If a cookie banner is visible click Accept",
+      "If a cookie banner appears, click Accept",
+      "Click the Login button",
+    ].map(__isCond)
+  ).toEqual([true, true, true, false]);
+});

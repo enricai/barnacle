@@ -12131,7 +12131,7 @@ async function deepLocatorCandidatesAsActions(
  * flow marked it optional. Fill/select/prompt-selector steps never qualify.
  */
 export function isConditionalClickStep(step: string): boolean {
-  const m = /^\s*if\b[^,]*\b(?:is|are)\s+(?:visible|present|shown|displayed|showing|open)\b[^,]*,\s*(?:then\s+)?(.*)$/is.exec(
+  const m = /^\s*if\b.*?\b(?:(?:is|are)\s+(?:visible|present|shown|displayed|showing|open)|appears?)\b[^,]*?(?:,\s*|\s+)(?:then\s+)?((?:click|tap|press|dismiss|close)\b.*)$/is.exec(
     step
   );
   if (!m) return false;
@@ -12208,7 +12208,7 @@ export async function probeStepBeforeAttempts(params: {
     const conditional = isConditionalClickStep(step);
     if (
       candidates.length === 0 &&
-      (optional || conditional) &&
+      (optional || (conditional && !frameTarget)) &&
       parsePromptSelectorStep(step) === null
     ) {
       logger.info(
