@@ -10001,8 +10001,12 @@ async function tryPromptSelectorPrimitive(params: {
         .concat(members)
         .filter((c, i, arr) => arr.indexOf(c) === i && c.tagName !== "SELECT" && rendered(c) && !sel.contains(c));
       const outer = triggers.filter((c) => !triggers.some((o) => o !== c && o.contains(c)));
-      if (outer.length !== 1) continue;
-      const t = outer[0];
+      // A layout-sized 0x0 opener passes the style-only rendered test; laid-out
+      // geometry, when the DOM has any, singles out the visible trigger.
+      const sized = outer.filter((c) => { const r = c.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+      const pick = outer.length > 1 && sized.length === 1 ? sized : outer;
+      if (pick.length !== 1) continue;
+      const t = pick[0];
       if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText)) continue;
       labelOverride.set(t, labText);
       if (!allWidgets.includes(t)) allWidgets.push(t);

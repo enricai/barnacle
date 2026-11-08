@@ -335,6 +335,38 @@ describe("flow-runner layered widget: anchor outside the select container, cover
     expect(doc.getElementById("panel-c")?.querySelector("[data-bcl-prompt-opt-idx]")).toBeNull();
   });
 
+  it("picks the laid-out anchor over an opener sized to 0x0 only by layout", async () => {
+    const html = `<form>${layeredField("c", "Country")}</form>`.replace(
+      ' style="width:0;height:0;overflow:hidden"',
+      ""
+    );
+    const h = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: { "anc-c": { options: ["Norway", "Sweden"] } },
+    });
+    const doc = h.window.document;
+    const stub = (id: string, width: number, height: number): void => {
+      const el = doc.getElementById(id) as unknown as {
+        getBoundingClientRect: () => { width: number; height: number };
+      };
+      el.getBoundingClientRect = () => ({ width, height });
+    };
+    stub("op-c", 0, 0);
+    stub("anc-c", 100, 20);
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step: "for 'Country' select 'Norway'",
+    };
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+    expect(result).toBe("completed");
+    expect(doc.getElementById("anc-c")?.textContent).toContain("Norway");
+    expect(doc.querySelectorAll("[data-bcl-prompt-idx]").length).toBe(1);
+    expect(doc.getElementById("anc-c")?.hasAttribute("data-bcl-prompt-idx")).toBe(true);
+  });
+
   it("selects in the second of two layered fields and leaves the first untouched", async () => {
     const { h, result } = await run(
       `<form>${layeredField("c", "Country")}${layeredField("s", "State/Province")}</form>`,
