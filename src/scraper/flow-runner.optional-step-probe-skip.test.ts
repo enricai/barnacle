@@ -52,4 +52,15 @@ describe("probeStepBeforeAttempts optional click-shaped step", () => {
   it("optional fill step keeps unfocused fallback", async () => {
     expect(await run("Fill in the 'Email' field with 'a@b.co'", true)).toBe("present");
   });
+
+  it("conditional click step, optional=false -> absent after one observe", async () => {
+    expect(await run("If the newsletter dialog is visible, click Close", false)).toBe("absent");
+    expect(guardedObserve).toHaveBeenCalledTimes(1);
+  });
+
+  it("conditional fill step keeps unfocused fallback", async () => {
+    expect(
+      await run("If the newsletter dialog is visible, fill in the 'Email' field with 'a@b.co'", false)
+    ).toBe("present");
+  });
 });

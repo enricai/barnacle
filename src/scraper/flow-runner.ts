@@ -12126,6 +12126,20 @@ async function deepLocatorCandidatesAsActions(
 }
 
 /**
+ * True when a click-shaped step's own text is an "If <something> is
+ * visible/present, click ..." guard — inherently skippable whether or not the
+ * flow marked it optional. Fill/select/prompt-selector steps never qualify.
+ */
+export function isConditionalClickStep(step: string): boolean {
+  const m = /^\s*if\b[^,]*\b(?:is|are)\s+(?:visible|present|shown|displayed|showing|open)\b[^,]*,\s*(?:then\s+)?(.*)$/is.exec(
+    step
+  );
+  if (!m) return false;
+  if (parsePromptSelectorStep(step) !== null) return false;
+  return /^(?:click|tap|press|dismiss|close)\b/i.test(m[1]);
+}
+
+/**
  * Cheap pre-cascade reachability gate. Runs before the 5-attempt healing cascade
  * (and any global replan) so a step aimed at the wrong page state fails fast
  * instead of burning attempts and replan budget. A focused observe can
@@ -12191,9 +12205,14 @@ export async function probeStepBeforeAttempts(params: {
       captureFn,
       frameTarget
     );
-    if (candidates.length === 0 && optional && parsePromptSelectorStep(step) === null) {
+    const conditional = isConditionalClickStep(step);
+    if (
+      candidates.length === 0 &&
+      (optional || conditional) &&
+      parsePromptSelectorStep(step) === null
+    ) {
       logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)}: optional click-shaped step, focused probe found 0 candidates — treating as absent (skip, no cascade)`
+        `${formatStepPrefix(stepIndex, totalSteps)}: ${conditional ? "conditional" : "optional"} click-shaped step, focused probe found 0 candidates — treating as absent (skip, no cascade)`
       );
       return "absent";
     }
@@ -13719,7 +13738,7 @@ export async function executeStepWithHealing(params: {
   );
   params.abortSignal?.throwIfAborted();
   if (probeResult === "absent") {
-    if (optional) {
+    if (optional || isConditionalClickStep(step)) {
       // Don't fast-skip when the page plainly has a required, still-empty
       // control this step was meant to answer (SPA hydration lag / observe
       // can't resolve the widget) — skipping would leave a required field empty
