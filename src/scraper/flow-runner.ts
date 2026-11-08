@@ -9875,6 +9875,19 @@ async function tryPromptSelectorPrimitive(params: {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const buttonValue = ${BUTTON_VALUE_EXPR};
     const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
+    // Trailing empty-value placeholder ("Country Code — Make a Selection —"),
+    // derived from emptyRx's own source: the leading anchor becomes a required
+    // separator run so only a suffix after a real label matches.
+    const trailingEmptyRx = new RegExp(emptyRxSrc.replace(/^\\^/, "[\\\\s\\\\-–—]+"), emptyRxFlags);
+    // aria-label with the trailing placeholder stripped; "" when it is absent
+    // or only a placeholder (so it names no question).
+    const ariaLabelOf = (w) => {
+      const al = w.getAttribute("aria-label");
+      if (!al) return "";
+      const bare = al.replace(/\\s*required\\s*$/i, "");
+      if (emptyRx.test(bare)) return "";
+      return bare.replace(/\\s+/g, " ").trim().replace(trailingEmptyRx, "").trim() || "";
+    };
     const triggers = Array.from(document.querySelectorAll(triggerSel));
     if (triggers.length === 0) return { widgetPresent: false };
     const containerOf = ${PROMPT_WIDGET_CONTAINER_EXPR};
@@ -9910,10 +9923,10 @@ async function tryPromptSelectorPrimitive(params: {
         for (const id of alb.split(/\\s+/)) { const el = document.getElementById(id); if (el) parts.push(el.textContent); }
         if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim().slice(0, 120);
       }
-      const al = w.getAttribute("aria-label");
       // A trigger's aria-label can merely echo its placeholder ("Select One
       // Required"), which names no question — defer to the <label>/group lookup.
-      if (al && !emptyRx.test(al.replace(/\\s*required\\s*$/i, ""))) return al.replace(/\\s+/g, " ").trim().slice(0, 120);
+      const al = ariaLabelOf(w);
+      if (al) return al.slice(0, 120);
       const labelledIds = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
       for (const id of labelledIds) {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
@@ -9967,8 +9980,7 @@ async function tryPromptSelectorPrimitive(params: {
     // falls back to, which is non-empty for every element).
     const hasOwnLabel = (w) => {
       if (w.getAttribute("aria-labelledby")) return true;
-      const al = w.getAttribute("aria-label");
-      if (al && !emptyRx.test(al.replace(/\\s*required\\s*$/i, ""))) return true;
+      if (ariaLabelOf(w)) return true;
       const ids = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
       return ids.some((id) => {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
