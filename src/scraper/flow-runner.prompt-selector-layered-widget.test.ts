@@ -200,3 +200,213 @@ describe("flow-runner layered widget: hidden opener aria-owns an empty panel", (
     expect(h.clicks.some((c) => c.includes("cc-select"))).toBe(false);
   });
 });
+
+describe("flow-runner layered widget: placeholder-labelled anchor, 0x0 opener, covered rendered select", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const SHAPE = `
+<form>
+  <div id="field-wrap">
+    <label for="cc-select">Country Code</label>
+    <div id="cc-opener" aria-haspopup="listbox" aria-owns="cc-empty-panel" aria-label="Country Code" style="width:0;height:0;overflow:hidden">Select</div>
+    <select id="cc-select" role="combobox" aria-controls="cc-empty-panel"><option value=""></option></select>
+    <div id="cc-wrapper">
+      <a id="cc-anchor" role="combobox" tabindex="0" aria-label="Select an option">Select</a>
+    </div>
+  </div>
+  <div id="cc-empty-panel" role="listbox"><div role="option"></div></div>
+</form>`;
+
+  it("enumerates one widget, clicks the anchor, and never clicks the opener or select", async () => {
+    const h = buildPromptWidgetHarness({
+      html: SHAPE,
+      popupByWidgetId: { "cc-anchor": { options: ["Norway", "Sweden"] } },
+    });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step: "for 'Country Code' select 'Sweden'",
+    };
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+    expect(result).toBe("completed");
+    expect(h.window.document.getElementById("cc-anchor")?.textContent).toContain("Sweden");
+    const doc = h.window.document;
+    expect(doc.getElementById("cc-anchor")?.hasAttribute("data-bcl-prompt-idx")).toBe(true);
+    expect(doc.querySelectorAll("[data-bcl-prompt-idx]").length).toBe(1);
+    expect(
+      doc.getElementById("cc-empty-panel")?.querySelector("[data-bcl-prompt-opt-idx]")
+    ).toBeNull();
+  });
+});
+
+describe("flow-runner layered widget: commits the chosen text through the rendered anchor", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Same layered shape as above, but the inline list is tagged as the anchor's
+  // popup so the harness models an option click committing into the anchor.
+  const COLLAPSED = `
+<form>
+  <div id="field-wrap">
+    <label for="cc-select">Country Code</label>
+    <div id="cc-opener" aria-haspopup="listbox" aria-owns="cc-empty-panel" aria-label="Country Code" style="width:0;height:0;overflow:hidden">Select</div>
+    <select id="cc-select" role="combobox" aria-controls="cc-empty-panel"><option value=""></option></select>
+    <div id="cc-wrapper">
+      <a id="cc-anchor" role="combobox" tabindex="0" aria-label="Select an option">Select</a>
+      <div data-test-popup-for="cc-anchor" role="listbox"><div role="option">Norway</div><div role="option">Sweden</div></div>
+    </div>
+  </div>
+  <div id="cc-empty-panel" role="listbox"><div role="option"></div></div>
+</form>`;
+
+  it("commits 'Sweden' into the rendered anchor, not the opener or covered select", async () => {
+    const h = buildPromptWidgetHarness({
+      html: COLLAPSED,
+      popupByWidgetId: { "cc-anchor": { options: ["Norway", "Sweden"] } },
+    });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step: "for 'Country Code' select 'Sweden'",
+    };
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+    expect(result).toBe("completed");
+    expect(h.window.document.getElementById("cc-anchor")?.textContent).toContain("Sweden");
+    const doc = h.window.document;
+    expect(doc.getElementById("cc-anchor")?.hasAttribute("data-bcl-prompt-idx")).toBe(true);
+    expect(doc.querySelectorAll("[data-bcl-prompt-idx]").length).toBe(1);
+    expect(
+      doc.getElementById("cc-empty-panel")?.querySelector("[data-bcl-prompt-opt-idx]")
+    ).toBeNull();
+  });
+});
+
+describe("flow-runner layered widget: anchor outside the select container, covered select", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // One field: a 0x0 opener whose aria-owns panel is an empty shell, a covered
+  // select carrying the field label, and the visible placeholder-labelled
+  // anchor rendered as a sibling of the select's container.
+  const layeredField = (k: string, label: string): string => `
+<div id="info-${k}">
+  <label for="sel-${k}">${label}</label>
+  <div id="cont-${k}">
+    <span id="op-${k}" role="combobox" aria-expanded="false" aria-owns="panel-${k}" tabindex="0" style="width:0;height:0;overflow:hidden"><span></span></span>
+    <select id="sel-${k}" role="combobox" aria-controls="lb-${k}" class="dropdown-hide" tabindex="-1" style="opacity:0"><option value=""></option></select>
+    <div id="panel-${k}" role="listbox"><div role="option"></div></div>
+  </div>
+  <a id="anc-${k}" class="dropdown-select" role="combobox" aria-expanded="false" aria-label="— Make a Selection —" tabindex="0">— Make a Selection —</a>
+</div>`;
+
+  async function run(html: string, popups: Record<string, string[]>, step: string) {
+    const h = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: Object.fromEntries(
+        Object.entries(popups).map(([id, options]) => [id, { options }])
+      ),
+    });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step,
+    };
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+    return { h, result };
+  }
+
+  it("selects through the visible anchor and never clicks the opener or select", async () => {
+    const { h, result } = await run(
+      `<form>${layeredField("c", "Country")}</form>`,
+      { "anc-c": ["Norway", "Sweden"] },
+      "for 'Country' select 'Norway'"
+    );
+    expect(result).toBe("completed");
+    expect(h.window.document.getElementById("anc-c")?.textContent).toContain("Norway");
+    const doc = h.window.document;
+    expect(doc.getElementById("anc-c")?.hasAttribute("data-bcl-prompt-idx")).toBe(true);
+    expect(doc.querySelectorAll("[data-bcl-prompt-idx]").length).toBe(1);
+    expect(doc.getElementById("panel-c")?.querySelector("[data-bcl-prompt-opt-idx]")).toBeNull();
+  });
+
+  it("picks the laid-out anchor over an opener sized to 0x0 only by layout", async () => {
+    const html = `<form>${layeredField("c", "Country")}</form>`.replace(
+      ' style="width:0;height:0;overflow:hidden"',
+      ""
+    );
+    const h = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: { "anc-c": { options: ["Norway", "Sweden"] } },
+    });
+    const doc = h.window.document;
+    const stub = (id: string, width: number, height: number): void => {
+      const el = doc.getElementById(id) as unknown as {
+        getBoundingClientRect: () => { width: number; height: number };
+      };
+      el.getBoundingClientRect = () => ({ width, height });
+    };
+    stub("op-c", 0, 0);
+    stub("anc-c", 100, 20);
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step: "for 'Country' select 'Norway'",
+    };
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+    expect(result).toBe("completed");
+    expect(doc.getElementById("anc-c")?.textContent).toContain("Norway");
+    expect(doc.querySelectorAll("[data-bcl-prompt-idx]").length).toBe(1);
+    expect(doc.getElementById("anc-c")?.hasAttribute("data-bcl-prompt-idx")).toBe(true);
+  });
+
+  it("selects in the second of two layered fields and leaves the first untouched", async () => {
+    const { h, result } = await run(
+      `<form>${layeredField("c", "Country")}${layeredField("s", "State/Province")}</form>`,
+      { "anc-c": ["Norway", "Sweden"], "anc-s": ["Ohio", "Texas"] },
+      "for 'State/Province' select 'Texas'"
+    );
+    expect(result).toBe("completed");
+    expect(h.window.document.getElementById("anc-s")?.textContent).toContain("Texas");
+    expect(h.window.document.getElementById("anc-c")?.textContent).not.toContain("Texas");
+  });
+
+  it("does not merge a select and a different field's combobox that share one row wrapper", async () => {
+    const html = `
+<form>
+  <div id="row">
+    <label for="row-country">Country</label>
+    <select id="row-country" role="combobox" aria-controls="row-country-lb"><option value=""></option></select>
+    <label for="row-language">Language</label>
+    <div id="row-language" role="combobox" tabindex="0">Select</div>
+  </div>
+</form>`;
+    const h = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: { "row-language": { options: ["Norway", "English"] } },
+    });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step: "for 'Country' select 'Norway'",
+    };
+    await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).catch(() => "failed");
+    expect(
+      h.window.document.getElementById("row-language")?.hasAttribute("data-bcl-prompt-idx")
+    ).toBe(false);
+    expect(h.window.document.getElementById("row-language")?.textContent).not.toContain("Norway");
+  });
+});
