@@ -18,7 +18,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
-import { SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
+import { SHADOW_XPATH_ALL_RESOLVER_SRC, SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
 
 import { REQUEST_BODY_UNAVAILABLE } from "./request-body-marker";
 
@@ -2021,6 +2021,32 @@ export const ERROR_SUMMARY_EXPR = `(() => {
   const titles = 'h1,h2,h3,h4,h5,h6,[role="heading"],button,[role="button"]';
   return Array.from(document.querySelectorAll(titles)).some((e) => vis(e) && /^(?:\\d+\\s+)?errors?\\s+found$/i.test(text(e)));
 })()`;
+
+/** Verbs that make a step an action on the page (checked after negated clauses are removed). */
+const ACTIONABLE_STEP_VERB =
+  /\b(?:click|tap|press|select|choose|pick|fill|type|enter|input|check|uncheck|tick|toggle|upload|attach|submit|open|expand|collapse|scroll|navigate|go to|visit|hover|drag|drop|focus|search|close|dismiss|accept|decline|log ?in|sign ?in|sign ?up|set|clear|apply|save|continue|advance|proceed|next|finish|done|sort|answer|mark|add|remove|agree|confirm|change|switch|filter|book|buy|reply|write|checkbox|radio|dropdown|button|link|field)\b/i;
+
+/** Markers that a step only asks to wait/observe/leave the page alone. */
+const PASSIVE_STEP_MARKER =
+  /\b(?:wait|observe|watch|settle|do nothing|nothing|no action|no-op|leave (?:it|the page) (?:as is|alone)|pause)\b|\b(?:do not|don't|dont|never|must not|should not|shouldn't|avoid|refrain from)\b/i;
+
+const NEGATED_ACTION_CLAUSE =
+  /\b(?:do not|don't|dont|never|must not|should not|shouldn't|does not|doesn't|avoid|refrain from|without)\b[^.;,?!\n]*/gi;
+
+/**
+ * Is this step purely passive ("Do not click anything; just wait for the list
+ * to settle")? True only when the text carries a wait/observe/negation marker
+ * and, once negated clauses are blanked, no actionable verb remains. A real
+ * click step, or a step with a negated target plus another positive action,
+ * is never passive. Pure.
+ */
+export function isPassiveNoopStep(instruction: string | null | undefined): boolean {
+  if (!instruction?.trim()) return false;
+  if (!PASSIVE_STEP_MARKER.test(instruction)) return false;
+  const positive = instruction.replace(NEGATED_ACTION_CLAUSE, " ");
+  if (/["'\u2018\u201c]\w/.test(positive.replace(/\b\w+'\w+\b/g, " "))) return false;
+  return !ACTIONABLE_STEP_VERB.test(positive);
+}
 
 /**
  * Is this flow step an advance/"Next" click (move to the next wizard page),
@@ -4920,12 +4946,12 @@ function xpathTailForRetarget(xpath: string): string | null {
  * cannot hand back an element that is not the named target. An empty list, or
  * a match with no text at all, is unrestricted.
  */
-const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
+export const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
     const isNegative = ${NEGATIVE_TEXT_EXPR};
     const accessibleName = (el) =>
       (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
-    const r = document.evaluate("//" + tail, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+    const matches = ${SHADOW_XPATH_ALL_RESOLVER_SRC}("//" + tail);
     const names = (phrases || []).map((p) => String(p).replace(/\\s+/g, " ").trim().toLowerCase()).filter(Boolean);
     const namesTarget = (el) => {
       if (names.length === 0) return true;
@@ -4936,8 +4962,7 @@ const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
       return texts.some((t) => names.some((n) => t.includes(n) || n.includes(t)));
     };
     const nodes = [];
-    for (let i = 0; i < r.snapshotLength; i++) {
-      const node = r.snapshotItem(i);
+    for (const node of matches) {
       if (namesTarget(node)) nodes.push(node);
     }
     if (nodes.length <= 1) return nodes[0] || null;
@@ -12816,6 +12841,13 @@ export async function executeStepWithHealing(params: {
   // verifier and key event in the cascade reads the page the click navigated to.
   let page = params.page;
   let frameReresolveAttempted = false;
+  // Passive step ("just wait", "do not click anything"): nothing to click, so
+  // the click cascade would end phantom-click-exhausted and replan. No-op success.
+  if (!upload && !emailStep && !captchaGated && !submitStep && isPassiveNoopStep(step)) {
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} passive step; no-op success`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return "completed";
+  }
   // Emailed-verification hook. Runs FIRST — before upload/select/checkbox/
   // radio/prompt-selector/captcha or any other cascade primitive — so an
   // `emailStep: true` step with no allocated inbox fails loud instead of

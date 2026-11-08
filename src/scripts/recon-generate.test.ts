@@ -40,6 +40,7 @@ import {
   resolveFoldPlan,
   resolveManifestActionSequence,
   resolveStepPayloadField,
+  type SubmitPatterns,
   sanitizeFixtureIdentifier,
   selectEffectiveResponseBody,
   selectPayloadAction,
@@ -5475,6 +5476,128 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
     );
 
     expect(kept.map((a) => a.capture.operationName)).toEqual(["SubmitBookingavailVas"]);
+  });
+
+  describe("a declared fold-return capture survives structural filtering only when joined to the flow", () => {
+    const HOST = "www.example.com";
+    const restCapture = (
+      method: string,
+      path: string,
+      responseBody: unknown,
+      requestPostData: string | null = null
+    ): Capture => ({
+      timestamp: "2026-01-01T00:00:00.000Z",
+      phase: "action",
+      method,
+      url: `https://${HOST}${path}`,
+      status: 200,
+      requestHeaders: { "Content-Type": "application/json" },
+      requestPostData,
+      responseHeaders: {},
+      responseBody,
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    });
+    const SEARCH_PATH = "/api/v2/trips/search?region=NORTH&limit=12";
+    const SUBMIT: SubmitPatterns = { endpoint: "/api/v2/trips/search", body: null };
+    const FOLD_SPEC: FoldReturnSpec = {
+      endpointPattern: "/stateroom-types-availability",
+      resultsPath: "itineraries",
+      joinFields: ["code"],
+    };
+    const search = restCapture("GET", SEARCH_PATH, {
+      itineraries: [{ code: "ITIN7ABCDE" }, { code: "ITIN9FGHIJ" }],
+    });
+    const pricing = restCapture("GET", "/api/builder/v2/itinerary/ITIN7ABCDE/sailings", {
+      results: [{ sailing: { packageId: "PKG4471209" } }],
+    });
+    const banner = restCapture("POST", "/site-banner/promo-widget", { ok: true }, "{}");
+
+    it("keeps a declared drill whose request carries a value an earlier response minted", () => {
+      const cabin = restCapture(
+        "POST",
+        "/api/builder/v2/stateroom-types-availability",
+        { results: [{ code: "INSIDE", available: true }] },
+        JSON.stringify({ sailingFilters: [{ packageId: "PKG4471209", numberOfGuests: 2 }] })
+      );
+
+      const kept = extractActionSequence([search, pricing, cabin, banner], SUBMIT, FOLD_SPEC, [
+        HOST,
+      ]).map((a) => a.capture.url);
+
+      expect(kept).toContain(cabin.url);
+      expect(kept).not.toContain(banner.url);
+    });
+
+    it("drops, in both the isolation and the final anchor pass, a declared drill neither joined by result nor by request", () => {
+      const unjoined = restCapture(
+        "POST",
+        "/api/builder/v2/stateroom-types-availability",
+        { itineraries: [{ code: "PROMO1XYZW" }] },
+        JSON.stringify({ campaign: "summer-deals", numberOfGuests: 2 })
+      );
+
+      const isolationOnly = extractActionSequence(
+        [search, pricing, unjoined, banner],
+        SUBMIT,
+        FOLD_SPEC,
+        [HOST],
+        null,
+        false
+      ).map((a) => a.capture.url);
+      const finalOnly = extractActionSequence([search, pricing, unjoined], SUBMIT, FOLD_SPEC, [
+        HOST,
+      ]).map((a) => a.capture.url);
+
+      expect(isolationOnly).not.toContain(unjoined.url);
+      expect(finalOnly).not.toContain(unjoined.url);
+      expect(finalOnly).toContain(search.url);
+    });
+
+    it("keeps a declared REST self-fold only while it is the flow's sole results source", () => {
+      const SELF_FOLD_SPEC: FoldReturnSpec = {
+        endpointPattern: "/stock-availability",
+        resultsPath: "items",
+        joinFields: ["sku"],
+      };
+      const RESERVE: SubmitPatterns = { endpoint: "/api/orders/reserve-item", body: null };
+      const selfFold = restCapture("GET", "/api/inventory/stock-availability?market=west", {
+        items: [{ sku: "SKU1AAAA" }, { sku: "SKU2BBBB" }],
+      });
+      const reserveOne = restCapture(
+        "POST",
+        "/api/orders/reserve-item",
+        { status: "confirmed" },
+        JSON.stringify({ reservationId: "reservation-1" })
+      );
+      const reserveTwo = restCapture(
+        "POST",
+        "/api/orders/reserve-item",
+        { status: "confirmed" },
+        JSON.stringify({ reservationId: "reservation-2" })
+      );
+      const otherPrimary = restCapture("GET", "/api/catalog/search?q=all", {
+        items: [{ sku: "SKU9ZZZZ" }],
+      });
+
+      const sole = extractActionSequence(
+        [selfFold, reserveOne, reserveTwo, banner],
+        RESERVE,
+        SELF_FOLD_SPEC,
+        [HOST]
+      ).map((a) => a.capture.url);
+      const notSole = extractActionSequence(
+        [otherPrimary, selfFold, reserveOne, reserveTwo, banner],
+        RESERVE,
+        SELF_FOLD_SPEC,
+        [HOST]
+      ).map((a) => a.capture.url);
+
+      expect(sole).toContain(selfFold.url);
+      expect(notSole).not.toContain(selfFold.url);
+    });
   });
 
   it("drops a minority own-backend host's mutation that coincidentally matches the declared submitEndpointPattern when primaryHost narrows to the dominant host", () => {

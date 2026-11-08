@@ -3,6 +3,8 @@ import {
   emitFoldMatchAndMergeLines,
   type FoldTarget,
   foldOneDrillOccurrence,
+  inferChainStepResponseSchema,
+  inferZodSchemaFromSamples,
   wholeArrayAttachKey,
   wrapIsolatedDrillLines,
 } from "@/scripts/recon-generate";
@@ -91,5 +93,26 @@ describe("isolated drills", () => {
   it("leaves unflagged drills untouched", () => {
     const lines = ["x"];
     expect(wrapIsolatedDrillLines({}, "d", "item", lines)).toBe(lines);
+  });
+});
+
+describe("drill and published schemas", () => {
+  const cap = (responseBody: unknown) =>
+    ({ url: "https://a.example/x/y", method: "GET", status: 200, responseBody }) as never;
+  it("drill schema tolerates an empty answer verbatim", () => {
+    const schema = inferChainStepResponseSchema(cap({ results: [{ a: 1 }], n: 2 }), [
+      cap({ results: [{ a: 1 }], n: 2 }),
+    ]);
+    expect(schema).toContain("results: z.array(");
+    expect(schema).toMatch(/n: z\.number\(\)\.nullable\(\)\.optional\(\)/);
+    const empty = inferChainStepResponseSchema(cap({ results: [] }), [cap({ results: [] })]);
+    expect(empty).toContain("results: z.array(z.unknown())");
+  });
+  it("published schema carries the fold-added attach key as optional", () => {
+    const body = { items: [{ id: 1 }, { id: 2 }] };
+    const folded = foldOneDrillOccurrence(body, ["items"], ["id"], rows, body.items[0]!, "reviews");
+    const schema = inferZodSchemaFromSamples([folded], 0, "");
+    expect(schema).toMatch(/reviews: z\.array\([\s\S]*?\)\)\.optional\(\)/);
+    expect(schema).toMatch(/id: z\.number\(\),?\n/);
   });
 });

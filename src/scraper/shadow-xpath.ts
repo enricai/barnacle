@@ -12,7 +12,7 @@
  * The text evaluates to a function `(xpath: string) => Element | null`. Embed
  * it in an in-page expression with {@link shadowXpathLookupExpr}.
  */
-export const SHADOW_XPATH_RESOLVER_SRC = `((xpath) => {
+const buildResolverSrc = (snapshot: boolean): string => `((xpath) => {
   const first = (expr, ctx) => {
     try {
       return document.evaluate(expr, ctx, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
@@ -26,8 +26,13 @@ export const SHADOW_XPATH_RESOLVER_SRC = `((xpath) => {
     } catch (e) { /* invalid expression: no matches */ }
     return out;
   };
-  const native = first(xpath, document);
-  if (native || xpath.indexOf("//") < 0) return native;
+  ${
+    snapshot
+      ? `const native = all(xpath, document);
+  if (native.length > 0 || xpath.indexOf("//") < 0) return native;`
+      : `const native = first(xpath, document);
+  if (native || xpath.indexOf("//") < 0) return native;`
+  }
   const parts = [];
   let depth = 0, quote = "", cur = "";
   for (let i = 0; i < xpath.length; i++) {
@@ -73,11 +78,23 @@ export const SHADOW_XPATH_RESOLVER_SRC = `((xpath) => {
         }
       }
     }
-    if (next.length === 0) return null;
+    if (next.length === 0) return ${snapshot ? "[]" : "null"};
     ctxs = next;
   }
-  return ctxs[0] === document ? null : ctxs[0];
+  ${
+    snapshot
+      ? "return ctxs.filter((n) => n !== document);"
+      : "return ctxs[0] === document ? null : ctxs[0];"
+  }
 })`;
+
+export const SHADOW_XPATH_RESOLVER_SRC = buildResolverSrc(false);
+
+/**
+ * Snapshot variant: `(xpath: string) => Element[]`, all matches in order.
+ * Native lookup first; the shadow walk runs only when native finds nothing.
+ */
+export const SHADOW_XPATH_ALL_RESOLVER_SRC = buildResolverSrc(true);
 
 /** In-page expression that resolves `xpath` to its first element (or null), piercing open shadow roots. */
 export function shadowXpathLookupExpr(xpath: string): string {
