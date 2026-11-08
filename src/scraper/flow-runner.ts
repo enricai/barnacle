@@ -9957,7 +9957,7 @@ async function tryPromptSelectorPrimitive(params: {
     // trigger; the collapsed openers are stamped as mates so option scoping can
     // still follow their aria-controls link.
     const rendered = ${PROMPT_RENDERED_EXPR};
-    for (const el of document.querySelectorAll("[" + markAttr + "-mate]")) el.removeAttribute(markAttr + "-mate");
+    for (const el of document.querySelectorAll("[" + markAttr + "-mate],[" + markAttr + "-layered]")) { el.removeAttribute(markAttr + "-mate"); el.removeAttribute(markAttr + "-layered"); }
     // A rendered role=combobox anchor with no aria-controls/aria-haspopup is
     // outside the trigger union; adopt it when an unrendered union opener shares
     // its label (the layered shape), so the rendered control becomes the widget.
@@ -9975,7 +9975,40 @@ async function tryPromptSelectorPrimitive(params: {
         return !!(lab && lab.textContent.trim());
       });
     };
-    const hiddenLabels = new Set(widgets.filter((w) => !rendered(w)).map((w) => norm(widgetLabel(w))).filter(Boolean));
+    // Layered field (hidden opener + covered/hidden native select + visible
+    // anchor): the select's <label for> names the field, and the field's extent
+    // is the nearest ancestor holding exactly that one label, so a sibling
+    // field's anchor in a shared row is never paired. The single rendered
+    // non-select combobox there is the trigger; every other member collapses
+    // into it and is NOT a mate, because a hidden opener's aria-owns panel is
+    // an empty shell, not the trigger's list.
+    const layerHost = new Map();
+    const labelElOf = (sel) => {
+      const byFor = sel.id ? document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(sel.id) : sel.id) + "']") : null;
+      return byFor || sel.closest("label");
+    };
+    for (const sel of widgets) {
+      if (sel.tagName !== "SELECT" || layerHost.has(sel)) continue;
+      const lab = labelElOf(sel);
+      const labText = lab ? lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120) : "";
+      if (!labText) continue;
+      let field = sel.parentElement;
+      for (let d = 0; d < 6 && field && field !== document.body && field.querySelectorAll("label").length === 0; d++) field = field.parentElement;
+      if (!field || field === document.body || field.querySelectorAll("label").length !== 1 || !field.contains(lab)) continue;
+      const members = widgets.filter((o) => field.contains(o));
+      if (members.some((o) => o !== sel && o.tagName === "SELECT")) continue;
+      const triggers = Array.from(field.querySelectorAll("[role='combobox']"))
+        .concat(members)
+        .filter((c, i, arr) => arr.indexOf(c) === i && c.tagName !== "SELECT" && rendered(c) && !sel.contains(c));
+      const outer = triggers.filter((c) => !triggers.some((o) => o !== c && o.contains(c)));
+      if (outer.length !== 1) continue;
+      const t = outer[0];
+      if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText)) continue;
+      labelOverride.set(t, labText);
+      if (!allWidgets.includes(t)) allWidgets.push(t);
+      for (const m of members) if (m !== t) layerHost.set(m, t);
+    }
+    const hiddenLabels = new Set(widgets.filter((w) => !rendered(w) && !layerHost.has(w)).map((w) => norm(widgetLabel(w))).filter(Boolean));
     if (hiddenLabels.size > 0) {
       for (const a of document.querySelectorAll("[role='combobox']")) {
         if (allWidgets.includes(a) || !rendered(a) || allWidgets.some((o) => o.contains(a) || a.contains(o))) continue;
@@ -9996,36 +10029,15 @@ async function tryPromptSelectorPrimitive(params: {
         }
       }
     }
-    // A rendered native select (a covered form control) sharing a field wrapper
-    // with a rendered combobox anchor that is not itself a widget (its own
-    // aria-label is only a placeholder) is the SAME field as that anchor: the
-    // anchor is the rendered trigger and inherits the select's label.
-    const coveredSelects = new Map();
-    for (const sel of widgets) {
-      if (sel.tagName !== "SELECT" || !rendered(sel) || allWidgets.some((o) => o !== sel && o.contains(sel))) continue;
-      let wrap = sel.parentElement;
-      for (let d = 0; d < 4 && wrap; d++, wrap = wrap.parentElement) {
-        const combos = Array.from(wrap.querySelectorAll("[role='combobox']")).filter((c) => c !== sel && !c.matches("select") && rendered(c));
-        if (combos.length === 0) continue;
-        const a = combos[0];
-        if (combos.length === 1 && !allWidgets.includes(a) && !a.contains(sel) && !sel.contains(a)) {
-          labelOverride.set(a, widgetLabel(sel));
-          allWidgets.push(a);
-          coveredSelects.set(sel, a);
-        }
-        break;
-      }
-    }
     widgets.length = 0;
     widgets.push(...allWidgets);
     const labelOf = new Map(widgets.map((w) => [w, norm(widgetLabel(w))]));
     const collapsed = new Map();
     for (const w of widgets) {
       const l = labelOf.get(w);
-      if (!l) continue;
-      if (coveredSelects.has(w)) { collapsed.set(w, coveredSelects.get(w)); continue; }
-      if (rendered(w)) continue;
-      const vis = widgets.filter((o) => labelOf.get(o) === l && rendered(o) && !coveredSelects.has(o));
+      if (layerHost.has(w)) { collapsed.set(w, layerHost.get(w)); continue; }
+      if (!l || rendered(w)) continue;
+      const vis = widgets.filter((o) => labelOf.get(o) === l && rendered(o) && !layerHost.has(o));
       if (vis.length === 1) collapsed.set(w, vis[0]);
     }
     const candidates = [];
@@ -10033,7 +10045,8 @@ async function tryPromptSelectorPrimitive(params: {
     for (const w of widgets) {
       if (collapsed.has(w) || !isUnfilled(w)) continue;
       w.setAttribute(markAttr, String(idx));
-      for (const [m, host] of collapsed) if (host === w) m.setAttribute(markAttr + "-mate", String(idx));
+      for (const [m, host] of collapsed) if (host === w && !layerHost.has(m)) m.setAttribute(markAttr + "-mate", String(idx));
+      if (layerHost.size > 0 && Array.from(layerHost.values()).includes(w)) w.setAttribute(markAttr + "-layered", "1");
       candidates.push({ wIdx: idx, label: widgetLabel(w) });
       idx++;
     }
@@ -10107,6 +10120,16 @@ async function tryPromptSelectorPrimitive(params: {
       const renderedEl = ${PROMPT_RENDERED_EXPR};
       const mates = Array.from(document.querySelectorAll("[" + widgetMarkAttr + '-mate="' + wIdx + '"]'));
       let scope = scopeOf(w);
+      // A layered field's trigger owns only the list it opens itself: its own
+      // popup link or subtree, else the nearest ancestor list that no other
+      // trigger shares (the field's own wrapper).
+      if (scope === document && w.hasAttribute(widgetMarkAttr + "-layered")) {
+        for (let a = w.parentElement; a && a !== document.body; a = a.parentElement) {
+          const others = Array.from(a.querySelectorAll(triggerSel + ",[role='combobox']")).filter((o) => o !== w && !w.contains(o) && !o.contains(w));
+          if (others.length > 0) break;
+          if (a.querySelector(optionSel)) { scope = a; break; }
+        }
+      }
       // A rendered anchor without its own popup link borrows its collapsed
       // layered openers' link (the visible widget's own list).
       // A rendered anchor with no popup link of its own but whose own field

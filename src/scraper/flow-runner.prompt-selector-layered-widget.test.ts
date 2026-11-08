@@ -214,7 +214,6 @@ describe("flow-runner layered widget: placeholder-labelled anchor, 0x0 opener, c
     <select id="cc-select" role="combobox" aria-controls="cc-empty-panel"><option value=""></option></select>
     <div id="cc-wrapper">
       <a id="cc-anchor" role="combobox" tabindex="0" aria-label="Select an option">Select</a>
-      <div role="listbox"><div role="option">Norway</div><div role="option">Sweden</div></div>
     </div>
   </div>
   <div id="cc-empty-panel" role="listbox"><div role="option"></div></div>
@@ -232,15 +231,15 @@ describe("flow-runner layered widget: placeholder-labelled anchor, 0x0 opener, c
     };
     const result = await executeStepWithHealing(
       merged as unknown as Parameters<typeof executeStepWithHealing>[0]
-    ).catch(() => "failed");
-    void result;
-    // The anchor's wrapper holds the real list: its option is clicked (the
-    // wrapper list is already rendered), never the opener, select or empty panel.
-    expect(h.clicks.some((c) => c.includes("data-bcl-prompt-opt-idx"))).toBe(true);
+    );
+    expect(result).toBe("completed");
+    expect(h.window.document.getElementById("cc-anchor")?.textContent).toContain("Sweden");
     expect(h.clicks.some((c) => c.includes("cc-opener"))).toBe(false);
     expect(h.clicks.some((c) => c.includes("cc-select"))).toBe(false);
     expect(h.clicks.some((c) => c.includes("cc-empty-panel"))).toBe(false);
-    expect(h.window.document.querySelectorAll("[data-bcl-prompt-idx]").length).toBeLessThanOrEqual(1);
+    expect(h.window.document.querySelectorAll("[data-bcl-prompt-idx]").length).toBeLessThanOrEqual(
+      1
+    );
   });
 });
 
@@ -282,5 +281,96 @@ describe("flow-runner layered widget: commits the chosen text through the render
     expect(h.window.document.getElementById("cc-anchor")?.textContent).toContain("Sweden");
     expect(h.clicks.some((c) => c.includes("cc-opener"))).toBe(false);
     expect(h.clicks.some((c) => c.includes("cc-select"))).toBe(false);
+  });
+});
+
+describe("flow-runner layered widget: anchor outside the select container, covered select", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // One field: a 0x0 opener whose aria-owns panel is an empty shell, a covered
+  // select carrying the field label, and the visible placeholder-labelled
+  // anchor rendered as a sibling of the select's container.
+  const layeredField = (k: string, label: string): string => `
+<div id="info-${k}">
+  <label for="sel-${k}">${label}</label>
+  <div id="cont-${k}">
+    <span id="op-${k}" role="combobox" aria-expanded="false" aria-owns="panel-${k}" tabindex="0" style="width:0;height:0;overflow:hidden"><span></span></span>
+    <select id="sel-${k}" role="combobox" aria-controls="lb-${k}" class="dropdown-hide" tabindex="-1" style="opacity:0"><option value=""></option></select>
+    <div id="panel-${k}" role="listbox"><div role="option"></div></div>
+  </div>
+  <a id="anc-${k}" class="dropdown-select" role="combobox" aria-expanded="false" aria-label="— Make a Selection —" tabindex="0">— Make a Selection —</a>
+</div>`;
+
+  async function run(html: string, popups: Record<string, string[]>, step: string) {
+    const h = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: Object.fromEntries(
+        Object.entries(popups).map(([id, options]) => [id, { options }])
+      ),
+    });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step,
+    };
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+    return { h, result };
+  }
+
+  it("selects through the visible anchor and never clicks the opener or select", async () => {
+    const { h, result } = await run(
+      `<form>${layeredField("c", "Country")}</form>`,
+      { "anc-c": ["Norway", "Sweden"] },
+      "for 'Country' select 'Norway'"
+    );
+    expect(result).toBe("completed");
+    expect(h.window.document.getElementById("anc-c")?.textContent).toContain("Norway");
+    const doc = h.window.document;
+    expect(doc.getElementById("anc-c")?.hasAttribute("data-bcl-prompt-idx")).toBe(true);
+    expect(doc.querySelectorAll("[data-bcl-prompt-idx]").length).toBe(1);
+    expect(doc.getElementById("panel-c")?.querySelector("[data-bcl-prompt-opt-idx]")).toBeNull();
+  });
+
+  it("selects in the second of two layered fields and leaves the first untouched", async () => {
+    const { h, result } = await run(
+      `<form>${layeredField("c", "Country")}${layeredField("s", "State/Province")}</form>`,
+      { "anc-c": ["Norway", "Sweden"], "anc-s": ["Ohio", "Texas"] },
+      "for 'State/Province' select 'Texas'"
+    );
+    expect(result).toBe("completed");
+    expect(h.window.document.getElementById("anc-s")?.textContent).toContain("Texas");
+    expect(h.window.document.getElementById("anc-c")?.textContent).not.toContain("Texas");
+  });
+
+  it("does not merge a select and a different field's combobox that share one row wrapper", async () => {
+    const html = `
+<form>
+  <div id="row">
+    <label for="row-country">Country</label>
+    <select id="row-country" role="combobox" aria-controls="row-country-lb"><option value=""></option></select>
+    <label for="row-language">Language</label>
+    <div id="row-language" role="combobox" tabindex="0">Select</div>
+  </div>
+</form>`;
+    const h = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: { "row-language": { options: ["Norway", "English"] } },
+    });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step: "for 'Country' select 'Norway'",
+    };
+    await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).catch(() => "failed");
+    expect(
+      h.window.document.getElementById("row-language")?.hasAttribute("data-bcl-prompt-idx")
+    ).toBe(false);
+    expect(h.window.document.getElementById("row-language")?.textContent).not.toContain("Norway");
   });
 });
