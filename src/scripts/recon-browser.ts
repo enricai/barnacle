@@ -984,7 +984,7 @@ function substituteFlowEnvVars(steps: NormalizedStep[]): NormalizedStep[] {
  * `text`, so a persisted flow never carries a plaintext credential that
  * `substituteFlowEnvVars` expanded in memory. Longest values first.
  */
-function scrubSecretEnvValues(text: string, env: NodeJS.ProcessEnv = process.env): string {
+export function scrubSecretEnvValues(text: string, env: NodeJS.ProcessEnv = process.env): string {
   const secrets = Object.entries(env)
     .filter(([name, v]) => /PASSWORD|PASSWD|SECRET|TOKEN/.test(name) && !!v && v.length >= 4)
     .sort((a, b) => b[1]!.length - a[1]!.length);
