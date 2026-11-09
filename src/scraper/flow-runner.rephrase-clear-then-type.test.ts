@@ -14,4 +14,8 @@ describe("withClearBeforeType", () => {
   it("leaves non-typing instructions unchanged", () => {
     expect(withClearBeforeType("Click the Continue button")).toBe("Click the Continue button");
   });
+  it("clears a prefilled field before typing in a rephrased click-then-type", () => {
+    const out = withClearBeforeType("Click the Phone field and type '555-0100'");
+    expect(out).toMatch(/selecting all existing text/);
+  });
 });

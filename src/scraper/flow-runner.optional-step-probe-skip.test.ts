@@ -52,4 +52,12 @@ describe("probeStepBeforeAttempts optional click-shaped step", () => {
   it("optional fill step keeps unfocused fallback", async () => {
     expect(await run("Fill in the 'Email' field with 'a@b.co'", true)).toBe("present");
   });
+
+  it("replan-bridge optional step, 0 focused -> absent, no 'treating as present' cascade", async () => {
+    const bridge = { instruction: "Click the 'Add Experience' button", optional: true, origin: "replan" };
+    expect(await run(bridge.instruction, bridge.optional)).toBe("absent");
+    const logged = (logger.info as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(logged.some((m) => m.includes("treating as present"))).toBe(false);
+    expect(logged.some((m) => m.includes("treating as absent"))).toBe(true);
+  });
 });
