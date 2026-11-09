@@ -979,6 +979,21 @@ function substituteFlowEnvVars(steps: NormalizedStep[]): NormalizedStep[] {
 }
 
 /**
+ * Restore `${VAR}` tokens for secret-bearing env vars (name contains
+ * PASSWORD/PASSWD/SECRET/TOKEN) wherever their resolved value appears in
+ * `text`, so a persisted flow never carries a plaintext credential that
+ * `substituteFlowEnvVars` expanded in memory. Longest values first.
+ */
+function scrubSecretEnvValues(text: string, env: NodeJS.ProcessEnv = process.env): string {
+  const secrets = Object.entries(env)
+    .filter(([name, v]) => /PASSWORD|PASSWD|SECRET|TOKEN/.test(name) && !!v && v.length >= 4)
+    .sort((a, b) => b[1]!.length - a[1]!.length);
+  let out = text;
+  for (const [name, v] of secrets) out = out.split(JSON.stringify(v!).slice(1, -1)).join(`\${${name}}`);
+  return out;
+}
+
+/**
  * Inverse of normalizeFlow: maps an internal `NormalizedStep` back to the
  * on-disk union shape. Bare string for the common case (required,
  * non-upload); object with only the truthy flags otherwise. Round-trip is
@@ -1817,7 +1832,7 @@ function persistReplannedFlow(params: {
         }
       : dedupedSteps;
   mkdirSync(runDir, { recursive: true });
-  writeFileSync(outPath, `${JSON.stringify(payload, null, 2)}\n`);
+  writeFileSync(outPath, scrubSecretEnvValues(`${JSON.stringify(payload, null, 2)}\n`));
   if (dedupedSteps.length !== denormalizedSteps.length) {
     logger.info(
       `dedupe collapsed ${denormalizedSteps.length - dedupedSteps.length} consecutive identical step(s) before write-back`
