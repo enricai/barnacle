@@ -2,6 +2,12 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { probeStepBeforeAttempts } from "@/scraper/flow-runner";
+import {
+  applyFailedStepFlagsToResumingBridgeStep,
+  filterReplanDuplicatingNextAuthored,
+  seedSubmitStepFromOwnInstructionText,
+  type NormalizedStep,
+} from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
 const guardedObserve = vi.fn();
@@ -60,5 +66,26 @@ describe("probeStepBeforeAttempts optional click-shaped step", () => {
     const logged = (logger.info as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(logged.some((m) => m.includes("treating as present ("))).toBe(false);
     expect(logged.some((m) => m.includes("treating as absent"))).toBe(true);
+  });
+
+  it("step spliced via real recon-browser replan helpers keeps optional and probes absent", async () => {
+    const mk = (instruction: string, optional: boolean, origin: "original" | "replan"): NormalizedStep => ({
+      instruction,
+      optional,
+      upload: false,
+      origin,
+    });
+    const failed = mk("Click the 'Add Experience' button", false, "original");
+    const remaining = [mk("Click the 'Continue' button", false, "original")];
+    const survivors = filterReplanDuplicatingNextAuthored(
+      [mk("Click the 'Add Experience' button", true, "replan")],
+      remaining
+    );
+    const [bridge] = seedSubmitStepFromOwnInstructionText(
+      applyFailedStepFlagsToResumingBridgeStep(survivors, failed)
+    );
+    expect(bridge?.origin).toBe("replan");
+    expect(bridge?.optional).toBe(true);
+    expect(await run(bridge!.instruction, bridge!.optional)).toBe("absent");
   });
 });
