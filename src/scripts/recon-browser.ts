@@ -994,6 +994,24 @@ export function scrubSecretEnvValues(text: string, env: NodeJS.ProcessEnv = proc
 }
 
 /**
+ * Applies `scrubSecretEnvValues` to string *values* only (never keys, numbers,
+ * booleans), so the serialized document stays valid JSON whatever the
+ * environment holds.
+ */
+export function scrubSecretEnvInValues<T>(node: T, env: NodeJS.ProcessEnv = process.env): T {
+  if (typeof node === "string") {
+    return JSON.parse(scrubSecretEnvValues(JSON.stringify(node), env)) as T;
+  }
+  if (Array.isArray(node)) return node.map((n) => scrubSecretEnvInValues(n, env)) as T;
+  if (node && typeof node === "object") {
+    return Object.fromEntries(
+      Object.entries(node).map(([k, v]) => [k, scrubSecretEnvInValues(v, env)])
+    ) as T;
+  }
+  return node;
+}
+
+/**
  * Inverse of normalizeFlow: maps an internal `NormalizedStep` back to the
  * on-disk union shape. Bare string for the common case (required,
  * non-upload); object with only the truthy flags otherwise. Round-trip is
@@ -1832,7 +1850,7 @@ function persistReplannedFlow(params: {
         }
       : dedupedSteps;
   mkdirSync(runDir, { recursive: true });
-  writeFileSync(outPath, scrubSecretEnvValues(`${JSON.stringify(payload, null, 2)}\n`));
+  writeFileSync(outPath, `${JSON.stringify(scrubSecretEnvInValues(payload), null, 2)}\n`);
   if (dedupedSteps.length !== denormalizedSteps.length) {
     logger.info(
       `dedupe collapsed ${denormalizedSteps.length - dedupedSteps.length} consecutive identical step(s) before write-back`
