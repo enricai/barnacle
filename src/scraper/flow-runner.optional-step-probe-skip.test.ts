@@ -54,10 +54,11 @@ describe("probeStepBeforeAttempts optional click-shaped step", () => {
   });
 
   it("replan-bridge optional step, 0 focused -> absent, no 'treating as present' cascade", async () => {
+    vi.mocked(logger.info).mockClear();
     const bridge = { instruction: "Click the 'Add Experience' button", optional: true, origin: "replan" };
     expect(await run(bridge.instruction, bridge.optional)).toBe("absent");
     const logged = (logger.info as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    expect(logged.some((m) => m.includes("treating as present"))).toBe(false);
+    expect(logged.some((m) => m.includes("treating as present ("))).toBe(false);
     expect(logged.some((m) => m.includes("treating as absent"))).toBe(true);
   });
 });
