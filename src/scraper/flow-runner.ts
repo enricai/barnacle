@@ -951,13 +951,31 @@ const WIDGET_LABEL_MATCHES_SRC = `((widgetLabel, questionLabel) => {
   const wl = lc(widgetLabel);
   const ql = lc(questionLabel);
   if (wl && ql && (wl.includes(ql) || ql.includes(wl))) return true;
-  const toks = (x) => x.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const toks = (x) => x.toLowerCase().split(/[^\\p{L}\\p{N}]+/u).filter(Boolean);
   const a = toks(widgetLabel);
   const b = toks(questionLabel);
   if (a.length === 0 || b.length === 0) return false;
   const small = a.length <= b.length ? a : b;
   const big = a.length <= b.length ? b : a;
   return small.every((t) => big.includes(t));
+})`;
+/**
+ * A widget's question label with decoration removed: a trailing required marker
+ * ("Required", "(required)", "*") and a trailing empty-value placeholder
+ * ("Country Code — Make a Selection —") are not part of the question it names.
+ * Returns "" when the text is only a placeholder. The placeholder pattern is
+ * derived from the empty-value regex source: its leading anchor becomes a
+ * required separator run so only a suffix after a real label matches. Shared by
+ * the widget enumerator and the required-control probe so every label source
+ * (aria-label, aria-labelledby, <label for>, group legend) is read one way.
+ */
+const WIDGET_BARE_LABEL_SRC = `((text, emptyRxSrc, emptyRxFlags) => {
+  const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
+  const trailingEmptyRx = new RegExp(emptyRxSrc.replace(/^\\^/, "[\\\\s\\\\-–—]+"), emptyRxFlags);
+  const stripRequired = (x) => x.replace(/\\s*(?:\\(\\s*required\\s*\\)|required|\\*)\\s*$/i, "").trim();
+  const t = stripRequired((text || "").replace(/\\s+/g, " ").trim());
+  if (emptyRx.test(t)) return "";
+  return stripRequired(t.replace(trailingEmptyRx, "").trim());
 })`;
 // Node-side export built from the SAME source injected into browser expressions.
 export const widgetLabelMatches = new Function(`return ${WIDGET_LABEL_MATCHES_SRC};`)() as (
@@ -9877,19 +9895,11 @@ async function tryPromptSelectorPrimitive(params: {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const buttonValue = ${BUTTON_VALUE_EXPR};
     const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
-    // Trailing empty-value placeholder ("Country Code — Make a Selection —"),
-    // derived from emptyRx's own source: the leading anchor becomes a required
-    // separator run so only a suffix after a real label matches.
-    const trailingEmptyRx = new RegExp(emptyRxSrc.replace(/^\\^/, "[\\\\s\\\\-–—]+"), emptyRxFlags);
-    // aria-label with the trailing placeholder stripped; "" when it is absent
-    // or only a placeholder (so it names no question).
-    const ariaLabelOf = (w) => {
-      const al = w.getAttribute("aria-label");
-      if (!al) return "";
-      const bare = al.replace(/\\s*required\\s*$/i, "");
-      if (emptyRx.test(bare)) return "";
-      return bare.replace(/\\s+/g, " ").trim().replace(trailingEmptyRx, "").trim() || "";
-    };
+    const bareLabel = ${WIDGET_BARE_LABEL_SRC};
+    const bare = (t) => bareLabel(t, emptyRxSrc, emptyRxFlags);
+    // aria-label with decoration stripped; "" when it is absent or only a
+    // placeholder (so it names no question).
+    const ariaLabelOf = (w) => bare(w.getAttribute("aria-label"));
     const triggers = Array.from(document.querySelectorAll(triggerSel));
     if (triggers.length === 0) return { widgetPresent: false };
     const containerOf = ${PROMPT_WIDGET_CONTAINER_EXPR};
@@ -9923,7 +9933,8 @@ async function tryPromptSelectorPrimitive(params: {
       if (alb) {
         const parts = [];
         for (const id of alb.split(/\\s+/)) { const el = document.getElementById(id); if (el) parts.push(el.textContent); }
-        if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim().slice(0, 120);
+        const named = bare(parts.join(" "));
+        if (named) return named.slice(0, 120);
       }
       // A trigger's aria-label can merely echo its placeholder ("Select One
       // Required"), which names no question — defer to the <label>/group lookup.
@@ -9932,13 +9943,15 @@ async function tryPromptSelectorPrimitive(params: {
       const labelledIds = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
       for (const id of labelledIds) {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
-        if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120);
+        const named = lab ? bare(lab.textContent) : "";
+        if (named) return named.slice(0, 120);
       }
       const grp = w.closest("[role='group'][aria-labelledby],fieldset");
       if (grp) {
         const gid = grp.getAttribute("aria-labelledby");
         const gref = gid ? document.getElementById(gid.split(/\\s+/)[0]) : grp.querySelector("legend");
-        if (gref && gref.textContent.trim()) return gref.textContent.replace(/\\s+/g, " ").trim().slice(0, 120);
+        const named = gref ? bare(gref.textContent) : "";
+        if (named) return named.slice(0, 120);
       }
       let node = w.parentElement;
       for (let d = 0; d < 5 && node; d++) {
@@ -11092,24 +11105,24 @@ export async function hasUnfilledRequiredControlForStep(
     // the depth-capped ancestor label/legend walk as a last resort (real
     // markup can nest a control several wrapper divs below its <label>,
     // deeper than any fixed ancestor cap can safely assume).
+    const bareLabel = ${WIDGET_BARE_LABEL_SRC};
+    const bare = (t) => bareLabel(t, emptyRxSrc, emptyRxFlags);
     const labelFor = (el) => {
       const alb = el.getAttribute && el.getAttribute("aria-labelledby");
       if (alb) {
         const parts = [];
         for (const id of alb.split(/\\s+/)) { const ref = document.getElementById(id); if (ref) parts.push(ref.textContent); }
-        if (parts.length) return norm(parts.join(" "));
+        const named = bare(parts.join(" "));
+        if (named) return named;
       }
+      // aria-label, as the enumerator reads it.
+      const own = bare(el.getAttribute && el.getAttribute("aria-label"));
+      if (own) return own;
       const ids = [el.id, ...Array.from(el.querySelectorAll ? el.querySelectorAll("[id]") : []).map((e) => e.id)].filter(Boolean);
       for (const id of ids) {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
-        if (lab && lab.textContent && lab.textContent.trim()) return norm(lab.textContent);
-      }
-      // aria-label (trailing placeholder stripped), as the enumerator reads it.
-      const al = el.getAttribute && el.getAttribute("aria-label");
-      if (al) {
-        const trailRx = new RegExp(emptyRxSrc.replace(/^\\^/, "[\\\\s\\\\-–—]+"), emptyRxFlags);
-        const bare = norm(al.replace(/\\s*required\\s*$/i, "").replace(trailRx, ""));
-        if (bare && !emptyRx.test(bare)) return bare;
+        const named = lab ? bare(lab.textContent) : "";
+        if (named) return named;
       }
       let node = el;
       for (let d = 0; d < 6 && node; d++) {
