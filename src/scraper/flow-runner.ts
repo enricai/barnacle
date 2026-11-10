@@ -126,7 +126,7 @@ import {
   isPlausibleStepDestination,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
-import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
+import { findQuotedSpans, maskApostrophes, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
 import {
   defaultCapturesDir,
   listCaptureFiles,
@@ -3175,7 +3175,7 @@ export function withClearBeforeType(instruction: string): string {
   if (!/\b(type|typing|enter|input)\b/i.test(instruction)) return instruction;
   if (!/\b(click|focus|select)\b/i.test(instruction)) return instruction;
   // Ignore quoted literals: the text being typed may itself contain "clear".
-  const unquoted = instruction.replace(/(["'`\u2018\u201c])[^]*?(["'`\u2019\u201d])/g, " ");
+  const unquoted = maskApostrophes(instruction).replace(/(["'`\u2018\u201c])[^]*?(["'`\u2019\u201d])/g, " ");
   if (
     /select(ing)? all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(
       unquoted
@@ -10018,11 +10018,21 @@ async function tryPromptSelectorPrimitive(params: {
     };
     for (const sel of widgets) {
       if (sel.tagName !== "SELECT" || layerHost.has(sel)) continue;
-      const lab = labelElOf(sel);
-      const labText = lab ? lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120) : "";
-      if (!labText) continue;
+      let lab = labelElOf(sel);
+      let labText = lab ? lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120) : "";
       let field = sel.parentElement;
       for (let d = 0; d < 6 && field && field !== document.body && field.querySelectorAll("label").length === 0; d++) field = field.parentElement;
+      if (!labText) {
+        // The select carries no label of its own: its aria-label names the
+        // field, and the field's single <label> (which may point at the
+        // rendered anchor instead) must read the same.
+        const al = ariaLabelOf(sel);
+        const only = field && field !== document.body && field.querySelectorAll("label").length === 1 ? field.querySelector("label") : null;
+        if (!al || !only || norm(only.textContent) !== norm(al)) continue;
+        lab = only;
+        labText = only.textContent.replace(/\\s+/g, " ").trim().slice(0, 120);
+      }
+      if (!labText) continue;
       if (!field || field === document.body || field.querySelectorAll("label").length !== 1 || !field.contains(lab)) continue;
       const members = widgets.filter((o) => field.contains(o));
       if (members.some((o) => o !== sel && o.tagName === "SELECT")) continue;
@@ -10036,7 +10046,7 @@ async function tryPromptSelectorPrimitive(params: {
       const pick = sized.length === 1 ? sized : outer;
       if (pick.length !== 1) continue;
       const t = pick[0];
-      if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText)) continue;
+      if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText) && !(lab.htmlFor && lab.htmlFor === t.id)) continue;
       labelOverride.set(t, labText);
       if (!allWidgets.includes(t)) allWidgets.push(t);
       for (const m of members) if (m !== t) layerHost.set(m, t);
