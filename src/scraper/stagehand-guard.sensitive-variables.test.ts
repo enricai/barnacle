@@ -248,6 +248,37 @@ describe("rephraseWithLLM sensitive variables", () => {
     );
   });
 
+  it("keeps a value that ends in a period whole when the clause is appended", async () => {
+    registerSensitiveValues(
+      "run-2",
+      { Company: "Acme Inc." },
+      { wordKeys: ["Company"], tokenizeKeys: ["Company"] }
+    );
+    const rewritten = await (async () => {
+      generateObject.mockImplementation(async (args: { prompt: string }) => {
+        const token = args.prompt.match(/%[A-Za-z0-9_]+%/)?.[0] ?? "";
+        return {
+          object: {
+            outcome: "rewrite",
+            instruction: `Click the Company field and type ${token}`,
+            typesIntoField: true,
+          },
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      });
+      return rephraseWithLLM(
+        model,
+        "Fill in the Company field with 'Acme Inc.'",
+        [],
+        [],
+        ["no effect"],
+        vi.fn().mockResolvedValue(undefined)
+      );
+    })();
+
+    expect(rewritten).toBe(`Click the Company field and type Acme Inc.${CLEAR_BEFORE_TYPE_CLAUSE}`);
+  });
+
   it("rejects a rewrite that cites an unknown token", async () => {
     respond("Fill the Password field with %Password%");
 

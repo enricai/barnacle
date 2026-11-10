@@ -3179,8 +3179,9 @@ export const CLEAR_BEFORE_TYPE_CLAUSE =
  * words here. Idempotent.
  */
 export function appendClearBeforeTypeClause(instruction: string): string {
-  if (instruction.endsWith(CLEAR_BEFORE_TYPE_CLAUSE)) return instruction;
-  return `${instruction.replace(/[.\s]+$/, "")}${CLEAR_BEFORE_TYPE_CLAUSE}`;
+  const base = instruction.replace(/[.\s]+$/, "");
+  if (base.endsWith(CLEAR_BEFORE_TYPE_CLAUSE)) return base;
+  return `${base}${CLEAR_BEFORE_TYPE_CLAUSE}`;
 }
 
 /**
@@ -3382,8 +3383,13 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
 
     if (parsed.outcome === "impossible") return null;
     if (unresolvedTokens(parsed.instruction, variables).length > 0) return null;
-    const instruction = detokenize(parsed.instruction, variables);
-    return parsed.typesIntoField ? appendClearBeforeTypeClause(instruction) : instruction;
+    // The clause goes on before tokens resolve: its trailing-punctuation strip
+    // must never cut into a resolved sensitive value (a value ending in "."
+    // would be typed without it, and re-tokenizing would then miss it).
+    return detokenize(
+      parsed.typesIntoField ? appendClearBeforeTypeClause(parsed.instruction) : parsed.instruction,
+      variables
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logBillingErrorIfPresent(err);

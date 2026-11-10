@@ -63,8 +63,14 @@ describe("rephraseWithLLM clears before typing only when the model says the rewr
   });
 
   it("leaves the instruction unchanged when typesIntoField is false", async () => {
-    respond("Click the Email field and enter user@example.com", false);
-    expect(await rephrase()).toBe("Click the Email field and enter user@example.com");
+    respond("Click the Country dropdown and choose Norway", false);
+    expect(await rephrase()).toBe("Click the Country dropdown and choose Norway");
+  });
+
+  it("does not append a second clause when the rewrite ends with it plus punctuation", async () => {
+    respond(`Type user@example.com into the Email field${CLEAR_BEFORE_TYPE_CLAUSE}.\n`, true);
+    const out = await rephrase();
+    expect(occurrences(out ?? "", CLEAR_BEFORE_TYPE_CLAUSE)).toBe(1);
   });
 
   it("leaves 'Press Enter to submit the form' unchanged when typesIntoField is false", async () => {
