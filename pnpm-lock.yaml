@@ -135,8 +135,8 @@ importers:
         specifier: ^6
         version: 6.15.0
       hot-shots:
-        specifier: ^17
-        version: 17.1.0
+        specifier: ^18
+        version: 18.0.0
       husky:
         specifier: ^9.1.6
         version: 9.1.7
@@ -2033,9 +2033,9 @@ packages:
     resolution: {integrity: sha512-GqXJqY/xJkJmuloTrnV1ZEXG3fqte+VjkUqoRNZXcrUidiUOP4fMSIHHY4tsqZBK++kVyWmt/AAfSUuy57/eSA==}
     engines: {node: '>=16.9.0'}
 
-  hot-shots@17.1.0:
-    resolution: {integrity: sha512-F7hnyBtBq7UE1amiWFRF8uEIzb29+FKW2otG9KbgPG+DwALavjwn/Vzc9GWp6EU6T1JW5sik7qnPecainwpIQA==}
-    engines: {node: '>=18.0.0'}
+  hot-shots@18.0.0:
+    resolution: {integrity: sha512-AUT3FdS6JTLtnHcSMNLLTLP93om4/92KA0CIrQgsGaGGPryJQF4bG0idDMSZvew363nfraFULakRaoo/bzgC6g==}
+    engines: {node: '>=20.0.0'}
 
   html-escaper@2.0.2:
     resolution: {integrity: sha512-H2iMtd0I4Mt5eYiapRdIDjp+XzelXQ0tFE4JS7YFwFevXXMmOp9myNrUvCg0D6ws8iqkRPBfKHgbwig1SmlLfg==}
@@ -2275,8 +2275,8 @@ packages:
     resolution: {integrity: sha512-BzQguy9W9NJgoVn2mRWzbFrFWWztGCcng2QI9+41frfk+Athwgx3qhqhvStz7ExeUUu7Kzw427sNzHpEZNINog==}
     engines: {node: '>=16.0.0'}
 
-  nan@2.28.0:
-    resolution: {integrity: sha512-fTsDz99OTq2sVePhGdp4qQhggZFtKr64ZNVyVajRKtMOkJxYekplBh577PiJB12v/D3s2E5cGtOI45LWp6rnLQ==}
+  nan@2.30.0:
+    resolution: {integrity: sha512-P5mokDkSvCGBz6mZDD/2l+w9QoICRXdCyZ9ONGmTePr40oihJg3Kpn0YU3twKd6PJnwSlLBWNQeOT6yWEV2c4A==}
 
   nanoid@3.3.20:
     resolution: {integrity: sha512-uKdg2G3GNCKQn9byYOpxbGqrT2fGO5KRt5J/8b3pok8rT6qxGWF6hxMyJiEYtAf+FVyYuD9hRaDqX5uPFYJ4ZQ==}
@@ -4806,7 +4806,7 @@ snapshots:
 
   hono@4.12.34: {}
 
-  hot-shots@17.1.0:
+  hot-shots@18.0.0:
     optionalDependencies:
       unix-dgram: 2.0.7
 
@@ -5029,7 +5029,7 @@ snapshots:
 
   mylas@2.1.14: {}
 
-  nan@2.28.0:
+  nan@2.30.0:
     optional: true
 
   nanoid@3.3.20: {}
@@ -5582,7 +5582,7 @@ snapshots:
   unix-dgram@2.0.7:
     dependencies:
       bindings: 1.5.0
-      nan: 2.28.0
+      nan: 2.30.0
     optional: true
 
   unpipe@1.0.0: {}
