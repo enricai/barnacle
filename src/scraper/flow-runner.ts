@@ -3172,15 +3172,36 @@ const REPHRASE_SYSTEM_PROMPT =
  * instructions that type into a field. Idempotent; other instructions unchanged.
  */
 export function withClearBeforeType(instruction: string): string {
-  if (!/\b(type|typing|enter|input)\b/i.test(instruction)) return instruction;
+  // Quoted text is a value or a label, never an instruction: "Click the
+  // 'Enter Your Information' button" types nothing, and typing
+  // 'Please clear the backlog' still needs the field cleared first.
+  const unquoted = withoutQuotedText(instruction);
+  if (!typesIntoAField(unquoted)) return instruction;
   if (
     /select(ing)? all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(
-      instruction
+      unquoted
     )
   ) {
     return instruction;
   }
   return `${instruction.replace(/[.\s]+$/, "")}, first selecting all existing text in the field (Ctrl/Cmd+A) and replacing it so the value is not appended to existing content`;
+}
+
+/** Drops quoted spans ('…', "…", ‘…’, “…”); an apostrophe inside a word is not a quote. */
+function withoutQuotedText(instruction: string): string {
+  return instruction.replace(/(^|[^\p{L}\p{N}])(['"‘“])[^'"‘’“”]*['"’”](?![\p{L}\p{N}])/gu, "$1");
+}
+
+/**
+ * True when the instruction types text into a field: the verb "type", or
+ * "enter"/"input" where a clause starts, which is where they are verbs.
+ * "Press Enter" is a key press, and "the Email input" is a noun.
+ */
+function typesIntoAField(unquoted: string): boolean {
+  if (/\b(type|typing)\b/i.test(unquoted)) return true;
+  return /(^|\bthen\b|\band\b|[,;:])\s*(enter|input)(ing)?\b(?!\s+(key|button)\b)/i.test(
+    unquoted.trim()
+  );
 }
 
 /**
