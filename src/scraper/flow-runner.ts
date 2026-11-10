@@ -960,9 +960,8 @@ const WIDGET_LABEL_MATCHES_SRC = `((widgetLabel, questionLabel) => {
   return small.every((t) => big.includes(t));
 })`;
 // Node-side export built from the SAME source injected into browser expressions.
-export const widgetLabelMatches: (widgetLabel: string, questionLabel: string) => boolean = (0, eval)(
-  WIDGET_LABEL_MATCHES_SRC
-);
+export const widgetLabelMatches: (widgetLabel: string, questionLabel: string) => boolean = (0,
+eval)(WIDGET_LABEL_MATCHES_SRC);
 /**
  * Browser-side expression reading a prompt-selector widget's OWN committed-value
  * text — the single source of truth for "is this widget filled?", shared by the

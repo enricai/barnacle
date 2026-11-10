@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import { Window } from "happy-dom";
+import { describe, expect, it } from "vitest";
 import { hasUnfilledRequiredControlForStep, widgetLabelMatches } from "./flow-runner";
 
 describe("widgetLabelMatches", () => {
@@ -19,10 +19,18 @@ describe("required-control probe uses the shared label predicate", () => {
     window.document.body.innerHTML = `<label for="p">Postal Code</label><input id="p" required value="">`;
     const target = {
       evaluate: async (expr: string) =>
-        new window.Function("document", "window", "CSS", `return (${expr});`)(window.document, window, window.CSS),
+        new window.Function("document", "window", "CSS", `return (${expr});`)(
+          window.document,
+          window,
+          window.CSS
+        ),
     };
-    expect(await hasUnfilledRequiredControlForStep(target as never, "Select 'CA' for 'Postal Zip Code'")).toBe(true);
-    expect(await hasUnfilledRequiredControlForStep(target as never, "Select 'CA' for 'Favorite Color'")).toBe(false);
+    expect(
+      await hasUnfilledRequiredControlForStep(target as never, "Select 'CA' for 'Postal Zip Code'")
+    ).toBe(true);
+    expect(
+      await hasUnfilledRequiredControlForStep(target as never, "Select 'CA' for 'Favorite Color'")
+    ).toBe(false);
   });
   it("neutral example for widgetLabelMatches", () => {
     expect(widgetLabelMatches("Postal Code", "Postal Zip Code")).toBe(true);
