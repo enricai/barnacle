@@ -946,22 +946,23 @@ const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
  * every token of the shorter label appears in the other ("Phone Country Code"
  * matches "Country Code"); unrelated labels share no full subset.
  */
-export function widgetLabelMatches(widgetLabel: string, questionLabel: string): boolean {
-  const lc = (x: string): string => x.toLowerCase().replace(/\s+/g, " ").trim();
+const WIDGET_LABEL_MATCHES_SRC = `((widgetLabel, questionLabel) => {
+  const lc = (x) => x.toLowerCase().replace(/\\s+/g, " ").trim();
   const wl = lc(widgetLabel);
   const ql = lc(questionLabel);
   if (wl && ql && (wl.includes(ql) || ql.includes(wl))) return true;
-  const toks = (x: string): string[] =>
-    x
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean);
+  const toks = (x) => x.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   const a = toks(widgetLabel);
   const b = toks(questionLabel);
   if (a.length === 0 || b.length === 0) return false;
-  const [small, big] = a.length <= b.length ? [a, b] : [b, a];
+  const small = a.length <= b.length ? a : b;
+  const big = a.length <= b.length ? b : a;
   return small.every((t) => big.includes(t));
-}
+})`;
+// Node-side export built from the SAME source injected into browser expressions.
+export const widgetLabelMatches: (widgetLabel: string, questionLabel: string) => boolean = (0, eval)(
+  WIDGET_LABEL_MATCHES_SRC
+);
 /**
  * Browser-side expression reading a prompt-selector widget's OWN committed-value
  * text — the single source of truth for "is this widget filled?", shared by the
@@ -11076,6 +11077,7 @@ export async function hasUnfilledRequiredControlForStep(
       if (al && /required\\s*$/i.test(al.trim())) return true;
       return false;
     };
+    const labelMatches = ${WIDGET_LABEL_MATCHES_SRC};
     const isEmptyish = (el) => {
       if (!el) return false;
       if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
@@ -11128,7 +11130,7 @@ export async function hasUnfilledRequiredControlForStep(
       const emptyOrInvalid = isEmptyish(el) || (el.querySelector && !!el.querySelector("[aria-invalid=true]"));
       if (!emptyOrInvalid) continue;
       const txt = labelFor(el);
-      if (txt && (txt.includes(want) || want.includes(txt))) return true;
+      if (txt && labelMatches(txt, want)) return true;
     }
     return false;
   })(${JSON.stringify(label)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)})`;
