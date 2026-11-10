@@ -3178,7 +3178,7 @@ export const CLEAR_BEFORE_TYPE_CLAUSE =
  * is the rephrase LLM's `typesIntoField` answer, not something read from its
  * words here. Idempotent.
  */
-export function withClearBeforeType(instruction: string): string {
+export function appendClearBeforeTypeClause(instruction: string): string {
   if (instruction.endsWith(CLEAR_BEFORE_TYPE_CLAUSE)) return instruction;
   return `${instruction.replace(/[.\s]+$/, "")}${CLEAR_BEFORE_TYPE_CLAUSE}`;
 }
@@ -3383,7 +3383,7 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
     if (parsed.outcome === "impossible") return null;
     if (unresolvedTokens(parsed.instruction, variables).length > 0) return null;
     const instruction = detokenize(parsed.instruction, variables);
-    return parsed.typesIntoField ? withClearBeforeType(instruction) : instruction;
+    return parsed.typesIntoField ? appendClearBeforeTypeClause(instruction) : instruction;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logBillingErrorIfPresent(err);

@@ -8,7 +8,11 @@ vi.mock("ai", async (importOriginal) => {
   return { ...actual, generateObject: (...args: unknown[]) => generateObject(...args) };
 });
 
-import { CLEAR_BEFORE_TYPE_CLAUSE, rephraseWithLLM, withClearBeforeType } from "./flow-runner";
+import {
+  appendClearBeforeTypeClause,
+  CLEAR_BEFORE_TYPE_CLAUSE,
+  rephraseWithLLM,
+} from "./flow-runner";
 
 const model = { modelId: "test-model" } as unknown as RephraseModel;
 
@@ -27,16 +31,16 @@ function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-describe("withClearBeforeType", () => {
+describe("appendClearBeforeTypeClause", () => {
   it("appends the clause once, replacing trailing punctuation", () => {
-    expect(withClearBeforeType("Type a@example.com into the Email field.")).toBe(
+    expect(appendClearBeforeTypeClause("Type a@example.com into the Email field.")).toBe(
       `Type a@example.com into the Email field${CLEAR_BEFORE_TYPE_CLAUSE}`
     );
   });
 
   it("is idempotent", () => {
-    const once = withClearBeforeType("Click the email input and type a@example.com");
-    expect(withClearBeforeType(once)).toBe(once);
+    const once = appendClearBeforeTypeClause("Click the email input and type a@example.com");
+    expect(appendClearBeforeTypeClause(once)).toBe(once);
   });
 });
 
