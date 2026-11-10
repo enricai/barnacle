@@ -1106,7 +1106,7 @@ const PROMPT_RENDERED_EXPR = `((el) => {
     const cs = getComputedStyle(n);
     if (cs.display === "none") return false;
     if (n === el && (cs.visibility === "hidden" || cs.visibility === "collapse")) return false;
-    if (n === el && cs.width === "0px" && cs.height === "0px") return false;
+    if (n === el && parseFloat(cs.width) === 0 && parseFloat(cs.height) === 0) return false;
     const own = (n.style && n.style.visibility) || "";
     if (visibility === "" && own !== "" && own !== "inherit") visibility = own;
   }
@@ -10245,7 +10245,7 @@ async function tryPromptSelectorPrimitive(params: {
       // widget's stale/leftover popup elsewhere in the document; only a scope
       // that resolved to THIS widget's own inline subtree or its own
       // aria-controls/aria-owns target counts.
-      return { optionsPresent: true, searchable: !!searchInput, options, scopeIsDocument: scope === document };
+      return { optionsPresent: true, searchable: !!searchInput, options, scopeIsDocument: scope === document, collapsed: w.getAttribute("aria-expanded") === "false" };
     })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})`;
 
     type EnumerateOptionsResult = {
@@ -10253,6 +10253,7 @@ async function tryPromptSelectorPrimitive(params: {
       searchable?: boolean;
       options?: PromptOptionRead[];
       scopeIsDocument?: boolean;
+      collapsed?: boolean;
     };
     // Pre-check (single evaluate, no polling): a PRIOR primitive call on this
     // same unreloaded page may have already opened/drilled this exact widget's
@@ -10276,7 +10277,8 @@ async function tryPromptSelectorPrimitive(params: {
     const alreadyOpen =
       precheck?.optionsPresent === true &&
       (precheck.options ?? []).some((o) => o.visible !== false) &&
-      precheck.scopeIsDocument !== true;
+      precheck.scopeIsDocument !== true &&
+      precheck.collapsed !== true;
     if (!alreadyOpen) {
       // Phase 2 (real gesture): open the popup. These widgets' trigger requires a
       // genuine click — a synthetic dispatchEvent does not fire its handler.
