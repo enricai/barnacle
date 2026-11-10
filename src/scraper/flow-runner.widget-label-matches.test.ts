@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { widgetLabelMatches } from "./flow-runner";
+import { Window } from "happy-dom";
+import { hasUnfilledRequiredControlForStep, widgetLabelMatches } from "./flow-runner";
 
 describe("widgetLabelMatches", () => {
   it("matches token-subset labels in either direction", () => {
@@ -14,20 +15,16 @@ describe("widgetLabelMatches", () => {
 
 describe("required-control probe uses the shared label predicate", () => {
   it("matches a required empty control by token subset", async () => {
-    const { JSDOM } = await import("jsdom").catch(() => ({ JSDOM: null }) as never);
-    if (!JSDOM) return;
-    const dom = new JSDOM(
-      `<label for="p">Postal Code</label><input id="p" required value="">`,
-      { runScripts: "outside-only" }
-    );
+    const window = new Window();
+    window.document.body.innerHTML = `<label for="p">Postal Code</label><input id="p" required value="">`;
     const target = {
-      evaluate: async (expr: string) => dom.window.eval(expr),
+      evaluate: async (expr: string) =>
+        new window.Function("document", "window", "CSS", `return (${expr});`)(window.document, window, window.CSS),
     };
-    const { hasUnfilledRequiredControlForStep } = await import("./flow-runner");
-    expect(await hasUnfilledRequiredControlForStep(target as never, "Fill in the Shipping Postal Code")).toBe(true);
-    expect(await hasUnfilledRequiredControlForStep(target as never, "Fill in the Favorite Color")).toBe(false);
+    expect(await hasUnfilledRequiredControlForStep(target as never, "Select 'CA' for 'Postal Zip Code'")).toBe(true);
+    expect(await hasUnfilledRequiredControlForStep(target as never, "Select 'CA' for 'Favorite Color'")).toBe(false);
   });
   it("neutral example for widgetLabelMatches", () => {
-    expect(widgetLabelMatches("Postal Code", "Shipping Postal Code")).toBe(true);
+    expect(widgetLabelMatches("Postal Code", "Postal Zip Code")).toBe(true);
   });
 });
