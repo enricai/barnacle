@@ -530,7 +530,7 @@ async function probeRateLimit(
 export function isLoopbackOrLinkLocalHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (h === "localhost" || h.endsWith(".localhost")) return true;
-  if (h === "::1" || h === "::" || h.startsWith("fe80:")) return true;
+  if (h === "::1" || h === "::" || /^fe[89ab][0-9a-f]:/.test(h)) return true;
   if (/^127\./.test(h) || /^169\.254\./.test(h) || h === "0.0.0.0") return true;
   return /^::ffff:(127\.|169\.254\.|7f[0-9a-f]{2}:|a9fe:)/.test(h);
 }
