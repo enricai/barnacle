@@ -11104,6 +11104,13 @@ export async function hasUnfilledRequiredControlForStep(
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
         if (lab && lab.textContent && lab.textContent.trim()) return norm(lab.textContent);
       }
+      // aria-label (trailing placeholder stripped), as the enumerator reads it.
+      const al = el.getAttribute && el.getAttribute("aria-label");
+      if (al) {
+        const trailRx = new RegExp(emptyRxSrc.replace(/^\\^/, "[\\\\s\\\\-–—]+"), emptyRxFlags);
+        const bare = norm(al.replace(/\\s*required\\s*$/i, "").replace(trailRx, ""));
+        if (bare && !emptyRx.test(bare)) return bare;
+      }
       let node = el;
       for (let d = 0; d < 6 && node; d++) {
         const lbl = node.querySelector && node.querySelector("label,legend");
