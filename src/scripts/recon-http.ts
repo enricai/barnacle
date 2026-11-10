@@ -528,7 +528,12 @@ async function probeRateLimit(
  * this function must never silently slip through on a caller's say-so.
  */
 export function isLoopbackOrLinkLocalHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  // A fully-qualified name may end in the root dot ("localhost.") and still
+  // name the same host.
+  const h = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "");
   if (h === "localhost" || h.endsWith(".localhost")) return true;
   if (h === "::1" || h === "::" || /^fe[89ab][0-9a-f]:/.test(h)) return true;
   if (/^127\./.test(h) || /^169\.254\./.test(h) || h === "0.0.0.0") return true;
