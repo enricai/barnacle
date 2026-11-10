@@ -34,7 +34,7 @@ vi.mock("ai", async (importOriginal) => {
   return { ...actual, generateObject: (...args: unknown[]) => generateObject(...args) };
 });
 
-import { rephraseWithLLM } from "@/scraper/flow-runner";
+import { CLEAR_BEFORE_TYPE_CLAUSE, rephraseWithLLM } from "@/scraper/flow-runner";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 
 const REQUEST = {
@@ -219,15 +219,15 @@ describe("guardedObserve sensitive variables", () => {
 describe("rephraseWithLLM sensitive variables", () => {
   const model = { modelId: "test-model" } as unknown as RephraseModel;
 
-  function respond(instruction: string): void {
+  function respond(instruction: string, typesIntoField = false): void {
     generateObject.mockResolvedValue({
-      object: { outcome: "rewrite", instruction },
+      object: { outcome: "rewrite", instruction, typesIntoField },
       usage: { inputTokens: 1, outputTokens: 1 },
     });
   }
 
   it("keeps values out of the prompt and resolves tokens in the rewrite", async () => {
-    respond("Type %LastName% into the input labelled Last name");
+    respond("Type %LastName% into the input labelled Last name", true);
     const capture = vi.fn().mockResolvedValue(undefined);
 
     const rewritten = await rephraseWithLLM(
@@ -243,7 +243,9 @@ describe("rephraseWithLLM sensitive variables", () => {
     expect(prompt).toContain("'%LastName%'");
     expect(prompt).not.toMatch(VALUE_PATTERN);
     expect(JSON.stringify(capture.mock.calls)).not.toMatch(VALUE_PATTERN);
-    expect(rewritten).toBe("Type Sentinelson into the input labelled Last name");
+    expect(rewritten).toBe(
+      `Type Sentinelson into the input labelled Last name${CLEAR_BEFORE_TYPE_CLAUSE}`
+    );
   });
 
   it("rejects a rewrite that cites an unknown token", async () => {

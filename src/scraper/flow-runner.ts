@@ -3163,51 +3163,32 @@ export type CaptureFn = (input: LlmCallInput) => Promise<void>;
  * is the per-call data.
  */
 const REPHRASE_SYSTEM_PROMPT =
-  "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED.";
+  "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED. With outcome=rewrite, set typesIntoField to true only when the rewritten instruction types or enters text into an input field; set it to false for clicks, key presses (such as pressing Enter), selecting an option from a dropdown, radio or checkbox, and navigation. Do not write any wording about clearing or selecting the field's existing text: when typesIntoField is true, that is added for you.";
 
 /**
- * A rephrased "click the input, then type X" must replace, not append: Stagehand's
- * click-then-type leaves existing text in place, so a prefilled field ends up
- * holding the value twice. Appends an explicit select-all-and-replace clause to
- * instructions that type into a field. Idempotent; other instructions unchanged.
+ * Appended to a rephrased instruction that types into a field. Stagehand's
+ * click-then-type leaves existing text in place, so a prefilled field would
+ * end up holding the value twice.
+ */
+export const CLEAR_BEFORE_TYPE_CLAUSE =
+  ", first selecting all existing text in the field (Ctrl/Cmd+A) and replacing it so the value is not appended to existing content";
+
+/**
+ * Appends `CLEAR_BEFORE_TYPE_CLAUSE`. Whether an instruction types into a field
+ * is the rephrase LLM's `typesIntoField` answer, not something read from its
+ * words here. Idempotent.
  */
 export function withClearBeforeType(instruction: string): string {
-  // Quoted text is a value or a label, never an instruction: "Click the
-  // 'Enter Your Information' button" types nothing, and typing
-  // 'Please clear the backlog' still needs the field cleared first.
-  const unquoted = withoutQuotedText(instruction);
-  if (!typesIntoAField(unquoted)) return instruction;
-  if (
-    /select(ing)? all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(
-      unquoted
-    )
-  ) {
-    return instruction;
-  }
-  return `${instruction.replace(/[.\s]+$/, "")}, first selecting all existing text in the field (Ctrl/Cmd+A) and replacing it so the value is not appended to existing content`;
-}
-
-/** Drops quoted spans ('…', "…", ‘…’, “…”); an apostrophe inside a word is not a quote. */
-function withoutQuotedText(instruction: string): string {
-  return instruction.replace(/(^|[^\p{L}\p{N}])(['"‘“])[^'"‘’“”]*['"’”](?![\p{L}\p{N}])/gu, "$1");
-}
-
-/**
- * True when the instruction types text into a field: the verb "type", or
- * "enter"/"input" where a clause starts, which is where they are verbs.
- * "Press Enter" is a key press, and "the Email input" is a noun.
- */
-function typesIntoAField(unquoted: string): boolean {
-  if (/\b(type|typing)\b/i.test(unquoted)) return true;
-  return /(^|\bthen\b|\band\b|[,;:])\s*(enter|input)(ing)?\b(?!\s+(key|button)\b)/i.test(
-    unquoted.trim()
-  );
+  if (instruction.endsWith(CLEAR_BEFORE_TYPE_CLAUSE)) return instruction;
+  return `${instruction.replace(/[.\s]+$/, "")}${CLEAR_BEFORE_TYPE_CLAUSE}`;
 }
 
 /**
  * Attempt-5 of the step-healing cascade: when three mechanical retry variations
  * all fail, this is the last resort before the step is declared terminal. Exported
  * so tests can inject a fake capture sink without touching the browser session.
+ * Returns the instruction ready for act(): with `CLEAR_BEFORE_TYPE_CLAUSE`
+ * appended when the model answers `typesIntoField: true`.
  */
 export async function rephraseWithLLM(
   client: RephraseModel,
@@ -3401,7 +3382,8 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
 
     if (parsed.outcome === "impossible") return null;
     if (unresolvedTokens(parsed.instruction, variables).length > 0) return null;
-    return detokenize(parsed.instruction, variables);
+    const instruction = detokenize(parsed.instruction, variables);
+    return parsed.typesIntoField ? withClearBeforeType(instruction) : instruction;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logBillingErrorIfPresent(err);
@@ -15425,7 +15407,7 @@ export async function executeStepWithHealing(params: {
             instruction: a.instruction,
             verdict: a.errorMessage ?? failureReasons[i] ?? null,
           }));
-          let rephrased = await rephraseWithLLM(
+          const rephrased = await rephraseWithLLM(
             rephraseModel,
             step,
             triedSelectors,
@@ -15442,7 +15424,6 @@ export async function executeStepWithHealing(params: {
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
           } else {
-            rephrased = withClearBeforeType(rephrased);
             record.instruction = rephrased;
             params.abortSignal?.throwIfAborted();
             const preCentred = await preCentreNaturalLanguageClick(rephrased);

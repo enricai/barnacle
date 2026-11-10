@@ -195,6 +195,26 @@ describe("LLM prose fields are uncapped", () => {
     ).toBe(true);
   });
 
+  it("requires typesIntoField on a rephrase rewrite", () => {
+    expect(
+      REPHRASE_RESPONSE_SCHEMA.safeParse({ outcome: "rewrite", instruction: "Click Next" }).success
+    ).toBe(false);
+    expect(
+      REPHRASE_RESPONSE_SCHEMA.safeParse({
+        outcome: "rewrite",
+        instruction: "Click Next",
+        typesIntoField: "no",
+      }).success
+    ).toBe(false);
+    expect(
+      REPHRASE_RESPONSE_SCHEMA.safeParse({
+        outcome: "rewrite",
+        instruction: "Type a@example.com into the Email field",
+        typesIntoField: true,
+      }).success
+    ).toBe(true);
+  });
+
   it("still enforces min(1) and array count bounds", () => {
     expect(SUBMIT_VERDICT_SCHEMA.safeParse({ verified: false, reason: "" }).success).toBe(false);
     expect(

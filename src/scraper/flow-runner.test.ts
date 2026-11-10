@@ -9,6 +9,7 @@ vi.mock("ai", async (importOriginal) => {
 });
 
 import {
+  CLEAR_BEFORE_TYPE_CLAUSE,
   executeStepWithHealing,
   extractLivePageFormEvidence,
   flowHasSubmitSemantics,
@@ -736,7 +737,11 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // attempt-5 rephrase runs on this config rather than hitting the
     // "no rephrase model configured; skipping rephrase" short-circuit.
     generateObjectMock.mockResolvedValueOnce({
-      object: { instruction: "Click the alternate Submit control", outcome: "rewritten" },
+      object: {
+        outcome: "rewrite",
+        instruction: "Click the alternate Submit control",
+        typesIntoField: false,
+      },
       usage: { inputTokens: 10, outputTokens: 5 },
     });
     const fakeRephraseModel = { modelId: "bedrock-claude-fake" } as unknown as Parameters<
@@ -768,12 +773,9 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     expect(stagehandAct).toHaveBeenCalledTimes(2);
   });
 
-  it("applies withClearBeforeType to a click-then-type rephrase before the retry act() call", async () => {
+  async function retryInstructionFor(object: Record<string, unknown>): Promise<string> {
     generateObjectMock.mockResolvedValueOnce({
-      object: {
-        instruction: "Click the email input, then type a@example.com",
-        outcome: "rewritten",
-      },
+      object,
       usage: { inputTokens: 10, outputTokens: 5 },
     });
     const fakeRephraseModel = { modelId: "bedrock-claude-fake" } as unknown as Parameters<
@@ -795,9 +797,25 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       name: "StepVerificationError",
     });
     expect(stagehandAct).toHaveBeenCalledTimes(2);
-    const retryArg = String(stagehandAct.mock.calls[1]?.[0]);
-    expect(retryArg).toContain("Click the email input, then type a@example.com");
-    expect(retryArg).toMatch(/selecting all existing text/);
+    return String(stagehandAct.mock.calls[1]?.[0]);
+  }
+
+  it("sends the clear-before-type clause to the retry act() when the rephrase types into a field", async () => {
+    const retryArg = await retryInstructionFor({
+      outcome: "rewrite",
+      instruction: "Type a@example.com into the Email field",
+      typesIntoField: true,
+    });
+    expect(retryArg).toBe(`Type a@example.com into the Email field${CLEAR_BEFORE_TYPE_CLAUSE}`);
+  });
+
+  it("sends the rephrase to the retry act() unchanged when it does not type into a field", async () => {
+    const retryArg = await retryInstructionFor({
+      outcome: "rewrite",
+      instruction: "Press Enter to submit the form",
+      typesIntoField: false,
+    });
+    expect(retryArg).toBe("Press Enter to submit the form");
   });
 
   it("records a ranked-empty deep-locator attempt and continues the cascade instead of throwing synchronously", async () => {

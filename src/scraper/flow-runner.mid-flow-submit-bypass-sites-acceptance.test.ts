@@ -285,7 +285,7 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit at bypass sites
   beforeEach(() => {
     vi.clearAllMocks();
     generateObjectMock.mockResolvedValue({
-      object: { outcome: "rephrased", instruction: REPHRASED },
+      object: { outcome: "rewrite", instruction: REPHRASED, typesIntoField: false },
       usage: { inputTokens: 1, outputTokens: 1 },
     });
   });

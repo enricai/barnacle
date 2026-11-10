@@ -1,58 +1,78 @@
-import { describe, expect, it } from "vitest";
-import { withClearBeforeType } from "./flow-runner";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { RephraseModel } from "@/lib/llm/anthropic-client";
+
+const generateObject = vi.fn();
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return { ...actual, generateObject: (...args: unknown[]) => generateObject(...args) };
+});
+
+import { CLEAR_BEFORE_TYPE_CLAUSE, rephraseWithLLM, withClearBeforeType } from "./flow-runner";
+
+const model = { modelId: "test-model" } as unknown as RephraseModel;
+
+function respond(instruction: string, typesIntoField: boolean): void {
+  generateObject.mockResolvedValue({
+    object: { outcome: "rewrite", instruction, typesIntoField },
+    usage: { inputTokens: 1, outputTokens: 1 },
+  });
+}
+
+function rephrase(): Promise<string | null> {
+  return rephraseWithLLM(model, "Fill the Email field", [], [], ["no effect"], async () => {});
+}
+
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
 
 describe("withClearBeforeType", () => {
-  it("adds select-all/replace to a click-then-type rephrase", () => {
-    const out = withClearBeforeType("Click the email input, then type a@example.com");
-    expect(out).toMatch(/selecting all existing text/);
-    expect(out.startsWith("Click the email input, then type a@example.com")).toBe(true);
+  it("appends the clause once, replacing trailing punctuation", () => {
+    expect(withClearBeforeType("Type a@example.com into the Email field.")).toBe(
+      `Type a@example.com into the Email field${CLEAR_BEFORE_TYPE_CLAUSE}`
+    );
   });
+
   it("is idempotent", () => {
     const once = withClearBeforeType("Click the email input and type a@example.com");
     expect(withClearBeforeType(once)).toBe(once);
   });
-  it("leaves non-typing instructions unchanged", () => {
-    expect(withClearBeforeType("Click the Continue button")).toBe("Click the Continue button");
-  });
 });
 
-describe("withClearBeforeType only clears before typing into a field", () => {
-  it("leaves a key press unchanged", () => {
-    expect(withClearBeforeType("Press Enter to submit the form")).toBe(
-      "Press Enter to submit the form"
-    );
+describe("rephraseWithLLM clears before typing only when the model says the rewrite types into a field", () => {
+  beforeEach(() => {
+    generateObject.mockReset();
   });
-  it("leaves a click on a button whose label says Enter unchanged", () => {
-    expect(withClearBeforeType("Click the 'Enter Your Information' button")).toBe(
-      "Click the 'Enter Your Information' button"
-    );
+
+  it("appends the clause exactly once when typesIntoField is true", async () => {
+    respond("Type user@example.com into the Email field", true);
+    const out = await rephrase();
+    expect(out).toBe(`Type user@example.com into the Email field${CLEAR_BEFORE_TYPE_CLAUSE}`);
+    expect(occurrences(out ?? "", CLEAR_BEFORE_TYPE_CLAUSE)).toBe(1);
   });
-  it("leaves a click on an input field unchanged", () => {
-    expect(withClearBeforeType("Click the Email input field")).toBe("Click the Email input field");
+
+  it("does not append a second clause when the rewrite already ends with it", async () => {
+    respond(`Type user@example.com into the Email field${CLEAR_BEFORE_TYPE_CLAUSE}`, true);
+    const out = await rephrase();
+    expect(occurrences(out ?? "", CLEAR_BEFORE_TYPE_CLAUSE)).toBe(1);
   });
-  it("leaves a click on an input inside a form unchanged", () => {
-    expect(withClearBeforeType("Click the Email input in the form")).toBe(
-      "Click the Email input in the form"
-    );
+
+  it("leaves the instruction unchanged when typesIntoField is false", async () => {
+    respond("Click the Email field and enter user@example.com", false);
+    expect(await rephrase()).toBe("Click the Email field and enter user@example.com");
   });
-  it("clears when a click is followed by entering a value", () => {
-    expect(withClearBeforeType("Click the Email field and enter user@example.com")).toMatch(
-      /selecting all existing text/
-    );
+
+  it("leaves 'Press Enter to submit the form' unchanged when typesIntoField is false", async () => {
+    respond("Press Enter to submit the form", false);
+    expect(await rephrase()).toBe("Press Enter to submit the form");
   });
-  it("clears before typing into a field with no click", () => {
-    expect(withClearBeforeType("Type 'user@example.com' into the Email input field")).toMatch(
-      /selecting all existing text/
-    );
-  });
-  it("clears before entering a value into a field", () => {
-    expect(withClearBeforeType("Enter user@example.com in the Email field")).toMatch(
-      /selecting all existing text/
-    );
-  });
-  it("still clears when the typed value itself says clear", () => {
-    expect(withClearBeforeType("Click the notes box and type 'Please clear the backlog'")).toMatch(
-      /selecting all existing text/
-    );
+
+  it("returns null for outcome=impossible", async () => {
+    generateObject.mockResolvedValue({
+      object: { outcome: "impossible", reason: "nothing else to click" },
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    expect(await rephrase()).toBeNull();
   });
 });
