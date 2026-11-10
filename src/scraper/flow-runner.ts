@@ -942,13 +942,33 @@ const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
   return "";
 })`;
 /**
+ * A widget label with its trailing empty-value placeholder removed
+ * ("Country Code — Make a Selection —" -> "Country Code"). A trigger whose
+ * accessible name is its label plus the placeholder it shows until a value is
+ * picked names the same field as the bare label, whichever node (aria-label,
+ * aria-labelledby, <label>, ancestor text) supplied it. Derived from
+ * {@link PROMPT_EMPTY_VALUE_RX}'s own source — the leading anchor becomes a
+ * required separator run — so only a suffix after a real label is stripped; a
+ * label that is ONLY a placeholder is left as-is.
+ */
+const TRAILING_EMPTY_VALUE_RX = new RegExp(
+  PROMPT_EMPTY_VALUE_RX_SRC.replace(/^\^/, "[\\s\\-–—]+"),
+  PROMPT_EMPTY_VALUE_RX_FLAGS
+);
+export function stripTrailingEmptyPlaceholder(label: string): string {
+  const bare = label.replace(/\s+/g, " ").trim();
+  return bare.replace(TRAILING_EMPTY_VALUE_RX, "").trim() || bare;
+}
+/**
  * Does a widget's label match the question label? Substring either way, or
  * every token of the shorter label appears in the other ("Phone Country Code"
- * matches "Country Code"); unrelated labels share no full subset.
+ * matches "Country Code"); unrelated labels share no full subset. A trailing
+ * empty-value placeholder on the widget label is not part of the field name.
  */
 export function widgetLabelMatches(widgetLabel: string, questionLabel: string): boolean {
+  const field = stripTrailingEmptyPlaceholder(widgetLabel);
   const lc = (x: string): string => x.toLowerCase().replace(/\s+/g, " ").trim();
-  const wl = lc(widgetLabel);
+  const wl = lc(field);
   const ql = lc(questionLabel);
   if (wl && ql && (wl.includes(ql) || ql.includes(wl))) return true;
   const toks = (x: string): string[] =>
@@ -956,7 +976,7 @@ export function widgetLabelMatches(widgetLabel: string, questionLabel: string): 
       .toLowerCase()
       .split(/[^a-z0-9]+/)
       .filter(Boolean);
-  const a = toks(widgetLabel);
+  const a = toks(field);
   const b = toks(questionLabel);
   if (a.length === 0 || b.length === 0) return false;
   const [small, big] = a.length <= b.length ? [a, b] : [b, a];
@@ -10098,7 +10118,7 @@ async function tryPromptSelectorPrimitive(params: {
     // (case/whitespace-insensitive) label equality breaks the tie when unique.
     const exactNorm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
     const exactMatches = labelMatches.filter(
-      (c) => exactNorm(c.label) === exactNorm(questionLabel ?? "")
+      (c) => exactNorm(stripTrailingEmptyPlaceholder(c.label)) === exactNorm(questionLabel ?? "")
     );
     const chosen =
       labelMatches.length === 1
