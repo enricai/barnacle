@@ -189,15 +189,16 @@ function keyShape(body: unknown): KeyShape | null {
 }
 
 /**
- * True when the replayed body's response shape differs from the capture's. A
- * missing body on either side has nothing to compare. A body structured on one
- * side only (a JSON capture replayed as an HTML page or a bare value) differs.
+ * True when the replayed body's response shape differs from the capture's. Only
+ * a structured (JSON object/array) capture has a shape to reproduce, and a
+ * replay with no body read has nothing to compare. A structured capture replayed
+ * as an unstructured body (an HTML page, a bare value) differs.
  */
 export function responseShapeDiffers(captured: unknown, replayed: unknown): boolean {
-  if (captured == null || replayed == null) return false;
   const a = keyShape(captured);
+  if (!a || replayed == null) return false;
   const b = keyShape(replayed);
-  if (!a || !b) return (a === null) !== (b === null);
+  if (!b) return true;
   if (a.array !== b.array) return true;
   if (!a.keys || !b.keys) return false;
   const right = b.keys;

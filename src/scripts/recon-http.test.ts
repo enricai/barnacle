@@ -558,7 +558,7 @@ describe("replayCapture — response shape", () => {
   afterEach(() => vi.unstubAllGlobals());
   const cap = (keys: Record<string, unknown>) =>
     ({
-      url: "https://example.com/schedule.json",
+      url: "https://example.com/items.json",
       method: "GET",
       operationName: null,
       query: null,
@@ -571,9 +571,9 @@ describe("replayCapture — response shape", () => {
   it("fails and names the omitted header when keys differ", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ game_duration: 1 }), { status: 200 }))
+      vi.fn(async () => new Response(JSON.stringify({ item_count: 1 }), { status: 200 }))
     );
-    const r = await replayCapture("a.json", cap({ gameDuration: 1 }));
+    const r = await replayCapture("a.json", cap({ itemCount: 1 }));
     expect(r?.success).toBe(false);
     expect(r?.replayStatus).toBe(200);
     expect(r?.shapeDiffers).toBe(true);
@@ -581,11 +581,12 @@ describe("replayCapture — response shape", () => {
   });
 
   it.each([
-    ["array vs object top level", [{ gameDuration: 1 }], { gameDuration: 1 }],
-    ["array element keys differ", [{ gameDuration: 1 }], [{ game_duration: 1 }]],
+    ["array vs object top level", [{ itemCount: 1 }], { itemCount: 1 }],
+    ["array element keys differ", [{ itemCount: 1 }], [{ item_count: 1 }]],
     ["a later element has different keys", [{ a: 1 }, { a: 1 }], [{ a: 1 }, { b: 1 }]],
     ["HTML replay body", { a: 1 }, "<!doctype html><html><body>app</body></html>"],
-    ["JSON scalar replay body", { a: 1 }, "ok"],
+    ["string value replay body", { a: 1 }, "ok"],
+    ["empty replay body", { a: 1 }, ""],
   ])("flags a differing shape: %s", (_name, captured, replayed) => {
     expect(responseShapeDiffers(captured, replayed)).toBe(true);
   });
@@ -596,6 +597,9 @@ describe("replayCapture — response shape", () => {
     ["nested list empty in replay", { items: [{ a: 1 }] }, { items: [] }],
     ["both bodies unstructured", "<html>a</html>", "<html>b</html>"],
     ["no captured body", null, { a: 1 }],
+    ["unstructured capture, JSON replay", "<html>login</html>", { a: 1 }],
+    ["scalar capture, HTML replay", true, "<html>a</html>"],
+    ["no replay body read", { a: 1 }, null],
     [
       "optional nested key absent in replay",
       { slots: [{ id: 1, start: "09:00", discountCode: "X" }] },
@@ -614,17 +618,17 @@ describe("replayCapture — response shape", () => {
   it("names a lower-case captured header the replay omitted", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ friendly_id: 1 }), { status: 200 }))
+      vi.fn(async () => new Response(JSON.stringify({ display_name: 1 }), { status: 200 }))
     );
     const c = {
-      url: "https://example.com/schedule.json",
+      url: "https://example.com/items.json",
       method: "GET",
       operationName: null,
       query: null,
       variables: null,
       requestPostData: null,
       requestHeaders: { "accept-language": "fr" },
-      responseBody: { friendlyId: 1 },
+      responseBody: { displayName: 1 },
     } as never;
     const r = await replayCapture("a.json", c);
     expect(r?.success).toBe(false);
@@ -642,7 +646,7 @@ describe("replayCapture — response shape", () => {
           })
       )
     );
-    const r = await replayCapture("a.json", cap({ gameDuration: 1 }));
+    const r = await replayCapture("a.json", cap({ itemCount: 1 }));
     expect(r?.success).toBe(false);
     expect(r?.shapeDiffers).toBe(true);
     expect(r?.error).toContain("Key-Inflection");
@@ -651,9 +655,9 @@ describe("replayCapture — response shape", () => {
   it("passes when shape matches", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ gameDuration: 2 }), { status: 200 }))
+      vi.fn(async () => new Response(JSON.stringify({ itemCount: 2 }), { status: 200 }))
     );
-    const r = await replayCapture("a.json", cap({ gameDuration: 1 }));
+    const r = await replayCapture("a.json", cap({ itemCount: 1 }));
     expect(r?.success).toBe(true);
     expect(r?.shapeDiffers).toBe(false);
   });
