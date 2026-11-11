@@ -42,6 +42,7 @@ import {
   parseMethodsFilter,
   probeAuxiliaryEndpoints,
   replayCapture,
+  responseShapeDiffers,
   selectAuxFixtureCandidates,
   selectRateLimitTargets,
   selectReplayCaptures,
@@ -573,9 +574,48 @@ describe("replayCapture — response shape", () => {
       vi.fn(async () => new Response(JSON.stringify({ game_duration: 1 }), { status: 200 }))
     );
     const r = await replayCapture("a.json", cap({ gameDuration: 1 }));
-    expect(r?.success).toBe(true);
+    expect(r?.success).toBe(false);
+    expect(r?.replayStatus).toBe(200);
     expect(r?.shapeDiffers).toBe(true);
     expect(r?.omittedCaptureHeaders).toContain("key-inflection");
+  });
+
+  it.each([
+    ["array vs object top level", [{ gameDuration: 1 }], { gameDuration: 1 }],
+    ["array element keys differ", [{ gameDuration: 1 }], [{ game_duration: 1 }]],
+    ["nested array element keys differ", { rooms: [{ roomId: 1 }] }, { rooms: [{ room_id: 1 }] }],
+    ["a later element has different keys", [{ a: 1 }, { a: 1 }], [{ a: 1 }, { b: 1 }]],
+  ])("flags a differing shape: %s", (_name, captured, replayed) => {
+    expect(responseShapeDiffers(captured, replayed)).toBe(true);
+  });
+
+  it.each([
+    ["same keys, different values", [{ a: 1 }], [{ a: 2 }]],
+    ["replay returns an empty list", [{ a: 1 }], []],
+    ["nested list empty in replay", { items: [{ a: 1 }] }, { items: [] }],
+    ["non-JSON replay body", { a: 1 }, "<html>"],
+  ])("does not flag a comparable-or-keyless pair: %s", (_name, captured, replayed) => {
+    expect(responseShapeDiffers(captured, replayed)).toBe(false);
+  });
+
+  it("names a lower-case captured header the replay omitted", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ friendly_id: 1 }), { status: 200 }))
+    );
+    const c = {
+      url: "https://example.com/schedule.json",
+      method: "GET",
+      operationName: null,
+      query: null,
+      variables: null,
+      requestPostData: null,
+      requestHeaders: { "accept-language": "fr" },
+      responseBody: { friendlyId: 1 },
+    } as never;
+    const r = await replayCapture("a.json", c);
+    expect(r?.success).toBe(false);
+    expect(r?.omittedCaptureHeaders).toEqual(["accept-language"]);
   });
 
   it("passes when shape matches", async () => {

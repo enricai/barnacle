@@ -57,6 +57,7 @@ import {
   type ReplayResult,
   readOwnBackendHostnames,
   replayPassed,
+  replayReachable,
   resolveLatestReconRunRoot,
 } from "@/scripts/recon-shared";
 
@@ -164,25 +165,50 @@ function parseBody(body: unknown): unknown {
   }
 }
 
-/** Collects nested key paths (arrays by first element, depth-capped) into out. */
-function collectKeyPaths(v: unknown, prefix: string, depth: number, out: Set<string>): void {
-  if (Array.isArray(v)) v = v[0];
+interface KeyShape {
+  paths: Set<string>;
+  /** Array paths with no elements: nothing to compare beneath them. */
+  emptyArrays: Set<string>;
+}
+
+/**
+ * Collects nested key paths. Arrays contribute a `[]` marker plus the union of
+ * their elements' keys, so an array body and an object body never look alike.
+ */
+function collectKeyPaths(v: unknown, prefix: string, depth: number, out: KeyShape): void {
   if (!v || typeof v !== "object" || depth > 6) return;
+  if (Array.isArray(v)) {
+    const elementPrefix = `${prefix}[]`;
+    if (v.length === 0) {
+      out.emptyArrays.add(elementPrefix);
+      return;
+    }
+    out.paths.add(elementPrefix);
+    for (const element of v) collectKeyPaths(element, elementPrefix, depth + 1, out);
+    return;
+  }
   for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
     const path = prefix ? `${prefix}.${k}` : k;
-    out.add(path);
+    out.paths.add(path);
     collectKeyPaths(child, path, depth + 1, out);
   }
 }
 
-/** Sorted nested key-path set of a JSON body; null when keyless. */
-function keyShape(body: unknown): string[] | null {
+/** Nested key shape of a JSON body; null when it carries no keys to compare. */
+function keyShape(body: unknown): KeyShape | null {
   const v = parseBody(body);
-  const first = Array.isArray(v) ? v[0] : v;
-  if (!first || typeof first !== "object" || Array.isArray(first)) return null;
-  const out = new Set<string>();
-  collectKeyPaths(first, "", 0, out);
-  return [...out].sort();
+  if (!v || typeof v !== "object") return null;
+  const out: KeyShape = { paths: new Set(), emptyArrays: new Set() };
+  collectKeyPaths(v, "", 0, out);
+  return out.paths.size > 0 ? out : null;
+}
+
+/** Paths of `shape` that are comparable against `other` (not under an array `other` left empty). */
+function comparablePaths(shape: KeyShape, other: KeyShape): string[] {
+  const empties = [...other.emptyArrays];
+  return [...shape.paths]
+    .filter((p) => !empties.some((e) => p === e || p.startsWith(`${e}.`) || p.startsWith(`${e}[`)))
+    .sort();
 }
 
 /** True when both bodies have key shapes (compared recursively) and those differ. */
@@ -190,7 +216,9 @@ export function responseShapeDiffers(captured: unknown, replayed: unknown): bool
   const a = keyShape(captured);
   const b = keyShape(replayed);
   if (!a || !b) return false;
-  return a.length !== b.length || a.some((k, i) => k !== b[i]);
+  const left = comparablePaths(a, b);
+  const right = comparablePaths(b, a);
+  return left.length !== right.length || left.some((k, i) => k !== right[i]);
 }
 
 /** Captured request header names (lowercased) the replay did not send. */
@@ -268,9 +296,9 @@ export async function replayCapture(
     const statusOk = response.status >= 200 && response.status < 300;
     const shapeDiffers = statusOk && responseShapeDiffers(capture.responseBody, replayBody);
     const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, headers);
-    // success stays the transport verdict so rate-limit/aux-fixture consumers keep
-    // their inputs; shape divergence is carried in shapeDiffers (see replayPassed).
-    const success = statusOk;
+    // A replay passes only when its response matches the capture's shape; a 2xx
+    // with a different shape means a request header it omitted is load-bearing.
+    const success = statusOk && !shapeDiffers;
 
     if (shapeDiffers) {
       logger.warn(
@@ -626,7 +654,7 @@ export function selectRateLimitTargets(
   const seenEndpoints = new Set<string>();
   let skipped = 0;
   for (const replay of replays) {
-    if (!replay.success) continue;
+    if (!replayReachable(replay)) continue;
     if (!isReplayResultSafe(replay)) continue;
     if (isNoiseUrl(replay.url)) {
       skipped++;

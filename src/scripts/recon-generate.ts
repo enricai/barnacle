@@ -58,6 +58,7 @@ import {
   readCaptureDir,
   readJsonDir,
   readOwnBackendHostnames,
+  replayReachable,
   resolveLatestReconRunRoot,
 } from "@/scripts/recon-shared";
 
@@ -2030,7 +2031,7 @@ export function deriveRequestHeaders(
   // instead of the primary host's.
   primaryHost: string | null = null
 ): Record<string, string> {
-  const successfulUrls = new Set(replays.filter((r) => r.success).map((r) => endpointKey(r.url)));
+  const successfulUrls = new Set(replays.filter(replayReachable).map((r) => endpointKey(r.url)));
 
   // Prefer ACTION captures (non-GET 2xx, non-noise) as the authoritative
   // header source. Replay-matched static-asset GETs lack the API-specific
@@ -2099,7 +2100,9 @@ export function deriveRequestHeaders(
     if (count < relevantCaptures.length && !loadBearing.has(lower)) continue;
     if (isVolatileHeaderName(lower)) continue;
     if (Object.keys(baseline).some((k) => k.toLowerCase() === lower)) continue;
-    for (const c of loadBearing.has(lower) ? (loadBearingSources.get(lower) ?? []) : headerSources) {
+    for (const c of loadBearing.has(lower)
+      ? (loadBearingSources.get(lower) ?? [])
+      : headerSources) {
       const original = Object.keys(c.requestHeaders).find((h) => h.toLowerCase() === lower);
       if (original) {
         baseline[original] = c.requestHeaders[original]!;

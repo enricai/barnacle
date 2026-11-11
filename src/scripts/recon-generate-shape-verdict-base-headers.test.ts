@@ -27,6 +27,9 @@ describe("deriveRequestHeaders consumes the replay shape verdict", () => {
     const replays = [
       {
         url: URL1,
+        method: "POST",
+        operationName: null,
+        replayStatus: 200,
         success: false,
         shapeDiffers: true,
         omittedCaptureHeaders: ["key-inflection"],
