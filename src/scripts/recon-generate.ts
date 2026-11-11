@@ -2074,12 +2074,21 @@ export function deriveRequestHeaders(
   // without them returned a different response shape, so keep them even when
   // not every relevant capture carries them.
   const loadBearing = new Set<string>();
+  // Per load-bearing header, the captures whose replay diverged without it.
+  const loadBearingSources = new Map<string, Capture[]>();
   for (const r of replays) {
     if (!r.shapeDiffers) continue;
+    const own = captures.filter(
+      (c) =>
+        c.url === r.url &&
+        c.method === r.method &&
+        (c.operationName ?? null) === (r.operationName ?? null)
+    );
     for (const h of r.omittedCaptureHeaders ?? []) {
       const lower = h.toLowerCase();
       if (IGNORE_REQUEST_HEADERS.has(lower)) continue;
       loadBearing.add(lower);
+      loadBearingSources.set(lower, [...(loadBearingSources.get(lower) ?? []), ...own]);
       if (!counts.has(lower)) counts.set(lower, 0);
     }
   }
@@ -2090,7 +2099,7 @@ export function deriveRequestHeaders(
     if (count < relevantCaptures.length && !loadBearing.has(lower)) continue;
     if (isVolatileHeaderName(lower)) continue;
     if (Object.keys(baseline).some((k) => k.toLowerCase() === lower)) continue;
-    for (const c of loadBearing.has(lower) ? captures : headerSources) {
+    for (const c of loadBearing.has(lower) ? (loadBearingSources.get(lower) ?? []) : headerSources) {
       const original = Object.keys(c.requestHeaders).find((h) => h.toLowerCase() === lower);
       if (original) {
         baseline[original] = c.requestHeaders[original]!;

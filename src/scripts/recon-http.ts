@@ -154,25 +154,41 @@ export function parseMethodsFilter(raw: string | undefined): Set<string> | null 
   return parts.length > 0 ? new Set(parts) : null;
 }
 
-/** Sorted top-level key set of a JSON body (first element for arrays); null when keyless. */
-function topLevelKeys(body: unknown): string[] | null {
-  let v = body;
-  if (typeof v === "string") {
-    try {
-      v = JSON.parse(v);
-    } catch {
-      return null;
-    }
+/** Parses a JSON body (string or value); undefined when unparseable. */
+function parseBody(body: unknown): unknown {
+  if (typeof body !== "string") return body;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
   }
-  if (Array.isArray(v)) v = v[0];
-  if (v && typeof v === "object" && !Array.isArray(v)) return Object.keys(v).sort();
-  return null;
 }
 
-/** True when both bodies have key sets and those sets differ. */
+/** Collects nested key paths (arrays by first element, depth-capped) into out. */
+function collectKeyPaths(v: unknown, prefix: string, depth: number, out: Set<string>): void {
+  if (Array.isArray(v)) v = v[0];
+  if (!v || typeof v !== "object" || depth > 6) return;
+  for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    out.add(path);
+    collectKeyPaths(child, path, depth + 1, out);
+  }
+}
+
+/** Sorted nested key-path set of a JSON body; null when keyless. */
+function keyShape(body: unknown): string[] | null {
+  const v = parseBody(body);
+  const first = Array.isArray(v) ? v[0] : v;
+  if (!first || typeof first !== "object" || Array.isArray(first)) return null;
+  const out = new Set<string>();
+  collectKeyPaths(first, "", 0, out);
+  return [...out].sort();
+}
+
+/** True when both bodies have key shapes (compared recursively) and those differ. */
 export function responseShapeDiffers(captured: unknown, replayed: unknown): boolean {
-  const a = topLevelKeys(captured);
-  const b = topLevelKeys(replayed);
+  const a = keyShape(captured);
+  const b = keyShape(replayed);
   if (!a || !b) return false;
   return a.length !== b.length || a.some((k, i) => k !== b[i]);
 }
