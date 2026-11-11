@@ -583,8 +583,9 @@ describe("replayCapture — response shape", () => {
   it.each([
     ["array vs object top level", [{ gameDuration: 1 }], { gameDuration: 1 }],
     ["array element keys differ", [{ gameDuration: 1 }], [{ game_duration: 1 }]],
-    ["nested array element keys differ", { rooms: [{ roomId: 1 }] }, { rooms: [{ room_id: 1 }] }],
     ["a later element has different keys", [{ a: 1 }, { a: 1 }], [{ a: 1 }, { b: 1 }]],
+    ["HTML replay body", { a: 1 }, "<!doctype html><html><body>app</body></html>"],
+    ["JSON scalar replay body", { a: 1 }, "ok"],
   ])("flags a differing shape: %s", (_name, captured, replayed) => {
     expect(responseShapeDiffers(captured, replayed)).toBe(true);
   });
@@ -593,7 +594,19 @@ describe("replayCapture — response shape", () => {
     ["same keys, different values", [{ a: 1 }], [{ a: 2 }]],
     ["replay returns an empty list", [{ a: 1 }], []],
     ["nested list empty in replay", { items: [{ a: 1 }] }, { items: [] }],
-    ["non-JSON replay body", { a: 1 }, "<html>"],
+    ["both bodies unstructured", "<html>a</html>", "<html>b</html>"],
+    ["no captured body", null, { a: 1 }],
+    [
+      "optional nested key absent in replay",
+      { slots: [{ id: 1, start: "09:00", discountCode: "X" }] },
+      { slots: [{ id: 2, start: "10:00" }] },
+    ],
+    [
+      "extra optional nested key in replay",
+      { user: { id: 1 } },
+      { user: { id: 2, nickname: "n" } },
+    ],
+    ["map keyed by ids", { byId: { "1001": { n: 1 } } }, { byId: { "2001": { n: 1 } } }],
   ])("does not flag a comparable-or-keyless pair: %s", (_name, captured, replayed) => {
     expect(responseShapeDiffers(captured, replayed)).toBe(false);
   });
@@ -616,6 +629,23 @@ describe("replayCapture — response shape", () => {
     const r = await replayCapture("a.json", c);
     expect(r?.success).toBe(false);
     expect(r?.omittedCaptureHeaders).toEqual(["accept-language"]);
+  });
+
+  it("fails a JSON capture whose 2xx replay is an HTML page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("<!doctype html><html><body>app</body></html>", {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          })
+      )
+    );
+    const r = await replayCapture("a.json", cap({ gameDuration: 1 }));
+    expect(r?.success).toBe(false);
+    expect(r?.shapeDiffers).toBe(true);
+    expect(r?.error).toContain("Key-Inflection");
   });
 
   it("passes when shape matches", async () => {

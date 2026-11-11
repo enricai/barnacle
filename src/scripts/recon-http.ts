@@ -165,60 +165,43 @@ function parseBody(body: unknown): unknown {
   }
 }
 
-interface KeyShape {
-  paths: Set<string>;
-  /** Array paths with no elements: nothing to compare beneath them. */
-  emptyArrays: Set<string>;
-}
-
 /**
- * Collects nested key paths. Arrays contribute a `[]` marker plus the union of
- * their elements' keys, so an array body and an object body never look alike.
+ * A structured body's response shape: its top-level key set. A top-level array
+ * has no keys of its own, so its shape is the union of its elements' keys, and
+ * an empty array has no element to read that from (`keys` is null). Keys below
+ * the top level are data (optional fields, id-keyed maps), not shape.
  */
-function collectKeyPaths(v: unknown, prefix: string, depth: number, out: KeyShape): void {
-  if (!v || typeof v !== "object") return;
-  if (Array.isArray(v)) {
-    const elementPrefix = `${prefix}[]`;
-    if (v.length === 0) {
-      out.emptyArrays.add(elementPrefix);
-      return;
-    }
-    out.paths.add(elementPrefix);
-    for (const element of v) collectKeyPaths(element, elementPrefix, depth + 1, out);
-    return;
-  }
-  for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
-    const path = prefix ? `${prefix}.${k}` : k;
-    out.paths.add(path);
-    collectKeyPaths(child, path, depth + 1, out);
-  }
+interface KeyShape {
+  array: boolean;
+  keys: Set<string> | null;
 }
 
-/** Nested key shape of a JSON object/array body; null when the body is not structured. */
+function objectKeys(v: unknown): string[] {
+  return v && typeof v === "object" && !Array.isArray(v) ? Object.keys(v) : [];
+}
+
+/** Response shape of a JSON object/array body; null when the body is not structured. */
 function keyShape(body: unknown): KeyShape | null {
   const v = parseBody(body);
   if (!v || typeof v !== "object") return null;
-  const out: KeyShape = { paths: new Set(), emptyArrays: new Set() };
-  collectKeyPaths(v, "", 0, out);
-  return out;
+  if (!Array.isArray(v)) return { array: false, keys: new Set(Object.keys(v)) };
+  return { array: true, keys: v.length > 0 ? new Set(v.flatMap(objectKeys)) : null };
 }
 
-/** Paths of `shape` that are comparable against `other` (not under an array `other` left empty). */
-function comparablePaths(shape: KeyShape, other: KeyShape): string[] {
-  const empties = [...other.emptyArrays];
-  return [...shape.paths]
-    .filter((p) => !empties.some((e) => p === e || p.startsWith(`${e}.`) || p.startsWith(`${e}[`)))
-    .sort();
-}
-
-/** True when both bodies have key shapes (compared recursively) and those differ. */
+/**
+ * True when the replayed body's response shape differs from the capture's. A
+ * missing body on either side has nothing to compare. A body structured on one
+ * side only (a JSON capture replayed as an HTML page or a bare value) differs.
+ */
 export function responseShapeDiffers(captured: unknown, replayed: unknown): boolean {
+  if (captured == null || replayed == null) return false;
   const a = keyShape(captured);
   const b = keyShape(replayed);
-  if (!a || !b) return false;
-  const left = comparablePaths(a, b);
-  const right = comparablePaths(b, a);
-  return left.length !== right.length || left.some((k, i) => k !== right[i]);
+  if (!a || !b) return (a === null) !== (b === null);
+  if (a.array !== b.array) return true;
+  if (!a.keys || !b.keys) return false;
+  const right = b.keys;
+  return a.keys.size !== right.size || [...a.keys].some((k) => !right.has(k));
 }
 
 /** Captured request header names (lowercased) the replay did not send. */

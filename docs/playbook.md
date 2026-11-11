@@ -398,7 +398,11 @@ add headers one at a time; the one that fixes it was load-bearing.
 
 A status-only pass is insufficient: content-negotiation headers (e.g. a
 key-casing or API-version header) can change the response body while still
-returning 200. Each replay's response shape is compared with its capture. When
+returning 200. Each replay's response shape is compared with its capture: the
+top-level key set of a JSON object, or the union of the element keys of a
+top-level JSON array. Nested keys are data (optional fields, id-keyed maps) and
+are not compared. A JSON capture whose replay is not JSON (an HTML page, a bare
+value) differs in shape. When
 `recon:http` logs `response shape differs from the browser capture; a request
 header may be load-bearing: <headers>`, the replay does not count as passed; the
 listed headers are the captured ones the replay omitted. Add them back to the
