@@ -2070,12 +2070,27 @@ export function deriveRequestHeaders(
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   };
 
+  // Headers a shape-diverging replay omitted are load-bearing: the replay
+  // without them returned a different response shape, so keep them even when
+  // not every relevant capture carries them.
+  const loadBearing = new Set<string>();
+  for (const r of replays) {
+    if (!r.shapeDiffers) continue;
+    for (const h of r.omittedCaptureHeaders ?? []) {
+      const lower = h.toLowerCase();
+      if (IGNORE_REQUEST_HEADERS.has(lower)) continue;
+      loadBearing.add(lower);
+      if (!counts.has(lower)) counts.set(lower, 0);
+    }
+  }
+
   // Add any request header present in all relevant captures, preserving original casing.
+  const headerSources = relevantCaptures.length > 0 ? relevantCaptures : captures;
   for (const [lower, count] of counts) {
-    if (count < relevantCaptures.length) continue;
+    if (count < relevantCaptures.length && !loadBearing.has(lower)) continue;
     if (isVolatileHeaderName(lower)) continue;
     if (Object.keys(baseline).some((k) => k.toLowerCase() === lower)) continue;
-    for (const c of relevantCaptures) {
+    for (const c of loadBearing.has(lower) ? captures : headerSources) {
       const original = Object.keys(c.requestHeaders).find((h) => h.toLowerCase() === lower);
       if (original) {
         baseline[original] = c.requestHeaders[original]!;
