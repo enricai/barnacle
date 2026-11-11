@@ -193,6 +193,10 @@ export interface ReplayResult {
   replayBody: unknown;
   success: boolean;
   error: string | null;
+  /** True when the replay response's key shape differs from the browser capture. */
+  shapeDiffers?: boolean;
+  /** Captured request headers that the replay did not send (possible load-bearing headers). */
+  omittedCaptureHeaders?: string[];
 }
 
 export interface RateLimitFinding {

@@ -54,6 +54,7 @@ import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   adoptReconRunRoot,
+  type ReplayResult,
   readOwnBackendHostnames,
   resolveLatestReconRunRoot,
 } from "@/scripts/recon-shared";
@@ -86,18 +87,7 @@ interface Capture {
   variables: unknown;
 }
 
-export interface ReplayResult {
-  sourceCapture: string;
-  url: string;
-  method: string;
-  operationName: string | null;
-  requestBody: string | null;
-  replayStatus: number | null;
-  replayHeaders: Record<string, string>;
-  replayBody: unknown;
-  success: boolean;
-  error: string | null;
-}
+export type { ReplayResult };
 
 interface RateLimitFinding {
   endpoint: string;
