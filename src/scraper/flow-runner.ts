@@ -10027,8 +10027,17 @@ async function tryPromptSelectorPrimitive(params: {
       const byFor = sel.id ? document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(sel.id) : sel.id) + "']") : null;
       return byFor || sel.closest("label");
     };
-    for (const sel of widgets) {
-      if (sel.tagName !== "SELECT" || layerHost.has(sel)) continue;
+    // Every labelled native select anchors a pairing attempt, not only one in
+    // the trigger union: whether the field is layered is decided by its
+    // structure (one label, one rendered non-select trigger), never by the
+    // select's own popup link or by how it is hidden. A covered select with no
+    // aria-controls/aria-owns is otherwise owned by neither primitive: the
+    // select primitive finds no matching option in it, and its field is never
+    // collapsed onto the rendered trigger.
+    const layerAnchors = widgets.filter((w) => w.tagName === "SELECT");
+    for (const s of document.querySelectorAll("select")) if (!layerAnchors.includes(s)) layerAnchors.push(s);
+    for (const sel of layerAnchors) {
+      if (layerHost.has(sel)) continue;
       const lab = labelElOf(sel);
       const labText = lab ? lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120) : "";
       if (!labText) continue;
