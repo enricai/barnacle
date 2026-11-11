@@ -200,19 +200,23 @@ Rate-limit probe not yet run.
 
 ## Codified Headers (Step 4b)
 
-_Captured request headers omitted by replays whose response shape differed from the capture._
-_A header omitted in a diverging replay is likely load-bearing. Commit the load-bearing subset_
-_as `BASE_HEADERS` in `src/sites/<id>/contract.ts`._
+_Captured request headers that, re-sent, restored the response shape of a replay that diverged_
+_from its capture: proven load-bearing. Commit them as `BASE_HEADERS` in `src/sites/<id>/contract.ts`,_
+_except credentials and conditionals, which are obtained per call, never committed._
 
-| Header | Shape-diverging replays omitting it (of 3) | Likely load-bearing? |
-|--------|--------------------------------------------------------|----------------------|
+| Header | Shape-diverging replays it restored (of 3) | Load-bearing? |
+|--------|-----------------------------------------------|---------------|
 | `x-example-case` | 3 | **Yes** |
-| `x-example-version` | 2 | **Yes** |
+| `authorization` | 1 | **Yes** (credential: obtain per call) |
 
-When no replay diverged in shape the section reads "No request headers implicated".
-A replay passes only if its status is OK **and** its response shape matches the capture;
-`recon:http` warns `response shape differs from the browser capture; a request header may be
-load-bearing: <headers>` naming the captured headers the replay omitted.
+When no replay diverged in shape the section reads "No request headers implicated"; when replays
+diverged but re-sending their omitted headers restored none of them, it says so.
+A replay passes only if its status is OK **and** its response shape matches the capture.
+For a replay whose shape differs, `recon:http` re-sends it with each captured header the replay
+omitted added back, one at a time; if none restores the shape alone, it adds them all back and,
+when that restores it, drops them one at a time to a minimal set. It warns `response shape differs
+from the browser capture; a request header may be load-bearing: <omitted headers>; restored by
+re-sending: <headers>` (or `no omitted header restores it when re-sent`).
 
 ## Hazards
 

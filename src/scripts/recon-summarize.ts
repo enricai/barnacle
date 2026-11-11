@@ -23,6 +23,7 @@ import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
 import {
   type Capture,
+  CREDENTIAL_REQUEST_HEADERS,
   type RateLimitFinding,
   type ReplayResult,
   readCaptureDir,
@@ -30,7 +31,7 @@ import {
   replayPassed,
   replayReachable,
   resolveLatestReconRunRoot,
-  tallyOmittedRequestHeaders,
+  tallyShapeRestoringHeaders,
 } from "@/scripts/recon-shared";
 
 const logger = getScriptLogger("recon-summarize");
@@ -212,7 +213,7 @@ async function main(): Promise<void> {
           })
           .join("\n");
 
-  const headerCounts = tallyOmittedRequestHeaders(replays);
+  const headerCounts = tallyShapeRestoringHeaders(replays);
   const divergedCount = replays.filter((r) => r.shapeDiffers).length;
 
   const lines: string[] = [
@@ -270,17 +271,22 @@ async function main(): Promise<void> {
     `## Codified Headers (Step 4b)`,
     ``,
     headerCounts.size === 0
-      ? "_No request headers implicated — no replay diverged in response shape from its capture._"
+      ? divergedCount === 0
+        ? "_No request headers implicated — no replay diverged in response shape from its capture._"
+        : `_No request headers implicated — ${divergedCount} replay(s) diverged in response shape, but re-sending the captured headers they omitted did not restore it._`
       : [
-          `_Captured request headers omitted by replays whose response shape differed from the capture._`,
-          `_A header omitted in a diverging replay is likely load-bearing. Commit the load-bearing subset_`,
-          `_as \`BASE_HEADERS\` in \`src/sites/<id>/contract.ts\`._`,
+          `_Captured request headers that, re-sent, restored the response shape of a replay that diverged_`,
+          `_from its capture: proven load-bearing. Commit them as \`BASE_HEADERS\` in \`src/sites/<id>/contract.ts\`,_`,
+          `_except credentials and conditionals, which are obtained per call, never committed._`,
           ``,
-          `| Header | Shape-diverging replays omitting it (of ${divergedCount}) | Likely load-bearing? |`,
-          `|--------|--------------------------------------------------------|----------------------|`,
+          `| Header | Shape-diverging replays it restored (of ${divergedCount}) | Load-bearing? |`,
+          `|--------|-----------------------------------------------|---------------|`,
           ...[...headerCounts.entries()]
             .sort((a, b) => b[1] - a[1])
-            .map(([header, count]) => `| \`${header}\` | ${count} | **Yes** |`),
+            .map(
+              ([header, count]) =>
+                `| \`${header}\` | ${count} | ${CREDENTIAL_REQUEST_HEADERS.has(header) ? "**Yes** (credential: obtain per call)" : "**Yes**"} |`
+            ),
         ].join("\n"),
     ``,
     `## Hazards`,

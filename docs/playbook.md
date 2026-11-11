@@ -405,8 +405,11 @@ are not compared. A JSON capture whose replay is not JSON (an HTML page, a bare
 value) differs in shape. When
 `recon:http` logs `response shape differs from the browser capture; a request
 header may be load-bearing: <headers>`, the replay does not count as passed; the
-listed headers are the captured ones the replay omitted. Add them back to the
-replay and re-run; the ones that restore the shape are load-bearing.
+listed headers are the captured ones the replay omitted. `recon:http` then
+re-sends the replay with each of them added back, one at a time (and, if none
+restores the shape alone, all of them, reduced to a minimal set), and records
+the ones that restore the shape as `shapeRestoringHeaders`: those, and only
+those, are load-bearing.
 
 Each replay is saved to `<run-dir>/replays/` with status, headers, body, and
 a link back to the source capture. Every replay returning 200 with a matching
@@ -481,9 +484,13 @@ The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.
   from UI-driven schema churn.
 - **4b — Verify load-bearing headers.** `recon-generate` derives
   `BASE_HEADERS` from the request headers present in every relevant capture
-  (the flow's action captures, else the captures whose replay got a 2xx),
-  plus the captured request headers omitted by replays whose response shape
-  diverged from the capture (the Codified Headers table).
+  (the flow's action captures, else the captures whose endpoint's replay got a
+  2xx), plus the headers re-replay proved restore a diverging replay's
+  response shape (the Codified Headers table). Credentials and conditionals
+  (`Authorization`, `Cookie`, `If-None-Match` and the other `If-*` headers)
+  are never frozen into it, even when proven load-bearing: the generated
+  contract carries a TODO to send each one per call from where the session
+  obtains it.
   Remove anything decorative; extra headers widen the bot-detection
   fingerprint surface.
 - **4c — Verify the rate-limit ceiling.** `recon-generate` sets Bottleneck's

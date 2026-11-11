@@ -197,6 +197,11 @@ export interface ReplayResult {
   shapeDiffers?: boolean;
   /** Captured request headers that the replay did not send (possible load-bearing headers). */
   omittedCaptureHeaders?: string[];
+  /**
+   * Of the omitted headers (as captured), those proven by re-replay to restore the
+   * capture's response shape. Empty when re-sending them does not restore it.
+   */
+  shapeRestoringHeaders?: string[];
 }
 
 export interface RateLimitFinding {
@@ -307,16 +312,33 @@ export function replayPassed(r: ReplayResult): boolean {
 }
 
 /**
- * Counts, per captured request header, how many shape-diverging replays omitted it.
- * A header omitted by a replay whose response shape differs from the capture is a
- * candidate load-bearing request header (e.g. a content-negotiation header).
+ * Request headers that carry a credential or a cache conditional: their captured
+ * value belongs to one recon session (a token, a cookie jar, a stale ETag or
+ * date), so generated code never freezes one into BASE_HEADERS, even when
+ * re-replay proves it load-bearing; it must be obtained per call.
  */
-export function tallyOmittedRequestHeaders(replays: ReplayResult[]): Map<string, number> {
+export const CREDENTIAL_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "if-none-match",
+  "if-match",
+  "if-modified-since",
+  "if-unmodified-since",
+  "if-range",
+]);
+
+/**
+ * Counts, per captured request header (lowercased), how many shape-diverging
+ * replays it restored when re-sent (`shapeRestoringHeaders`): the request headers
+ * re-replay proved load-bearing.
+ */
+export function tallyShapeRestoringHeaders(replays: ReplayResult[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const replay of replays) {
     if (!replay.shapeDiffers) continue;
     for (const header of new Set(
-      (replay.omittedCaptureHeaders ?? []).map((h) => h.toLowerCase())
+      (replay.shapeRestoringHeaders ?? []).map((h) => h.toLowerCase())
     )) {
       counts.set(header, (counts.get(header) ?? 0) + 1);
     }

@@ -33,11 +33,18 @@ describe("deriveRequestHeaders consumes the replay shape verdict", () => {
         success: false,
         shapeDiffers: true,
         omittedCaptureHeaders: ["key-inflection"],
+        shapeRestoringHeaders: ["key-inflection"],
       } as ReplayResult,
     ];
     const withVerdict = deriveRequestHeaders(captures, replays, "https://api.example.com");
     expect(withVerdict["key-inflection"]).toBe("camel");
     const without = deriveRequestHeaders(captures, [], "https://api.example.com");
     expect(without["key-inflection"]).toBeUndefined();
+    const unproven = deriveRequestHeaders(
+      captures,
+      [{ ...replays[0]!, shapeRestoringHeaders: [] }],
+      "https://api.example.com"
+    );
+    expect(unproven["key-inflection"]).toBeUndefined();
   });
 });

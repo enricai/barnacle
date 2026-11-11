@@ -123,12 +123,14 @@ describe("recon-summarize main (real call path)", () => {
     w(join(root, "replays"), "a.json", {
       ...replay("https://a.com/gql", 200, true),
       shapeDiffers: true,
-      omittedCaptureHeaders: ["Key-Inflection", "x-b"],
+      omittedCaptureHeaders: ["Key-Inflection", "x-b", "x-c", "Authorization"],
+      shapeRestoringHeaders: ["Key-Inflection", "x-b", "Authorization"],
     });
     w(join(root, "replays"), "b.json", {
       ...replay("https://a.com/gql2", 200, true),
       shapeDiffers: true,
       omittedCaptureHeaders: ["key-inflection"],
+      shapeRestoringHeaders: ["key-inflection"],
     });
     const out = join(root, "out", "r.md");
     process.argv = [
@@ -148,6 +150,8 @@ describe("recon-summarize main (real call path)", () => {
     expect(md).toContain("(of 2)");
     expect(md).toContain("| `key-inflection` | 2 | **Yes** |");
     expect(md).toContain("| `x-b` | 1 | **Yes** |");
+    expect(md).toContain("| `authorization` | 1 | **Yes** (credential: obtain per call) |");
+    expect(md).not.toContain("`x-c`");
     expect(md).not.toContain("_No request headers implicated");
   });
 });

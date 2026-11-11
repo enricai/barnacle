@@ -217,6 +217,83 @@ export function omittedHeaders(
     .filter((k) => !have.has(k.toLowerCase()));
 }
 
+/** Sends one replay request and reads its body: parsed JSON, else the raw text, else null. */
+async function sendReplay(
+  capture: Capture,
+  headers: Record<string, string>,
+  requestBody: string | null
+): Promise<{ response: Response; body: unknown }> {
+  const response = await fetch(capture.url, {
+    method: capture.method,
+    headers,
+    body: requestBody ?? undefined,
+  });
+  let body: unknown = null;
+  try {
+    const text = await response.text();
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  } catch {
+    // consumed
+  }
+  return { response, body };
+}
+
+/** True when a replay sent with `headers` gets a 2xx whose shape matches the capture. */
+async function replayMatchesCapture(
+  capture: Capture,
+  headers: Record<string, string>,
+  requestBody: string | null
+): Promise<boolean> {
+  try {
+    const { response, body } = await sendReplay(capture, headers, requestBody);
+    const statusOk = response.status >= 200 && response.status < 300;
+    return statusOk && !responseShapeDiffers(capture.responseBody, body);
+  } catch (err) {
+    logger.warn(`re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`);
+    return false;
+  }
+}
+
+/**
+ * The captured request headers (as captured) that restore a shape-diverging
+ * replay's response shape, proven by re-replaying. Each omitted header is first
+ * added back on its own; every header that alone makes the replay match the
+ * capture is returned. When none does, all of them are added back together and,
+ * if that matches, headers are dropped one at a time while it still matches,
+ * leaving a minimal restoring set. Empty when nothing restores the shape (a
+ * login page, a header-independent change): no omitted header is proven
+ * load-bearing. HTTP/2 pseudo-headers (`:authority`, …) are not request headers
+ * and are never candidates.
+ */
+async function findShapeRestoringHeaders(
+  capture: Capture,
+  headers: Record<string, string>,
+  requestBody: string | null,
+  omitted: string[]
+): Promise<string[]> {
+  const candidates = omitted.filter((h) => !h.startsWith(":"));
+  const withHeaders = (names: string[]): Record<string, string> => ({
+    ...headers,
+    ...Object.fromEntries(names.map((h) => [h, capture.requestHeaders[h]!])),
+  });
+  const alone: string[] = [];
+  for (const h of candidates) {
+    if (await replayMatchesCapture(capture, withHeaders([h]), requestBody)) alone.push(h);
+  }
+  if (alone.length > 0 || candidates.length < 2) return alone;
+  if (!(await replayMatchesCapture(capture, withHeaders(candidates), requestBody))) return [];
+  let kept = candidates;
+  for (const h of candidates) {
+    const without = kept.filter((k) => k !== h);
+    if (await replayMatchesCapture(capture, withHeaders(without), requestBody)) kept = without;
+  }
+  return kept;
+}
+
 /**
  * Replays one capture. Returns null (and sends nothing) when the capture is
  * skipped: its body was recorded as the `<unavailable>` marker (replaying it
@@ -255,41 +332,33 @@ export async function replayCapture(
   }
 
   try {
-    const response = await fetch(capture.url, {
-      method: capture.method,
-      headers,
-      body: requestBody ?? undefined,
-    });
+    const { response, body: replayBody } = await sendReplay(capture, headers, requestBody);
 
     const replayHeaders: Record<string, string> = {};
     response.headers.forEach((v, k) => {
       replayHeaders[k] = v;
     });
 
-    let replayBody: unknown = null;
-    try {
-      const text = await response.text();
-      try {
-        replayBody = JSON.parse(text);
-      } catch {
-        replayBody = text;
-      }
-    } catch {
-      // consumed
-    }
-
     const statusOk = response.status >= 200 && response.status < 300;
     const shapeDiffers = statusOk && responseShapeDiffers(capture.responseBody, replayBody);
     const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, headers);
     const omittedAsCaptured = omittedHeaders(capture.requestHeaders, headers, true);
-    const shapeMessage = `response shape differs from the browser capture; a request header may be load-bearing: ${omittedAsCaptured.join(", ") || "(none omitted)"}`;
     // A replay passes only when its response matches the capture's shape; a 2xx
-    // with a different shape means a request header it omitted is load-bearing.
+    // with a different shape may mean a request header it omitted is load-bearing,
+    // and re-replaying with each one added back proves which (if any).
     const success = statusOk && !shapeDiffers;
+    const shapeRestoringHeaders = shapeDiffers
+      ? await findShapeRestoringHeaders(capture, headers, requestBody, omittedAsCaptured)
+      : [];
+    const restoredBy =
+      shapeRestoringHeaders.length > 0
+        ? `restored by re-sending: ${shapeRestoringHeaders.join(", ")}`
+        : "no omitted header restores it when re-sent";
+    const shapeMessage = `response shape differs from the browser capture; a request header may be load-bearing: ${omittedAsCaptured.join(", ") || "(none omitted)"}; ${restoredBy}`;
 
     if (shapeDiffers) {
       logger.warn(
-        `[${response.status}] ${capture.method} ${capture.url} response shape differs from the browser capture; a request header may be load-bearing: ${omittedCaptureHeaders.join(", ") || "(none omitted)"}`
+        `[${response.status}] ${capture.method} ${capture.url} response shape differs from the browser capture; a request header may be load-bearing: ${omittedCaptureHeaders.join(", ") || "(none omitted)"}; ${restoredBy}`
       );
     } else if (!success) {
       logger.warn(`[${response.status}] ${capture.method} ${capture.url}`);
@@ -322,6 +391,7 @@ export async function replayCapture(
       success,
       shapeDiffers,
       omittedCaptureHeaders,
+      shapeRestoringHeaders,
       error: shapeDiffers ? shapeMessage : null,
     };
   } catch (err) {
