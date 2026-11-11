@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Capture, RateLimitFinding, ReplayResult } from "@/scripts/recon-shared";
+import { replayPassed, tallyOmittedRequestHeaders } from "@/scripts/recon-shared";
 import { buildUniqueEndpoints, detectHazards, formatDate } from "@/scripts/recon-summarize";
 
 function makeCapture(overrides: Partial<Capture>): Capture {
@@ -126,8 +127,7 @@ describe("detectHazards", () => {
 });
 
 describe("shape-aware pass counts and load-bearing headers", () => {
-  it("counts a shape-diverging replay as failed and flags its omitted header", async () => {
-    const { tallyOmittedRequestHeaders, replayPassed } = await import("@/scripts/recon-shared");
+  it("counts a shape-diverging replay as failed and flags its omitted header", () => {
     const ok = makeReplay({});
     const bad = makeReplay({ shapeDiffers: true, omittedCaptureHeaders: ["Key-Inflection"] });
     expect(replayPassed(ok)).toBe(true);
