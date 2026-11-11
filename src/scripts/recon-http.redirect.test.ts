@@ -2,7 +2,10 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { sendReplay } from "@/scripts/recon-http";
+import { mkdtempSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { probeIntrospection, sendReplay } from "@/scripts/recon-http";
 
 let server: Server | undefined;
 afterEach(() => {
@@ -46,5 +49,28 @@ describe("sendReplay redirects", () => {
       body: '{"a":1}',
       ct: "application/json",
     });
+  });
+});
+
+describe("probeIntrospection redirects", () => {
+  it("re-issues the POST after a 301 and writes the schema", async () => {
+    const methods: Array<string | undefined> = [];
+    server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        methods.push(req.method);
+        if (req.url === "/gql") res.writeHead(301, { location: "/en/gql" }).end();
+        else
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end('{"data":{"__schema":{}}}');
+      });
+    });
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+    const dir = mkdtempSync(join(tmpdir(), "probe-"));
+    await probeIntrospection(`http://127.0.0.1:${port}/gql`, dir);
+    expect(methods).toEqual(["POST", "POST"]);
+    expect(existsSync(join(dir, "introspection-schema.json"))).toBe(true);
   });
 });
