@@ -28,7 +28,8 @@ import {
   readCaptureDir,
   readJsonDir,
   resolveLatestReconRunRoot,
-  tallyResponseHeaders,
+  replayPassed,
+  tallyOmittedRequestHeaders,
 } from "@/scripts/recon-shared";
 
 const logger = getScriptLogger("recon-summarize");
@@ -51,7 +52,9 @@ export interface EndpointTally {
 }
 
 /** Dedupes captures by origin+pathname while accumulating each endpoint's methods and operation names. */
-export function buildUniqueEndpoints(captures: Capture[]): Map<string, EndpointTally> {
+export function buildUniqueEndpoints(
+  captures: Capture[],
+): Map<string, EndpointTally> {
   const uniqueEndpoints = new Map<string, EndpointTally>();
   for (const c of captures) {
     try {
@@ -74,7 +77,7 @@ export function buildUniqueEndpoints(captures: Capture[]): Map<string, EndpointT
 /** True when replays show a 403 or the rate-limit headers reveal a bot-manager edge (Akamai/Cloudflare). Shared by the Hazards list and the Summary row. */
 export function hasBotDetection(
   replays: ReplayResult[],
-  rateLimitRaw: RateLimitFinding[]
+  rateLimitRaw: RateLimitFinding[],
 ): boolean {
   if (replays.some((r) => r.replayStatus === 403)) return true;
   const hs = rateLimitRaw
@@ -86,7 +89,7 @@ export function hasBotDetection(
 /** Keeps only rate-limit findings whose endpoint host is one the replays targeted (own-host probes). */
 export function filterOwnHostRateLimits(
   findings: RateLimitFinding[],
-  replays: ReplayResult[]
+  replays: ReplayResult[],
 ): RateLimitFinding[] {
   const host = (u: string): string | null => {
     try {
@@ -95,7 +98,9 @@ export function filterOwnHostRateLimits(
       return null;
     }
   };
-  const own = new Set(replays.map((r) => host(r.url)).filter((h): h is string => h !== null));
+  const own = new Set(
+    replays.map((r) => host(r.url)).filter((h): h is string => h !== null),
+  );
   if (own.size === 0) return findings;
   return findings.filter((f) => {
     const h = host(f.endpoint);
@@ -104,7 +109,10 @@ export function filterOwnHostRateLimits(
 }
 
 /** Flags auth/bot-detection/edge-provider hazards from replay statuses and rate-limit header sniffing. */
-export function detectHazards(replays: ReplayResult[], rateLimitRaw: RateLimitFinding[]): string[] {
+export function detectHazards(
+  replays: ReplayResult[],
+  rateLimitRaw: RateLimitFinding[],
+): string[] {
   const has401 = replays.some((r) => r.replayStatus === 401);
   const has403 = replays.some((r) => r.replayStatus === 403);
 
@@ -112,9 +120,11 @@ export function detectHazards(replays: ReplayResult[], rateLimitRaw: RateLimitFi
   if (has401) hazards.push("Auth required on some endpoints (401)");
   if (has403)
     hazards.push(
-      "Bot detection active on some endpoints (403) — may need more headers or Stagehand-only"
+      "Bot detection active on some endpoints (403) — may need more headers or Stagehand-only",
     );
-  const rateLimitHeaders = rateLimitRaw.flatMap((f) => Object.keys(f.xRateLimitHeaders ?? {}));
+  const rateLimitHeaders = rateLimitRaw.flatMap((f) =>
+    Object.keys(f.xRateLimitHeaders ?? {}),
+  );
   if (rateLimitHeaders.some((h) => h.toLowerCase().includes("akamai")))
     hazards.push("Akamai edge detected");
   if (rateLimitHeaders.some((h) => h.toLowerCase().includes("cf-")))
@@ -133,7 +143,8 @@ async function main(): Promise<void> {
     else if (args[i] === "--run-dir" && args[i + 1]) runDir = args[++i]!;
   }
   // Default output path is scoped to site ID when one is provided.
-  outPath ??= siteId !== PLACEHOLDER_ID ? `docs/${siteId}-recon.md` : DEFAULT_OUT;
+  outPath ??=
+    siteId !== PLACEHOLDER_ID ? `docs/${siteId}-recon.md` : DEFAULT_OUT;
 
   const runRoot = resolveLatestReconRunRoot(runDir);
   logger.info(`reading recon artifacts from ${runRoot}`);
@@ -149,7 +160,7 @@ async function main(): Promise<void> {
   const rateLimitAll = (() => {
     try {
       return JSON.parse(
-        readFileSync(join(replaysDir, "rate-limit.json"), "utf8")
+        readFileSync(join(replaysDir, "rate-limit.json"), "utf8"),
       ) as RateLimitFinding[];
     } catch {
       return [] as RateLimitFinding[];
@@ -169,7 +180,9 @@ async function main(): Promise<void> {
   })();
 
   const now = new Date().toISOString();
-  const reconDate = captures[0]?.timestamp ? formatDate(captures[0].timestamp) : "unknown";
+  const reconDate = captures[0]?.timestamp
+    ? formatDate(captures[0].timestamp)
+    : "unknown";
 
   const uniqueEndpoints = buildUniqueEndpoints(captures);
 
@@ -183,8 +196,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const passed = replays.filter((r) => r.success).length;
-  const failed = replays.filter((r) => !r.success).length;
+  const passed = replays.filter(replayPassed).length;
+  const failed = replays.filter((r) => !replayPassed(r)).length;
 
   const has401 = replays.some((r) => r.replayStatus === 401);
   const botDetected = hasBotDetection(replays, rateLimitRaw);
@@ -201,7 +214,8 @@ async function main(): Promise<void> {
               f.triggerStatus !== null
                 ? ` (triggered ${f.triggerStatus} at ${f.triggerRps} rps)`
                 : " (no trigger observed)";
-            const minTime = f.safeRps !== null ? Math.floor(1000 / f.safeRps) : null;
+            const minTime =
+              f.safeRps !== null ? Math.floor(1000 / f.safeRps) : null;
             const snippet =
               minTime !== null
                 ? `\n  \`\`\`typescript\n  // Step 4c: commit this Bottleneck ceiling in your plugin's contract.ts\n  const limiter = new Bottleneck({ minTime: ${minTime} }); // ${f.safeRps} rps safe ceiling\n  \`\`\``
@@ -210,8 +224,8 @@ async function main(): Promise<void> {
           })
           .join("\n");
 
-  const headerCounts = tallyResponseHeaders(replays);
-  const successCount = replays.filter((r) => r.success).length;
+  const headerCounts = tallyOmittedRequestHeaders(replays);
+  const divergedCount = replays.filter((r) => r.shapeDiffers).length;
 
   const lines: string[] = [
     `# Target Recon Findings`,
@@ -233,20 +247,29 @@ async function main(): Promise<void> {
     ``,
     `## Endpoints Found`,
     ``,
-    ...[...uniqueEndpoints.entries()].map(([endpoint, { methods, operations }]) => {
-      const replay = replayByUrl.get(endpoint);
-      const replayStatus = replay ? `\`${replay.replayStatus ?? "ERR"}\`` : "not replayed";
-      const ops = operations.size > 0 ? `operations: ${[...operations].join(", ")}` : "REST";
-      return `- \`${endpoint}\` — ${[...methods].join("/")} — ${ops} — replay: ${replayStatus}`;
-    }),
+    ...[...uniqueEndpoints.entries()].map(
+      ([endpoint, { methods, operations }]) => {
+        const replay = replayByUrl.get(endpoint);
+        const replayStatus = replay
+          ? `\`${replay.replayStatus ?? "ERR"}\``
+          : "not replayed";
+        const ops =
+          operations.size > 0
+            ? `operations: ${[...operations].join(", ")}`
+            : "REST";
+        return `- \`${endpoint}\` — ${[...methods].join("/")} — ${ops} — replay: ${replayStatus}`;
+      },
+    ),
     ``,
     `## Public Endpoints`,
     ``,
-    replays.filter((r) => r.success).length === 0
+    replays.filter(replayPassed).length === 0
       ? "_None confirmed — all replays failed. Check §Hazards._"
       : replays
           .filter((r) => r.success)
-          .map((r) => `- \`${r.url}\` — **public** (replayed ${r.replayStatus})`)
+          .map(
+            (r) => `- \`${r.url}\` — **public** (replayed ${r.replayStatus})`,
+          )
           .join("\n"),
     ``,
     `## Auth Required`,
@@ -256,7 +279,7 @@ async function main(): Promise<void> {
           .filter((r) => r.replayStatus === 401)
           .map(
             (r) =>
-              `- \`${r.url}\` — 401. Capture token, determine lifetime, build refresh strategy.`
+              `- \`${r.url}\` — 401. Capture token, determine lifetime, build refresh strategy.`,
           )
           .join("\n")
       : "_No authenticated endpoints detected._",
@@ -268,25 +291,24 @@ async function main(): Promise<void> {
     `## Codified Headers (Step 4b)`,
     ``,
     headerCounts.size === 0
-      ? "_No successful replays — run recon-http.ts first._"
+      ? "_No request headers implicated — no replay diverged in response shape from its capture._"
       : [
-          `_Headers present in successful replays, sorted by frequency. Headers appearing in all_`,
-          `_${successCount} successful replay(s) are likely load-bearing. Commit the load-bearing subset_`,
-          `_as \`BASE_HEADERS\` in \`src/sites/<id>/contract.ts\` and drop the rest._`,
+          `_Captured request headers omitted by replays whose response shape differed from the capture._`,
+          `_A header omitted in a diverging replay is likely load-bearing. Commit the load-bearing subset_`,
+          `_as \`BASE_HEADERS\` in \`src/sites/<id>/contract.ts\`._`,
           ``,
-          `| Header | Replays present (of ${successCount}) | Likely load-bearing? |`,
-          `|--------|--------------------------------------|----------------------|`,
+          `| Header | Shape-diverging replays omitting it (of ${divergedCount}) | Likely load-bearing? |`,
+          `|--------|--------------------------------------------------------|----------------------|`,
           ...[...headerCounts.entries()]
             .sort((a, b) => b[1] - a[1])
-            .map(([header, count]) => {
-              const loadBearing = count === successCount ? "**Yes**" : "No";
-              return `| \`${header}\` | ${count} | ${loadBearing} |`;
-            }),
+            .map(([header, count]) => `| \`${header}\` | ${count} | **Yes** |`),
         ].join("\n"),
     ``,
     `## Hazards`,
     ``,
-    hazards.length === 0 ? "_None detected._" : hazards.map((h) => `- ${h}`).join("\n"),
+    hazards.length === 0
+      ? "_None detected._"
+      : hazards.map((h) => `- ${h}`).join("\n"),
     ``,
     `## Auxiliary Fixtures`,
     ``,
@@ -295,7 +317,9 @@ async function main(): Promise<void> {
       : [
           `_Downloaded to \`${auxDir}\` — commit each as a static fixture in \`src/sites/<id>/fixtures/\`._`,
           ``,
-          ...auxFiles.map((f) => `- \`${f}\` — commit as \`src/sites/<id>/fixtures/${f}\``),
+          ...auxFiles.map(
+            (f) => `- \`${f}\` — commit as \`src/sites/<id>/fixtures/${f}\``,
+          ),
         ].join("\n"),
     ``,
     `## Codified Query Location`,
@@ -322,7 +346,8 @@ async function main(): Promise<void> {
 
 if (
   process.argv[1] !== undefined &&
-  (process.argv[1].endsWith("recon-summarize.ts") || process.argv[1].endsWith("recon-summarize.js"))
+  (process.argv[1].endsWith("recon-summarize.ts") ||
+    process.argv[1].endsWith("recon-summarize.js"))
 ) {
   main().catch((err) => {
     logger.error(`recon-summarize failed: ${toErrorMessage(err)}`);

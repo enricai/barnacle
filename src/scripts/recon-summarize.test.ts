@@ -124,3 +124,14 @@ describe("detectHazards", () => {
     expect(detectHazards(replays, [])).toEqual([]);
   });
 });
+
+describe("shape-aware pass counts and load-bearing headers", () => {
+  it("counts a shape-diverging replay as failed and flags its omitted header", async () => {
+    const { tallyOmittedRequestHeaders, replayPassed } = await import("@/scripts/recon-shared");
+    const ok = makeReplay({});
+    const bad = makeReplay({ shapeDiffers: true, omittedCaptureHeaders: ["Key-Inflection"] });
+    expect(replayPassed(ok)).toBe(true);
+    expect(replayPassed(bad)).toBe(false);
+    expect([...tallyOmittedRequestHeaders([ok, bad])]).toEqual([["key-inflection", 1]]);
+  });
+});
