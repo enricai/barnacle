@@ -166,9 +166,9 @@ function parseBody(body: unknown): unknown {
 }
 
 /**
- * Key spelling with case and word separators removed: `gameDuration`,
- * `game_duration`, `game-duration` and `GameDuration` all become
- * `gameduration`; `userID` and `user_id` become `userid`; `item2Id` and
+ * Key spelling with case and word separators removed: `itemCount`,
+ * `item_count`, `item-count` and `ItemCount` all become
+ * `itemcount`; `userID` and `user_id` become `userid`; `item2Id` and
  * `item_2_id` become `item2id`.
  */
 export function inflectionKey(key: string): string {
@@ -252,8 +252,8 @@ function topLevelKeysDiffer(a: object, b: object): boolean {
  * as an unstructured body (an HTML page, a bare value) differs. Two structured
  * bodies differ when either:
  * - (inflection, any depth) at some path both have, a key is spelled
- *   differently with the same `inflectionKey` (`gameDuration` against
- *   `game_duration`), or
+ *   differently with the same `inflectionKey` (`itemCount` against
+ *   `item_count`), or
  * - (top level) their top-level key sets differ (`topLevelKeysDiffer`).
  * Below the top level, keys present on one side only are data (optional
  * fields, id-keyed maps), not shape. At the top level they are shape, so an

@@ -420,7 +420,9 @@ top-level array elements with different optional keys are flagged too. When
 `recon:http` logs `response shape differs from the browser capture; a request
 header may be load-bearing: <headers>`, the replay does not count as passed; the
 listed headers are the captured ones the replay omitted. `recon:http` then
-re-sends the replay with each of them added back, one at a time (and, if none
+re-sends the replay unchanged (if that already matches, the divergence did not
+reproduce and no header is credited) and with each of them added back, one at
+a time, skipping transport headers such as `Content-Length` (and, if none
 restores the shape alone, all of them, reduced to a minimal set), and records
 the ones that restore the shape as `shapeRestoringHeaders`: those, and only
 those, are load-bearing.
@@ -501,10 +503,12 @@ The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.
   (the flow's action captures, else the captures whose endpoint's replay got a
   2xx), plus the headers re-replay proved restore a diverging replay's
   response shape (the Codified Headers table). Credentials and conditionals
-  (`Authorization`, `Cookie`, `If-None-Match` and the other `If-*` headers)
-  are never frozen into it, even when proven load-bearing: the generated
-  contract carries a TODO to send each one per call from where the session
-  obtains it.
+  (`Authorization`, `Proxy-Authorization`, `Cookie`, `If-None-Match`,
+  `If-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`) are never
+  frozen into it, even when proven load-bearing. For each one re-replay proved
+  load-bearing, the generated contract carries a TODO above `BASE_HEADERS` to
+  send it per call from where the session obtains it; an unproven one is
+  simply left out.
   Remove anything decorative; extra headers widen the bot-detection
   fingerprint surface.
 - **4c — Verify the rate-limit ceiling.** `recon-generate` sets Bottleneck's

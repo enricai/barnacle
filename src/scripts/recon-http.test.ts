@@ -647,10 +647,10 @@ describe("replayCapture — response shape", () => {
   });
 
   it.each([
-    ["gameDuration", "gameduration"],
-    ["game_duration", "gameduration"],
-    ["game-duration", "gameduration"],
-    ["GameDuration", "gameduration"],
+    ["itemCount", "itemcount"],
+    ["item_count", "itemcount"],
+    ["item-count", "itemcount"],
+    ["ItemCount", "itemcount"],
     ["userID", "userid"],
     ["user_id", "userid"],
     ["item2Id", "item2id"],
