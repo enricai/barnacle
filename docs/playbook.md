@@ -396,6 +396,14 @@ auth tokens are almost always unnecessary on public endpoints — adding them
 makes it harder to isolate which headers actually matter. If a replay fails,
 add headers one at a time; the one that fixes it was load-bearing.
 
+A status-only pass is insufficient: content-negotiation headers (e.g. a
+key-casing or API-version header) can change the response body while still
+returning 200. Each replay's response shape is compared with its capture. When
+`recon:http` logs `response shape differs from the browser capture; a request
+header may be load-bearing: <headers>`, the replay does not count as passed; the
+listed headers are the captured ones the replay omitted. Add them back to the
+replay and re-run; the ones that restore the shape are load-bearing.
+
 Each replay is saved to `<run-dir>/replays/` with status, headers, body, and
 a link back to the source capture. Every replay returning 200 with a matching
 shape proves the browser is unnecessary for production.
@@ -468,7 +476,8 @@ The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.
   verbatim. Strip UI-only fields — often 60% of them — to isolate yourself
   from UI-driven schema churn.
 - **4b — Verify load-bearing headers.** `recon-generate` derives
-  `BASE_HEADERS` from headers present in every successfully-replayed capture.
+  `BASE_HEADERS` from the captured request headers omitted by replays whose
+  response shape diverged from the capture (the Codified Headers table).
   Remove anything decorative; extra headers widen the bot-detection
   fingerprint surface.
 - **4c — Verify the rate-limit ceiling.** `recon-generate` sets Bottleneck's

@@ -200,26 +200,19 @@ Rate-limit probe not yet run.
 
 ## Codified Headers (Step 4b)
 
-_Headers present in successful replays, sorted by frequency. Headers appearing in all_
-_83 successful replay(s) are likely load-bearing. Commit the load-bearing subset_
-_as `BASE_HEADERS` in `src/sites/<id>/contract.ts` and drop the rest._
+_Captured request headers omitted by replays whose response shape differed from the capture._
+_A header omitted in a diverging replay is likely load-bearing. Commit the load-bearing subset_
+_as `BASE_HEADERS` in `src/sites/<id>/contract.ts`._
 
-| Header | Replays present (of 83) | Likely load-bearing? |
-|--------|--------------------------------------|----------------------|
-| `content-type` | 83 | **Yes** |
-| `access-control-allow-origin` | 6 | No |
-| `alt-svc` | 6 | No |
-| `cache-control` | 6 | No |
-| `cross-origin-resource-policy` | 6 | No |
-| `timing-allow-origin` | 6 | No |
-| `cross-origin-opener-policy` | 5 | No |
-| `accept-ranges` | 5 | No |
-| `report-to` | 5 | No |
-| `content-security-policy-report-only` | 4 | No |
-| `content-encoding` | 2 | No |
-| `link` | 1 | No |
-| `cf-cdnjs-via` | 1 | No |
-| `nel` | 1 | No |
+| Header | Shape-diverging replays omitting it (of 3) | Likely load-bearing? |
+|--------|--------------------------------------------------------|----------------------|
+| `key-inflection` | 3 | **Yes** |
+| `x-requested-with` | 2 | **Yes** |
+
+When no replay diverged in shape the section reads "No request headers implicated".
+A replay passes only if its status is OK **and** its response shape matches the capture;
+`recon:http` warns `response shape differs from the browser capture; a request header may be
+load-bearing: <headers>` naming the captured headers the replay omitted.
 
 ## Hazards
 
