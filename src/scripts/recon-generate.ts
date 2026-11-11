@@ -52,12 +52,14 @@ import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   type Capture,
+  CREDENTIAL_REQUEST_HEADERS,
   type RateLimitFinding,
   type ReplayResult,
   readBrowserFlowOnly,
   readCaptureDir,
   readJsonDir,
   readOwnBackendHostnames,
+  replayReachable,
   resolveLatestReconRunRoot,
 } from "@/scripts/recon-shared";
 
@@ -1992,6 +1994,22 @@ const IGNORE_REQUEST_HEADERS = new Set([
  */
 const VOLATILE_HEADER_NAME_FRAGMENTS = ["correlation-id", "conversation-id"];
 
+/**
+ * Credential/conditional headers (as captured) that recon:http's re-replay proved
+ * restore a shape-diverging replay's response shape. They stay out of
+ * BASE_HEADERS; the generated contract carries a TODO to obtain each per call.
+ */
+export function shapeRestoringCredentialHeaders(replays: ReplayResult[]): string[] {
+  const names = new Map<string, string>();
+  for (const r of replays) {
+    for (const h of r.shapeRestoringHeaders ?? []) {
+      const lower = h.toLowerCase();
+      if (CREDENTIAL_REQUEST_HEADERS.has(lower) && !names.has(lower)) names.set(lower, h);
+    }
+  }
+  return [...names.values()];
+}
+
 function isVolatileHeaderName(headerName: string): boolean {
   const lower = headerName.toLowerCase();
   return VOLATILE_HEADER_NAME_FRAGMENTS.some((frag) => lower.includes(frag));
@@ -2015,6 +2033,10 @@ function isVolatileHeaderName(headerName: string): boolean {
  * every capture with an identical value — that's the signature of a
  * per-session id the site mints once and resends, not a stable constant.
  * `emitMultiStepExecuteHttp` re-mints it at call time instead.
+ *
+ * A header a shape-diverging replay omitted is added only when recon:http's
+ * re-replay proved it restores the shape (`shapeRestoringHeaders`). A
+ * {@link CREDENTIAL_REQUEST_HEADERS} entry is never added, proven or not.
  */
 export function deriveRequestHeaders(
   captures: Capture[],
@@ -2030,7 +2052,7 @@ export function deriveRequestHeaders(
   // instead of the primary host's.
   primaryHost: string | null = null
 ): Record<string, string> {
-  const successfulUrls = new Set(replays.filter((r) => r.success).map((r) => endpointKey(r.url)));
+  const successfulUrls = new Set(replays.filter(replayReachable).map((r) => endpointKey(r.url)));
 
   // Prefer ACTION captures (non-GET 2xx, non-noise) as the authoritative
   // header source. Replay-matched static-asset GETs lack the API-specific
@@ -2070,12 +2092,39 @@ export function deriveRequestHeaders(
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   };
 
+  // A header recon:http's re-replay proved restores a shape-diverging replay's
+  // response shape is load-bearing, so keep it even when not every relevant
+  // capture carries it. An omitted header whose re-replay did not restore the
+  // shape is not kept on that account.
+  const loadBearing = new Set<string>();
+  // Per load-bearing header, the captures whose replay it restored.
+  const loadBearingSources = new Map<string, Capture[]>();
+  for (const r of replays) {
+    if (!r.shapeDiffers) continue;
+    const own = captures.filter(
+      (c) =>
+        c.url === r.url &&
+        c.method === r.method &&
+        (c.operationName ?? null) === (r.operationName ?? null)
+    );
+    for (const h of r.shapeRestoringHeaders ?? []) {
+      const lower = h.toLowerCase();
+      if (IGNORE_REQUEST_HEADERS.has(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower)) continue;
+      loadBearing.add(lower);
+      loadBearingSources.set(lower, [...(loadBearingSources.get(lower) ?? []), ...own]);
+      if (!counts.has(lower)) counts.set(lower, 0);
+    }
+  }
+
   // Add any request header present in all relevant captures, preserving original casing.
+  const headerSources = relevantCaptures.length > 0 ? relevantCaptures : captures;
   for (const [lower, count] of counts) {
-    if (count < relevantCaptures.length) continue;
-    if (isVolatileHeaderName(lower)) continue;
+    if (count < relevantCaptures.length && !loadBearing.has(lower)) continue;
+    if (isVolatileHeaderName(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower)) continue;
     if (Object.keys(baseline).some((k) => k.toLowerCase() === lower)) continue;
-    for (const c of relevantCaptures) {
+    for (const c of loadBearing.has(lower)
+      ? (loadBearingSources.get(lower) ?? [])
+      : headerSources) {
       const original = Object.keys(c.requestHeaders).find((h) => h.toLowerCase() === lower);
       if (original) {
         baseline[original] = c.requestHeaders[original]!;
@@ -16664,6 +16713,12 @@ export function emitContractTsParts(opts: {
   pascal: string;
   baseUrl: string;
   baseHeaders: Record<string, string>;
+  /**
+   * Credential/conditional headers proven load-bearing by re-replay
+   * ({@link shapeRestoringCredentialHeaders}). Never in `baseHeaders`; each gets a
+   * TODO above BASE_HEADERS saying how to obtain it per call.
+   */
+  credentialHeadersToObtain?: string[];
   minTime: number;
   safeRps: number;
   /** Whether `safeRps`/`minTime` were derived from a real recon rate-limit
@@ -16824,6 +16879,7 @@ export function emitContractTsParts(opts: {
     pascal,
     baseUrl,
     baseHeaders,
+    credentialHeadersToObtain = [],
     minTime,
     safeRps,
     hasRateLimitProbeData = false,
@@ -18095,10 +18151,18 @@ export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr}
   // client) nor BASE_HEADERS (no per-call headers to bake in) — both would
   // sit unreferenced and trip Biome's `noUnusedVariables`.
   const bottleneckImport = omitExecuteHttp ? "" : `import Bottleneck from "bottleneck";\n`;
+  const credentialTodos = credentialHeadersToObtain
+    .map(
+      (h) =>
+        `// TODO: recon:http proved ${h} restores this API's response shape, but it is a credential or\n` +
+        "// conditional header and is not frozen here: send it per call from where the session obtains\n" +
+        "// it (a prior step's response, the caller's payload, or config), never the recon capture's value.\n"
+    )
+    .join("");
   const baseHeadersBlock = omitExecuteHttp
     ? ""
     : `
-const BASE_HEADERS: Record<string, string> = {
+${credentialTodos}const BASE_HEADERS: Record<string, string> = {
 ${headersLiteral},
 };
 `;
@@ -20912,6 +20976,7 @@ async function main(): Promise<void> {
       // G1+G2: only the static headers (no baseUrl/tenant-subdomain references)
       // get baked into BASE_HEADERS. The rest are emitted per-call from payload.
       baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
+      credentialHeadersToObtain: shapeRestoringCredentialHeaders(replays),
       minTime,
       safeRps,
       hasRateLimitProbeData,

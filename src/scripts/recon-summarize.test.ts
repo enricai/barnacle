@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Capture, RateLimitFinding, ReplayResult } from "@/scripts/recon-shared";
+import { replayPassed, tallyShapeRestoringHeaders } from "@/scripts/recon-shared";
 import { buildUniqueEndpoints, detectHazards, formatDate } from "@/scripts/recon-summarize";
 
 function makeCapture(overrides: Partial<Capture>): Capture {
@@ -122,5 +123,19 @@ describe("detectHazards", () => {
   it("returns no hazards when nothing is detected", () => {
     const replays = [makeReplay({ replayStatus: 200, success: true })];
     expect(detectHazards(replays, [])).toEqual([]);
+  });
+});
+
+describe("shape-aware pass counts and load-bearing headers", () => {
+  it("counts a shape-diverging replay as failed and tallies only the header that restored it", () => {
+    const ok = makeReplay({});
+    const bad = makeReplay({
+      shapeDiffers: true,
+      omittedCaptureHeaders: ["Key-Inflection", "X-Requested-With"],
+      shapeRestoringHeaders: ["Key-Inflection"],
+    });
+    expect(replayPassed(ok)).toBe(true);
+    expect(replayPassed(bad)).toBe(false);
+    expect([...tallyShapeRestoringHeaders([ok, bad])]).toEqual([["key-inflection", 1]]);
   });
 });

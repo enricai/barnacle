@@ -23,12 +23,15 @@ import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
 import {
   type Capture,
+  CREDENTIAL_REQUEST_HEADERS,
   type RateLimitFinding,
   type ReplayResult,
   readCaptureDir,
   readJsonDir,
+  replayPassed,
+  replayReachable,
   resolveLatestReconRunRoot,
-  tallyResponseHeaders,
+  tallyShapeRestoringHeaders,
 } from "@/scripts/recon-shared";
 
 const logger = getScriptLogger("recon-summarize");
@@ -183,8 +186,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const passed = replays.filter((r) => r.success).length;
-  const failed = replays.filter((r) => !r.success).length;
+  const passed = replays.filter(replayPassed).length;
+  const failed = replays.filter((r) => !replayPassed(r)).length;
 
   const has401 = replays.some((r) => r.replayStatus === 401);
   const botDetected = hasBotDetection(replays, rateLimitRaw);
@@ -210,8 +213,8 @@ async function main(): Promise<void> {
           })
           .join("\n");
 
-  const headerCounts = tallyResponseHeaders(replays);
-  const successCount = replays.filter((r) => r.success).length;
+  const headerCounts = tallyShapeRestoringHeaders(replays);
+  const divergedCount = replays.filter((r) => r.shapeDiffers).length;
 
   const lines: string[] = [
     `# Target Recon Findings`,
@@ -242,10 +245,10 @@ async function main(): Promise<void> {
     ``,
     `## Public Endpoints`,
     ``,
-    replays.filter((r) => r.success).length === 0
+    replays.filter(replayReachable).length === 0
       ? "_None confirmed — all replays failed. Check §Hazards._"
       : replays
-          .filter((r) => r.success)
+          .filter(replayReachable)
           .map((r) => `- \`${r.url}\` — **public** (replayed ${r.replayStatus})`)
           .join("\n"),
     ``,
@@ -268,20 +271,22 @@ async function main(): Promise<void> {
     `## Codified Headers (Step 4b)`,
     ``,
     headerCounts.size === 0
-      ? "_No successful replays — run recon-http.ts first._"
+      ? divergedCount === 0
+        ? "_No request headers implicated — no replay diverged in response shape from its capture._"
+        : `_No request headers implicated — ${divergedCount} replay(s) diverged in response shape, but no captured header they omitted was proven to restore it._`
       : [
-          `_Headers present in successful replays, sorted by frequency. Headers appearing in all_`,
-          `_${successCount} successful replay(s) are likely load-bearing. Commit the load-bearing subset_`,
-          `_as \`BASE_HEADERS\` in \`src/sites/<id>/contract.ts\` and drop the rest._`,
+          `_Captured request headers that, re-sent, restored the response shape of a replay that diverged_`,
+          `_from its capture: proven load-bearing. Commit them as \`BASE_HEADERS\` in \`src/sites/<id>/contract.ts\`,_`,
+          `_except credentials and conditionals, which are obtained per call, never committed._`,
           ``,
-          `| Header | Replays present (of ${successCount}) | Likely load-bearing? |`,
-          `|--------|--------------------------------------|----------------------|`,
+          `| Header | Shape-diverging replays it restored (of ${divergedCount}) | Load-bearing? |`,
+          `|--------|-----------------------------------------------|---------------|`,
           ...[...headerCounts.entries()]
             .sort((a, b) => b[1] - a[1])
-            .map(([header, count]) => {
-              const loadBearing = count === successCount ? "**Yes**" : "No";
-              return `| \`${header}\` | ${count} | ${loadBearing} |`;
-            }),
+            .map(
+              ([header, count]) =>
+                `| \`${header}\` | ${count} | ${CREDENTIAL_REQUEST_HEADERS.has(header) ? "**Yes** (credential: obtain per call)" : "**Yes**"} |`
+            ),
         ].join("\n"),
     ``,
     `## Hazards`,

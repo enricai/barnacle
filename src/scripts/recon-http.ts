@@ -54,7 +54,10 @@ import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   adoptReconRunRoot,
+  type ReplayResult,
   readOwnBackendHostnames,
+  replayPassed,
+  replayReachable,
   resolveLatestReconRunRoot,
 } from "@/scripts/recon-shared";
 
@@ -86,18 +89,7 @@ interface Capture {
   variables: unknown;
 }
 
-export interface ReplayResult {
-  sourceCapture: string;
-  url: string;
-  method: string;
-  operationName: string | null;
-  requestBody: string | null;
-  replayStatus: number | null;
-  replayHeaders: Record<string, string>;
-  replayBody: unknown;
-  success: boolean;
-  error: string | null;
-}
+export type { ReplayResult };
 
 interface RateLimitFinding {
   endpoint: string;
@@ -163,6 +155,280 @@ export function parseMethodsFilter(raw: string | undefined): Set<string> | null 
   return parts.length > 0 ? new Set(parts) : null;
 }
 
+/** Parses a JSON body (string or value); undefined when unparseable. */
+function parseBody(body: unknown): unknown {
+  if (typeof body !== "string") return body;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Key spelling with case and word separators removed: `itemCount`,
+ * `item_count`, `item-count` and `ItemCount` all become
+ * `itemcount`; `userID` and `user_id` become `userid`; `item2Id` and
+ * `item_2_id` become `item2id`.
+ */
+export function inflectionKey(key: string): string {
+  return key.toLowerCase().replace(/[_-]/g, "");
+}
+
+/**
+ * The object keys of a JSON body, grouped by where they sit: a path of object
+ * keys from the root, with every array level collapsed to one `[]` step so that
+ * all elements of an array share one key set. A path is a number from
+ * `pathIds`, which interns (parent path, step) pairs; pass the same table for
+ * both bodies so equal paths get equal numbers. Iterative, and linear in the
+ * body's size whatever its depth.
+ */
+function keysByPath(root: object, pathIds: Map<string, number>): Map<number, Set<string>> {
+  const step = (parent: number, s: string): number => {
+    const k = `${parent}:${s}`;
+    let id = pathIds.get(k);
+    if (id === undefined) {
+      id = pathIds.size + 1;
+      pathIds.set(k, id);
+    }
+    return id;
+  };
+  const out = new Map<number, Set<string>>();
+  const stack: Array<[unknown, number]> = [[root, 0]];
+  while (stack.length > 0) {
+    const [v, path] = stack.pop()!;
+    if (!v || typeof v !== "object") continue;
+    if (Array.isArray(v)) {
+      const elementPath = step(path, "[]");
+      for (const element of v) stack.push([element, elementPath]);
+      continue;
+    }
+    const keys = out.get(path) ?? new Set<string>();
+    out.set(path, keys);
+    for (const [k, child] of Object.entries(v)) {
+      keys.add(k);
+      stack.push([child, step(path, JSON.stringify(k))]);
+    }
+  }
+  return out;
+}
+
+/** True when a key of `a` is spelled differently in `b` with the same `inflectionKey`. */
+function inflectedPair(a: Set<string>, b: Set<string>): boolean {
+  const others = new Set([...b].filter((k) => !a.has(k)).map(inflectionKey));
+  return [...a].some((k) => !b.has(k) && others.has(inflectionKey(k)));
+}
+
+/**
+ * A structured body's top-level key set: an object's keys, or for a top-level
+ * array the keys found across its elements. `keys` is null for an empty array,
+ * which has no element to read keys from.
+ */
+function topLevelKeys(v: object): { array: boolean; keys: Set<string> | null } {
+  if (!Array.isArray(v)) return { array: false, keys: new Set(Object.keys(v)) };
+  if (v.length === 0) return { array: true, keys: null };
+  return {
+    array: true,
+    keys: new Set(
+      v.flatMap((e) => (e && typeof e === "object" && !Array.isArray(e) ? Object.keys(e) : []))
+    ),
+  };
+}
+
+/** True when the top-level key sets differ, or one body is an array and the other an object. */
+function topLevelKeysDiffer(a: object, b: object): boolean {
+  const left = topLevelKeys(a);
+  const right = topLevelKeys(b);
+  if (left.array !== right.array) return true;
+  if (!left.keys || !right.keys) return false;
+  const r = right.keys;
+  return left.keys.size !== r.size || [...left.keys].some((k) => !r.has(k));
+}
+
+/**
+ * True when the replayed body's response shape differs from the capture's. Only
+ * a structured (JSON object/array) capture has a shape to reproduce, and a
+ * replay with no body read has nothing to compare. A structured capture replayed
+ * as an unstructured body (an HTML page, a bare value) differs. Two structured
+ * bodies differ when either:
+ * - (inflection, any depth) at some path both have, a key is spelled
+ *   differently with the same `inflectionKey` (`itemCount` against
+ *   `item_count`), or
+ * - (top level) their top-level key sets differ (`topLevelKeysDiffer`).
+ * Below the top level, keys present on one side only are data (optional
+ * fields, id-keyed maps), not shape. At the top level they are shape, so an
+ * optional top-level key or a top-level id-keyed map that changes is flagged.
+ */
+export function responseShapeDiffers(captured: unknown, replayed: unknown): boolean {
+  const a = parseBody(captured);
+  if (!a || typeof a !== "object" || replayed == null) return false;
+  const b = parseBody(replayed);
+  if (!b || typeof b !== "object") return true;
+  if (topLevelKeysDiffer(a, b)) return true;
+  const pathIds = new Map<string, number>();
+  const right = keysByPath(b, pathIds);
+  for (const [path, keys] of keysByPath(a, pathIds)) {
+    const other = right.get(path);
+    if (other && inflectedPair(keys, other)) return true;
+  }
+  return false;
+}
+
+/** Captured request header names (lowercased) the replay did not send. */
+export function omittedHeaders(
+  captured: Record<string, string> | undefined,
+  sent: Record<string, string>,
+  keepCase = false
+): string[] {
+  const have = new Set(Object.keys(sent).map((k) => k.toLowerCase()));
+  return Object.keys(captured ?? {})
+    .map((k) => (keepCase ? k : k.toLowerCase()))
+    .filter((k) => !have.has(k.toLowerCase()));
+}
+
+/** Sends one replay request and reads its body: parsed JSON, else the raw text, else null. */
+async function sendReplay(
+  capture: Capture,
+  headers: Record<string, string>,
+  requestBody: string | null
+): Promise<{ response: Response; body: unknown }> {
+  const response = await fetch(capture.url, {
+    method: capture.method,
+    headers,
+    body: requestBody ?? undefined,
+  });
+  let body: unknown = null;
+  try {
+    const text = await response.text();
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  } catch {
+    // consumed
+  }
+  return { response, body };
+}
+
+/**
+ * True when `restored` positively reproduces the capture's shape where the
+ * diverging replay `diverged` did not. `responseShapeDiffers` is lenient when
+ * there is nothing to compare (an empty list, a path one side lacks, no body),
+ * which is right for flagging but cannot prove a restoration. So `restored` must
+ * also be a structured body, keep the capture's top-level keys (a non-empty
+ * top-level array does not come back empty), and carry, at its path, every
+ * captured key that `diverged` had re-inflected.
+ */
+function restoresShape(captured: unknown, diverged: unknown, restored: unknown): boolean {
+  const a = parseBody(captured);
+  const r = parseBody(restored);
+  if (!a || typeof a !== "object" || !r || typeof r !== "object") return false;
+  if (responseShapeDiffers(captured, restored)) return false;
+  if (topLevelKeys(a).keys && !topLevelKeys(r).keys) return false;
+  const d = parseBody(diverged);
+  if (!d || typeof d !== "object") return true;
+  const pathIds = new Map<string, number>();
+  const capturedKeys = keysByPath(a, pathIds);
+  const divergedKeys = keysByPath(d, pathIds);
+  const restoredKeys = keysByPath(r, pathIds);
+  for (const [path, keys] of capturedKeys) {
+    const other = divergedKeys.get(path);
+    if (!other) continue;
+    const reinflected = new Set([...other].filter((k) => !keys.has(k)).map(inflectionKey));
+    for (const k of keys) {
+      if (other.has(k) || !reinflected.has(inflectionKey(k))) continue;
+      if (!restoredKeys.get(path)?.has(k)) return false;
+    }
+  }
+  return true;
+}
+
+/** True when a replay sent with `headers` gets a 2xx that {@link restoresShape}. */
+async function replayRestoresShape(
+  capture: Capture,
+  diverged: unknown,
+  headers: Record<string, string>,
+  requestBody: string | null
+): Promise<boolean> {
+  try {
+    const { response, body } = await sendReplay(capture, headers, requestBody);
+    const statusOk = response.status >= 200 && response.status < 300;
+    return statusOk && restoresShape(capture.responseBody, diverged, body);
+  } catch (err) {
+    logger.warn(`re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Captured request headers the HTTP client derives from the connection or from
+ * the body it sends (an HTTP/2 capture records them alongside the page's own
+ * headers). They carry no request semantics, and re-sending a captured value
+ * (a `content-length` for a body that is re-serialised) breaks the request, so
+ * they are never re-replay candidates. HTTP/2 pseudo-headers (`:authority`, …)
+ * are excluded the same way.
+ */
+const TRANSPORT_REQUEST_HEADERS = new Set([
+  "host",
+  "content-length",
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "te",
+  "upgrade",
+  "accept-encoding",
+]);
+
+/**
+ * The captured request headers (as captured) that restore a shape-diverging
+ * replay's response shape, proven by re-replaying ({@link restoresShape}). The
+ * replay is first re-sent unchanged: when that already restores the shape, the
+ * divergence did not reproduce (`reproduced: false`) and no header can be
+ * credited with it. Otherwise each omitted header is added back on its own, and
+ * every header that alone restores the shape is returned. When none does, all of them are added back together
+ * and, if that matches, headers are dropped one at a time while it still
+ * matches, leaving a minimal restoring set. Empty when nothing restores the
+ * shape (a login page, a header-independent change). Candidates are one per
+ * header name (the first captured spelling), excluding
+ * {@link TRANSPORT_REQUEST_HEADERS} and pseudo-headers.
+ */
+async function findShapeRestoringHeaders(
+  capture: Capture,
+  diverged: unknown,
+  headers: Record<string, string>,
+  requestBody: string | null,
+  omitted: string[]
+): Promise<{ headers: string[]; reproduced: boolean }> {
+  const seen = new Set<string>();
+  const candidates = omitted.filter((h) => {
+    const lower = h.toLowerCase();
+    if (h.startsWith(":") || TRANSPORT_REQUEST_HEADERS.has(lower) || seen.has(lower)) return false;
+    seen.add(lower);
+    return true;
+  });
+  const withHeaders = (names: string[]): Record<string, string> => ({
+    ...headers,
+    ...Object.fromEntries(names.map((h) => [h, capture.requestHeaders[h]!])),
+  });
+  const restores = (names: string[]) =>
+    replayRestoresShape(capture, diverged, withHeaders(names), requestBody);
+  if (await restores([])) return { headers: [], reproduced: false };
+  if (candidates.length === 0) return { headers: [], reproduced: true };
+  const alone: string[] = [];
+  for (const h of candidates) {
+    if (await restores([h])) alone.push(h);
+  }
+  if (alone.length > 0 || candidates.length < 2) return { headers: alone, reproduced: true };
+  if (!(await restores(candidates))) return { headers: [], reproduced: true };
+  let kept = candidates;
+  for (const h of candidates) {
+    const without = kept.filter((k) => k !== h);
+    if (await restores(without)) kept = without;
+  }
+  return { headers: kept, reproduced: true };
+}
+
 /**
  * Replays one capture. Returns null (and sends nothing) when the capture is
  * skipped: its body was recorded as the `<unavailable>` marker (replaying it
@@ -201,32 +467,43 @@ export async function replayCapture(
   }
 
   try {
-    const response = await fetch(capture.url, {
-      method: capture.method,
-      headers,
-      body: requestBody ?? undefined,
-    });
+    const { response, body: replayBody } = await sendReplay(capture, headers, requestBody);
 
     const replayHeaders: Record<string, string> = {};
     response.headers.forEach((v, k) => {
       replayHeaders[k] = v;
     });
 
-    let replayBody: unknown = null;
-    try {
-      const text = await response.text();
-      try {
-        replayBody = JSON.parse(text);
-      } catch {
-        replayBody = text;
-      }
-    } catch {
-      // consumed
-    }
+    const statusOk = response.status >= 200 && response.status < 300;
+    const shapeDiffers = statusOk && responseShapeDiffers(capture.responseBody, replayBody);
+    const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, headers);
+    const omittedAsCaptured = omittedHeaders(capture.requestHeaders, headers, true);
+    // A replay passes only when its response matches the capture's shape; a 2xx
+    // with a different shape may mean a request header it omitted is load-bearing,
+    // and re-replaying with each one added back proves which (if any).
+    const success = statusOk && !shapeDiffers;
+    const proof = shapeDiffers
+      ? await findShapeRestoringHeaders(
+          capture,
+          replayBody,
+          headers,
+          requestBody,
+          omittedAsCaptured
+        )
+      : { headers: [], reproduced: true };
+    const shapeRestoringHeaders = proof.headers;
+    const restoredBy = !proof.reproduced
+      ? "the divergence did not reproduce on an unchanged re-send"
+      : shapeRestoringHeaders.length > 0
+        ? `restored by re-sending: ${shapeRestoringHeaders.join(", ")}`
+        : "no omitted header restores it when re-sent";
+    const shapeMessage = `response shape differs from the browser capture; a request header may be load-bearing: ${omittedAsCaptured.join(", ") || "(none omitted)"}; ${restoredBy}`;
 
-    const success = response.status >= 200 && response.status < 300;
-
-    if (!success) {
+    if (shapeDiffers) {
+      logger.warn(
+        `[${response.status}] ${capture.method} ${capture.url} response shape differs from the browser capture; a request header may be load-bearing: ${omittedCaptureHeaders.join(", ") || "(none omitted)"}; ${restoredBy}`
+      );
+    } else if (!success) {
       logger.warn(`[${response.status}] ${capture.method} ${capture.url}`);
       if (response.status === 403)
         logger.warn(
@@ -255,7 +532,10 @@ export async function replayCapture(
       replayHeaders,
       replayBody,
       success,
-      error: null,
+      shapeDiffers,
+      omittedCaptureHeaders,
+      shapeRestoringHeaders,
+      error: shapeDiffers ? shapeMessage : null,
     };
   } catch (err) {
     logger.error(`[ERR] ${capture.method} ${capture.url}: ${toErrorMessage(err)}`);
@@ -579,7 +859,7 @@ export function selectRateLimitTargets(
   const seenEndpoints = new Set<string>();
   let skipped = 0;
   for (const replay of replays) {
-    if (!replay.success) continue;
+    if (!replayReachable(replay)) continue;
     if (!isReplayResultSafe(replay)) continue;
     if (isNoiseUrl(replay.url)) {
       skipped++;
@@ -757,7 +1037,7 @@ async function main(): Promise<void> {
     writeFileSync(join(runDir.replaysDir, filename), JSON.stringify(result, null, 2));
   }
 
-  const passed = replays.filter((r) => r.success).length;
+  const passed = replays.filter(replayPassed).length;
   logger.info(`replay complete: ${passed}/${replays.length} passed`);
 
   // GraphQL introspection probe

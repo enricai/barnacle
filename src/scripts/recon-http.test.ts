@@ -39,9 +39,11 @@ vi.mock("@/lib/logging", () => ({
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
 import {
+  inflectionKey,
   parseMethodsFilter,
   probeAuxiliaryEndpoints,
   replayCapture,
+  responseShapeDiffers,
   selectAuxFixtureCandidates,
   selectRateLimitTargets,
   selectReplayCaptures,
@@ -550,6 +552,168 @@ describe("replayCapture — marker and methods filter", () => {
     expect(await replayCapture("b.json", mk("POST", null), { methods })).toBeNull();
     expect(f).not.toHaveBeenCalled();
     expect(await replayCapture("c.json", mk("GET", null), { methods })).not.toBeNull();
+  });
+});
+
+describe("replayCapture — response shape", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const cap = (keys: Record<string, unknown>) =>
+    ({
+      url: "https://example.com/items.json",
+      method: "GET",
+      operationName: null,
+      query: null,
+      variables: null,
+      requestPostData: null,
+      requestHeaders: { "Key-Inflection": "camel", accept: "application/json" },
+      responseBody: keys,
+    }) as never;
+
+  it("fails and names the omitted header when keys differ", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ item_count: 1 }), { status: 200 }))
+    );
+    const r = await replayCapture("a.json", cap({ itemCount: 1 }));
+    expect(r?.success).toBe(false);
+    expect(r?.replayStatus).toBe(200);
+    expect(r?.shapeDiffers).toBe(true);
+    expect(r?.omittedCaptureHeaders).toContain("key-inflection");
+  });
+
+  it.each([
+    ["array vs object top level", [{ itemCount: 1 }], { itemCount: 1 }],
+    ["array element keys differ", [{ itemCount: 1 }], [{ item_count: 1 }]],
+    ["a later element has different keys", [{ a: 1 }, { a: 1 }], [{ a: 1 }, { b: 1 }]],
+    ["HTML replay body", { a: 1 }, "<!doctype html><html><body>app</body></html>"],
+    ["string value replay body", { a: 1 }, "ok"],
+    ["empty replay body", { a: 1 }, ""],
+    ["inflection inside an envelope", { data: { itemCount: 1 } }, { data: { item_count: 1 } }],
+    [
+      "inflection inside array elements",
+      { items: [{ itemCount: 1 }] },
+      { items: [{ item_count: 1 }] },
+    ],
+    ["inflection of an acronym", { data: { userID: 1 } }, { data: { user_id: 1 } }],
+    ["inflection around digits", { data: { item2Id: 1 } }, { data: { item_2_id: 1 } }],
+    [
+      "kebab-case against PascalCase",
+      { data: { "display-name": 1 } },
+      { data: { DisplayName: 1 } },
+    ],
+    [
+      "inflection seven levels down",
+      { a: { b: { c: { d: { e: { f: { itemCount: 1 } } } } } } },
+      { a: { b: { c: { d: { e: { f: { item_count: 1 } } } } } } },
+    ],
+    ["inflection under an empty list's key", { itemList: [] }, { item_list: [] }],
+    // Accepted cost of comparing the top-level key set: data variance there is shape.
+    ["an optional top-level key", { a: 1, cursor: "c" }, { a: 1 }],
+    ["a top-level map keyed by ids", { "1001": { n: 1 } }, { "2001": { n: 1 } }],
+    ["top-level array elements with optional keys", [{ id: 1, sale: 2 }, { id: 2 }], [{ id: 3 }]],
+  ])("flags a differing shape: %s", (_name, captured, replayed) => {
+    expect(responseShapeDiffers(captured, replayed)).toBe(true);
+  });
+
+  it.each([
+    ["same keys, different values", [{ a: 1 }], [{ a: 2 }]],
+    ["replay returns an empty list", [{ a: 1 }], []],
+    ["nested list empty in replay", { items: [{ a: 1 }] }, { items: [] }],
+    ["both bodies unstructured", "<html>a</html>", "<html>b</html>"],
+    ["no captured body", null, { a: 1 }],
+    ["unstructured capture, JSON replay", "<html>login</html>", { a: 1 }],
+    ["scalar capture, HTML replay", true, "<html>a</html>"],
+    ["no replay body read", { a: 1 }, null],
+    [
+      "optional nested key absent in replay",
+      { slots: [{ id: 1, start: "09:00", discountCode: "X" }] },
+      { slots: [{ id: 2, start: "10:00" }] },
+    ],
+    [
+      "extra optional nested key in replay",
+      { user: { id: 1 } },
+      { user: { id: 2, nickname: "n" } },
+    ],
+    ["map keyed by ids", { byId: { "1001": { n: 1 } } }, { byId: { "2001": { n: 1 } } }],
+    [
+      "nested array elements with different optional keys",
+      { items: [{ id: 1, sale: 2 }] },
+      { items: [{ id: 2, note: "n" }] },
+    ],
+    ["a nested key replaced by an unrelated one", { data: { a: 1 } }, { data: { b: 1 } }],
+    ["same spelling in both", { data: { itemCount: 1 } }, { data: { itemCount: 2 } }],
+  ])("does not flag a comparable-or-keyless pair: %s", (_name, captured, replayed) => {
+    expect(responseShapeDiffers(captured, replayed)).toBe(false);
+  });
+
+  it.each([
+    ["itemCount", "itemcount"],
+    ["item_count", "itemcount"],
+    ["item-count", "itemcount"],
+    ["ItemCount", "itemcount"],
+    ["userID", "userid"],
+    ["user_id", "userid"],
+    ["item2Id", "item2id"],
+    ["item_2_id", "item2id"],
+  ])("inflectionKey(%s) is %s", (key, normal) => {
+    expect(inflectionKey(key)).toBe(normal);
+  });
+
+  it("compares a deeply nested body without recursion", () => {
+    let captured: Record<string, unknown> = { itemCount: 1 };
+    let replayed: Record<string, unknown> = { item_count: 1 };
+    for (let i = 0; i < 20000; i++) {
+      captured = { n: captured };
+      replayed = { n: replayed };
+    }
+    expect(responseShapeDiffers(captured, replayed)).toBe(true);
+  });
+
+  it("names a lower-case captured header the replay omitted", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ display_name: 1 }), { status: 200 }))
+    );
+    const c = {
+      url: "https://example.com/items.json",
+      method: "GET",
+      operationName: null,
+      query: null,
+      variables: null,
+      requestPostData: null,
+      requestHeaders: { "accept-language": "fr" },
+      responseBody: { displayName: 1 },
+    } as never;
+    const r = await replayCapture("a.json", c);
+    expect(r?.success).toBe(false);
+    expect(r?.omittedCaptureHeaders).toEqual(["accept-language"]);
+  });
+
+  it("fails a JSON capture whose 2xx replay is an HTML page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("<!doctype html><html><body>app</body></html>", {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          })
+      )
+    );
+    const r = await replayCapture("a.json", cap({ itemCount: 1 }));
+    expect(r?.success).toBe(false);
+    expect(r?.shapeDiffers).toBe(true);
+    expect(r?.error).toContain("Key-Inflection");
+  });
+
+  it("passes when shape matches", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ itemCount: 2 }), { status: 200 }))
+    );
+    const r = await replayCapture("a.json", cap({ itemCount: 1 }));
+    expect(r?.success).toBe(true);
+    expect(r?.shapeDiffers).toBe(false);
   });
 });
 

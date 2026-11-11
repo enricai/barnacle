@@ -396,6 +396,40 @@ auth tokens are almost always unnecessary on public endpoints — adding them
 makes it harder to isolate which headers actually matter. If a replay fails,
 add headers one at a time; the one that fixes it was load-bearing.
 
+A status-only pass is insufficient: content-negotiation headers (e.g. a
+key-casing or API-version header) can change the response body while still
+returning 200. Each replay's response shape is compared with its capture. A
+JSON object or array capture whose replay is not JSON (an HTML page, a bare
+value, an empty body) differs in shape. Two JSON bodies differ when either:
+
+- **a key is re-inflected, at any depth**: at the same place in both bodies
+  (array elements pooled), a key is spelled differently but equal once case
+  and the `_`/`-` separators are removed. `itemCount`, `item_count`,
+  `item-count` and `ItemCount` are one key; so are `userID` and `user_id`, and
+  `item2Id` and `item_2_id`. This catches a key-casing header inside an
+  envelope such as `{data: {...}}`.
+- **the top-level key set differs**: the keys of a top-level object, or the
+  keys found across the elements of a top-level array (an empty array is not
+  compared; an array against an object differs). This catches a language or
+  API-version header that swaps the top-level vocabulary.
+
+Below the top level, keys present on one side only are data (optional fields,
+id-keyed maps) and are not compared. The accepted cost is at the top level:
+an optional top-level key the replay lacks, a top-level map keyed by ids, or
+top-level array elements with different optional keys are flagged too. When
+`recon:http` logs `response shape differs from the browser capture; a request
+header may be load-bearing: <headers>`, the replay does not count as passed; the
+listed headers are the captured ones the replay omitted. `recon:http` then
+re-sends the replay unchanged (if that already matches, the divergence did not
+reproduce and no header is credited) and with each of them added back, one at
+a time, skipping transport headers such as `Content-Length` (and, if none
+restores the shape alone, all of them, reduced to a minimal set), and records
+the ones that restore the shape as `shapeRestoringHeaders`: those, and only
+those, are load-bearing. A re-send restores the shape only by reproducing it:
+JSON with the capture's top-level keys and the captured spellings the
+diverging replay had changed. An emptier answer (an empty list, `null`, no
+body) proves nothing.
+
 Each replay is saved to `<run-dir>/replays/` with status, headers, body, and
 a link back to the source capture. Every replay returning 200 with a matching
 shape proves the browser is unnecessary for production.
@@ -468,7 +502,16 @@ The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.
   verbatim. Strip UI-only fields — often 60% of them — to isolate yourself
   from UI-driven schema churn.
 - **4b — Verify load-bearing headers.** `recon-generate` derives
-  `BASE_HEADERS` from headers present in every successfully-replayed capture.
+  `BASE_HEADERS` from the request headers present in every relevant capture
+  (the flow's action captures, else the captures whose endpoint's replay got a
+  2xx), plus the headers re-replay proved restore a diverging replay's
+  response shape (the Codified Headers table). Credentials and conditionals
+  (`Authorization`, `Proxy-Authorization`, `Cookie`, `If-None-Match`,
+  `If-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`) are never
+  frozen into it, even when proven load-bearing. For each one re-replay proved
+  load-bearing, the generated contract carries a TODO above `BASE_HEADERS` to
+  send it per call from where the session obtains it; an unproven one is
+  simply left out.
   Remove anything decorative; extra headers widen the bot-detection
   fingerprint surface.
 - **4c — Verify the rate-limit ceiling.** `recon-generate` sets Bottleneck's

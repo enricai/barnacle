@@ -193,6 +193,15 @@ export interface ReplayResult {
   replayBody: unknown;
   success: boolean;
   error: string | null;
+  /** True when the replay response's key shape differs from the browser capture. */
+  shapeDiffers?: boolean;
+  /** Captured request headers that the replay did not send (possible load-bearing headers). */
+  omittedCaptureHeaders?: string[];
+  /**
+   * Of the omitted headers (as captured), those proven by re-replay to restore the
+   * capture's response shape. Empty when re-sending them does not restore it.
+   */
+  shapeRestoringHeaders?: string[];
 }
 
 export interface RateLimitFinding {
@@ -292,41 +301,46 @@ export function readBrowserFlowOnly(flowFile: string): boolean {
   return (parsed as { browserFlowOnly?: unknown } | null)?.browserFlowOnly === true;
 }
 
+/** True when the replay got a 2xx response, whether or not its shape matched the capture. */
+export function replayReachable(r: ReplayResult): boolean {
+  return r.replayStatus !== null && r.replayStatus >= 200 && r.replayStatus < 300;
+}
+
+/** A replay passes only when its status was ok AND its response shape matches the capture. */
+export function replayPassed(r: ReplayResult): boolean {
+  return r.success && !r.shapeDiffers;
+}
+
 /**
- * Counts how often each response header appears across successful replays.
- * Infrastructure headers that are never load-bearing on the request side are
- * excluded so the caller sees only candidates worth committing as BASE_HEADERS.
+ * Request headers that carry a credential or a cache conditional: their captured
+ * value belongs to one recon session (a token, a cookie jar, a stale ETag or
+ * date), so generated code never freezes one into BASE_HEADERS, even when
+ * re-replay proves it load-bearing; it must be obtained per call.
  */
-export function tallyResponseHeaders(replays: ReplayResult[]): Map<string, number> {
-  const IGNORE = new Set([
-    "date",
-    "content-length",
-    "transfer-encoding",
-    "connection",
-    "vary",
-    "server",
-    "x-request-id",
-    "x-correlation-id",
-    "cf-ray",
-    "cf-cache-status",
-    "age",
-    "via",
-    "etag",
-    "last-modified",
-    "expires",
-    "pragma",
-    "strict-transport-security",
-    "x-content-type-options",
-    "x-frame-options",
-    "x-xss-protection",
-  ]);
+export const CREDENTIAL_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "if-none-match",
+  "if-match",
+  "if-modified-since",
+  "if-unmodified-since",
+  "if-range",
+]);
+
+/**
+ * Counts, per captured request header (lowercased), how many shape-diverging
+ * replays it restored when re-sent (`shapeRestoringHeaders`): the request headers
+ * re-replay proved load-bearing.
+ */
+export function tallyShapeRestoringHeaders(replays: ReplayResult[]): Map<string, number> {
   const counts = new Map<string, number>();
-  const successfulReplays = replays.filter((r) => r.success && r.replayHeaders);
-  for (const replay of successfulReplays) {
-    for (const header of Object.keys(replay.replayHeaders)) {
-      const lower = header.toLowerCase();
-      if (IGNORE.has(lower)) continue;
-      counts.set(lower, (counts.get(lower) ?? 0) + 1);
+  for (const replay of replays) {
+    if (!replay.shapeDiffers) continue;
+    for (const header of new Set(
+      (replay.shapeRestoringHeaders ?? []).map((h) => h.toLowerCase())
+    )) {
+      counts.set(header, (counts.get(header) ?? 0) + 1);
     }
   }
   return counts;
