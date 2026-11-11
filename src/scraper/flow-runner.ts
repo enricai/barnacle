@@ -10048,23 +10048,27 @@ async function tryPromptSelectorPrimitive(params: {
       if (members.some((o) => o !== sel && o.tagName === "SELECT")) continue;
       // A select outside the trigger union may be a plain, working select next
       // to an unrelated widget (a date-of-birth row, a country/currency pair).
-      // It anchors the pairing only when its field also holds ITS OWN shadow
-      // opener, the layered shape's fingerprint: an opener that is unrendered,
-      // or zero-area where the page has layout, and that belongs to this select
-      // (it shares a wrapper with the select that excludes the label, or it is
-      // labelled exactly as the select is). An unrelated hidden widget in the
-      // same field (a hidden mobile duplicate, another widget's opener) is not.
+      // It anchors the pairing only when its field also holds a shadow opener
+      // that is tied to this select: unrendered, or zero-area where the page
+      // has layout, and either sharing a wrapper with the select that excludes
+      // the label, or labelled exactly as the select is.
       if (!widgets.includes(sel)) {
         const zeroArea = (o) => {
           const r = o.getBoundingClientRect();
           return r.width === 0 || r.height === 0;
         };
         const laidOut = !zeroArea(field);
-        const shadow = (o) => !rendered(o) || (laidOut && zeroArea(o));
+        // Geometry alone does not make a shadow: an empty icon or overlay is
+        // zero-area too. A rendered zero-area opener counts only when it
+        // links a popup of its own (aria-owns/aria-controls).
+        const shadow = (o) => !rendered(o) || (laidOut && zeroArea(o) && (o.hasAttribute("aria-owns") || o.hasAttribute("aria-controls")));
+        // A control group (label outside, select and neighbours inside) also
+        // wraps the select without the label; a wrapper ties the opener to
+        // the select only when it holds no other rendered trigger.
         const wrapsWithSel = (o) => {
           let w = o.parentElement;
           while (w && w !== field && !w.contains(sel)) w = w.parentElement;
-          return !!w && w !== field && !w.contains(lab);
+          return !!w && w !== field && !w.contains(lab) && !Array.from(w.querySelectorAll("[role='combobox']")).concat(members).some((c) => c !== o && c.tagName !== "SELECT" && w.contains(c) && rendered(c));
         };
         const ownShadow = (o) =>
           o !== sel && shadow(o) && (wrapsWithSel(o) || (hasOwnLabel(o) && norm(widgetLabel(o)) === norm(labText)));
@@ -10081,6 +10085,10 @@ async function tryPromptSelectorPrimitive(params: {
       if (pick.length !== 1) continue;
       const t = pick[0];
       if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText)) continue;
+      // The layered shape's visible anchor is outside the trigger union (that
+      // is why it needs pairing). A trigger in the union is a full widget with
+      // its own popup, so a select outside the union never adopts it.
+      if (!widgets.includes(sel) && widgets.includes(t)) continue;
       labelOverride.set(t, labText);
       if (!allWidgets.includes(t)) allWidgets.push(t);
       for (const m of members) if (m !== t) layerHost.set(m, t);
