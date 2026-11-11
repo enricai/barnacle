@@ -131,7 +131,16 @@ describe("recon-summarize main (real call path)", () => {
       omittedCaptureHeaders: ["key-inflection"],
     });
     const out = join(root, "out", "r.md");
-    process.argv = ["node", "/x/recon-summarize.ts", "--site-id", "acme", "--out", out, "--run-dir", root];
+    process.argv = [
+      "node",
+      "/x/recon-summarize.ts",
+      "--site-id",
+      "acme",
+      "--out",
+      out,
+      "--run-dir",
+      root,
+    ];
     await import("@/scripts/recon-summarize.js");
     await vi.waitFor(() => expect(() => readFileSync(out, "utf8")).not.toThrow());
     const md = readFileSync(out, "utf8");

@@ -4,10 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  readOwnBackendHostnames,
-  readSuccessUrlFragments,
-} from "@/scripts/recon-shared";
+import { readOwnBackendHostnames, readSuccessUrlFragments } from "@/scripts/recon-shared";
 
 const DIR = mkdtempSync(join(tmpdir(), "flow-readers-"));
 const flow = (name: string, body: string): string => {
@@ -21,7 +18,10 @@ describe.each([
   ["readOwnBackendHostnames", readOwnBackendHostnames, "ownBackendHostnames"],
 ] as const)("%s", (_n, fn, key) => {
   it("returns only non-empty strings", () => {
-    expect(fn(flow(`${key}1.json`, JSON.stringify({ [key]: ["a", "", 3, "b"] })))).toEqual(["a", "b"]);
+    expect(fn(flow(`${key}1.json`, JSON.stringify({ [key]: ["a", "", 3, "b"] })))).toEqual([
+      "a",
+      "b",
+    ]);
   });
   it("returns [] for bare-array flow, missing key, non-array value", () => {
     expect(fn(flow(`${key}2.json`, "[]"))).toEqual([]);

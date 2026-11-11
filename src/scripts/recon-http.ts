@@ -224,12 +224,13 @@ export function responseShapeDiffers(captured: unknown, replayed: unknown): bool
 /** Captured request header names (lowercased) the replay did not send. */
 export function omittedHeaders(
   captured: Record<string, string> | undefined,
-  sent: Record<string, string>
+  sent: Record<string, string>,
+  keepCase = false
 ): string[] {
   const have = new Set(Object.keys(sent).map((k) => k.toLowerCase()));
   return Object.keys(captured ?? {})
-    .map((k) => k.toLowerCase())
-    .filter((k) => !have.has(k));
+    .map((k) => (keepCase ? k : k.toLowerCase()))
+    .filter((k) => !have.has(k.toLowerCase()));
 }
 
 /**
@@ -296,6 +297,8 @@ export async function replayCapture(
     const statusOk = response.status >= 200 && response.status < 300;
     const shapeDiffers = statusOk && responseShapeDiffers(capture.responseBody, replayBody);
     const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, headers);
+    const omittedAsCaptured = omittedHeaders(capture.requestHeaders, headers, true);
+    const shapeMessage = `response shape differs from the browser capture; a request header may be load-bearing: ${omittedAsCaptured.join(", ") || "(none omitted)"}`;
     // A replay passes only when its response matches the capture's shape; a 2xx
     // with a different shape means a request header it omitted is load-bearing.
     const success = statusOk && !shapeDiffers;
@@ -335,7 +338,7 @@ export async function replayCapture(
       success,
       shapeDiffers,
       omittedCaptureHeaders,
-      error: null,
+      error: shapeDiffers ? shapeMessage : null,
     };
   } catch (err) {
     logger.error(`[ERR] ${capture.method} ${capture.url}: ${toErrorMessage(err)}`);
