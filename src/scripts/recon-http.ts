@@ -56,6 +56,7 @@ import {
   adoptReconRunRoot,
   type ReplayResult,
   readOwnBackendHostnames,
+  replayPassed,
   resolveLatestReconRunRoot,
 } from "@/scripts/recon-shared";
 
@@ -251,7 +252,9 @@ export async function replayCapture(
     const statusOk = response.status >= 200 && response.status < 300;
     const shapeDiffers = statusOk && responseShapeDiffers(capture.responseBody, replayBody);
     const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, headers);
-    const success = statusOk && !shapeDiffers;
+    // success stays the transport verdict so rate-limit/aux-fixture consumers keep
+    // their inputs; shape divergence is carried in shapeDiffers (see replayPassed).
+    const success = statusOk;
 
     if (shapeDiffers) {
       logger.warn(
@@ -785,7 +788,7 @@ async function main(): Promise<void> {
     writeFileSync(join(runDir.replaysDir, filename), JSON.stringify(result, null, 2));
   }
 
-  const passed = replays.filter((r) => r.success).length;
+  const passed = replays.filter(replayPassed).length;
   logger.info(`replay complete: ${passed}/${replays.length} passed`);
 
   // GraphQL introspection probe

@@ -573,7 +573,7 @@ describe("replayCapture — response shape", () => {
       vi.fn(async () => new Response(JSON.stringify({ game_duration: 1 }), { status: 200 }))
     );
     const r = await replayCapture("a.json", cap({ gameDuration: 1 }));
-    expect(r?.success).toBe(false);
+    expect(r?.success).toBe(true);
     expect(r?.shapeDiffers).toBe(true);
     expect(r?.omittedCaptureHeaders).toContain("key-inflection");
   });
