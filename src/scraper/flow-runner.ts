@@ -942,13 +942,33 @@ const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
   return "";
 })`;
 /**
+ * A widget label with its trailing empty-value placeholder removed
+ * ("Country Code — Make a Selection —" -> "Country Code"). A trigger whose
+ * accessible name is its label plus the placeholder it shows until a value is
+ * picked names the same field as the bare label, whichever node (aria-label,
+ * aria-labelledby, <label>, ancestor text) supplied it. Derived from
+ * {@link PROMPT_EMPTY_VALUE_RX}'s own source — the leading anchor becomes a
+ * required separator run — so only a suffix after a real label is stripped; a
+ * label that is ONLY a placeholder is left as-is.
+ */
+const TRAILING_EMPTY_VALUE_RX = new RegExp(
+  PROMPT_EMPTY_VALUE_RX_SRC.replace(/^\^/, "[\\s\\-–—]+"),
+  PROMPT_EMPTY_VALUE_RX_FLAGS
+);
+export function stripTrailingEmptyPlaceholder(label: string): string {
+  const bare = label.replace(/\s+/g, " ").trim();
+  return bare.replace(TRAILING_EMPTY_VALUE_RX, "").trim() || bare;
+}
+/**
  * Does a widget's label match the question label? Substring either way, or
  * every token of the shorter label appears in the other ("Phone Country Code"
- * matches "Country Code"); unrelated labels share no full subset.
+ * matches "Country Code"); unrelated labels share no full subset. A trailing
+ * empty-value placeholder on the widget label is not part of the field name.
  */
 export function widgetLabelMatches(widgetLabel: string, questionLabel: string): boolean {
+  const field = stripTrailingEmptyPlaceholder(widgetLabel);
   const lc = (x: string): string => x.toLowerCase().replace(/\s+/g, " ").trim();
-  const wl = lc(widgetLabel);
+  const wl = lc(field);
   const ql = lc(questionLabel);
   if (wl && ql && (wl.includes(ql) || ql.includes(wl))) return true;
   const toks = (x: string): string[] =>
@@ -956,7 +976,7 @@ export function widgetLabelMatches(widgetLabel: string, questionLabel: string): 
       .toLowerCase()
       .split(/[^a-z0-9]+/)
       .filter(Boolean);
-  const a = toks(widgetLabel);
+  const a = toks(field);
   const b = toks(questionLabel);
   if (a.length === 0 || b.length === 0) return false;
   const [small, big] = a.length <= b.length ? [a, b] : [b, a];
@@ -3143,31 +3163,33 @@ export type CaptureFn = (input: LlmCallInput) => Promise<void>;
  * is the per-call data.
  */
 const REPHRASE_SYSTEM_PROMPT =
-  "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED.";
+  "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED. With outcome=rewrite, set typesIntoField to true only when the rewritten instruction types or enters text into an input field; set it to false for clicks, key presses (such as pressing Enter), selecting an option from a dropdown, radio or checkbox, and navigation. Do not write any wording about clearing or selecting the field's existing text: when typesIntoField is true, that is added for you.";
 
 /**
- * A rephrased "click the input, then type X" must replace, not append: Stagehand's
- * click-then-type leaves existing text in place, so a prefilled field ends up
- * holding the value twice. Appends an explicit select-all-and-replace clause to
- * instructions that type into a field. Idempotent; other instructions unchanged.
+ * Appended to a rephrased instruction that types into a field. Stagehand's
+ * click-then-type leaves existing text in place, so a prefilled field would
+ * end up holding the value twice.
  */
-export function withClearBeforeType(instruction: string): string {
-  if (!/\b(type|typing|enter|input)\b/i.test(instruction)) return instruction;
-  if (!/\b(click|focus|select)\b/i.test(instruction)) return instruction;
-  if (
-    /select(ing)? all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(
-      instruction
-    )
-  ) {
-    return instruction;
-  }
-  return `${instruction.replace(/[.\s]+$/, "")}, first selecting all existing text in the field (Ctrl/Cmd+A) and replacing it so the value is not appended to existing content`;
+export const CLEAR_BEFORE_TYPE_CLAUSE =
+  ", first selecting all existing text in the field (Ctrl/Cmd+A) and replacing it so the value is not appended to existing content";
+
+/**
+ * Appends `CLEAR_BEFORE_TYPE_CLAUSE`. Whether an instruction types into a field
+ * is the rephrase LLM's `typesIntoField` answer, not something read from its
+ * words here. Idempotent.
+ */
+export function appendClearBeforeTypeClause(instruction: string): string {
+  const base = instruction.replace(/[.\s]+$/, "");
+  if (base.endsWith(CLEAR_BEFORE_TYPE_CLAUSE)) return base;
+  return `${base}${CLEAR_BEFORE_TYPE_CLAUSE}`;
 }
 
 /**
  * Attempt-5 of the step-healing cascade: when three mechanical retry variations
  * all fail, this is the last resort before the step is declared terminal. Exported
  * so tests can inject a fake capture sink without touching the browser session.
+ * Returns the instruction ready for act(): with `CLEAR_BEFORE_TYPE_CLAUSE`
+ * appended when the model answers `typesIntoField: true`.
  */
 export async function rephraseWithLLM(
   client: RephraseModel,
@@ -3361,7 +3383,13 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
 
     if (parsed.outcome === "impossible") return null;
     if (unresolvedTokens(parsed.instruction, variables).length > 0) return null;
-    return detokenize(parsed.instruction, variables);
+    // The clause goes on before tokens resolve: its trailing-punctuation strip
+    // must never cut into a resolved sensitive value (a value ending in "."
+    // would be typed without it, and re-tokenizing would then miss it).
+    return detokenize(
+      parsed.typesIntoField ? appendClearBeforeTypeClause(parsed.instruction) : parsed.instruction,
+      variables
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logBillingErrorIfPresent(err);
@@ -9999,8 +10027,17 @@ async function tryPromptSelectorPrimitive(params: {
       const byFor = sel.id ? document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(sel.id) : sel.id) + "']") : null;
       return byFor || sel.closest("label");
     };
-    for (const sel of widgets) {
-      if (sel.tagName !== "SELECT" || layerHost.has(sel)) continue;
+    // Every labelled native select anchors a pairing attempt, not only one in
+    // the trigger union: whether the field is layered is decided by its
+    // structure (one label, one rendered non-select trigger), never by the
+    // select's own popup link or by how it is hidden. A covered select with no
+    // aria-controls/aria-owns is otherwise owned by neither primitive: the
+    // select primitive finds no matching option in it, and its field is never
+    // collapsed onto the rendered trigger.
+    const layerAnchors = widgets.filter((w) => w.tagName === "SELECT");
+    for (const s of document.querySelectorAll("select")) if (!layerAnchors.includes(s)) layerAnchors.push(s);
+    for (const sel of layerAnchors) {
+      if (layerHost.has(sel)) continue;
       const lab = labelElOf(sel);
       const labText = lab ? lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120) : "";
       if (!labText) continue;
@@ -10009,6 +10046,34 @@ async function tryPromptSelectorPrimitive(params: {
       if (!field || field === document.body || field.querySelectorAll("label").length !== 1 || !field.contains(lab)) continue;
       const members = widgets.filter((o) => field.contains(o));
       if (members.some((o) => o !== sel && o.tagName === "SELECT")) continue;
+      // A select outside the trigger union may be a plain, working select next
+      // to an unrelated widget (a date-of-birth row, a country/currency pair).
+      // It anchors the pairing only when its field also holds a shadow opener
+      // that is tied to this select: unrendered, or zero-area where the page
+      // has layout, and either sharing a wrapper with the select that excludes
+      // the label, or labelled exactly as the select is.
+      if (!widgets.includes(sel)) {
+        const zeroArea = (o) => {
+          const r = o.getBoundingClientRect();
+          return r.width === 0 || r.height === 0;
+        };
+        const laidOut = !zeroArea(field);
+        // Geometry alone does not make a shadow: an empty icon or overlay is
+        // zero-area too. A rendered zero-area opener counts only when it
+        // links a popup of its own (aria-owns/aria-controls).
+        const shadow = (o) => !rendered(o) || (laidOut && zeroArea(o) && (o.hasAttribute("aria-owns") || o.hasAttribute("aria-controls")));
+        // A control group (label outside, select and neighbours inside) also
+        // wraps the select without the label; a wrapper ties the opener to
+        // the select only when it holds no other rendered trigger.
+        const wrapsWithSel = (o) => {
+          let w = o.parentElement;
+          while (w && w !== field && !w.contains(sel)) w = w.parentElement;
+          return !!w && w !== field && !w.contains(lab) && !Array.from(w.querySelectorAll("[role='combobox']")).concat(members).some((c) => c !== o && c.tagName !== "SELECT" && w.contains(c) && rendered(c));
+        };
+        const ownShadow = (o) =>
+          o !== sel && shadow(o) && (wrapsWithSel(o) || (hasOwnLabel(o) && norm(widgetLabel(o)) === norm(labText)));
+        if (!members.some(ownShadow)) continue;
+      }
       const triggers = Array.from(field.querySelectorAll("[role='combobox']"))
         .concat(members)
         .filter((c, i, arr) => arr.indexOf(c) === i && c.tagName !== "SELECT" && rendered(c) && !sel.contains(c));
@@ -10020,6 +10085,10 @@ async function tryPromptSelectorPrimitive(params: {
       if (pick.length !== 1) continue;
       const t = pick[0];
       if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText)) continue;
+      // The layered shape's visible anchor is outside the trigger union (that
+      // is why it needs pairing). A trigger in the union is a full widget with
+      // its own popup, so a select outside the union never adopts it.
+      if (!widgets.includes(sel) && widgets.includes(t)) continue;
       labelOverride.set(t, labText);
       if (!allWidgets.includes(t)) allWidgets.push(t);
       for (const m of members) if (m !== t) layerHost.set(m, t);
@@ -10098,7 +10167,7 @@ async function tryPromptSelectorPrimitive(params: {
     // (case/whitespace-insensitive) label equality breaks the tie when unique.
     const exactNorm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
     const exactMatches = labelMatches.filter(
-      (c) => exactNorm(c.label) === exactNorm(questionLabel ?? "")
+      (c) => exactNorm(stripTrailingEmptyPlaceholder(c.label)) === exactNorm(questionLabel ?? "")
     );
     const chosen =
       labelMatches.length === 1
@@ -15385,7 +15454,7 @@ export async function executeStepWithHealing(params: {
             instruction: a.instruction,
             verdict: a.errorMessage ?? failureReasons[i] ?? null,
           }));
-          let rephrased = await rephraseWithLLM(
+          const rephrased = await rephraseWithLLM(
             rephraseModel,
             step,
             triedSelectors,
@@ -15402,7 +15471,6 @@ export async function executeStepWithHealing(params: {
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
           } else {
-            rephrased = withClearBeforeType(rephrased);
             record.instruction = rephrased;
             params.abortSignal?.throwIfAborted();
             const preCentred = await preCentreNaturalLanguageClick(rephrased);

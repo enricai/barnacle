@@ -153,6 +153,12 @@ export const REPHRASE_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("rewrite"),
     instruction: z.string().min(1).max(400),
+    /**
+     * Whether the rewritten instruction types or enters text into an input
+     * field. When true, `rephraseWithLLM` appends the clear-before-type
+     * clause; it never infers this from the instruction's words.
+     */
+    typesIntoField: z.boolean(),
   }),
   z.object({
     outcome: z.literal("impossible"),

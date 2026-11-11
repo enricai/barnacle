@@ -99,9 +99,12 @@ describe("recon-browser — cookie-jar snapshot module reaches the built dist tr
       // Belt and suspenders: the built recon-browser.js still imports the
       // cookie-jar module by its post-tsc-alias relative path (not a `@/`
       // literal tsc-alias failed to rewrite), so the chain resolves at
-      // runtime inside a real dist/ tree with node_modules present.
+      // runtime inside a real dist/ tree with node_modules present. The `.js`
+      // suffix is optional because tsc-alias >=1.9.10 emits full paths.
       const builtReconBrowserSource = readFileSync(builtReconBrowser, "utf8");
-      expect(builtReconBrowserSource).toMatch(/require\(["']\.\.\/scraper\/cookie-jar["']\)/);
+      expect(builtReconBrowserSource).toMatch(
+        /require\(["']\.\.\/scraper\/cookie-jar(\.js)?["']\)/
+      );
 
       // An installed-package consumer (nursefly/autoapply) never runs
       // recon-browser — it imports the cookie contract via package.json's

@@ -87,7 +87,7 @@ three are `true`.
 
 Did the model's response match the expected output structure for this
 `callType`? `true` when `responseContent` is valid JSON conforming to the
-call type's contract — e.g. `recon-rephrase` expects a plain string,
+call type's contract — e.g. `recon-rephrase` expects `{outcome: "rewrite", instruction, typesIntoField}` or `{outcome: "impossible", reason}`,
 `recon-flow-patch` expects `{anchor, replacement, strategy, pivot_reason}`.
 If the sample's own `parsedOk` is `false`, the judge marks `schemaOk = false`
 regardless of what the model returned.

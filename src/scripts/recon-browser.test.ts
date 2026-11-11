@@ -224,6 +224,7 @@ function makeRephraseModel(
       : {
           outcome: "rewrite" as const,
           instruction: responseText,
+          typesIntoField: false,
         };
   generateObjectStub.mockResolvedValue({
     object: parsed,
