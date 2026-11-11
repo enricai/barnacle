@@ -10048,9 +10048,28 @@ async function tryPromptSelectorPrimitive(params: {
       if (members.some((o) => o !== sel && o.tagName === "SELECT")) continue;
       // A select outside the trigger union may be a plain, working select next
       // to an unrelated widget (a date-of-birth row, a country/currency pair).
-      // It anchors the pairing only when its field also holds an unrendered
-      // opener, which is the layered shape's own fingerprint.
-      if (!widgets.includes(sel) && !members.some((o) => !rendered(o))) continue;
+      // It anchors the pairing only when its field also holds ITS OWN shadow
+      // opener, the layered shape's fingerprint: an opener that is unrendered,
+      // or zero-area where the page has layout, and that belongs to this select
+      // (it shares a wrapper with the select that excludes the label, or it is
+      // labelled exactly as the select is). An unrelated hidden widget in the
+      // same field (a hidden mobile duplicate, another widget's opener) is not.
+      if (!widgets.includes(sel)) {
+        const zeroArea = (o) => {
+          const r = o.getBoundingClientRect();
+          return r.width === 0 || r.height === 0;
+        };
+        const laidOut = !zeroArea(field);
+        const shadow = (o) => !rendered(o) || (laidOut && zeroArea(o));
+        const wrapsWithSel = (o) => {
+          let w = o.parentElement;
+          while (w && w !== field && !w.contains(sel)) w = w.parentElement;
+          return !!w && w !== field && !w.contains(lab);
+        };
+        const ownShadow = (o) =>
+          o !== sel && shadow(o) && (wrapsWithSel(o) || (hasOwnLabel(o) && norm(widgetLabel(o)) === norm(labText)));
+        if (!members.some(ownShadow)) continue;
+      }
       const triggers = Array.from(field.querySelectorAll("[role='combobox']"))
         .concat(members)
         .filter((c, i, arr) => arr.indexOf(c) === i && c.tagName !== "SELECT" && rendered(c) && !sel.contains(c));

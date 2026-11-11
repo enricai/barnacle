@@ -226,4 +226,68 @@ describe("prompt-selector: a visible working select is never paired with a neigh
     expect(result).toBe("completed");
     expect(doc.querySelector("#cat")?.textContent).toContain("Engineering");
   });
+
+  it("a hidden duplicate of the neighbouring widget does not make the select layered", async () => {
+    const { result, doc } = await run(
+      `<form><fieldset><legend>Date of birth</legend><div class="row">
+<label for="m">Month</label><select id="m"><option value="">--</option><option>January</option></select>
+<div id="yr" role="combobox" aria-haspopup="listbox" tabindex="0">— Make a Selection —</div>
+<div id="yr-m" role="combobox" aria-haspopup="listbox" tabindex="0" style="display:none">— Make a Selection —</div></div></fieldset></form>`,
+      { yr: { options: ["1989", "1990"] } },
+      "Select '1990' in the 'Date of birth' dropdown"
+    );
+    expect(result).toBe("completed");
+    expect(doc.querySelector("#yr")?.textContent).toContain("1990");
+  });
+
+  it("another widget's shadow opener in the same row does not pair the plain select", async () => {
+    const { result, doc } = await run(
+      `<form><div class="field"><label for="c">Country</label>
+<select id="c"><option value="">--</option><option>Other (not listed)</option></select>
+<div class="control"><span id="op" role="combobox" aria-expanded="false" aria-owns="pnl" aria-label="Currency" tabindex="0" style="width:0px;height:0px"><span></span></span>
+<select id="csel" role="combobox" tabindex="-1" aria-label="Currency" style="position:absolute;opacity:0;width:1px;height:1px"><option value=""></option></select>
+<div id="pnl" role="listbox"></div></div>
+<a id="vis" role="combobox" aria-expanded="false" aria-label="— Make a Selection —">— Make a Selection —</a></div></form>`,
+      { vis: { options: ["Other", "USD"] } },
+      "Select 'Other' in the 'Country' dropdown"
+    );
+    expect(result).not.toBe("completed");
+    expect(doc.querySelector("#vis")?.textContent).toContain("Make a Selection");
+  });
+});
+
+describe("prompt-selector: layered pairing for a select in the trigger union is unchanged", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("pairs a union select with its visible trigger even with no shadow opener", async () => {
+    const h = buildPromptWidgetHarness({
+      html: `<form><div class="field"><label id="a-l" for="a-sel">Country</label>
+<div class="control"><select id="a-sel" role="combobox" aria-controls="a-sel-lb" tabindex="-1" aria-label="Country" style="${COVERED}"><option value=""></option></select></div>
+<a id="a-vis" role="combobox" aria-expanded="false" aria-label="— Make a Selection —">— Make a Selection —</a></div></form>`,
+      popupByWidgetId: { "a-vis": { options: ["France", "Norway"] } },
+    });
+    const r = await executeStepWithHealing(
+      params(h.page as unknown as Page, "Select 'Norway' in the 'Country' dropdown") as never
+    );
+    expect(r).toBe("completed");
+    expect(h.window.document.querySelector("#a-vis")?.textContent).toContain("Norway");
+  });
+
+  it("pairs a flat layered field whose opener is labelled by the select's label", async () => {
+    const h = buildPromptWidgetHarness({
+      html: `<form><div class="field"><label id="a-l" for="a-sel">Country</label>
+<span id="a-op" role="combobox" aria-expanded="false" aria-owns="a-pnl" aria-labelledby="a-l" tabindex="0" style="width:0px;height:0px"><span></span></span>
+<select id="a-sel" role="combobox" tabindex="-1" aria-label="Country" style="${COVERED}"><option value=""></option></select>
+<div id="a-pnl" role="listbox"></div>
+<a id="a-vis" role="combobox" aria-expanded="false" aria-label="— Make a Selection —">— Make a Selection —</a></div></form>`,
+      popupByWidgetId: { "a-vis": { options: ["France", "Norway"] } },
+    });
+    const r = await executeStepWithHealing(
+      params(h.page as unknown as Page, "Select 'Norway' in the 'Country' dropdown") as never
+    );
+    expect(r).toBe("completed");
+    expect(h.window.document.querySelector("#a-vis")?.textContent).toContain("Norway");
+  });
 });
