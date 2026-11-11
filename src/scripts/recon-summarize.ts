@@ -273,7 +273,7 @@ async function main(): Promise<void> {
     headerCounts.size === 0
       ? divergedCount === 0
         ? "_No request headers implicated — no replay diverged in response shape from its capture._"
-        : `_No request headers implicated — ${divergedCount} replay(s) diverged in response shape, but re-sending the captured headers they omitted did not restore it._`
+        : `_No request headers implicated — ${divergedCount} replay(s) diverged in response shape, but no captured header they omitted was proven to restore it._`
       : [
           `_Captured request headers that, re-sent, restored the response shape of a replay that diverged_`,
           `_from its capture: proven load-bearing. Commit them as \`BASE_HEADERS\` in \`src/sites/<id>/contract.ts\`,_`,

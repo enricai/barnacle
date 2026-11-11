@@ -425,7 +425,10 @@ reproduce and no header is credited) and with each of them added back, one at
 a time, skipping transport headers such as `Content-Length` (and, if none
 restores the shape alone, all of them, reduced to a minimal set), and records
 the ones that restore the shape as `shapeRestoringHeaders`: those, and only
-those, are load-bearing.
+those, are load-bearing. A re-send restores the shape only by reproducing it:
+JSON with the capture's top-level keys and the captured spellings the
+diverging replay had changed. An emptier answer (an empty list, `null`, no
+body) proves nothing.
 
 Each replay is saved to `<run-dir>/replays/` with status, headers, body, and
 a link back to the source capture. Every replay returning 200 with a matching

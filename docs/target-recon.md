@@ -210,14 +210,18 @@ _except credentials and conditionals, which are obtained per call, never committ
 | `authorization` | 1 | **Yes** (credential: obtain per call) |
 
 When no replay diverged in shape the section reads "No request headers implicated"; when replays
-diverged but re-sending their omitted headers restored none of them, it says so.
+diverged but no omitted header was proven to restore any of them, it says so.
 A replay passes only if its status is OK **and** its response shape matches the capture.
 For a replay whose shape differs, `recon:http` re-sends it unchanged (if that already matches, the
 divergence did not reproduce and no header is credited), then with each captured header the replay
-omitted added back, one at a time, skipping transport headers such as `Content-Length`; if none restores the shape alone, it adds them all back and,
-when that restores it, drops them one at a time to a minimal set. It warns `response shape differs
-from the browser capture; a request header may be load-bearing: <omitted headers>; restored by
-re-sending: <headers>` (or `no omitted header restores it when re-sent`).
+omitted added back, one at a time, skipping transport headers such as `Content-Length`; if none
+restores the shape alone, it adds them all back and, when that restores it, drops them one at a
+time to a minimal set. A re-send restores the shape only when it positively reproduces it: a JSON
+body with the capture's top-level keys (a non-empty top-level list stays non-empty) and, at their
+paths, the captured keys the diverging replay had re-inflected; an emptier answer proves nothing.
+It warns `response shape differs from the browser capture; a request header may be load-bearing:
+<omitted headers>; restored by re-sending: <headers>` (or `no omitted header restores it when
+re-sent`, or `the divergence did not reproduce on an unchanged re-send`).
 
 ## Hazards
 

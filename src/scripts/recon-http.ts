@@ -311,16 +311,50 @@ async function sendReplay(
   return { response, body };
 }
 
-/** True when a replay sent with `headers` gets a 2xx whose shape matches the capture. */
-async function replayMatchesCapture(
+/**
+ * True when `restored` positively reproduces the capture's shape where the
+ * diverging replay `diverged` did not. `responseShapeDiffers` is lenient when
+ * there is nothing to compare (an empty list, a path one side lacks, no body),
+ * which is right for flagging but cannot prove a restoration. So `restored` must
+ * also be a structured body, keep the capture's top-level keys (a non-empty
+ * top-level array does not come back empty), and carry, at its path, every
+ * captured key that `diverged` had re-inflected.
+ */
+function restoresShape(captured: unknown, diverged: unknown, restored: unknown): boolean {
+  const a = parseBody(captured);
+  const r = parseBody(restored);
+  if (!a || typeof a !== "object" || !r || typeof r !== "object") return false;
+  if (responseShapeDiffers(captured, restored)) return false;
+  if (topLevelKeys(a).keys && !topLevelKeys(r).keys) return false;
+  const d = parseBody(diverged);
+  if (!d || typeof d !== "object") return true;
+  const pathIds = new Map<string, number>();
+  const capturedKeys = keysByPath(a, pathIds);
+  const divergedKeys = keysByPath(d, pathIds);
+  const restoredKeys = keysByPath(r, pathIds);
+  for (const [path, keys] of capturedKeys) {
+    const other = divergedKeys.get(path);
+    if (!other) continue;
+    const reinflected = new Set([...other].filter((k) => !keys.has(k)).map(inflectionKey));
+    for (const k of keys) {
+      if (other.has(k) || !reinflected.has(inflectionKey(k))) continue;
+      if (!restoredKeys.get(path)?.has(k)) return false;
+    }
+  }
+  return true;
+}
+
+/** True when a replay sent with `headers` gets a 2xx that {@link restoresShape}. */
+async function replayRestoresShape(
   capture: Capture,
+  diverged: unknown,
   headers: Record<string, string>,
   requestBody: string | null
 ): Promise<boolean> {
   try {
     const { response, body } = await sendReplay(capture, headers, requestBody);
     const statusOk = response.status >= 200 && response.status < 300;
-    return statusOk && !responseShapeDiffers(capture.responseBody, body);
+    return statusOk && restoresShape(capture.responseBody, diverged, body);
   } catch (err) {
     logger.warn(`re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`);
     return false;
@@ -348,11 +382,11 @@ const TRANSPORT_REQUEST_HEADERS = new Set([
 
 /**
  * The captured request headers (as captured) that restore a shape-diverging
- * replay's response shape, proven by re-replaying. The replay is first re-sent
- * unchanged: when that already matches the capture, the divergence did not
- * reproduce and no header can be credited with it. Otherwise each omitted header
- * is added back on its own, and every header that alone makes the replay match
- * the capture is returned. When none does, all of them are added back together
+ * replay's response shape, proven by re-replaying ({@link restoresShape}). The
+ * replay is first re-sent unchanged: when that already restores the shape, the
+ * divergence did not reproduce (`reproduced: false`) and no header can be
+ * credited with it. Otherwise each omitted header is added back on its own, and
+ * every header that alone restores the shape is returned. When none does, all of them are added back together
  * and, if that matches, headers are dropped one at a time while it still
  * matches, leaving a minimal restoring set. Empty when nothing restores the
  * shape (a login page, a header-independent change). Candidates are one per
@@ -361,10 +395,11 @@ const TRANSPORT_REQUEST_HEADERS = new Set([
  */
 async function findShapeRestoringHeaders(
   capture: Capture,
+  diverged: unknown,
   headers: Record<string, string>,
   requestBody: string | null,
   omitted: string[]
-): Promise<string[]> {
+): Promise<{ headers: string[]; reproduced: boolean }> {
   const seen = new Set<string>();
   const candidates = omitted.filter((h) => {
     const lower = h.toLowerCase();
@@ -376,20 +411,22 @@ async function findShapeRestoringHeaders(
     ...headers,
     ...Object.fromEntries(names.map((h) => [h, capture.requestHeaders[h]!])),
   });
-  if (candidates.length === 0) return [];
-  if (await replayMatchesCapture(capture, headers, requestBody)) return [];
+  const restores = (names: string[]) =>
+    replayRestoresShape(capture, diverged, withHeaders(names), requestBody);
+  if (await restores([])) return { headers: [], reproduced: false };
+  if (candidates.length === 0) return { headers: [], reproduced: true };
   const alone: string[] = [];
   for (const h of candidates) {
-    if (await replayMatchesCapture(capture, withHeaders([h]), requestBody)) alone.push(h);
+    if (await restores([h])) alone.push(h);
   }
-  if (alone.length > 0 || candidates.length < 2) return alone;
-  if (!(await replayMatchesCapture(capture, withHeaders(candidates), requestBody))) return [];
+  if (alone.length > 0 || candidates.length < 2) return { headers: alone, reproduced: true };
+  if (!(await restores(candidates))) return { headers: [], reproduced: true };
   let kept = candidates;
   for (const h of candidates) {
     const without = kept.filter((k) => k !== h);
-    if (await replayMatchesCapture(capture, withHeaders(without), requestBody)) kept = without;
+    if (await restores(without)) kept = without;
   }
-  return kept;
+  return { headers: kept, reproduced: true };
 }
 
 /**
@@ -445,11 +482,19 @@ export async function replayCapture(
     // with a different shape may mean a request header it omitted is load-bearing,
     // and re-replaying with each one added back proves which (if any).
     const success = statusOk && !shapeDiffers;
-    const shapeRestoringHeaders = shapeDiffers
-      ? await findShapeRestoringHeaders(capture, headers, requestBody, omittedAsCaptured)
-      : [];
-    const restoredBy =
-      shapeRestoringHeaders.length > 0
+    const proof = shapeDiffers
+      ? await findShapeRestoringHeaders(
+          capture,
+          replayBody,
+          headers,
+          requestBody,
+          omittedAsCaptured
+        )
+      : { headers: [], reproduced: true };
+    const shapeRestoringHeaders = proof.headers;
+    const restoredBy = !proof.reproduced
+      ? "the divergence did not reproduce on an unchanged re-send"
+      : shapeRestoringHeaders.length > 0
         ? `restored by re-sending: ${shapeRestoringHeaders.join(", ")}`
         : "no omitted header restores it when re-sent";
     const shapeMessage = `response shape differs from the browser capture; a request header may be load-bearing: ${omittedAsCaptured.join(", ") || "(none omitted)"}; ${restoredBy}`;

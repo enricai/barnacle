@@ -193,6 +193,66 @@ describe("re-replay credits a header only with a divergence it reproduces", () =
     expect(r.shapeRestoringHeaders).toEqual([]);
     for (const h of ["key-inflection", "x-requested-with", "accept-language"])
       expect(lower(base)).not.toContain(h);
+    expect(r.error).toContain("the divergence did not reproduce on an unchanged re-send");
+  });
+
+  it.each([
+    [
+      "an envelope's list comes back empty",
+      { data: [{ itemCount: 1 }] },
+      { data: [{ item_count: 1 }] },
+      '{"data":[]}',
+    ],
+    ["a top-level list comes back empty", [{ itemCount: 1 }], [{ item_count: 1 }], "[]"],
+    ["a JSON null comes back", { itemCount: 1 }, { item_count: 1 }, "null"],
+    [
+      "an empty object comes back in an envelope",
+      { data: { itemCount: 1 } },
+      { data: { item_count: 1 } },
+      '{"data":{}}',
+    ],
+  ])(
+    "credits no header when re-sending it only empties the answer: %s",
+    async (_n, captured, without, withHeader) => {
+      const c = buildCapture({
+        url: URL_DIVERGING,
+        method: "GET",
+        requestPostData: null,
+        responseBody: captured,
+        requestHeaders: { "X-Region": "eu", "Key-Inflection": "camel" },
+        timestamp: "2026-08-01T00:00:00Z",
+      });
+      stubServer((sent) => ({ body: sent.get("x-region") ? withHeader : JSON.stringify(without) }));
+      const r = await replayCapture("a.json", c as never);
+      expect(r?.shapeDiffers).toBe(true);
+      expect(r?.shapeRestoringHeaders).toEqual([]);
+    }
+  );
+
+  it("credits no header whose re-send returns a body that cannot be read", async () => {
+    const c = buildCapture({
+      url: URL_DIVERGING,
+      method: "GET",
+      requestPostData: null,
+      responseBody: CAMEL,
+      requestHeaders: { "X-Region": "eu" },
+      timestamp: "2026-08-01T00:00:00Z",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_u: unknown, init?: { headers?: Record<string, string> }) => {
+        if (!new Headers(init?.headers ?? {}).get("x-region"))
+          return new Response(JSON.stringify(SNAKE), { status: 200 });
+        const broken = new ReadableStream({
+          start(controller) {
+            controller.error(new Error("stream reset"));
+          },
+        });
+        return new Response(broken, { status: 200 });
+      })
+    );
+    const r = await replayCapture("a.json", c as never);
+    expect(r?.shapeRestoringHeaders).toEqual([]);
   });
 
   it("re-sends one spelling per header and never a transport header", async () => {
