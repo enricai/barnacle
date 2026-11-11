@@ -553,6 +553,42 @@ describe("replayCapture — marker and methods filter", () => {
   });
 });
 
+describe("replayCapture — response shape", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const cap = (keys: Record<string, unknown>) =>
+    ({
+      url: "https://example.com/schedule.json",
+      method: "GET",
+      operationName: null,
+      query: null,
+      variables: null,
+      requestPostData: null,
+      requestHeaders: { "Key-Inflection": "camel", accept: "application/json" },
+      responseBody: keys,
+    }) as never;
+
+  it("fails and names the omitted header when keys differ", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ game_duration: 1 }), { status: 200 }))
+    );
+    const r = await replayCapture("a.json", cap({ gameDuration: 1 }));
+    expect(r?.success).toBe(false);
+    expect(r?.shapeDiffers).toBe(true);
+    expect(r?.omittedCaptureHeaders).toContain("key-inflection");
+  });
+
+  it("passes when shape matches", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ gameDuration: 2 }), { status: 200 }))
+    );
+    const r = await replayCapture("a.json", cap({ gameDuration: 1 }));
+    expect(r?.success).toBe(true);
+    expect(r?.shapeDiffers).toBe(false);
+  });
+});
+
 describe("recon-http main() --methods and unavailable-body skipping", () => {
   it("runs end to end, skipping marker captures and method-filtered captures without fetching", async () => {
     const { mkdirSync, writeFileSync } = await import("node:fs");

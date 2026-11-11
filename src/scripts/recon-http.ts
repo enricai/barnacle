@@ -153,6 +153,40 @@ export function parseMethodsFilter(raw: string | undefined): Set<string> | null 
   return parts.length > 0 ? new Set(parts) : null;
 }
 
+/** Sorted top-level key set of a JSON body (first element for arrays); null when keyless. */
+function topLevelKeys(body: unknown): string[] | null {
+  let v = body;
+  if (typeof v === "string") {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  if (Array.isArray(v)) v = v[0];
+  if (v && typeof v === "object" && !Array.isArray(v)) return Object.keys(v).sort();
+  return null;
+}
+
+/** True when both bodies have key sets and those sets differ. */
+export function responseShapeDiffers(captured: unknown, replayed: unknown): boolean {
+  const a = topLevelKeys(captured);
+  const b = topLevelKeys(replayed);
+  if (!a || !b) return false;
+  return a.length !== b.length || a.some((k, i) => k !== b[i]);
+}
+
+/** Captured request header names (lowercased) the replay did not send. */
+export function omittedHeaders(
+  captured: Record<string, string> | undefined,
+  sent: Record<string, string>
+): string[] {
+  const have = new Set(Object.keys(sent).map((k) => k.toLowerCase()));
+  return Object.keys(captured ?? {})
+    .map((k) => k.toLowerCase())
+    .filter((k) => !have.has(k));
+}
+
 /**
  * Replays one capture. Returns null (and sends nothing) when the capture is
  * skipped: its body was recorded as the `<unavailable>` marker (replaying it
@@ -214,9 +248,16 @@ export async function replayCapture(
       // consumed
     }
 
-    const success = response.status >= 200 && response.status < 300;
+    const statusOk = response.status >= 200 && response.status < 300;
+    const shapeDiffers = statusOk && responseShapeDiffers(capture.responseBody, replayBody);
+    const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, headers);
+    const success = statusOk && !shapeDiffers;
 
-    if (!success) {
+    if (shapeDiffers) {
+      logger.warn(
+        `[${response.status}] ${capture.method} ${capture.url} response shape differs from the browser capture; a request header may be load-bearing: ${omittedCaptureHeaders.join(", ") || "(none omitted)"}`
+      );
+    } else if (!success) {
       logger.warn(`[${response.status}] ${capture.method} ${capture.url}`);
       if (response.status === 403)
         logger.warn(
@@ -245,6 +286,8 @@ export async function replayCapture(
       replayHeaders,
       replayBody,
       success,
+      shapeDiffers,
+      omittedCaptureHeaders,
       error: null,
     };
   } catch (err) {
