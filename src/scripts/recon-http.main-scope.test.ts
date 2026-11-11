@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isOwnBackendTarget } from "@/scripts/recon-http";
 
 const { logs } = vi.hoisted(() => ({ logs: [] as string[] }));
-vi.mock("@/lib/logging", () => ({
+vi.mock("@/lib/logging", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/logging")>()),
   getScriptLogger: () => ({
     info: (m: string) => logs.push(m),
     warn: (m: string) => logs.push(m),
