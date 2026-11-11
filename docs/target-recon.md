@@ -206,8 +206,8 @@ _as `BASE_HEADERS` in `src/sites/<id>/contract.ts`._
 
 | Header | Shape-diverging replays omitting it (of 3) | Likely load-bearing? |
 |--------|--------------------------------------------------------|----------------------|
-| `key-inflection` | 3 | **Yes** |
-| `x-requested-with` | 2 | **Yes** |
+| `x-example-case` | 3 | **Yes** |
+| `x-example-version` | 2 | **Yes** |
 
 When no replay diverged in shape the section reads "No request headers implicated".
 A replay passes only if its status is OK **and** its response shape matches the capture;
