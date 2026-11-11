@@ -398,11 +398,25 @@ add headers one at a time; the one that fixes it was load-bearing.
 
 A status-only pass is insufficient: content-negotiation headers (e.g. a
 key-casing or API-version header) can change the response body while still
-returning 200. Each replay's response shape is compared with its capture: the
-top-level key set of a JSON object, or the union of the element keys of a
-top-level JSON array. Nested keys are data (optional fields, id-keyed maps) and
-are not compared. A JSON capture whose replay is not JSON (an HTML page, a bare
-value) differs in shape. When
+returning 200. Each replay's response shape is compared with its capture. A
+JSON object or array capture whose replay is not JSON (an HTML page, a bare
+value, an empty body) differs in shape. Two JSON bodies differ when either:
+
+- **a key is re-inflected, at any depth**: at the same place in both bodies
+  (array elements pooled), a key is spelled differently but equal once case
+  and the `_`/`-` separators are removed. `itemCount`, `item_count`,
+  `item-count` and `ItemCount` are one key; so are `userID` and `user_id`, and
+  `item2Id` and `item_2_id`. This catches a key-casing header inside an
+  envelope such as `{data: {...}}`.
+- **the top-level key set differs**: the keys of a top-level object, or the
+  keys found across the elements of a top-level array (an empty array is not
+  compared; an array against an object differs). This catches a language or
+  API-version header that swaps the top-level vocabulary.
+
+Below the top level, keys present on one side only are data (optional fields,
+id-keyed maps) and are not compared. The accepted cost is at the top level:
+an optional top-level key the replay lacks, a top-level map keyed by ids, or
+top-level array elements with different optional keys are flagged too. When
 `recon:http` logs `response shape differs from the browser capture; a request
 header may be load-bearing: <headers>`, the replay does not count as passed; the
 listed headers are the captured ones the replay omitted. `recon:http` then

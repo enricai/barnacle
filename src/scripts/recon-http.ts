@@ -166,43 +166,112 @@ function parseBody(body: unknown): unknown {
 }
 
 /**
- * A structured body's response shape: its top-level key set. A top-level array
- * has no keys of its own, so its shape is the union of its elements' keys, and
- * an empty array has no element to read that from (`keys` is null). Keys below
- * the top level are data (optional fields, id-keyed maps), not shape.
+ * Key spelling with case and word separators removed: `gameDuration`,
+ * `game_duration`, `game-duration` and `GameDuration` all become
+ * `gameduration`; `userID` and `user_id` become `userid`; `item2Id` and
+ * `item_2_id` become `item2id`.
  */
-interface KeyShape {
-  array: boolean;
-  keys: Set<string> | null;
+export function inflectionKey(key: string): string {
+  return key.toLowerCase().replace(/[_-]/g, "");
 }
 
-function objectKeys(v: unknown): string[] {
-  return v && typeof v === "object" && !Array.isArray(v) ? Object.keys(v) : [];
+/**
+ * The object keys of a JSON body, grouped by where they sit: a path of object
+ * keys from the root, with every array level collapsed to one `[]` step so that
+ * all elements of an array share one key set. A path is a number from
+ * `pathIds`, which interns (parent path, step) pairs; pass the same table for
+ * both bodies so equal paths get equal numbers. Iterative, and linear in the
+ * body's size whatever its depth.
+ */
+function keysByPath(root: object, pathIds: Map<string, number>): Map<number, Set<string>> {
+  const step = (parent: number, s: string): number => {
+    const k = `${parent}:${s}`;
+    let id = pathIds.get(k);
+    if (id === undefined) {
+      id = pathIds.size + 1;
+      pathIds.set(k, id);
+    }
+    return id;
+  };
+  const out = new Map<number, Set<string>>();
+  const stack: Array<[unknown, number]> = [[root, 0]];
+  while (stack.length > 0) {
+    const [v, path] = stack.pop()!;
+    if (!v || typeof v !== "object") continue;
+    if (Array.isArray(v)) {
+      const elementPath = step(path, "[]");
+      for (const element of v) stack.push([element, elementPath]);
+      continue;
+    }
+    const keys = out.get(path) ?? new Set<string>();
+    out.set(path, keys);
+    for (const [k, child] of Object.entries(v)) {
+      keys.add(k);
+      stack.push([child, step(path, JSON.stringify(k))]);
+    }
+  }
+  return out;
 }
 
-/** Response shape of a JSON object/array body; null when the body is not structured. */
-function keyShape(body: unknown): KeyShape | null {
-  const v = parseBody(body);
-  if (!v || typeof v !== "object") return null;
+/** True when a key of `a` is spelled differently in `b` with the same `inflectionKey`. */
+function inflectedPair(a: Set<string>, b: Set<string>): boolean {
+  const others = new Set([...b].filter((k) => !a.has(k)).map(inflectionKey));
+  return [...a].some((k) => !b.has(k) && others.has(inflectionKey(k)));
+}
+
+/**
+ * A structured body's top-level key set: an object's keys, or for a top-level
+ * array the keys found across its elements. `keys` is null for an empty array,
+ * which has no element to read keys from.
+ */
+function topLevelKeys(v: object): { array: boolean; keys: Set<string> | null } {
   if (!Array.isArray(v)) return { array: false, keys: new Set(Object.keys(v)) };
-  return { array: true, keys: v.length > 0 ? new Set(v.flatMap(objectKeys)) : null };
+  if (v.length === 0) return { array: true, keys: null };
+  return {
+    array: true,
+    keys: new Set(
+      v.flatMap((e) => (e && typeof e === "object" && !Array.isArray(e) ? Object.keys(e) : []))
+    ),
+  };
+}
+
+/** True when the top-level key sets differ, or one body is an array and the other an object. */
+function topLevelKeysDiffer(a: object, b: object): boolean {
+  const left = topLevelKeys(a);
+  const right = topLevelKeys(b);
+  if (left.array !== right.array) return true;
+  if (!left.keys || !right.keys) return false;
+  const r = right.keys;
+  return left.keys.size !== r.size || [...left.keys].some((k) => !r.has(k));
 }
 
 /**
  * True when the replayed body's response shape differs from the capture's. Only
  * a structured (JSON object/array) capture has a shape to reproduce, and a
  * replay with no body read has nothing to compare. A structured capture replayed
- * as an unstructured body (an HTML page, a bare value) differs.
+ * as an unstructured body (an HTML page, a bare value) differs. Two structured
+ * bodies differ when either:
+ * - (inflection, any depth) at some path both have, a key is spelled
+ *   differently with the same `inflectionKey` (`gameDuration` against
+ *   `game_duration`), or
+ * - (top level) their top-level key sets differ (`topLevelKeysDiffer`).
+ * Below the top level, keys present on one side only are data (optional
+ * fields, id-keyed maps), not shape. At the top level they are shape, so an
+ * optional top-level key or a top-level id-keyed map that changes is flagged.
  */
 export function responseShapeDiffers(captured: unknown, replayed: unknown): boolean {
-  const a = keyShape(captured);
-  if (!a || replayed == null) return false;
-  const b = keyShape(replayed);
-  if (!b) return true;
-  if (a.array !== b.array) return true;
-  if (!a.keys || !b.keys) return false;
-  const right = b.keys;
-  return a.keys.size !== right.size || [...a.keys].some((k) => !right.has(k));
+  const a = parseBody(captured);
+  if (!a || typeof a !== "object" || replayed == null) return false;
+  const b = parseBody(replayed);
+  if (!b || typeof b !== "object") return true;
+  if (topLevelKeysDiffer(a, b)) return true;
+  const pathIds = new Map<string, number>();
+  const right = keysByPath(b, pathIds);
+  for (const [path, keys] of keysByPath(a, pathIds)) {
+    const other = right.get(path);
+    if (other && inflectedPair(keys, other)) return true;
+  }
+  return false;
 }
 
 /** Captured request header names (lowercased) the replay did not send. */

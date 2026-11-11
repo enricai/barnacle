@@ -39,6 +39,7 @@ vi.mock("@/lib/logging", () => ({
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
 import {
+  inflectionKey,
   parseMethodsFilter,
   probeAuxiliaryEndpoints,
   replayCapture,
@@ -587,6 +588,29 @@ describe("replayCapture — response shape", () => {
     ["HTML replay body", { a: 1 }, "<!doctype html><html><body>app</body></html>"],
     ["string value replay body", { a: 1 }, "ok"],
     ["empty replay body", { a: 1 }, ""],
+    ["inflection inside an envelope", { data: { itemCount: 1 } }, { data: { item_count: 1 } }],
+    [
+      "inflection inside array elements",
+      { items: [{ itemCount: 1 }] },
+      { items: [{ item_count: 1 }] },
+    ],
+    ["inflection of an acronym", { data: { userID: 1 } }, { data: { user_id: 1 } }],
+    ["inflection around digits", { data: { item2Id: 1 } }, { data: { item_2_id: 1 } }],
+    [
+      "kebab-case against PascalCase",
+      { data: { "display-name": 1 } },
+      { data: { DisplayName: 1 } },
+    ],
+    [
+      "inflection seven levels down",
+      { a: { b: { c: { d: { e: { f: { itemCount: 1 } } } } } } },
+      { a: { b: { c: { d: { e: { f: { item_count: 1 } } } } } } },
+    ],
+    ["inflection under an empty list's key", { itemList: [] }, { item_list: [] }],
+    // Accepted cost of comparing the top-level key set: data variance there is shape.
+    ["an optional top-level key", { a: 1, cursor: "c" }, { a: 1 }],
+    ["a top-level map keyed by ids", { "1001": { n: 1 } }, { "2001": { n: 1 } }],
+    ["top-level array elements with optional keys", [{ id: 1, sale: 2 }, { id: 2 }], [{ id: 3 }]],
   ])("flags a differing shape: %s", (_name, captured, replayed) => {
     expect(responseShapeDiffers(captured, replayed)).toBe(true);
   });
@@ -611,8 +635,38 @@ describe("replayCapture — response shape", () => {
       { user: { id: 2, nickname: "n" } },
     ],
     ["map keyed by ids", { byId: { "1001": { n: 1 } } }, { byId: { "2001": { n: 1 } } }],
+    [
+      "nested array elements with different optional keys",
+      { items: [{ id: 1, sale: 2 }] },
+      { items: [{ id: 2, note: "n" }] },
+    ],
+    ["a nested key replaced by an unrelated one", { data: { a: 1 } }, { data: { b: 1 } }],
+    ["same spelling in both", { data: { itemCount: 1 } }, { data: { itemCount: 2 } }],
   ])("does not flag a comparable-or-keyless pair: %s", (_name, captured, replayed) => {
     expect(responseShapeDiffers(captured, replayed)).toBe(false);
+  });
+
+  it.each([
+    ["gameDuration", "gameduration"],
+    ["game_duration", "gameduration"],
+    ["game-duration", "gameduration"],
+    ["GameDuration", "gameduration"],
+    ["userID", "userid"],
+    ["user_id", "userid"],
+    ["item2Id", "item2id"],
+    ["item_2_id", "item2id"],
+  ])("inflectionKey(%s) is %s", (key, normal) => {
+    expect(inflectionKey(key)).toBe(normal);
+  });
+
+  it("compares a deeply nested body without recursion", () => {
+    let captured: Record<string, unknown> = { itemCount: 1 };
+    let replayed: Record<string, unknown> = { item_count: 1 };
+    for (let i = 0; i < 20000; i++) {
+      captured = { n: captured };
+      replayed = { n: replayed };
+    }
+    expect(responseShapeDiffers(captured, replayed)).toBe(true);
   });
 
   it("names a lower-case captured header the replay omitted", async () => {
