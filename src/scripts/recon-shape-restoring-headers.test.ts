@@ -182,6 +182,48 @@ describe("a shape-diverging replay adds only the headers re-replay proves restor
   });
 });
 
+describe("re-replay credits a header only with a divergence it reproduces", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("credits no header when an unchanged re-send already matches the capture", async () => {
+    let calls = 0;
+    stubServer(() => ({ body: JSON.stringify(calls++ === 0 ? SNAKE : CAMEL) }));
+    const { r, base } = await replayAndDerive();
+    expect(r.shapeDiffers).toBe(true);
+    expect(r.shapeRestoringHeaders).toEqual([]);
+    for (const h of ["key-inflection", "x-requested-with", "accept-language"])
+      expect(lower(base)).not.toContain(h);
+  });
+
+  it("re-sends one spelling per header and never a transport header", async () => {
+    const h2 = buildCapture({
+      url: URL_DIVERGING,
+      method: "GET",
+      requestPostData: null,
+      responseBody: CAMEL,
+      requestHeaders: {
+        "X-A": "1",
+        "x-a": "1",
+        "X-B": "2",
+        "x-b": "2",
+        "content-length": "999",
+        ":authority": "api.example.com",
+      },
+      timestamp: "2026-08-01T00:00:00Z",
+    });
+    const f = stubServer((sent) => ({
+      body: JSON.stringify(sent.get("x-a") === "1" && sent.get("x-b") === "2" ? CAMEL : SNAKE),
+    }));
+    const r = await replayCapture("a.json", h2 as never);
+    expect(r?.shapeRestoringHeaders).toEqual(["X-A", "X-B"]);
+    for (const [, init] of f.mock.calls) {
+      const sent = new Headers((init as { headers?: Record<string, string> }).headers ?? {});
+      expect(sent.has("content-length")).toBe(false);
+      expect(sent.get("x-a") ?? "1").toBe("1");
+    }
+  });
+});
+
 describe("deriveRequestHeaders never freezes a credential present on every capture", () => {
   it("drops Authorization and If-None-Match from the all-captures baseline", () => {
     const only = buildCapture({

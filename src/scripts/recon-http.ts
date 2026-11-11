@@ -328,15 +328,36 @@ async function replayMatchesCapture(
 }
 
 /**
+ * Captured request headers the HTTP client derives from the connection or from
+ * the body it sends (an HTTP/2 capture records them alongside the page's own
+ * headers). They carry no request semantics, and re-sending a captured value
+ * (a `content-length` for a body that is re-serialised) breaks the request, so
+ * they are never re-replay candidates. HTTP/2 pseudo-headers (`:authority`, …)
+ * are excluded the same way.
+ */
+const TRANSPORT_REQUEST_HEADERS = new Set([
+  "host",
+  "content-length",
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "te",
+  "upgrade",
+  "accept-encoding",
+]);
+
+/**
  * The captured request headers (as captured) that restore a shape-diverging
- * replay's response shape, proven by re-replaying. Each omitted header is first
- * added back on its own; every header that alone makes the replay match the
- * capture is returned. When none does, all of them are added back together and,
- * if that matches, headers are dropped one at a time while it still matches,
- * leaving a minimal restoring set. Empty when nothing restores the shape (a
- * login page, a header-independent change): no omitted header is proven
- * load-bearing. HTTP/2 pseudo-headers (`:authority`, …) are not request headers
- * and are never candidates.
+ * replay's response shape, proven by re-replaying. The replay is first re-sent
+ * unchanged: when that already matches the capture, the divergence did not
+ * reproduce and no header can be credited with it. Otherwise each omitted header
+ * is added back on its own, and every header that alone makes the replay match
+ * the capture is returned. When none does, all of them are added back together
+ * and, if that matches, headers are dropped one at a time while it still
+ * matches, leaving a minimal restoring set. Empty when nothing restores the
+ * shape (a login page, a header-independent change). Candidates are one per
+ * header name (the first captured spelling), excluding
+ * {@link TRANSPORT_REQUEST_HEADERS} and pseudo-headers.
  */
 async function findShapeRestoringHeaders(
   capture: Capture,
@@ -344,11 +365,19 @@ async function findShapeRestoringHeaders(
   requestBody: string | null,
   omitted: string[]
 ): Promise<string[]> {
-  const candidates = omitted.filter((h) => !h.startsWith(":"));
+  const seen = new Set<string>();
+  const candidates = omitted.filter((h) => {
+    const lower = h.toLowerCase();
+    if (h.startsWith(":") || TRANSPORT_REQUEST_HEADERS.has(lower) || seen.has(lower)) return false;
+    seen.add(lower);
+    return true;
+  });
   const withHeaders = (names: string[]): Record<string, string> => ({
     ...headers,
     ...Object.fromEntries(names.map((h) => [h, capture.requestHeaders[h]!])),
   });
+  if (candidates.length === 0) return [];
+  if (await replayMatchesCapture(capture, headers, requestBody)) return [];
   const alone: string[] = [];
   for (const h of candidates) {
     if (await replayMatchesCapture(capture, withHeaders([h]), requestBody)) alone.push(h);
