@@ -10027,17 +10027,91 @@ async function tryPromptSelectorPrimitive(params: {
       const byFor = sel.id ? document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(sel.id) : sel.id) + "']") : null;
       return byFor || sel.closest("label");
     };
-    // Every labelled native select anchors a pairing attempt, not only one in
-    // the trigger union: whether the field is layered is decided by its
-    // structure (one label, one rendered non-select trigger), never by the
-    // select's own popup link or by how it is hidden. A covered select with no
+    // A labelled native select outside the trigger union anchors a pairing
+    // attempt too, when the user cannot reach it: whether its field is
+    // layered is then decided by structure (one label, one rendered non-select
+    // trigger), never by the select's own popup link. A covered select with no
     // aria-controls/aria-owns is otherwise owned by neither primitive: the
     // select primitive finds no matching option in it, and its field is never
     // collapsed onto the rendered trigger.
+    //
+    // A native select outside the union that the user can reach (the pointer
+    // reaches it and it is in the tab order) is the field's own control, not
+    // a layered shadow, so it never anchors the pairing, whatever sits beside
+    // it. The decision rests on the select because every neighbour-side test
+    // (the neighbour's popup link, a wrapper or label shared with a hidden
+    // member, a zero-area opener's popup link) admitted an unrelated widget in
+    // some ordinary layout and dropped a real layered field in another.
+    // Selects in the union pair as they always did.
+    //
+    // A select the pointer cannot reach is a shadow and may pair with the
+    // field's trigger. A select the pointer reaches but the tab order skips
+    // is ambiguous: the site has taken keyboard focus away from it, as a
+    // layered widget does when its own stylesheet is missing, but a visible
+    // select can also just sit beside a complete widget. It pairs only with a
+    // trigger outside the union, which has no popup of its own and so is not
+    // a complete widget.
+    //
+    // Where the page has layout, "the pointer reaches it" is measured. Opacity
+    // does not decide: a styled select is often an opacity-0 select laid over
+    // a decorated box, and that select is what the user clicks. A select is
+    // unreachable when its content box is 1px or less (measured inside border
+    // and padding: a browser draws a bordered 1px select at 2px), when it lies
+    // wholly off the page to the left or top, when an ancestor that clips
+    // overflow is 1px or less (a visually-hidden wrapper), or when the element
+    // at its centre is something else (covered by the trigger, clipped away,
+    // invisible, inert). A centre that cannot be probed (outside the
+    // viewport, or scrolled out of a container) counts as reachable. Without
+    // layout, only declared styles are left, read the same way: display:none
+    // on the select or an ancestor, an inert ancestor, its own visibility, a
+    // declared size of 1px or less, or a clip on a positioned select.
+    // Opacity, clip-path and aria-hidden are not read there either, since none
+    // of them stops the pointer.
+    const pageLaidOut = (() => {
+      const r = document.documentElement.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    })();
+    const px = (cs, k) => parseFloat(cs[k]) || 0;
+    const reachable = (sel) => {
+      const cs = getComputedStyle(sel);
+      const r = sel.getBoundingClientRect();
+      const w = r.width - px(cs, "borderLeftWidth") - px(cs, "borderRightWidth") - px(cs, "paddingLeft") - px(cs, "paddingRight");
+      const h = r.height - px(cs, "borderTopWidth") - px(cs, "borderBottomWidth") - px(cs, "paddingTop") - px(cs, "paddingBottom");
+      if (w <= 1 || h <= 1) return false;
+      if (r.right + window.scrollX <= 0 || r.bottom + window.scrollY <= 0) return false;
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      for (let n = sel.parentElement; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+        const ncs = getComputedStyle(n);
+        if (![ncs.overflow, ncs.overflowX, ncs.overflowY].some((v) => v && v !== "visible")) continue;
+        const a = n.getBoundingClientRect();
+        if (a.width <= 1 || a.height <= 1) return false;
+        if (cx < a.left || cx > a.right || cy < a.top || cy > a.bottom) return true;
+      }
+      if (cx < 0 || cy < 0 || cx >= window.innerWidth || cy >= window.innerHeight) return true;
+      const hit = document.elementFromPoint(cx, cy);
+      return !hit || hit === sel || sel.contains(hit);
+    };
+    const styleHidden = (sel) => {
+      for (let n = sel; n && n.nodeType === 1; n = n.parentElement) {
+        if (n.inert || getComputedStyle(n).display === "none") return true;
+      }
+      const cs = getComputedStyle(sel);
+      if (cs.visibility === "hidden" || cs.visibility === "collapse") return true;
+      if (parseFloat(cs.width) <= 1 || parseFloat(cs.height) <= 1) return true;
+      return !!cs.clip && cs.clip !== "auto" && (cs.position === "absolute" || cs.position === "fixed");
+    };
+    const pointerReaches = (sel) => (pageLaidOut ? reachable(sel) : !styleHidden(sel));
+    const tabbable = (sel) => {
+      const ti = sel.getAttribute("tabindex");
+      return ti === null || !(parseInt(ti, 10) < 0);
+    };
     const layerAnchors = widgets.filter((w) => w.tagName === "SELECT");
     for (const s of document.querySelectorAll("select")) if (!layerAnchors.includes(s)) layerAnchors.push(s);
     for (const sel of layerAnchors) {
       if (layerHost.has(sel)) continue;
+      const seen = !widgets.includes(sel) && pointerReaches(sel);
+      if (seen && tabbable(sel)) continue;
       const lab = labelElOf(sel);
       const labText = lab ? lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120) : "";
       if (!labText) continue;
@@ -10046,34 +10120,6 @@ async function tryPromptSelectorPrimitive(params: {
       if (!field || field === document.body || field.querySelectorAll("label").length !== 1 || !field.contains(lab)) continue;
       const members = widgets.filter((o) => field.contains(o));
       if (members.some((o) => o !== sel && o.tagName === "SELECT")) continue;
-      // A select outside the trigger union may be a plain, working select next
-      // to an unrelated widget (a date-of-birth row, a country/currency pair).
-      // It anchors the pairing only when its field also holds a shadow opener
-      // that is tied to this select: unrendered, or zero-area where the page
-      // has layout, and either sharing a wrapper with the select that excludes
-      // the label, or labelled exactly as the select is.
-      if (!widgets.includes(sel)) {
-        const zeroArea = (o) => {
-          const r = o.getBoundingClientRect();
-          return r.width === 0 || r.height === 0;
-        };
-        const laidOut = !zeroArea(field);
-        // Geometry alone does not make a shadow: an empty icon or overlay is
-        // zero-area too. A rendered zero-area opener counts only when it
-        // links a popup of its own (aria-owns/aria-controls).
-        const shadow = (o) => !rendered(o) || (laidOut && zeroArea(o) && (o.hasAttribute("aria-owns") || o.hasAttribute("aria-controls")));
-        // A control group (label outside, select and neighbours inside) also
-        // wraps the select without the label; a wrapper ties the opener to
-        // the select only when it holds no other rendered trigger.
-        const wrapsWithSel = (o) => {
-          let w = o.parentElement;
-          while (w && w !== field && !w.contains(sel)) w = w.parentElement;
-          return !!w && w !== field && !w.contains(lab) && !Array.from(w.querySelectorAll("[role='combobox']")).concat(members).some((c) => c !== o && c.tagName !== "SELECT" && w.contains(c) && rendered(c));
-        };
-        const ownShadow = (o) =>
-          o !== sel && shadow(o) && (wrapsWithSel(o) || (hasOwnLabel(o) && norm(widgetLabel(o)) === norm(labText)));
-        if (!members.some(ownShadow)) continue;
-      }
       const triggers = Array.from(field.querySelectorAll("[role='combobox']"))
         .concat(members)
         .filter((c, i, arr) => arr.indexOf(c) === i && c.tagName !== "SELECT" && rendered(c) && !sel.contains(c));
@@ -10085,10 +10131,7 @@ async function tryPromptSelectorPrimitive(params: {
       if (pick.length !== 1) continue;
       const t = pick[0];
       if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText)) continue;
-      // The layered shape's visible anchor is outside the trigger union (that
-      // is why it needs pairing). A trigger in the union is a full widget with
-      // its own popup, so a select outside the union never adopts it.
-      if (!widgets.includes(sel) && widgets.includes(t)) continue;
+      if (seen && widgets.includes(t)) continue;
       labelOverride.set(t, labText);
       if (!allWidgets.includes(t)) allWidgets.push(t);
       for (const m of members) if (m !== t) layerHost.set(m, t);
