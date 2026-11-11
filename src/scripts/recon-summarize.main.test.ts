@@ -115,4 +115,30 @@ describe("recon-summarize main (real call path)", () => {
     expect(md).toContain("`fixture.json` — commit as `src/sites/acme/fixtures/fixture.json`");
     expect(md).toContain("Jan 2, 2024");
   });
+
+  it("renders the Codified Headers table from shape-diverging replays", async () => {
+    const root = mkdtempSync(join(tmpdir(), "recon-sum-"));
+    for (const d of ["graphql", "replays"]) mkdirSync(join(root, d), { recursive: true });
+    w(join(root, "graphql"), "a.json", cap("https://a.com/gql", "POST", "Op1"));
+    w(join(root, "replays"), "a.json", {
+      ...replay("https://a.com/gql", 200, true),
+      shapeDiffers: true,
+      omittedCaptureHeaders: ["Key-Inflection", "x-b"],
+    });
+    w(join(root, "replays"), "b.json", {
+      ...replay("https://a.com/gql2", 200, true),
+      shapeDiffers: true,
+      omittedCaptureHeaders: ["key-inflection"],
+    });
+    const out = join(root, "out", "r.md");
+    process.argv = ["node", "/x/recon-summarize.ts", "--site-id", "acme", "--out", out, "--run-dir", root];
+    await import("@/scripts/recon-summarize.js");
+    await vi.waitFor(() => expect(() => readFileSync(out, "utf8")).not.toThrow());
+    const md = readFileSync(out, "utf8");
+    expect(md).toContain("## Codified Headers (Step 4b)");
+    expect(md).toContain("(of 2)");
+    expect(md).toContain("| `key-inflection` | 2 | **Yes** |");
+    expect(md).toContain("| `x-b` | 1 | **Yes** |");
+    expect(md).not.toContain("_No request headers implicated");
+  });
 });
