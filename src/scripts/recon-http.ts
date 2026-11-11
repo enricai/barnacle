@@ -176,7 +176,7 @@ interface KeyShape {
  * their elements' keys, so an array body and an object body never look alike.
  */
 function collectKeyPaths(v: unknown, prefix: string, depth: number, out: KeyShape): void {
-  if (!v || typeof v !== "object" || depth > 6) return;
+  if (!v || typeof v !== "object") return;
   if (Array.isArray(v)) {
     const elementPrefix = `${prefix}[]`;
     if (v.length === 0) {
@@ -194,13 +194,13 @@ function collectKeyPaths(v: unknown, prefix: string, depth: number, out: KeyShap
   }
 }
 
-/** Nested key shape of a JSON body; null when it carries no keys to compare. */
+/** Nested key shape of a JSON object/array body; null when the body is not structured. */
 function keyShape(body: unknown): KeyShape | null {
   const v = parseBody(body);
   if (!v || typeof v !== "object") return null;
   const out: KeyShape = { paths: new Set(), emptyArrays: new Set() };
   collectKeyPaths(v, "", 0, out);
-  return out.paths.size > 0 ? out : null;
+  return out;
 }
 
 /** Paths of `shape` that are comparable against `other` (not under an array `other` left empty). */
