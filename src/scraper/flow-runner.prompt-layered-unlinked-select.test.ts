@@ -219,6 +219,112 @@ describe("prompt-selector: layered field anchored on a select with no popup link
   });
 });
 
+describe("prompt-selector: layered field whose visible trigger is a component-library trigger", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const MS = "— Make a Selection —";
+  /** The item-8 field with the visible trigger's markup and the select's attributes varied. */
+  function i8(vis: string, opts: { inCtl?: boolean; op?: string; select?: string } = {}): string {
+    const op = `<span id="a-op" role="combobox" aria-expanded="false" ${opts.op ?? 'aria-owns="a-pnl" aria-labelledby="a-l"'} tabindex="0" style="width:0px;height:0px"><span></span></span>`;
+    const sel =
+      opts.select ??
+      `<select id="a-sel" role="combobox" tabindex="-1" aria-label="Country" style="${COVERED}"><option value=""></option></select>`;
+    return `<form><div class="field"><label id="a-l" for="a-sel">Country</label>
+<div class="control">${opts.inCtl ? vis : ""}${op}${sel}<div id="a-pnl" role="listbox"></div></div>
+${opts.inCtl ? "" : vis}</div></form>`;
+  }
+
+  async function picks(html: string) {
+    const h = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: { "a-vis": { options: ["France", "Norway"] } },
+    });
+    const r = await executeStepWithHealing(
+      params(h.page as unknown as Page, "Select 'Norway' in the 'Country' dropdown") as never
+    );
+    expect(r).toBe("completed");
+    expect(h.window.document.querySelector("#a-vis")?.textContent).toContain("Norway");
+  }
+
+  // R1–R6: the trigger carries aria-haspopup (and role=combobox or
+  // aria-controls), so it is a trigger-union member; the field is still
+  // layered because its select is covered and out of the tab order.
+  it.each([
+    [
+      "an anchor with role=combobox and aria-haspopup (R1)",
+      `<a id="a-vis" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-label="${MS}">${MS}</a>`,
+    ],
+    [
+      "a div with role=combobox, aria-haspopup and aria-controls (R2)",
+      `<div id="a-vis" role="combobox" aria-haspopup="listbox" aria-controls="a-vis-lb" aria-expanded="false" aria-label="${MS}" tabindex="0">${MS}</div>`,
+    ],
+    [
+      "a button with aria-haspopup (R3)",
+      `<button id="a-vis" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="${MS}">${MS}</button>`,
+    ],
+    [
+      "a button with role=combobox and aria-haspopup (R4)",
+      `<button id="a-vis" type="button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-label="${MS}">${MS}</button>`,
+    ],
+    [
+      "a button with aria-haspopup and no aria-label (R5)",
+      `<button id="a-vis" type="button" aria-haspopup="listbox" aria-expanded="false">${MS}</button>`,
+    ],
+  ])("drives the visible trigger: %s", async (_name, vis) => {
+    await picks(i8(vis));
+  });
+
+  it("drives a button trigger whose select is display:none (R6)", async () => {
+    await picks(
+      i8(
+        `<button id="a-vis" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="${MS}">${MS}</button>`,
+        {
+          select: `<select id="a-sel" role="combobox" tabindex="-1" aria-label="Country" style="display:none"><option value=""></option></select>`,
+        }
+      )
+    );
+  });
+
+  it("drives a plain anchor inside the opener's wrapper when the opener carries no label (R8)", async () => {
+    await picks(
+      i8(`<a id="a-vis" role="combobox" aria-expanded="false" aria-label="${MS}">${MS}</a>`, {
+        inCtl: true,
+        op: 'aria-owns="a-pnl"',
+        select: `<select id="a-sel" role="combobox" tabindex="-1" aria-label="Country" style="${COVERED}"><option value="">--</option></select>`,
+      })
+    );
+  });
+
+  // Without layout, a select left in the tab order is still a layered shadow
+  // when its declared style hides it or leaves it no box. Each alone, in and
+  // out of the tab order. The opener carries no label, so only the pairing
+  // (not the hidden-label adoption of the anchor) can complete the step.
+  const ANCHOR = `<a id="a-vis" role="combobox" aria-expanded="false" aria-label="${MS}">${MS}</a>`;
+  it.each([
+    ["opacity 0 and a 1x1 box (R15)", COVERED, "", ""],
+    ["a 1x1 box", "position:absolute;width:1px;height:1px", "", ""],
+    ["clip", "position:absolute;clip:rect(0px, 0px, 0px, 0px)", "", ""],
+    ["display:none", "display:none", "", ""],
+    ["visibility:hidden", "visibility:hidden", "", ""],
+    ["an inert ancestor", "", "<span inert>", "</span>"],
+  ])(
+    "drives the visible trigger when the select is hidden or has no box: %s",
+    async (_name, style, open, close) => {
+      for (const tab of ["", ' tabindex="-1"']) {
+        vi.clearAllMocks();
+        await picks(
+          i8(ANCHOR, {
+            op: 'aria-owns="a-pnl"',
+            select: `${open}<select id="a-sel" role="combobox"${tab} aria-label="Country"${style ? ` style="${style}"` : ""}><option value="">--</option></select>${close}`,
+          })
+        );
+      }
+    }
+  );
+});
+
 describe("prompt-selector: a visible working select is never paired with a neighbouring widget", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -339,6 +445,42 @@ ${CUR}</div></fieldset></form>`,
 <div class="inputs">${COUNTRY}
 <a id="cur" role="combobox" aria-expanded="false">— Make a Selection —</a><div id="curm" role="combobox" aria-haspopup="listbox" tabindex="0" style="display:none">— Make a Selection —</div></div></div></fieldset></form>`,
     ],
+    [
+      "an opacity-0 select laid over a decorated box",
+      `<form><fieldset><legend>Preferred currency</legend><div class="field"><label for="c">Country</label>
+<div class="box" style="position:relative;width:200px;height:28px"><span aria-hidden="true">--</span><select id="c" style="position:absolute;left:0;top:0;width:100%;height:100%;opacity:0"><option value="">--</option><option>Other (not listed)</option></select></div>
+${CUR}</div></fieldset></form>`,
+    ],
+    [
+      "a select with a rounded clip-path",
+      `<form><fieldset><legend>Preferred currency</legend><div class="field"><label for="c">Country</label>
+<select id="c" style="clip-path:inset(0 round 6px)"><option value="">--</option><option>Other (not listed)</option></select>
+${CUR}</div></fieldset></form>`,
+    ],
+    [
+      "a visible select under an aria-hidden ancestor",
+      `<form><fieldset><legend>Preferred currency</legend><div class="field"><label for="c">Country</label>
+<span aria-hidden="true"><select id="c"><option value="">--</option><option>Other (not listed)</option></select></span>
+${CUR}</div></fieldset></form>`,
+    ],
+    [
+      "a visible select out of the tab order beside a complete widget",
+      `<form><fieldset><legend>Preferred currency</legend><div class="field"><label for="c">Country</label>
+<select id="c" tabindex="-1"><option value="">--</option><option>Other (not listed)</option></select>
+${CUR}</div></fieldset></form>`,
+    ],
+    [
+      "a hidden hint in the select's own wrapper beside a plain anchor (X1)",
+      `<form><fieldset><legend>Preferred currency</legend><div class="field"><label for="c">Country</label>
+<div class="select-wrap">${COUNTRY}<div class="err" aria-haspopup="listbox" style="display:none">Please choose</div></div>
+<a id="cur" role="combobox" aria-expanded="false">— Make a Selection —</a></div></fieldset></form>`,
+    ],
+    [
+      "the select's own hidden enhanced trigger beside a plain anchor (X2)",
+      `<form><div class="field"><label for="c">Country</label>
+<div class="select-wrap">${COUNTRY}<button type="button" aria-haspopup="listbox" hidden>Choose</button></div>
+<a id="cur" role="combobox" aria-expanded="false">— Make a Selection —</a></div></form>`,
+    ],
   ])("a plain select is not paired with its neighbour: %s", async (_name, html) => {
     const { result, doc } = await run(
       html,
@@ -347,6 +489,23 @@ ${CUR}</div></fieldset></form>`,
     );
     expect(result).not.toBe("completed");
     expect(doc.querySelector("#cur")?.textContent).toContain("Make a Selection");
+    expect((doc.querySelector("#c") as unknown as { value: string }).value).toBe("");
+  });
+  // X4 wrote into the input only in real Chromium (it is a fixture there).
+  // In happy-dom the step reports "completed" and the harness sets the
+  // input's text node (never its value) at every version, through the
+  // hidden-label adoption, so this case asserts only the input's value and
+  // the select's.
+  it("a plain select is not paired with a react-select-style input beside a hidden duplicate labelled as the select (X4)", async () => {
+    const { doc } = await run(
+      `<form><div class="field"><label for="c">Country</label>
+${COUNTRY}
+<div id="cm" role="combobox" aria-haspopup="listbox" tabindex="0" aria-label="Country" style="display:none">— Make a Selection —</div>
+<div class="rs"><input id="cur" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-haspopup="true" value=""></div></div></form>`,
+      { cur: { options: ["Other", "USD"] } },
+      "Select 'Other' in the 'Country' dropdown"
+    );
+    expect((doc.querySelector("#cur") as unknown as { value: string }).value).toBe("");
     expect((doc.querySelector("#c") as unknown as { value: string }).value).toBe("");
   });
 });
@@ -422,6 +581,173 @@ describe("prompt-selector: zero-area openers where the page has layout", () => {
     expect(doc.querySelector("#cur")?.textContent).toContain("Make a Selection");
     expect((doc.querySelector("#c") as unknown as { value: string }).value).toBe("");
   });
+  it("a zero-area chevron whose aria-controls names the select does not pair it with a plain anchor (X6)", async () => {
+    const { result, doc } = await run(
+      `<form><div class="field"><label for="c">Country</label>
+<div class="select-wrap"><select id="c"><option value="">--</option><option>Other (not listed)</option></select><span class="chev" role="combobox" aria-haspopup="listbox" aria-controls="c"></span></div>
+<a id="cur" role="combobox" aria-expanded="false">— Make a Selection —</a></div></form>`,
+      [".field", "#cur", "#c"],
+      { cur: { options: ["Other", "USD"] } },
+      "Select 'Other' in the 'Country' dropdown"
+    );
+    expect(result).not.toBe("completed");
+    expect(doc.querySelector("#cur")?.textContent).toContain("Make a Selection");
+    expect((doc.querySelector("#c") as unknown as { value: string }).value).toBe("");
+  });
+});
+
+describe("prompt-selector: where the page has layout, a select the pointer reaches is its own control", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  type Rect = [number, number, number, number];
+  // happy-dom lays nothing out: give the page, the select and its relatives
+  // a box, and answer elementFromPoint, as a browser would.
+  function layout(
+    doc: { documentElement: object; querySelector: (s: string) => unknown },
+    boxes: Record<string, Rect>,
+    hit: string | null
+  ) {
+    const box = (el: object, [x, y, w, h]: Rect) =>
+      Object.defineProperty(el, "getBoundingClientRect", {
+        value: () => ({
+          x,
+          y,
+          left: x,
+          top: y,
+          right: x + w,
+          bottom: y + h,
+          width: w,
+          height: h,
+          toJSON: () => ({}),
+        }),
+      });
+    box(doc.documentElement, [0, 0, 1024, 2000]);
+    for (const [sel, r] of Object.entries(boxes)) box(doc.querySelector(sel) as object, r);
+    Object.defineProperty(doc, "elementFromPoint", {
+      value: () => (hit ? doc.querySelector(hit) : null),
+    });
+  }
+
+  async function run(
+    html: string,
+    boxes: Record<string, Rect>,
+    hit: string | null,
+    popups: Record<string, { options: string[] }>,
+    step: string
+  ) {
+    const h = buildPromptWidgetHarness({ html, popupByWidgetId: popups });
+    layout(h.window.document as never, boxes, hit);
+    let result: unknown;
+    try {
+      result = await executeStepWithHealing(params(h.page as unknown as Page, step) as never);
+    } catch (err) {
+      result = err;
+    }
+    return { result, doc: h.window.document };
+  }
+
+  // A working select beside a currency widget that has no label of its own.
+  const plain = (select: string, wrapOpen = "", wrapClose = "") =>
+    `<form><fieldset><legend>Preferred currency</legend><div class="field"><label for="c">Country</label>
+${wrapOpen}${select}${wrapClose}
+<div id="cur" role="combobox" aria-haspopup="listbox" tabindex="0">— Make a Selection —</div></div></fieldset></form>`;
+  const OPTS = `<option value="">--</option><option>Other (not listed)</option>`;
+  const CUR: Rect = [10, 60, 200, 28];
+
+  it.each<[string, string, Record<string, Rect>, string | null, string?, string?]>([
+    [
+      "an opacity-0 select laid over a decorated box, which the pointer reaches",
+      `<select id="c" style="position:absolute;left:0;top:0;width:100%;height:100%;opacity:0">${OPTS}</select>`,
+      { "#c": [10, 20, 200, 28], "#cur": CUR },
+      "#c",
+    ],
+    [
+      "a visible select out of the tab order beside a complete widget",
+      `<select id="c" tabindex="-1">${OPTS}</select>`,
+      { "#c": [10, 20, 200, 28], "#cur": CUR },
+      "#c",
+    ],
+    [
+      "a select below the viewport, whose centre cannot be probed",
+      `<select id="c">${OPTS}</select>`,
+      { "#c": [10, 1500, 200, 28], "#cur": CUR },
+      "#cur",
+    ],
+    [
+      "a select scrolled out of its container, whose centre cannot be probed",
+      `<select id="c">${OPTS}</select>`,
+      { "#scroller": [0, 0, 400, 100], "#c": [10, 300, 200, 28], "#cur": CUR },
+      "#cur",
+      '<div id="scroller" style="overflow:auto">',
+      "</div>",
+    ],
+  ])("is not paired with its neighbour: %s", async (_name, select, boxes, hit, open, close) => {
+    const { result, doc } = await run(
+      plain(select, open, close),
+      boxes,
+      hit,
+      { cur: { options: ["Other", "USD"] } },
+      "Select 'Other' in the 'Country' dropdown"
+    );
+    expect(result).not.toBe("completed");
+    expect(doc.querySelector("#cur")?.textContent).toContain("Make a Selection");
+    expect((doc.querySelector("#c") as unknown as { value: string }).value).toBe("");
+  });
+
+  // The item-8 field with a tabbable select hidden only by layout.
+  const layered = (select: string, wrapOpen = "", wrapClose = "") =>
+    `<form><div class="field"><label id="a-l" for="a-sel">Country</label>
+<div class="control"><span id="a-op" role="combobox" aria-expanded="false" aria-owns="a-pnl" tabindex="0" style="width:0px;height:0px"><span></span></span>
+${wrapOpen}${select}${wrapClose}<div id="a-pnl" role="listbox"></div></div>
+<a id="a-vis" role="combobox" aria-expanded="false" aria-label="— Make a Selection —">— Make a Selection —</a></div></form>`;
+  const SEL = (style = "") =>
+    `<select id="a-sel" role="combobox" aria-label="Country"${style ? ` style="${style}"` : ""}><option value="">--</option></select>`;
+  const VIS: Rect = [10, 20, 200, 28];
+
+  it.each<[string, string, Record<string, Rect>, string | null, string?, string?]>([
+    [
+      "a select behind the trigger",
+      SEL(),
+      { "#a-sel": [10, 20, 200, 28], "#a-vis": VIS },
+      "#a-vis",
+    ],
+    ["a 1x1 select", SEL(), { "#a-sel": [10, 20, 1, 1], "#a-vis": VIS }, "#a-sel"],
+    [
+      "a bordered 1px select drawn at 2px",
+      SEL("border:1px solid #000;padding:0"),
+      { "#a-sel": [10, 20, 2, 2], "#a-vis": VIS },
+      "#a-sel",
+    ],
+    [
+      "a select off the page to the left",
+      SEL(),
+      { "#a-sel": [-9999, 20, 200, 28], "#a-vis": VIS },
+      null,
+    ],
+    [
+      "a select in a 1px visually-hidden wrapper",
+      SEL(),
+      { "#sr": [10, 20, 1, 1], "#a-sel": [10, 20, 200, 28], "#a-vis": VIS },
+      "#a-sel",
+      '<span id="sr" style="position:absolute;overflow:hidden">',
+      "</span>",
+    ],
+  ])(
+    "drives the visible trigger when the pointer cannot reach the select: %s",
+    async (_name, select, boxes, hit, open, close) => {
+      const { result, doc } = await run(
+        layered(select, open, close),
+        boxes,
+        hit,
+        { "a-vis": { options: ["France", "Norway"] } },
+        "Select 'Norway' in the 'Country' dropdown"
+      );
+      expect(result).toBe("completed");
+      expect(doc.querySelector("#a-vis")?.textContent).toContain("Norway");
+    }
+  );
 });
 
 describe("prompt-selector: layered pairing for a select in the trigger union is unchanged", () => {
