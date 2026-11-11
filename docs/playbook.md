@@ -480,8 +480,10 @@ The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.
   verbatim. Strip UI-only fields — often 60% of them — to isolate yourself
   from UI-driven schema churn.
 - **4b — Verify load-bearing headers.** `recon-generate` derives
-  `BASE_HEADERS` from the captured request headers omitted by replays whose
-  response shape diverged from the capture (the Codified Headers table).
+  `BASE_HEADERS` from the request headers present in every relevant capture
+  (the flow's action captures, else the captures whose replay got a 2xx),
+  plus the captured request headers omitted by replays whose response shape
+  diverged from the capture (the Codified Headers table).
   Remove anything decorative; extra headers widen the bot-detection
   fingerprint surface.
 - **4c — Verify the rate-limit ceiling.** `recon-generate` sets Bottleneck's
