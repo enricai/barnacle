@@ -338,8 +338,8 @@ const MAX_METHOD_PRESERVING_REDIRECTS = 5;
  * caller rather than the redirect mangling the request, which makes it
  * expensive to diagnose.
  *
- * Observed on ncl.com: `POST /api/vacation-builder/v2/stateroom-types-availability`
- * 301s to a locale-prefixed path for any non-US-market egress. Following it
+ * Example: `POST https://api.example.com/v2/availability` 301s to a
+ * locale-prefixed path (`/en-gb/v2/availability`) for non-US-market egress. Following it
  * with the default policy yields 404 HTML; re-issuing the same POST and body
  * at the `Location` yields 200 with real pricing. Any site that 301s its API
  * path turns every POST drill into a 404 under the default policy.
@@ -359,7 +359,7 @@ const MAX_METHOD_PRESERVING_REDIRECTS = 5;
  * caller's response bindings can read headers that only ever appear on a
  * redirect.
  */
-async function fetchFollowingRedirectsPreservingMethod(
+export async function fetchFollowingRedirectsPreservingMethod(
   url: string,
   init: RequestInit,
   onHop?: (hop: { status: number; headers: Headers; url: string }) => void
