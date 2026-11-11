@@ -615,6 +615,11 @@ describe("emitMultiStepExecuteHttp — multipart upload step", () => {
   it("does not emit the inline Object.fromEntries filter idiom", () => {
     expect(body).not.toContain("Object.fromEntries(Object.entries(BASE_HEADERS)");
   });
+
+  it("routes the upload through the method-preserving follower, never a bare fetch", () => {
+    expect(body).toContain("await fetchFollowingRedirectsPreservingMethod(");
+    expect(body).not.toMatch(/await fetch\(/);
+  });
 });
 
 /** Second action step whose URL echoes an inputBody array element, forcing

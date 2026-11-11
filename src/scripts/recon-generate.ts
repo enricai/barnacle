@@ -11487,7 +11487,7 @@ export function emitMultiStepExecuteHttp(
         `    const ${fdVar}_bytes = Uint8Array.from(payload.Resume);`,
         `    ${fdVar}.append("files[]", new Blob([${fdVar}_bytes], { type: payload.ResumeContentType }), payload.ResumeFilename);`,
         `    const ${headersVar} = { ...omitHeaderCaseInsensitive(BASE_HEADERS, "Content-Type")${perCallHeadersLit} };`,
-        `    const ${respVar} = await fetch(\`${r.url}\`, {`,
+        `    const ${respVar} = await fetchFollowingRedirectsPreservingMethod(\`${r.url}\`, {`,
         `      method: "POST",`,
         `      headers: ${headersVar},`,
         `      body: ${fdVar},`,
@@ -11602,7 +11602,7 @@ function emitHtmlFetchLines(
   const headers = literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
   const respVar = `resp_${stepVar}`;
   return [
-    `${indent}const ${respVar} = await fetch(\`${url}\`, {`,
+    `${indent}const ${respVar} = await fetchFollowingRedirectsPreservingMethod(\`${url}\`, {`,
     `${indent}  method: ${JSON.stringify(method)},`,
     `${indent}  headers: ${headers},`,
     ...(bodyArg !== "" ? [`${indent}  ${bodyArg}`] : []),
@@ -17528,6 +17528,10 @@ export function emitContractTsParts(opts: {
   // emitMultiStepExecuteHttp emits a call to this helper whenever more than
   // one fold plan resolves — the generated plugin package can't reach into
   // recon-generate.ts's own module scope, so it must import it separately.
+  const redirectFollowerImport =
+    !omitExecuteHttp && multiStepBody?.includes("fetchFollowingRedirectsPreservingMethod(") === true
+      ? `import { fetchFollowingRedirectsPreservingMethod } from "${ENGINE_PKG}/scraper/http-client";\n`
+      : "";
   const mergeFoldedPrimaryBodiesImport =
     multiStepBody?.includes("mergeFoldedPrimaryBodies(") === true
       ? `import { mergeFoldedPrimaryBodies } from "${ENGINE_PKG}/lib/merge-folded-primary-bodies";\n`
@@ -18225,7 +18229,7 @@ ${executeHttpBody}
 
 ${bottleneckImport}import { z } from "zod/v4";
 
-${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}${
+${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${redirectFollowerImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}${
   !omitExecuteHttp && /\bgetLogger\(/.test(executeHttpBody)
     ? `\nimport { getLogger } from "${ENGINE_PKG}/lib/logging";`
     : ""
