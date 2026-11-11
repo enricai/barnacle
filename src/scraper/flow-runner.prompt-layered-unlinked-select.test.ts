@@ -174,3 +174,56 @@ describe("prompt-selector: layered field anchored on a select with no popup link
     expect(h.window.document.querySelector("#b-vis")?.textContent).toContain("Make a Selection");
   });
 });
+
+describe("prompt-selector: a visible working select is never paired with a neighbouring widget", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function run(html: string, popups: Record<string, { options: string[] }>, step: string) {
+    const h = buildPromptWidgetHarness({ html, popupByWidgetId: popups });
+    let result: unknown;
+    try {
+      result = await executeStepWithHealing(params(h.page as unknown as Page, step) as never);
+    } catch (err) {
+      result = err;
+    }
+    return { result, doc: h.window.document };
+  }
+
+  it("a year widget beside a Month select keeps its own label", async () => {
+    const { result, doc } = await run(
+      `<form><fieldset><legend>Date of birth</legend><div class="row">
+<label for="m">Month</label><select id="m"><option value="">--</option><option>January</option></select>
+<div id="yr" role="combobox" aria-haspopup="listbox" tabindex="0">— Make a Selection —</div></div></fieldset></form>`,
+      { yr: { options: ["1989", "1990"] } },
+      "Select '1990' in the 'Date of birth' dropdown"
+    );
+    expect(result).toBe("completed");
+    expect(doc.querySelector("#yr")?.textContent).toContain("1990");
+  });
+
+  it("a step for the select is never written into the neighbouring widget", async () => {
+    const { result, doc } = await run(
+      `<form><fieldset><legend>Preferred currency</legend><div class="field"><label for="c">Country</label>
+<select id="c"><option value="">--</option><option>Other (not listed)</option></select>
+<div id="cur" role="combobox" aria-haspopup="listbox" tabindex="0">— Make a Selection —</div></div></fieldset></form>`,
+      { cur: { options: ["Other", "USD"] } },
+      "Select 'Other' in the 'Country' dropdown"
+    );
+    expect(result).not.toBe("completed");
+    expect(doc.querySelector("#cur")?.textContent).toContain("Make a Selection");
+  });
+
+  it("a typeahead beside a labelled select adds no candidate to an unlabelled step", async () => {
+    const { result, doc } = await run(
+      `<form><div class="w"><div id="cat" aria-haspopup="listbox" role="combobox" tabindex="0">— Make a Selection —</div></div>
+<div class="field"><label for="s">City</label><select id="s"><option value="">--</option><option>Paris</option></select>
+<input id="ta" role="combobox" aria-autocomplete="list" placeholder="Search city"></div></form>`,
+      { cat: { options: ["Engineering", "Sales"] } },
+      "Click the top-level category 'Engineering'"
+    );
+    expect(result).toBe("completed");
+    expect(doc.querySelector("#cat")?.textContent).toContain("Engineering");
+  });
+});

@@ -10046,6 +10046,11 @@ async function tryPromptSelectorPrimitive(params: {
       if (!field || field === document.body || field.querySelectorAll("label").length !== 1 || !field.contains(lab)) continue;
       const members = widgets.filter((o) => field.contains(o));
       if (members.some((o) => o !== sel && o.tagName === "SELECT")) continue;
+      // A select outside the trigger union may be a plain, working select next
+      // to an unrelated widget (a date-of-birth row, a country/currency pair).
+      // It anchors the pairing only when its field also holds an unrendered
+      // opener, which is the layered shape's own fingerprint.
+      if (!widgets.includes(sel) && !members.some((o) => !rendered(o))) continue;
       const triggers = Array.from(field.querySelectorAll("[role='combobox']"))
         .concat(members)
         .filter((c, i, arr) => arr.indexOf(c) === i && c.tagName !== "SELECT" && rendered(c) && !sel.contains(c));
