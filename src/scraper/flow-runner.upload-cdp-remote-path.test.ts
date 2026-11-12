@@ -57,3 +57,23 @@ describe("setFilesViaCdp path selection", () => {
     expect(params.session.send).not.toHaveBeenCalled();
   });
 });
+
+describe("setFilesViaCdp remote upload redirect", () => {
+  it("re-sends the POST to the redirect target", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 307,
+        headers: new Headers({ location: "https://uploads.example.test/u" }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    const params = makeParams({ browserbaseSessionId: "sess-9" });
+    expect(await setFilesViaCdp(params)).toBeDefined();
+    expect(fetchMock.mock.calls.length).toBe(2);
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe("https://uploads.example.test/u");
+    expect(init.method).toBe("POST");
+  });
+});
