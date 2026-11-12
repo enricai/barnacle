@@ -96,8 +96,11 @@ export async function fetchFollowingRedirectsPreservingMethod(
       // to a different origin.
       hopCookies.clear();
       const kept: Record<string, string> = {};
-      for (const [k, v] of Object.entries((currentInit.headers as Record<string, string> | undefined) ?? {})) {
-        if (!["authorization", "cookie", "proxy-authorization"].includes(k.toLowerCase())) kept[k] = v;
+      for (const [k, v] of Object.entries(
+        (currentInit.headers as Record<string, string> | undefined) ?? {}
+      )) {
+        if (!["authorization", "cookie", "proxy-authorization"].includes(k.toLowerCase()))
+          kept[k] = v;
       }
       currentInit.headers = kept;
     }
