@@ -555,7 +555,7 @@ export async function replayCapture(
   }
 }
 
-async function probeIntrospection(endpoint: string, replaysDir: string): Promise<void> {
+export async function probeIntrospection(endpoint: string, replaysDir: string): Promise<void> {
   logger.info(`introspection probe: ${endpoint}`);
   const origin = new URL(endpoint).origin;
   const headers: Record<string, string> = {

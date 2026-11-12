@@ -42,6 +42,7 @@ import {
   inflectionKey,
   parseMethodsFilter,
   probeAuxiliaryEndpoints,
+  probeIntrospection,
   replayCapture,
   responseShapeDiffers,
   selectAuxFixtureCandidates,
@@ -903,4 +904,39 @@ describe("replayCapture — redirects preserve method and body", () => {
       expect(init.body).toBe('{"a":1}');
     });
   }
+});
+
+describe("probeIntrospection — redirects preserve method and body", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("re-sends the POST introspection query after a 307 and writes the schema", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "intro-"));
+    try {
+      const f = vi.fn(async (url: string | URL, _init?: RequestInit) =>
+        String(url) === "https://example.com/graphql"
+          ? new Response(null, { status: 302, headers: { location: "/v2/graphql" } })
+          : new Response('{"data":{"__schema":{"types":[]}}}', { status: 200 }),
+      );
+      vi.stubGlobal("fetch", f);
+      await probeIntrospection("https://example.com/graphql", dir);
+      const [url, init] = f.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe("https://example.com/v2/graphql");
+      expect(init.method).toBe("POST");
+      expect(String(init.body)).toContain("__schema");
+      expect(existsSync(join(dir, "introspection-schema.json"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not write a schema when introspection is disabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "intro-"));
+    try {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response('{"errors":[]}', { status: 200 })));
+      await probeIntrospection("https://example.com/graphql", dir);
+      expect(existsSync(join(dir, "introspection-schema.json"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
