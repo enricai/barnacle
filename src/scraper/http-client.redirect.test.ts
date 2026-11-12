@@ -59,6 +59,12 @@ describe("http-client redirect policy", () => {
         } else if (req.url === "/r302") {
           res.writeHead(302, { Location: "/final" });
           res.end();
+        } else if (req.url === "/r307") {
+          res.writeHead(307, { Location: "/final" });
+          res.end();
+        } else if (req.url === "/r308") {
+          res.writeHead(308, { Location: "/final" });
+          res.end();
         } else if (req.url === "/r303") {
           res.writeHead(303, { Location: "/final" });
           res.end();
@@ -107,6 +113,20 @@ describe("http-client redirect policy", () => {
       expect(seen.map((s) => s.method)).toEqual(["POST", "POST"]);
     }
   );
+
+  it.each([307, 308])("preserves POST, headers and body across a %i redirect", async (status) => {
+    seen.length = 0;
+    const result = await client()(`${base}/r${status}`, {
+      method: "POST",
+      body: JSON.stringify({ q: "cabins" }),
+      headers: { Cookie: "caller=keepme" },
+    });
+    expect(result.method).toBe("POST");
+    expect(result.body).toBe(JSON.stringify({ q: "cabins" }));
+    expect(result.cookie).toContain("caller=keepme");
+    expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([`POST /r${status}`, "POST /final"]);
+    expect(seen.at(-1)?.body).toBe(JSON.stringify({ q: "cabins" }));
+  });
 
   it("degrades a 303 to GET and drops the body, as the status requires", async () => {
     seen.length = 0;
