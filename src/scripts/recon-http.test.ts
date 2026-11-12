@@ -896,7 +896,7 @@ describe("replayCapture — redirects preserve method and body", () => {
       );
       vi.stubGlobal("fetch", f);
       await replayCapture("a.json", cap("POST"));
-      expect(f).toHaveBeenCalledTimes(2);
+      expect(f.mock.calls[0]?.[0]).toBe("https://example.com/api");
       const [url, init] = f.mock.calls[1] as [string, RequestInit];
       expect(url).toBe("https://example.com/v2/api");
       expect(init.method).toBe("POST");
