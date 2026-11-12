@@ -344,8 +344,8 @@ const MAX_METHOD_PRESERVING_REDIRECTS = 5;
  * at the `Location` yields 200 with real pricing. Any site that 301s its API
  * path turns every POST drill into a 404 under the default policy.
  *
- * 307/308 already forbid the rewrite, so `fetch` handles those correctly on
- * its own. 301/302 are followed here manually, re-issuing the original
+ * 307/308 forbid the rewrite and are followed here too (manual mode stops
+ * `fetch` following them). 301/302 are followed here manually, re-issuing the original
  * method, headers and body. A 303 is followed as a GET with the body dropped,
  * which is what the status means and is therefore preserved deliberately
  * rather than overridden. A relative `Location` resolves against the URL that
@@ -373,7 +373,7 @@ export async function fetchFollowingRedirectsPreservingMethod(
   for (let hop = 0; hop <= MAX_METHOD_PRESERVING_REDIRECTS; hop += 1) {
     const response = await fetch(currentUrl, currentInit);
     onHop?.({ status: response.status, headers: response.headers, url: currentUrl });
-    if (response.status !== 301 && response.status !== 302 && response.status !== 303) {
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
       return response;
     }
     const location = response.headers.get("location");
@@ -406,7 +406,18 @@ export async function fetchFollowingRedirectsPreservingMethod(
       currentInit.headers = headers;
     }
 
-    currentUrl = new URL(location, currentUrl).toString();
+    const nextUrl = new URL(location, currentUrl);
+    if (nextUrl.origin !== new URL(currentUrl).origin) {
+      // Match fetch's own cross-origin behavior: never forward credentials
+      // to a different origin.
+      hopCookies.clear();
+      const kept: Record<string, string> = {};
+      for (const [k, v] of Object.entries((currentInit.headers as Record<string, string> | undefined) ?? {})) {
+        if (!["authorization", "cookie", "proxy-authorization"].includes(k.toLowerCase())) kept[k] = v;
+      }
+      currentInit.headers = kept;
+    }
+    currentUrl = nextUrl.toString();
     // 303 means "see other": the follow-up is a GET and the body is dropped.
     if (response.status === 303) {
       currentInit.method = "GET";
