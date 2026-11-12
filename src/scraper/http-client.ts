@@ -348,8 +348,8 @@ const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]
  * the default policy.
  *
  * Because `redirect: "manual"` is forced, `fetch` follows nothing itself, so
- * 307/308 are followed here too. 301/302/307/308 are followed manually, re-issuing the original
- * method, headers and body. A 303 is followed as a GET with the body dropped,
+ * 307/308 are followed here too. 301/302/307/308 are followed manually,
+ * re-issuing the original method, headers and body. A 303 is followed as a GET with the body dropped,
  * which is what the status means and is therefore preserved deliberately
  * rather than overridden. A relative `Location` resolves against the URL that
  * produced it. No redirect is the common case and costs one extra
