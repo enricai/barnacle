@@ -151,6 +151,32 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
     );
   });
 
+  it("strips credentials and hop cookies on a cross-origin redirect", async () => {
+    const seen: Array<Record<string, string>> = [];
+    const fetchImpl = vi.fn(async (_u: unknown, i?: RequestInit) => {
+      seen.push(Object.fromEntries(new Headers(i?.headers).entries()));
+      if (seen.length === 1) {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "https://other.example/x", "Set-Cookie": "s=1" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof fetch;
+    await fetchFollowingRedirectsPreservingMethod("https://a.example/start", {
+      headers: {
+        Authorization: "Bearer t",
+        Cookie: "mine=0",
+        "X-Keep": "yes",
+      },
+      fetchImpl,
+    });
+    expect(seen[0]?.authorization).toBe("Bearer t");
+    expect(seen[1]?.authorization).toBeUndefined();
+    expect(seen[1]?.cookie).toBeUndefined();
+    expect(seen[1]?.["x-keep"]).toBe("yes");
+  });
+
   it("calls onHop for every response", async () => {
     const onHop = vi.fn();
     await fetchFollowingRedirectsPreservingMethod(
