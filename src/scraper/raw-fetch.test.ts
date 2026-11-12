@@ -241,7 +241,18 @@ describe("rawFetch redirect hops", () => {
   let base: string;
   beforeAll(async () => {
     server = createServer((req, res) => {
-      if (req.url === "/start") {
+      const m = /^\/post-(301|302|303)$/.exec(req.url ?? "");
+      if (m) {
+        res.writeHead(Number(m[1]), { Location: "/echo" });
+        res.end();
+      } else if (req.url === "/echo") {
+        const chunks: Buffer[] = [];
+        req.on("data", (c: Buffer) => chunks.push(c));
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end(`${req.method}:${Buffer.concat(chunks).toString()}`);
+        });
+      } else if (req.url === "/start") {
         res.writeHead(302, { Location: "/mid", "Set-Cookie": "flow=step2; Path=/" });
         res.end();
       } else if (req.url === "/mid") {
@@ -327,6 +338,43 @@ describe("rawFetch redirect hops", () => {
     expect(result.status).toBe(200);
     expect(result.finalUrl).toBe(`${base}/final`);
     expect(result.headers.get("content-type")).toBe("text/plain");
+  });
+
+  it.each([301, 302, 303])(
+    "real server: default follow re-sends POST and body across a %i; one onResponse",
+    async (status) => {
+      const onResponse = vi.fn();
+      const result = await rawFetch(`${base}/post-${status}`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: "payload",
+        onResponse,
+        contextLabel: "demo",
+        fetchImpl: realFetch,
+      });
+      expect(result.status).toBe(200);
+      expect(result.rawBody).toBe("POST:payload");
+      expect(result.finalUrl).toBe(`${base}/echo`);
+      expect(onResponse).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it("manual with POST returns the 3xx untouched after a single call", async () => {
+    const fetchImpl = vi.fn(realFetch);
+    const onResponse = vi.fn();
+    const result = await rawFetch(`${base}/post-302`, {
+      method: "POST",
+      headers: {},
+      body: "payload",
+      onResponse,
+      contextLabel: "demo",
+      redirect: "manual",
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe(302);
+    expect(result.headers.get("location")).toBe("/echo");
   });
 
   it("passes init.redirect through to fetchImpl and does not classify 3xx", async () => {
