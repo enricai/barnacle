@@ -109,7 +109,8 @@ describe("recon-http redirects preserve method and body", () => {
       };
       await probeAuxiliaryEndpoints([replay], join(dir, "aux"), ["example.com"], null);
       const aux = calls.filter((c) => c.url.includes("/labels/"));
-      if (aux.length === 0) return; // candidate selection may exclude non-GET; covered by selector tests
+      // Selector has no method filter, so the POST candidate must be fetched; never pass vacuously.
+      expect(aux.length).toBeGreaterThan(0);
       expect(aux.map((c) => c.method)).toEqual(aux.map(() => "POST"));
       expect(aux.some((c) => c.url.includes("/v2/labels/"))).toBe(true);
     });
