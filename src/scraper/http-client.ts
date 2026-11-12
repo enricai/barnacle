@@ -328,6 +328,9 @@ function extractCookieValue(setCookieHeaders: string[], cookieName: string): str
  */
 const MAX_METHOD_PRESERVING_REDIRECTS = 5;
 
+/** The single decision of which redirect statuses are followed. */
+const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+
 /**
  * Follows redirects without silently downgrading the request method.
  *
@@ -338,14 +341,14 @@ const MAX_METHOD_PRESERVING_REDIRECTS = 5;
  * caller rather than the redirect mangling the request, which makes it
  * expensive to diagnose.
  *
- * Observed on ncl.com: `POST /api/vacation-builder/v2/stateroom-types-availability`
- * 301s to a locale-prefixed path for any non-US-market egress. Following it
- * with the default policy yields 404 HTML; re-issuing the same POST and body
- * at the `Location` yields 200 with real pricing. Any site that 301s its API
- * path turns every POST drill into a 404 under the default policy.
+ * Example: `POST https://example.com/api/v2/items` 301s to a locale-prefixed
+ * path for some egress regions. Following it with the default policy yields
+ * 404 HTML; re-issuing the same POST and body at the `Location` yields 200.
+ * Any site that 301s its API path turns every POST drill into a 404 under
+ * the default policy.
  *
- * 307/308 already forbid the rewrite, so `fetch` handles those correctly on
- * its own. 301/302 are followed here manually, re-issuing the original
+ * Because `redirect: "manual"` is forced, `fetch` follows nothing itself, so
+ * 307/308 are followed here too. 301/302/307/308 are followed manually, re-issuing the original
  * method, headers and body. A 303 is followed as a GET with the body dropped,
  * which is what the status means and is therefore preserved deliberately
  * rather than overridden. A relative `Location` resolves against the URL that
@@ -373,7 +376,7 @@ async function fetchFollowingRedirectsPreservingMethod(
   for (let hop = 0; hop <= MAX_METHOD_PRESERVING_REDIRECTS; hop += 1) {
     const response = await fetch(currentUrl, currentInit);
     onHop?.({ status: response.status, headers: response.headers, url: currentUrl });
-    if (response.status !== 301 && response.status !== 302 && response.status !== 303) {
+    if (!REDIRECT_STATUSES.has(response.status)) {
       return response;
     }
     const location = response.headers.get("location");
