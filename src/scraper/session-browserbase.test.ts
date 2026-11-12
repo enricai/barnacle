@@ -571,6 +571,28 @@ describe("createBrowserbaseBrowserSession close() release", () => {
     expect(seen).toBeInstanceOf(AbortSignal);
     expect(seen?.aborted).toBe(false);
   });
+
+  it("re-sends the release POST with its body across a 302", async () => {
+    bbCtorOptions.length = 0;
+    const session = await createBrowserbaseBrowserSession();
+    await session.close();
+    const fetchImpl = bbCtorOptions.at(-1)?.fetch as (url: string, init: object) => Promise<unknown>;
+    const calls: Array<{ url: unknown; init: { method?: string; body?: string } }> = [];
+    vi.mocked(undiciFetch)
+      .mockImplementationOnce((async (url: unknown, init: unknown) => {
+        calls.push({ url, init: init as never });
+        return new Response(null, { status: 302, headers: { location: "/v2/x" } });
+      }) as never)
+      .mockImplementationOnce((async (url: unknown, init: unknown) => {
+        calls.push({ url, init: init as never });
+        return new Response("{}", { status: 200 });
+      }) as never);
+    await fetchImpl("https://api.browserbase.com/v1/x", { method: "POST", body: "{\"a\":1}" });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.url).toBe("https://api.browserbase.com/v2/x");
+    expect(calls[1]?.init.method).toBe("POST");
+    expect(calls[1]?.init.body).toBe('{"a":1}');
+  });
 });
 
 describe("createBrowserbaseBrowserSession bounded teardown", () => {
