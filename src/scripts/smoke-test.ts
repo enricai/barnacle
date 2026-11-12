@@ -24,6 +24,7 @@ import { resolve } from "node:path";
 import { z } from "zod/v4";
 
 import { toErrorMessage } from "@/lib/errors";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
 
@@ -134,7 +135,7 @@ async function main(): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    response = await fetch(url, {
+    response = await fetchFollowingRedirectsPreservingMethod(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -205,7 +206,7 @@ async function main(): Promise<void> {
     const fallbackController = new AbortController();
     const fallbackTimer = setTimeout(() => fallbackController.abort(), timeoutMs);
     try {
-      fallbackResponse = await fetch(url, {
+      fallbackResponse = await fetchFollowingRedirectsPreservingMethod(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
