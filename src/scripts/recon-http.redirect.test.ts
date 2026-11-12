@@ -25,11 +25,7 @@ vi.mock("@/lib/logging", () => ({
 }));
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
-import {
-  probeAuxiliaryEndpoints,
-  probeIntrospection,
-  replayCapture,
-} from "@/scripts/recon-http";
+import { probeAuxiliaryEndpoints, probeIntrospection, replayCapture } from "@/scripts/recon-http";
 import type { ReplayResult } from "@/scripts/recon-shared";
 
 type Call = { url: string; method: string; body: unknown };
@@ -155,14 +151,20 @@ describe("recon-http main(): rate-limit probe and robots under redirects", () =>
         })
       );
       const calls: Call[] = [];
+      let sawIntrospection = false;
       vi.stubGlobal(
         "fetch",
         vi.fn(async (url: string | URL, init?: RequestInit) => {
           const u = new URL(String(url));
           calls.push({ url: u.href, method: init?.method ?? "GET", body: init?.body });
           if (u.pathname === "/robots.txt") return new Response("", { status: 404 });
+          if (String(init?.body).includes("__schema")) sawIntrospection = true;
           if (u.pathname.startsWith("/v2/")) {
-            return new Response("{}", { status: 429, headers: { "retry-after": "1" } });
+            // Replay and introspection succeed; the later rate-limit probe gets 429 (stops fast).
+            const limited = sawIntrospection && !String(init?.body).includes("__schema");
+            return limited
+              ? new Response("{}", { status: 429, headers: { "retry-after": "1" } })
+              : new Response('{"data":{}}', { status: 200 });
           }
           return new Response(null, { status, headers: { location: `/v2${u.pathname}` } });
         })
@@ -199,7 +201,7 @@ describe("recon-http main(): rate-limit probe and robots under redirects", () =>
       const last = calls[calls.length - 1];
       expect(last?.url).toBe("https://api.example.com/v2/graphql");
       expect(last?.method).toBe("POST");
-      expect(last?.body).toBe('{"query":"{ a }"}');
+      expect(last?.body).toBe('{"operationName":"Q","query":"{ a }","variables":{}}');
     }, 40000);
   }
 });
