@@ -26,10 +26,9 @@ export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([
  * the default policy.
  *
  * Because `redirect: "manual"` is forced, `fetch` follows nothing itself, so
- * 307/308 are followed here too. 301/302/307/308 are followed manually,
- * re-issuing the original method, headers and body. A 303 is followed as a GET with the body dropped,
- * which is what the status means and is therefore preserved deliberately
- * rather than overridden. A relative `Location` resolves against the URL that
+ * 307/308 are followed here too. 301/302/303/307/308 are all followed
+ * manually under one rule, re-issuing the original method, headers and body
+ * (a 303 is not downgraded to a GET). A relative `Location` resolves against the URL that
  * produced it. No redirect is the common case and costs one extra
  * `redirect: "manual"` fetch and nothing else.
  *
@@ -115,11 +114,6 @@ export async function fetchFollowingRedirectsPreservingMethod(
     }
 
     currentUrl = nextUrl.toString();
-    // 303 means "see other": the follow-up is a GET and the body is dropped.
-    if (response.status === 303) {
-      currentInit.method = "GET";
-      currentInit.body = undefined;
-    }
   }
   throw new Error(
     `exceeded ${MAX_METHOD_PRESERVING_REDIRECTS} redirects starting at ${url}`,

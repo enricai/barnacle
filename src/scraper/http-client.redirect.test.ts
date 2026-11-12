@@ -128,14 +128,14 @@ describe("http-client redirect policy", () => {
     expect(seen.at(-1)?.body).toBe(JSON.stringify({ q: "cabins" }));
   });
 
-  it("degrades a 303 to GET and drops the body, as the status requires", async () => {
+  it("re-sends the method and body on a 303", async () => {
     seen.length = 0;
     const result = await client()(`${base}/r303`, {
       method: "POST",
       body: JSON.stringify({ q: "cabins" }),
     });
-    expect(result.method).toBe("GET");
-    expect(result.body).toBe("");
+    expect(result.method).toBe("POST");
+    expect(result.body).toBe(JSON.stringify({ q: "cabins" }));
   });
 
   it("resolves a relative Location against the URL that produced it", async () => {

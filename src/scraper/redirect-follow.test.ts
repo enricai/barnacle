@@ -71,7 +71,7 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
     headers: { "X-Test": "yes" },
   };
 
-  it.each([301, 302, 307, 308])(
+  it.each([301, 302, 303, 307, 308])(
     "%i re-issues method, headers and body",
     async (status) => {
       const res = await fetchFollowingRedirectsPreservingMethod(
@@ -87,18 +87,6 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
       });
     },
   );
-
-  it("303 follows as GET without body (current behavior)", async () => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/r303`,
-      post,
-    );
-    expect(await res.json()).toMatchObject({
-      url: "/final",
-      method: "GET",
-      body: "",
-    });
-  });
 
   it("leaves GET unaffected", async () => {
     const res = await fetchFollowingRedirectsPreservingMethod(`${base}/r301`, {
