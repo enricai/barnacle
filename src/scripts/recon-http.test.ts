@@ -866,3 +866,41 @@ describe("selectReplayCaptures — safe-by-default with --methods opt-in", () =>
     expect(r.selected.map((i) => i.filename)).toEqual(["GET.json", "PUT.json"]);
   });
 });
+
+describe("replayCapture — redirects preserve method and body", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const cap = (method: string) =>
+    ({
+      url: "https://example.com/api",
+      method,
+      operationName: null,
+      query: null,
+      variables: null,
+      requestPostData: '{"a":1}',
+    }) as never;
+
+  it("non-redirecting response is returned after a single request", async () => {
+    const f = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    const r = await replayCapture("a.json", cap("POST"));
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(r?.requestBody).toBe('{"a":1}');
+  });
+
+  for (const status of [301, 302, 303]) {
+    it(`POST across ${status} re-sends POST with body`, async () => {
+      const f = vi.fn(async (url: string | URL, _init?: RequestInit) =>
+        String(url).endsWith("/api")
+          ? new Response(null, { status, headers: { location: "/v2/api" } })
+          : new Response("{}", { status: 200 }),
+      );
+      vi.stubGlobal("fetch", f);
+      await replayCapture("a.json", cap("POST"));
+      expect(f).toHaveBeenCalledTimes(2);
+      const [url, init] = f.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe("https://example.com/v2/api");
+      expect(init.method).toBe("POST");
+      expect(init.body).toBe('{"a":1}');
+    });
+  }
+});

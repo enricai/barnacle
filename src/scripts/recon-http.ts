@@ -52,6 +52,7 @@ import {
 import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 import {
   adoptReconRunRoot,
   type ReplayResult,
@@ -292,7 +293,7 @@ async function sendReplay(
   headers: Record<string, string>,
   requestBody: string | null
 ): Promise<{ response: Response; body: unknown }> {
-  const response = await fetch(capture.url, {
+  const response = await fetchFollowingRedirectsPreservingMethod(capture.url, {
     method: capture.method,
     headers,
     body: requestBody ?? undefined,
@@ -563,7 +564,7 @@ async function probeIntrospection(endpoint: string, replaysDir: string): Promise
     Referer: `${origin}/`,
   };
   try {
-    const response = await fetch(endpoint, {
+    const response = await fetchFollowingRedirectsPreservingMethod(endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify({ query: "{ __schema { types { name } } }" }),
@@ -678,7 +679,7 @@ export async function probeAuxiliaryEndpoints(
       Referer: `${origin}/`,
     };
     try {
-      const response = await fetch(candidate.url, {
+      const response = await fetchFollowingRedirectsPreservingMethod(candidate.url, {
         method: candidate.method,
         headers,
       });
@@ -741,7 +742,7 @@ async function probeRateLimit(
     for (let i = 0; i < requestsPerLevel; i++) {
       const before = Date.now();
       try {
-        const response = await fetch(endpoint, {
+        const response = await fetchFollowingRedirectsPreservingMethod(endpoint, {
           method,
           headers,
           body: body ?? undefined,
