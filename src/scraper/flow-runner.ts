@@ -13,6 +13,7 @@
  * the terminal failure dump.
  */
 
+import { fetchFollowingRedirectsPreservingMethod } from "./redirect-follow";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6390,7 +6391,7 @@ async function uploadFixtureToRemoteSession(
     fixture.name
   );
   try {
-    const res = await fetch(
+    const res = await fetchFollowingRedirectsPreservingMethod(
       `${config.scraper.browserbaseBaseUrl}/v1/sessions/${sessionId}/uploads`,
       {
         method: "POST",
