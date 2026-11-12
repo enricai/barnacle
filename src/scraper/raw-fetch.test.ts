@@ -347,3 +347,27 @@ describe("rawFetch redirect hops", () => {
     expect(result.finalUrl).toBe("https://example.com/");
   });
 });
+
+describe("rawFetch default redirect follow preserves method", () => {
+  it.each([301, 302, 303])("re-sends POST and body across a %i", async (status) => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(makeMockFetchResponse(status, "", { location: "/next" }))
+      .mockResolvedValueOnce(makeMockFetchResponse(200, "ok"));
+    const onResponse = vi.fn();
+    const result = await rawFetch(BASE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"a":1}',
+      fetchImpl: fetchImpl as unknown as FetchImpl,
+      onResponse,
+      contextLabel: LABEL,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe("https://example.com/next");
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "POST", body: '{"a":1}' });
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(result.finalUrl).toBe("https://example.com/next");
+    expect(result.rawBody).toBe("ok");
+  });
+});
