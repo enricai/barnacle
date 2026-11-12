@@ -11487,7 +11487,7 @@ export function emitMultiStepExecuteHttp(
         `    const ${fdVar}_bytes = Uint8Array.from(payload.Resume);`,
         `    ${fdVar}.append("files[]", new Blob([${fdVar}_bytes], { type: payload.ResumeContentType }), payload.ResumeFilename);`,
         `    const ${headersVar} = { ...omitHeaderCaseInsensitive(BASE_HEADERS, "Content-Type")${perCallHeadersLit} };`,
-        `    const ${respVar} = await fetchFollowingRedirectsPreservingMethod(\`${r.url}\`, {`,
+        `    const ${respVar} = await fetch(\`${r.url}\`, {`,
         `      method: "POST",`,
         `      headers: ${headersVar},`,
         `      body: ${fdVar},`,
@@ -11602,7 +11602,7 @@ function emitHtmlFetchLines(
   const headers = literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
   const respVar = `resp_${stepVar}`;
   return [
-    `${indent}const ${respVar} = await fetchFollowingRedirectsPreservingMethod(\`${url}\`, {`,
+    `${indent}const ${respVar} = await fetch(\`${url}\`, {`,
     `${indent}  method: ${JSON.stringify(method)},`,
     `${indent}  headers: ${headers},`,
     ...(bodyArg !== "" ? [`${indent}  ${bodyArg}`] : []),
@@ -17525,13 +17525,18 @@ export function emitContractTsParts(opts: {
     hasMultipartStep && !omitExecuteHttp
       ? `import { omitHeaderCaseInsensitive } from "${ENGINE_PKG}/lib/case-insensitive-headers";\n`
       : "";
+  // The multipart upload and HTML-token steps call `fetch` directly (they need
+  // a FormData body or the raw response text, which httpClient does not
+  // expose). The global `fetch` follows a 301/302 by rewriting a POST into a
+  // bodyless GET, so the contract binds `fetch` to the engine's
+  // method-preserving follower for the whole module instead.
+  const redirectFollowerImport =
+    !omitExecuteHttp && multiStepBody !== undefined && /(?<![\w$.])fetch\(/.test(multiStepBody)
+      ? `import { fetchFollowingRedirectsPreservingMethod as fetch } from "${ENGINE_PKG}/scraper/http-client";\n`
+      : "";
   // emitMultiStepExecuteHttp emits a call to this helper whenever more than
   // one fold plan resolves — the generated plugin package can't reach into
   // recon-generate.ts's own module scope, so it must import it separately.
-  const redirectFollowerImport =
-    !omitExecuteHttp && multiStepBody?.includes("fetchFollowingRedirectsPreservingMethod(") === true
-      ? `import { fetchFollowingRedirectsPreservingMethod } from "${ENGINE_PKG}/scraper/http-client";\n`
-      : "";
   const mergeFoldedPrimaryBodiesImport =
     multiStepBody?.includes("mergeFoldedPrimaryBodies(") === true
       ? `import { mergeFoldedPrimaryBodies } from "${ENGINE_PKG}/lib/merge-folded-primary-bodies";\n`

@@ -205,9 +205,8 @@ describe("HTML-issued token emission", () => {
   it("extracts a form-action token from the response text and splices it into the URL", () => {
     const out = emit(mk(`<form action="/checkout?csrf=${T}"></form>`, "go=1", `?csrf=${T}`), true);
     expect(out).not.toContain(T);
-    expect(out).toContain("await fetchFollowingRedirectsPreservingMethod(");
+    expect(out).toContain("await fetch(");
     expect(out).toContain("text_r0");
-    expect(out).not.toMatch(/await fetch\(/);
     expect(out).toContain('.get("csrf")');
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(out).toContain("?csrf=${csrfToken}");
@@ -283,7 +282,7 @@ describe("percent-encoded token replay", () => {
     );
     expect(out).not.toContain(B64);
     expect(out).not.toContain(encodeURIComponent(B64));
-    expect(out).toContain("await fetchFollowingRedirectsPreservingMethod(");
+    expect(out).toContain("await fetch(");
   });
 });
 

@@ -52,7 +52,7 @@ import {
 import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
-import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/http-client";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follower";
 import {
   adoptReconRunRoot,
   type ReplayResult,

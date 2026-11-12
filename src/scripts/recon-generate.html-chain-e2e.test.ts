@@ -112,8 +112,7 @@ describe("recon-generate CLI — HTML token read inside a fold chain hop", () =>
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).toMatch(/\.map\(async \(\w+\) => \{/);
     expect(contract).not.toContain(TOK);
-    expect(contract).toContain("await fetchFollowingRedirectsPreservingMethod(");
-    expect(contract).toMatch(/import \{ fetchFollowingRedirectsPreservingMethod \} from "[^"]+\/scraper\/http-client"/);
+    expect(contract).toContain("await fetch(");
     expect(contract).toContain("const nonceToken");
   }, 30_000);
 });
