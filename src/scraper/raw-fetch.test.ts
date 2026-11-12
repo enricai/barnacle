@@ -175,6 +175,7 @@ describe("rawFetch", () => {
         method: "POST",
         headers: { "Content-Type": "multipart/form-data" },
         body: Buffer.from("payload"),
+        redirect: "manual",
       });
     });
   });
