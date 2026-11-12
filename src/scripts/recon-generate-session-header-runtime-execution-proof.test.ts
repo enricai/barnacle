@@ -9,7 +9,7 @@ import { z } from "zod/v4";
 
 import { omitHeaderCaseInsensitive } from "@/lib/case-insensitive-headers";
 import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
-import { createHttpClient } from "@/scraper/http-client";
+import { createHttpClient, fetchFollowingRedirectsPreservingMethod } from "@/scraper/http-client";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
   extractExecuteHttpBodyFromContract,
@@ -38,15 +38,17 @@ function evalExecuteHttpBodyWithMultipartBindings(
     "mergeFoldedPrimaryBodies",
     "omitHeaderCaseInsensitive",
     "BASE_HEADERS",
+    "fetchFollowingRedirectsPreservingMethod",
     `return async function executeHttp(payload, context = { baseUrl: payload.BaseUrl }) {\n${stripped}\n};`
   ) as (
     httpClient: unknown,
     z: unknown,
     mergeFoldedPrimaryBodies: unknown,
     omitHeaderCaseInsensitive: unknown,
-    baseHeaders: unknown
+    baseHeaders: unknown,
+    fetchFollower: unknown
   ) => (payload: Record<string, unknown>) => Promise<{ data: unknown }>;
-  return factory(httpClient, z, mergeFoldedPrimaryBodies, omitHeaderCaseInsensitive, baseHeaders);
+  return factory(httpClient, z, mergeFoldedPrimaryBodies, omitHeaderCaseInsensitive, baseHeaders, fetchFollowingRedirectsPreservingMethod);
 }
 
 /**
