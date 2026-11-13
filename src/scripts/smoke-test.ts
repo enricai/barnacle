@@ -24,9 +24,9 @@ import { resolve } from "node:path";
 import { z } from "zod/v4";
 
 import { toErrorMessage } from "@/lib/errors";
-import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 
 configureHttpDispatcher();
 

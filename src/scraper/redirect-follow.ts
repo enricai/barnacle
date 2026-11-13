@@ -5,9 +5,7 @@
 const MAX_METHOD_PRESERVING_REDIRECTS = 5;
 
 /** The single decision of which redirect statuses are followed. */
-export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([
-  301, 302, 303, 307, 308,
-]);
+export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
 /**
  * Follows redirects without silently downgrading the request method.
@@ -42,7 +40,7 @@ export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([
 export async function fetchFollowingRedirectsPreservingMethod(
   url: string,
   init: RequestInit & { fetchImpl?: typeof fetch },
-  onHop?: (hop: { status: number; headers: Headers; url: string }) => void,
+  onHop?: (hop: { status: number; headers: Headers; url: string }) => void
 ): Promise<Response> {
   const { fetchImpl = fetch, ...rest } = init;
   const currentInit: RequestInit = { ...rest, redirect: "manual" };
@@ -82,8 +80,7 @@ export async function fetchFollowingRedirectsPreservingMethod(
         ...(currentInit.headers as Record<string, string> | undefined),
       };
       const existingKey =
-        Object.keys(headers).find((k) => k.toLowerCase() === "cookie") ??
-        "Cookie";
+        Object.keys(headers).find((k) => k.toLowerCase() === "cookie") ?? "Cookie";
       // Merge rather than replace, so a cookie the caller sent survives
       // alongside the hop's — and a hop setting the same name wins, since it
       // is the more current value.
@@ -97,9 +94,7 @@ export async function fetchFollowingRedirectsPreservingMethod(
 
     currentUrl = nextUrl.toString();
   }
-  throw new Error(
-    `exceeded ${MAX_METHOD_PRESERVING_REDIRECTS} redirects starting at ${url}`,
-  );
+  throw new Error(`exceeded ${MAX_METHOD_PRESERVING_REDIRECTS} redirects starting at ${url}`);
 }
 
 /**
@@ -109,17 +104,13 @@ export async function fetchFollowingRedirectsPreservingMethod(
  * an operator-authored `baseHeaders` or per-call `init.headers` Cookie value
  * is untrusted input, not a value this module produced.
  */
-export function parseCookiePairs(
-  cookieHeader: string,
-): Array<[string, string]> {
+export function parseCookiePairs(cookieHeader: string): Array<[string, string]> {
   return cookieHeader
     .split(";")
     .map((pair) => pair.trim())
     .filter(Boolean)
     .flatMap((pair) => {
       const eq = pair.indexOf("=");
-      return eq === -1
-        ? []
-        : [[pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()] as const];
+      return eq === -1 ? [] : [[pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()] as const];
     });
 }

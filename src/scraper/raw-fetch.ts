@@ -10,9 +10,9 @@
 import { fetch as undiciFetch } from "undici";
 
 import { toErrorMessage } from "@/lib/errors";
-import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 import { HttpServerError } from "@/scraper/errors";
 import { classifyHttpStatus } from "@/scraper/http-status-classifier";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 
 /** Return value: raw outcome before any Zod parsing. */
 export interface RawFetchResult {

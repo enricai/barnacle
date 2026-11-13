@@ -47,8 +47,7 @@ function parseRetryAfterMs(headers: Headers): number | undefined {
   const raw = headers.get("Retry-After");
   if (raw === null) return undefined;
   const seconds = Number(raw);
-  if (Number.isFinite(seconds))
-    return Math.min(Math.max(seconds, 0) * 1_000, MAX_RETRY_AFTER_MS);
+  if (Number.isFinite(seconds)) return Math.min(Math.max(seconds, 0) * 1_000, MAX_RETRY_AFTER_MS);
   const dateMs = Date.parse(raw);
   if (Number.isNaN(dateMs)) return undefined;
   return Math.min(Math.max(dateMs - Date.now(), 0), MAX_RETRY_AFTER_MS);
@@ -99,23 +98,17 @@ function placeholderForExpectedType(expected: string): unknown {
   }
 }
 
-function setAtPath(
-  body: unknown,
-  path: ReadonlyArray<PropertyKey>,
-  value: unknown,
-): unknown {
+function setAtPath(body: unknown, path: ReadonlyArray<PropertyKey>, value: unknown): unknown {
   if (path.length === 0) return value;
   const [key, ...rest] = path;
   if (key === undefined) return value;
-  const clonedNode: Record<PropertyKey, unknown> | unknown[] = Array.isArray(
-    body,
-  )
+  const clonedNode: Record<PropertyKey, unknown> | unknown[] = Array.isArray(body)
     ? [...body]
     : { ...(body as Record<PropertyKey, unknown>) };
   (clonedNode as Record<PropertyKey, unknown>)[key] = setAtPath(
     (clonedNode as Record<PropertyKey, unknown>)[key],
     rest,
-    value,
+    value
   );
   return clonedNode;
 }
@@ -134,21 +127,17 @@ function setAtPath(
 function tolerateNullScalarMismatch(
   activeSchema: ZodType,
   body: unknown,
-  issues: ReadonlyArray<ZodIssue>,
+  issues: ReadonlyArray<ZodIssue>
 ): unknown {
   const nullMismatches = issues.filter(
-    (issue) =>
-      issue.code === "invalid_type" && valueAtPath(body, issue.path) === null,
+    (issue) => issue.code === "invalid_type" && valueAtPath(body, issue.path) === null
   );
-  if (nullMismatches.length !== issues.length || nullMismatches.length === 0)
-    return undefined;
+  if (nullMismatches.length !== issues.length || nullMismatches.length === 0) return undefined;
 
   const sanitizedBody = nullMismatches.reduce<unknown>((acc, issue) => {
     const expected = "expected" in issue ? String(issue.expected) : "";
     const placeholder = placeholderForExpectedType(expected);
-    return placeholder === undefined
-      ? acc
-      : setAtPath(acc, issue.path, placeholder);
+    return placeholder === undefined ? acc : setAtPath(acc, issue.path, placeholder);
   }, body);
 
   const reparsed = activeSchema.safeParse(sanitizedBody);
@@ -156,7 +145,7 @@ function tolerateNullScalarMismatch(
 
   return nullMismatches.reduce<unknown>(
     (acc, issue) => setAtPath(acc, issue.path, null),
-    reparsed.data,
+    reparsed.data
   );
 }
 
@@ -250,10 +239,7 @@ export interface HttpClientOptions<TResponse> {
    * abort), or `undefined` to fall through to the normal JSON-parse path. This
    * is how vendor-specific wire quirks stay in the plugin instead of the engine.
    */
-  classifyResponseBody?: (
-    rawText: string,
-    ctx: { url: string },
-  ) => ScraperError | undefined;
+  classifyResponseBody?: (rawText: string, ctx: { url: string }) => ScraperError | undefined;
   /**
    * Aborts a call after this many milliseconds when the caller supplies no
    * `init.signal` — Node's built-in fetch has no default timeout (see
@@ -311,12 +297,8 @@ function parseJsonOrThrowRetryable(rawText: string, url: string): unknown {
   try {
     return JSON.parse(rawText);
   } catch (err) {
-    logger.warn(
-      `non-JSON response body from ${url} (first 200 chars): ${rawText.slice(0, 200)}`,
-    );
-    throw new UnknownScraperError(
-      `response body is not valid JSON: ${String(err)}`,
-    );
+    logger.warn(`non-JSON response body from ${url} (first 200 chars): ${rawText.slice(0, 200)}`);
+    throw new UnknownScraperError(`response body is not valid JSON: ${String(err)}`);
   }
 }
 
@@ -326,10 +308,7 @@ function parseJsonOrThrowRetryable(rawText: string, url: string): unknown {
  * multiple entries with commas and would corrupt the individual cookie-pair
  * boundaries) so multi-cookie responses resolve correctly.
  */
-function extractCookieValue(
-  setCookieHeaders: string[],
-  cookieName: string,
-): string | undefined {
+function extractCookieValue(setCookieHeaders: string[], cookieName: string): string | undefined {
   for (const entry of setCookieHeaders) {
     const pair = entry.split(";", 1)[0] ?? "";
     const eq = pair.indexOf("=");
@@ -349,7 +328,7 @@ function extractCookieValue(
  */
 function findHeaderCaseInsensitive(
   headers: Record<string, string>,
-  name: string,
+  name: string
 ): string | undefined {
   const lower = name.toLowerCase();
   const key = Object.keys(headers).find((k) => k.toLowerCase() === lower);
@@ -370,19 +349,16 @@ function findHeaderCaseInsensitive(
 function mergeCookieHeader(
   baseHeaders: Record<string, string>,
   boundHeaders: Record<string, string>,
-  initHeaders: Record<string, string>,
+  initHeaders: Record<string, string>
 ): string | undefined {
   const merged = new Map<string, string>();
   for (const source of [baseHeaders, initHeaders, boundHeaders]) {
     const cookieHeader = findHeaderCaseInsensitive(source, "Cookie");
     if (cookieHeader === undefined) continue;
-    for (const [name, value] of parseCookiePairs(cookieHeader))
-      merged.set(name, value);
+    for (const [name, value] of parseCookiePairs(cookieHeader)) merged.set(name, value);
   }
   if (merged.size === 0) return undefined;
-  return [...merged.entries()]
-    .map(([name, value]) => `${name}=${value}`)
-    .join("; ");
+  return [...merged.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
 }
 
 /**
@@ -392,10 +368,7 @@ function mergeCookieHeader(
  * with an empty string — see `HttpClientOptions.bind` for why a miss must
  * not fabricate a value.
  */
-function resolveBinding(
-  binding: HttpResponseBinding,
-  headers: Headers,
-): string | undefined {
+function resolveBinding(binding: HttpResponseBinding, headers: Headers): string | undefined {
   if (binding.sourceHeader.toLowerCase() === "set-cookie") {
     return binding.cookieName
       ? extractCookieValue(headers.getSetCookie(), binding.cookieName)
@@ -410,10 +383,7 @@ function resolveBinding(
  * elapsing (`TimeoutError`).
  */
 function isAbortOrTimeout(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err.name === "AbortError" || err.name === "TimeoutError")
-  );
+  return err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
 }
 
 /**
@@ -425,14 +395,10 @@ function errorDetail(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   const cause = err.cause;
   const causeCode =
-    cause !== null && typeof cause === "object" && "code" in cause
-      ? String(cause.code)
-      : undefined;
+    cause !== null && typeof cause === "object" && "code" in cause ? String(cause.code) : undefined;
   const causeMessage = cause instanceof Error ? cause.message : undefined;
   const suffix = [causeCode, causeMessage].filter(Boolean).join(" ");
-  return suffix
-    ? `${err.name}: ${err.message} (${suffix})`
-    : `${err.name}: ${err.message}`;
+  return suffix ? `${err.name}: ${err.message} (${suffix})` : `${err.name}: ${err.message}`;
 }
 
 /**
@@ -458,13 +424,9 @@ const MAX_CAUSE_DEPTH = 4;
  * error code. The walk is bounded so a self-referencing cause cannot loop.
  */
 function hasNetworkCauseCode(err: unknown, depth = 0): boolean {
-  if (depth > MAX_CAUSE_DEPTH || err === null || typeof err !== "object")
-    return false;
+  if (depth > MAX_CAUSE_DEPTH || err === null || typeof err !== "object") return false;
   const code = "code" in err ? err.code : undefined;
-  if (
-    typeof code === "string" &&
-    (NETWORK_ERROR_CODES.has(code) || code.startsWith("UND_ERR_"))
-  ) {
+  if (typeof code === "string" && (NETWORK_ERROR_CODES.has(code) || code.startsWith("UND_ERR_"))) {
     return true;
   }
   return "cause" in err && hasNetworkCauseCode(err.cause, depth + 1);
@@ -491,16 +453,10 @@ function isNetworkFailure(err: unknown): boolean {
  * in p-retry's `AbortError` because the signal fired on purpose and a retry
  * would only time out again.
  */
-function transportFailure(
-  err: unknown,
-  label: string,
-): HttpTransportError | AbortError {
+function transportFailure(err: unknown, label: string): HttpTransportError | AbortError {
   if (isAbortOrTimeout(err)) {
     return new AbortError(
-      new HttpTransportError(
-        `${label}: aborted or timed out: ${errorDetail(err)}`,
-        { cause: err },
-      ),
+      new HttpTransportError(`${label}: aborted or timed out: ${errorDetail(err)}`, { cause: err })
     );
   }
   return new HttpTransportError(`${label}: ${errorDetail(err)}`, {
@@ -514,15 +470,10 @@ function transportFailure(
  * refused to send, so it is wrapped in `AbortError(UnknownScraperError)`:
  * retrying it or cascading it into a browser session would only hide the bug.
  */
-function toTransportFailure(
-  err: unknown,
-  label: string,
-): HttpTransportError | AbortError {
+function toTransportFailure(err: unknown, label: string): HttpTransportError | AbortError {
   if (isNetworkFailure(err)) return transportFailure(err, label);
   return new AbortError(
-    new UnknownScraperError(
-      `${label}: request rejected before sending: ${errorDetail(err)}`,
-    ),
+    new UnknownScraperError(`${label}: request rejected before sending: ${errorDetail(err)}`)
   );
 }
 
@@ -531,10 +482,7 @@ function toTransportFailure(
  * the body streams in, and that is the same "no usable response" failure as
  * one that happens before the headers arrive.
  */
-async function readBodyOrThrow(
-  response: Response,
-  url: string,
-): Promise<string> {
+async function readBodyOrThrow(response: Response, url: string): Promise<string> {
   try {
     return await response.text();
   } catch (err) {
@@ -552,16 +500,15 @@ async function readBodyOrThrow(
 async function rethrowCallerAbortAsTransport<T>(
   signal: AbortSignal | undefined,
   url: string,
-  run: () => Promise<T>,
+  run: () => Promise<T>
 ): Promise<T> {
   try {
     return await run();
   } catch (err) {
-    if (isScraperError(err) || !signal?.aborted || err !== signal.reason)
-      throw err;
+    if (isScraperError(err) || !signal?.aborted || err !== signal.reason) throw err;
     throw new HttpTransportError(
       `http request to ${url} aborted or timed out between attempts: ${errorDetail(err)}`,
-      { cause: err },
+      { cause: err }
     );
   }
 }
@@ -593,11 +540,8 @@ async function rethrowCallerAbortAsTransport<T>(
  * plugin bug, so NOT a fallback trigger.
  */
 export function createHttpClient<TResponse>(
-  options: HttpClientOptions<TResponse>,
-): <TOverride = TResponse>(
-  url: string,
-  init?: HttpRequestInit<TOverride>,
-) => Promise<TOverride> {
+  options: HttpClientOptions<TResponse>
+): <TOverride = TResponse>(url: string, init?: HttpRequestInit<TOverride>) => Promise<TOverride> {
   const {
     schema,
     bottleneck,
@@ -627,23 +571,18 @@ export function createHttpClient<TResponse>(
 
   return async <TOverride = TResponse>(
     url: string,
-    init: HttpRequestInit<TOverride> = {},
+    init: HttpRequestInit<TOverride> = {}
   ): Promise<TOverride> => {
     // A per-call `init.schema` supersedes the client-level default for this
     // call only — see HttpRequestInit.schema for why a multi-call chain with
     // heterogeneous response shapes needs this escape hatch.
-    const activeSchema =
-      init.schema ?? (schema as unknown as ZodType<TOverride>);
+    const activeSchema = init.schema ?? (schema as unknown as ZodType<TOverride>);
     const attempt = (): Promise<TOverride> =>
       pRetry(
         async () => {
           const method = init.method ?? "GET";
           const initHeaders = init.headers ?? {};
-          const mergedCookie = mergeCookieHeader(
-            baseHeaders,
-            boundHeaders,
-            initHeaders,
-          );
+          const mergedCookie = mergeCookieHeader(baseHeaders, boundHeaders, initHeaders);
           const headers: Record<string, string> = {
             ...baseHeaders,
             ...boundHeaders,
@@ -651,8 +590,7 @@ export function createHttpClient<TResponse>(
           };
           if (mergedCookie !== undefined) {
             const cookieKey =
-              Object.keys(headers).find((k) => k.toLowerCase() === "cookie") ??
-              "Cookie";
+              Object.keys(headers).find((k) => k.toLowerCase() === "cookie") ?? "Cookie";
             headers[cookieKey] = mergedCookie;
           }
 
@@ -661,10 +599,7 @@ export function createHttpClient<TResponse>(
           // `createTimeoutFetch` in `src/scraper/session-shared.ts`.
           const signal =
             init.signal && defaultTimeoutMs !== undefined
-              ? AbortSignal.any([
-                  init.signal,
-                  AbortSignal.timeout(defaultTimeoutMs),
-                ])
+              ? AbortSignal.any([init.signal, AbortSignal.timeout(defaultTimeoutMs)])
               : (init.signal ??
                 (defaultTimeoutMs !== undefined
                   ? AbortSignal.timeout(defaultTimeoutMs)
@@ -689,16 +624,13 @@ export function createHttpClient<TResponse>(
               // requests never send it as an empty string.
               if (value === undefined) continue;
               const targetKey = binding.targetHeader.toLowerCase();
-              const canonicalTarget =
-                targetHeaderCasing.get(targetKey) ?? binding.targetHeader;
+              const canonicalTarget = targetHeaderCasing.get(targetKey) ?? binding.targetHeader;
               targetHeaderCasing.set(targetKey, canonicalTarget);
               if (binding.cookieName === undefined) {
                 boundHeaders[canonicalTarget] = value;
                 continue;
               }
-              const cookies =
-                boundCookiesByTarget.get(targetKey) ??
-                new Map<string, string>();
+              const cookies = boundCookiesByTarget.get(targetKey) ?? new Map<string, string>();
               cookies.set(binding.cookieName, value);
               boundCookiesByTarget.set(targetKey, cookies);
               boundHeaders[canonicalTarget] = [...cookies.entries()]
@@ -717,7 +649,7 @@ export function createHttpClient<TResponse>(
                 body: init.body,
                 signal,
               },
-              observeResponse,
+              observeResponse
             );
           } catch (err) {
             throw toTransportFailure(err, `http fetch to ${url} failed`);
@@ -727,8 +659,8 @@ export function createHttpClient<TResponse>(
             // Bot challenge / auth wall — not a transient failure, abort retry.
             throw new AbortError(
               new HttpBotChallengeError(
-                `http ${response.status} from ${url} — bot challenge or auth required`,
-              ),
+                `http ${response.status} from ${url} — bot challenge or auth required`
+              )
             );
           }
 
@@ -738,22 +670,19 @@ export function createHttpClient<TResponse>(
             // below honors Retry-After before the next attempt fires.
             throw new HttpRateLimitError(
               `http 429 from ${url} — rate limit exceeded`,
-              parseRetryAfterMs(response.headers),
+              parseRetryAfterMs(response.headers)
             );
           }
 
           if (response.status >= 500) {
             // Server error — non-retryable at the HTTP level; dispatch() will
             // engage the browser fallback instead.
-            throw new AbortError(
-              new HttpServerError(`http ${response.status} from ${url}`),
-            );
+            throw new AbortError(new HttpServerError(`http ${response.status} from ${url}`));
           }
 
           if (process.env.CAPTURE_BASELINE_BODIES === "1") {
             try {
-              const dir =
-                process.env.BASELINE_BODIES_DIR ?? "/tmp/baseline-bodies";
+              const dir = process.env.BASELINE_BODIES_DIR ?? "/tmp/baseline-bodies";
               mkdirSync(dir, { recursive: true });
               const idx = String(baselineCallCounter++).padStart(2, "0");
               const slug =
@@ -775,13 +704,13 @@ export function createHttpClient<TResponse>(
                     requestBody: init.body ?? null,
                   },
                   null,
-                  2,
-                ),
+                  2
+                )
               );
               logger.warn(`baseline-body captured: ${target}`);
             } catch (err) {
               logger.warn(
-                `baseline-body capture failed: ${err instanceof Error ? err.message : String(err)}`,
+                `baseline-body capture failed: ${err instanceof Error ? err.message : String(err)}`
               );
             }
           }
@@ -794,9 +723,7 @@ export function createHttpClient<TResponse>(
           // is re-thrown so p-retry re-issues. `undefined` falls through.
           const classified = classifyResponseBody?.(rawText, { url });
           if (classified !== undefined) {
-            throw classified.retryable
-              ? classified
-              : new AbortError(classified);
+            throw classified.retryable ? classified : new AbortError(classified);
           }
 
           if (response.status >= 400) {
@@ -807,10 +734,7 @@ export function createHttpClient<TResponse>(
             // 404) but before JSON parsing, so a non-JSON body (e.g. an HTML
             // error page) never reaches parseJsonOrThrowRetryable.
             throw new AbortError(
-              new HttpClientError(
-                response.status,
-                `http ${response.status} from ${url}`,
-              ),
+              new HttpClientError(response.status, `http ${response.status} from ${url}`)
             );
           }
 
@@ -818,25 +742,21 @@ export function createHttpClient<TResponse>(
 
           const parsed = activeSchema.safeParse(body);
           if (!parsed.success) {
-            const tolerated = tolerateNullScalarMismatch(
-              activeSchema,
-              body,
-              parsed.error.issues,
-            );
+            const tolerated = tolerateNullScalarMismatch(activeSchema, body, parsed.error.issues);
             if (tolerated !== undefined) {
               logger.warn(
-                `http schema mismatch from ${url} tolerated as null scalar: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
+                `http schema mismatch from ${url} tolerated as null scalar: ${parsed.error.issues.map((i) => i.message).join("; ")}`
               );
               return tolerated as TOverride;
             }
             logger.warn(
-              `http schema mismatch from ${url}: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
+              `http schema mismatch from ${url}: ${parsed.error.issues.map((i) => i.message).join("; ")}`
             );
             // Schema mismatch — not transient, abort retry.
             throw new AbortError(
               new HttpSchemaError(
-                `response schema mismatch: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
-              ),
+                `response schema mismatch: ${parsed.error.issues.map((i) => i.message).join("; ")}`
+              )
             );
           }
 
@@ -851,22 +771,17 @@ export function createHttpClient<TResponse>(
           signal: init.signal,
           onFailedAttempt: async (context) => {
             logger.warn(
-              `http hot-path attempt ${context.attemptNumber} failed: ${context.error.message}; ${context.retriesLeft} retries left`,
+              `http hot-path attempt ${context.attemptNumber} failed: ${context.error.message}; ${context.retriesLeft} retries left`
             );
             // p-retry awaits this hook before scheduling its own exponential
             // backoff timer, so honoring a server-supplied Retry-After here
             // composes with — rather than replaces — the existing config.
-            if (
-              isHttpRateLimitError(context.error) &&
-              context.error.retryAfterMs !== undefined
-            ) {
+            if (isHttpRateLimitError(context.error) && context.error.retryAfterMs !== undefined) {
               await sleep(context.error.retryAfterMs);
             }
           },
-        },
+        }
       );
-    return bottleneck.schedule(() =>
-      rethrowCallerAbortAsTransport(init.signal, url, attempt),
-    );
+    return bottleneck.schedule(() => rethrowCallerAbortAsTransport(init.signal, url, attempt));
   };
 }

@@ -51,8 +51,8 @@ import {
 } from "@/recon/capture-filters";
 import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
-import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
+import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   adoptReconRunRoot,
   type ReplayResult,

@@ -53,7 +53,7 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
               body,
               cookie: req.headers.cookie ?? "",
               xtest: req.headers["x-test"] ?? "",
-            }),
+            })
           );
         }
       });
@@ -71,22 +71,16 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
     headers: { "X-Test": "yes" },
   };
 
-  it.each([301, 302, 303, 307, 308])(
-    "%i re-issues method, headers and body",
-    async (status) => {
-      const res = await fetchFollowingRedirectsPreservingMethod(
-        `${base}/r${status}`,
-        post,
-      );
-      const j = await res.json();
-      expect(j).toMatchObject({
-        url: "/final",
-        method: "POST",
-        body: '{"a":1}',
-        xtest: "yes",
-      });
-    },
-  );
+  it.each([301, 302, 303, 307, 308])("%i re-issues method, headers and body", async (status) => {
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/r${status}`, post);
+    const j = await res.json();
+    expect(j).toMatchObject({
+      url: "/final",
+      method: "POST",
+      body: '{"a":1}',
+      xtest: "yes",
+    });
+  });
 
   it("leaves GET unaffected", async () => {
     const res = await fetchFollowingRedirectsPreservingMethod(`${base}/r301`, {
@@ -96,56 +90,38 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
   });
 
   it("resolves relative Location", async () => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/abs`,
-      post,
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/abs`, post);
     expect(((await res.json()) as { url: string }).url).toBe("/sub/page");
   });
 
   it("throws past the hop limit", async () => {
-    await expect(
-      fetchFollowingRedirectsPreservingMethod(`${base}/loop`, post),
-    ).rejects.toThrow("exceeded 5 redirects");
+    await expect(fetchFollowingRedirectsPreservingMethod(`${base}/loop`, post)).rejects.toThrow(
+      "exceeded 5 redirects"
+    );
   });
 
   it("returns a redirect without Location as-is", async () => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/noloc`,
-      post,
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/noloc`, post);
     expect(res.status).toBe(302);
     expect(await res.text()).toBe("nolocation");
   });
 
   it("returns non-redirect responses directly", async () => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/plain`,
-      post,
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/plain`, post);
     expect(res.status).toBe(200);
   });
 
   it("merges hop cookies with the caller's Cookie", async () => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/cookie1`,
-      {
-        method: "GET",
-        headers: { Cookie: "mine=0" },
-      },
-    );
-    expect(((await res.json()) as { cookie: string }).cookie).toBe(
-      "mine=0; a=1; b=2",
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/cookie1`, {
+      method: "GET",
+      headers: { Cookie: "mine=0" },
+    });
+    expect(((await res.json()) as { cookie: string }).cookie).toBe("mine=0; a=1; b=2");
   });
 
   it("calls onHop for every response", async () => {
     const onHop = vi.fn();
-    await fetchFollowingRedirectsPreservingMethod(
-      `${base}/cookie1`,
-      { method: "GET" },
-      onHop,
-    );
+    await fetchFollowingRedirectsPreservingMethod(`${base}/cookie1`, { method: "GET" }, onHop);
     expect(onHop.mock.calls.map((c) => c[0].status)).toEqual([302, 302, 200]);
     expect(onHop.mock.calls[0]?.[0].url).toBe(`${base}/cookie1`);
   });
@@ -154,19 +130,14 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
     const ac = new AbortController();
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(
-        new Response(null, { status: 307, headers: { Location: "/x" } }),
-      )
+      .mockResolvedValueOnce(new Response(null, { status: 307, headers: { Location: "/x" } }))
       .mockResolvedValueOnce(new Response("ok", { status: 200 }));
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      "http://example.com/a",
-      {
-        method: "POST",
-        body: "b",
-        signal: ac.signal,
-        fetchImpl,
-      },
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      method: "POST",
+      body: "b",
+      signal: ac.signal,
+      fetchImpl,
+    });
     expect(await res.text()).toBe("ok");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl.mock.calls[1]?.[0]).toBe("http://example.com/x");

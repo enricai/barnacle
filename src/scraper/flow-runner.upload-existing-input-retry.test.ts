@@ -138,7 +138,9 @@ describe("tryUploadPrimitive existing-input retry", () => {
   it("re-issues the uploads POST with its FormData body at Location after a 303", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(null, { status: 303, headers: { location: "/v1/moved" } }))
+      .mockResolvedValueOnce(
+        new Response(null, { status: 303, headers: { location: "/v1/moved" } })
+      )
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const t = setup({ inputTakes: false });

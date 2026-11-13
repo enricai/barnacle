@@ -13,13 +13,13 @@
  * the terminal failure dump.
  */
 
-import { fetchFollowingRedirectsPreservingMethod } from "./redirect-follow";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { SHADOW_XPATH_ALL_RESOLVER_SRC, SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
+import { fetchFollowingRedirectsPreservingMethod } from "./redirect-follow";
 
 import { REQUEST_BODY_UNAVAILABLE } from "./request-body-marker";
 

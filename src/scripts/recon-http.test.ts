@@ -893,7 +893,7 @@ describe("replayCapture — redirects preserve method and body", () => {
       const f = vi.fn(async (url: string | URL, _init?: RequestInit) =>
         String(url).endsWith("/api")
           ? new Response(null, { status, headers: { location: "/v2/api" } })
-          : new Response("{}", { status: 200 }),
+          : new Response("{}", { status: 200 })
       );
       vi.stubGlobal("fetch", f);
       await replayCapture("a.json", cap("POST"));
@@ -915,7 +915,7 @@ describe("probeIntrospection — redirects preserve method and body", () => {
       const f = vi.fn(async (url: string | URL, _init?: RequestInit) =>
         String(url) === "https://example.com/graphql"
           ? new Response(null, { status: 302, headers: { location: "/v2/graphql" } })
-          : new Response('{"data":{"__schema":{"types":[]}}}', { status: 200 }),
+          : new Response('{"data":{"__schema":{"types":[]}}}', { status: 200 })
       );
       vi.stubGlobal("fetch", f);
       await probeIntrospection("https://example.com/graphql", dir);
@@ -932,7 +932,10 @@ describe("probeIntrospection — redirects preserve method and body", () => {
   it("does not write a schema when introspection is disabled", async () => {
     const dir = mkdtempSync(join(tmpdir(), "intro-"));
     try {
-      vi.stubGlobal("fetch", vi.fn(async () => new Response('{"errors":[]}', { status: 200 })));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response('{"errors":[]}', { status: 200 }))
+      );
       await probeIntrospection("https://example.com/graphql", dir);
       expect(existsSync(join(dir, "introspection-schema.json"))).toBe(false);
     } finally {
