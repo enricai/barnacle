@@ -172,6 +172,10 @@
       "types": "./dist/scraper/http-client.d.ts",
       "default": "./dist/scraper/http-client.js"
     },
+    "./scraper/redirect-follow": {
+      "types": "./dist/scraper/redirect-follow.d.ts",
+      "default": "./dist/scraper/redirect-follow.js"
+    },
     "./scraper/http-status-classifier": {
       "types": "./dist/scraper/http-status-classifier.d.ts",
       "default": "./dist/scraper/http-status-classifier.js"
