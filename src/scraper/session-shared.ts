@@ -3,6 +3,7 @@ import type Bottleneck from "bottleneck";
 
 import { pickRandom } from "@/lib/random";
 import type { CdpTransportClosedError } from "@/scraper/errors";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 import { withWatchdog } from "@/scraper/watchdog";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 
@@ -121,7 +122,11 @@ export function createTimeoutFetch(timeoutMs: number): typeof fetch {
       (s): s is AbortSignal => s instanceof AbortSignal
     );
     const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-    return fetch(url, { ...init, signal }).finally(() => clearTimeout(timer));
+    const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+    return fetchFollowingRedirectsPreservingMethod(target, {
+      ...init,
+      signal,
+    }).finally(() => clearTimeout(timer));
   };
 }
 

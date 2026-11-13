@@ -121,7 +121,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("tryUploadPrimitive existing-input retry", () => {
   it("falls through to click-to-surface when setInputFiles never takes, threading the session id", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const t = setup({ inputTakes: false });
     expect(await t.run()).toBe("completed");
@@ -133,6 +133,26 @@ describe("tryUploadPrimitive existing-input retry", () => {
       files: ["/tmp/.uploads/r.pdf"],
       backendNodeId: 7,
     });
+  });
+
+  it("re-issues the uploads POST with its FormData body at Location after a 303", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 303, headers: { location: "/v1/moved" } })
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const t = setup({ inputTakes: false });
+    expect(await t.run()).toBe("completed");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [u1, i1] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [u2, i2] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(u1).toMatch(/\/v1\/sessions\/sess-1\/uploads$/);
+    expect(String(u2)).toMatch(/\/v1\/moved$/);
+    expect(i1.body).toBeInstanceOf(FormData);
+    expect(i2.method).toBe("POST");
+    expect(i2.body).toBeInstanceOf(FormData);
   });
 
   it("does not click or surface when setInputFiles works", async () => {

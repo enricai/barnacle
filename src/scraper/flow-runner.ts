@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { SHADOW_XPATH_ALL_RESOLVER_SRC, SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
+import { fetchFollowingRedirectsPreservingMethod } from "./redirect-follow";
 
 import { REQUEST_BODY_UNAVAILABLE } from "./request-body-marker";
 
@@ -6390,7 +6391,7 @@ async function uploadFixtureToRemoteSession(
     fixture.name
   );
   try {
-    const res = await fetch(
+    const res = await fetchFollowingRedirectsPreservingMethod(
       `${config.scraper.browserbaseBaseUrl}/v1/sessions/${sessionId}/uploads`,
       {
         method: "POST",

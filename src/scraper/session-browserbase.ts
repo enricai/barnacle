@@ -8,6 +8,7 @@ import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import { startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
 import { CdpTransportClosedError } from "@/scraper/errors";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 import { resolveSessionOutboundIp } from "@/scraper/session-ip";
 import {
   type BrowserSession,
@@ -178,9 +179,15 @@ function createReleaseFetch(): ClientOptions["fetch"] {
   return ((url: Parameters<typeof undiciFetch>[0], init: Parameters<typeof undiciFetch>[1]) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), RELEASE_TIMEOUT_MS);
-    return undiciFetch(url, { ...init, signal: controller.signal }).finally(() =>
-      clearTimeout(timer)
-    );
+    // The follower re-issues method, headers and body across 301/302/303/307/308; the
+    // one timeout signal bounds the whole chain. It takes a string URL, so normalise
+    // the URL / Request shapes the SDK may pass.
+    const target = typeof url === "string" ? url : "url" in url ? String(url.url) : String(url);
+    return fetchFollowingRedirectsPreservingMethod(target, {
+      ...(init as RequestInit),
+      signal: controller.signal,
+      fetchImpl: undiciFetch as unknown as typeof fetch,
+    }).finally(() => clearTimeout(timer));
   }) as unknown as ClientOptions["fetch"];
 }
 

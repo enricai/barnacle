@@ -175,6 +175,7 @@ describe("rawFetch", () => {
         method: "POST",
         headers: { "Content-Type": "multipart/form-data" },
         body: Buffer.from("payload"),
+        redirect: "manual",
       });
     });
   });
@@ -240,7 +241,18 @@ describe("rawFetch redirect hops", () => {
   let base: string;
   beforeAll(async () => {
     server = createServer((req, res) => {
-      if (req.url === "/start") {
+      const m = /^\/post-(301|302|303)$/.exec(req.url ?? "");
+      if (m) {
+        res.writeHead(Number(m[1]), { Location: "/echo" });
+        res.end();
+      } else if (req.url === "/echo") {
+        const chunks: Buffer[] = [];
+        req.on("data", (c: Buffer) => chunks.push(c));
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end(`${req.method}:${Buffer.concat(chunks).toString()}`);
+        });
+      } else if (req.url === "/start") {
         res.writeHead(302, { Location: "/mid", "Set-Cookie": "flow=step2; Path=/" });
         res.end();
       } else if (req.url === "/mid") {
@@ -328,6 +340,43 @@ describe("rawFetch redirect hops", () => {
     expect(result.headers.get("content-type")).toBe("text/plain");
   });
 
+  it.each([301, 302, 303])(
+    "real server: default follow re-sends POST and body across a %i; one onResponse",
+    async (status) => {
+      const onResponse = vi.fn();
+      const result = await rawFetch(`${base}/post-${status}`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: "payload",
+        onResponse,
+        contextLabel: "demo",
+        fetchImpl: realFetch,
+      });
+      expect(result.status).toBe(200);
+      expect(result.rawBody).toBe("POST:payload");
+      expect(result.finalUrl).toBe(`${base}/echo`);
+      expect(onResponse).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it("manual with POST returns the 3xx untouched after a single call", async () => {
+    const fetchImpl = vi.fn(realFetch);
+    const onResponse = vi.fn();
+    const result = await rawFetch(`${base}/post-302`, {
+      method: "POST",
+      headers: {},
+      body: "payload",
+      onResponse,
+      contextLabel: "demo",
+      redirect: "manual",
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe(302);
+    expect(result.headers.get("location")).toBe("/echo");
+  });
+
   it("passes init.redirect through to fetchImpl and does not classify 3xx", async () => {
     const fetchImpl = vi.fn(async (_u: string, _i: Parameters<FetchImpl>[1]) => ({
       status: 302,
@@ -345,5 +394,29 @@ describe("rawFetch redirect hops", () => {
     expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
     expect(result.status).toBe(302);
     expect(result.finalUrl).toBe("https://example.com/");
+  });
+});
+
+describe("rawFetch default redirect follow preserves method", () => {
+  it.each([301, 302, 303])("re-sends POST and body across a %i", async (status) => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(makeMockFetchResponse(status, "", { location: "/next" }))
+      .mockResolvedValueOnce(makeMockFetchResponse(200, "ok"));
+    const onResponse = vi.fn();
+    const result = await rawFetch(BASE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"a":1}',
+      fetchImpl: fetchImpl as unknown as FetchImpl,
+      onResponse,
+      contextLabel: LABEL,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe("https://example.com/next");
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "POST", body: '{"a":1}' });
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(result.finalUrl).toBe("https://example.com/next");
+    expect(result.rawBody).toBe("ok");
   });
 });

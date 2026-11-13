@@ -12,6 +12,7 @@ import { fetch as undiciFetch } from "undici";
 import { toErrorMessage } from "@/lib/errors";
 import { HttpServerError } from "@/scraper/errors";
 import { classifyHttpStatus } from "@/scraper/http-status-classifier";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 
 /** Return value: raw outcome before any Zod parsing. */
 export interface RawFetchResult {
@@ -102,8 +103,26 @@ export async function rawFetch(url: string, options: RawFetchOptions): Promise<R
   } = options;
 
   let response: Awaited<ReturnType<FetchImpl>>;
+  let finalHopUrl = url;
   try {
-    response = await fetchImpl(url, { method, headers, body, redirect });
+    if (redirect === "manual") {
+      response = await fetchImpl(url, { method, headers, body, redirect });
+    } else {
+      // Default follow goes through the shared follower so 301/302/303 keep
+      // the original method and body (fetch's own follow downgrades to GET).
+      response = (await fetchFollowingRedirectsPreservingMethod(
+        url,
+        {
+          method,
+          headers,
+          body: body as RequestInit["body"],
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+        },
+        (hop) => {
+          finalHopUrl = hop.url;
+        }
+      )) as unknown as Awaited<ReturnType<FetchImpl>>;
+    }
   } catch (err) {
     throw new HttpServerError(`${contextLabel} network error: ${toErrorMessage(err)}`);
   }
@@ -119,6 +138,6 @@ export async function rawFetch(url: string, options: RawFetchOptions): Promise<R
     status: response.status,
     rawBody,
     headers: response.headers,
-    finalUrl: response.url || url,
+    finalUrl: redirect === "manual" ? response.url || url : finalHopUrl,
   };
 }

@@ -42,6 +42,7 @@ import {
   inflectionKey,
   parseMethodsFilter,
   probeAuxiliaryEndpoints,
+  probeIntrospection,
   replayCapture,
   responseShapeDiffers,
   selectAuxFixtureCandidates,
@@ -864,5 +865,81 @@ describe("selectReplayCaptures — safe-by-default with --methods opt-in", () =>
   it("--methods PUT opts in only PUT", () => {
     const r = selectReplayCaptures(items, false, parseMethodsFilter("PUT"));
     expect(r.selected.map((i) => i.filename)).toEqual(["GET.json", "PUT.json"]);
+  });
+});
+
+describe("replayCapture — redirects preserve method and body", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const cap = (method: string) =>
+    ({
+      url: "https://example.com/api",
+      method,
+      operationName: null,
+      query: null,
+      variables: null,
+      requestPostData: '{"a":1}',
+    }) as never;
+
+  it("non-redirecting response is returned after a single request", async () => {
+    const f = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    const r = await replayCapture("a.json", cap("POST"));
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(r?.requestBody).toBe('{"a":1}');
+  });
+
+  for (const status of [301, 302, 303]) {
+    it(`POST across ${status} re-sends POST with body`, async () => {
+      const f = vi.fn(async (url: string | URL, _init?: RequestInit) =>
+        String(url).endsWith("/api")
+          ? new Response(null, { status, headers: { location: "/v2/api" } })
+          : new Response("{}", { status: 200 })
+      );
+      vi.stubGlobal("fetch", f);
+      await replayCapture("a.json", cap("POST"));
+      expect(f.mock.calls[0]?.[0]).toBe("https://example.com/api");
+      const [url, init] = f.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe("https://example.com/v2/api");
+      expect(init.method).toBe("POST");
+      expect(init.body).toBe('{"a":1}');
+    });
+  }
+});
+
+describe("probeIntrospection — redirects preserve method and body", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("re-sends the POST introspection query after a 307 and writes the schema", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "intro-"));
+    try {
+      const f = vi.fn(async (url: string | URL, _init?: RequestInit) =>
+        String(url) === "https://example.com/graphql"
+          ? new Response(null, { status: 302, headers: { location: "/v2/graphql" } })
+          : new Response('{"data":{"__schema":{"types":[]}}}', { status: 200 })
+      );
+      vi.stubGlobal("fetch", f);
+      await probeIntrospection("https://example.com/graphql", dir);
+      const [url, init] = f.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe("https://example.com/v2/graphql");
+      expect(init.method).toBe("POST");
+      expect(String(init.body)).toContain("__schema");
+      expect(existsSync(join(dir, "introspection-schema.json"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not write a schema when introspection is disabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "intro-"));
+    try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response('{"errors":[]}', { status: 200 }))
+      );
+      await probeIntrospection("https://example.com/graphql", dir);
+      expect(existsSync(join(dir, "introspection-schema.json"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
