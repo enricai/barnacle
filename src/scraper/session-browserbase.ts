@@ -182,7 +182,7 @@ function createReleaseFetch(): ClientOptions["fetch"] {
     // The follower re-issues method, headers and body across 301/302/303/307/308; the
     // one timeout signal bounds the whole chain. It takes a string URL, so normalise
     // the URL / Request shapes the SDK may pass.
-    const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+    const target = typeof url === "string" ? url : "url" in url ? String(url.url) : String(url);
     return fetchFollowingRedirectsPreservingMethod(target, {
       ...(init as RequestInit),
       signal: controller.signal,
