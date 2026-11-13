@@ -73,27 +73,9 @@ export async function fetchFollowingRedirectsPreservingMethod(
     // honored: this is a short-lived redirect chain inside one logical
     // request, not a cookie jar.
     const nextUrl = new URL(location, currentUrl);
-    // Like the fetch spec's default follow: a cross-origin hop must not
-    // receive credentials or session cookies minted for the prior origin.
-    const crossOrigin = nextUrl.origin !== new URL(currentUrl).origin;
-    if (crossOrigin) {
-      hopCookies.clear();
-      const kept: Record<string, string> = {};
-      const sensitive = new Set([
-        "authorization",
-        "cookie",
-        "proxy-authorization",
-      ]);
-      const h = new Headers(currentInit.headers);
-      for (const [k, v] of h.entries()) {
-        if (!sensitive.has(k.toLowerCase())) kept[k] = v;
-      }
-      currentInit.headers = kept;
-    } else {
-      for (const setCookie of response.headers.getSetCookie()) {
-        const [first] = parseCookiePairs(setCookie);
-        if (first !== undefined) hopCookies.set(first[0], first[1]);
-      }
+    for (const setCookie of response.headers.getSetCookie()) {
+      const [first] = parseCookiePairs(setCookie);
+      if (first !== undefined) hopCookies.set(first[0], first[1]);
     }
     if (hopCookies.size > 0) {
       const headers = {
