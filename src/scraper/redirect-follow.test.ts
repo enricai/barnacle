@@ -152,6 +152,41 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
   });
 });
 
+describe("fetchFollowingRedirectsPreservingMethod caller inputs", () => {
+  it("forces redirect:manual even when the caller asks for follow", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      method: "POST",
+      redirect: "follow",
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
+  });
+
+  it("follows exactly five hops but throws on the sixth", async () => {
+    const hop = () => new Response(null, { status: 302, headers: { Location: "/n" } });
+    const ok = vi
+      .fn()
+      .mockResolvedValueOnce(hop())
+      .mockResolvedValueOnce(hop())
+      .mockResolvedValueOnce(hop())
+      .mockResolvedValueOnce(hop())
+      .mockResolvedValueOnce(hop())
+      .mockResolvedValueOnce(new Response("done", { status: 200 }));
+    const res = await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      method: "POST",
+      body: "b",
+      fetchImpl: ok,
+    });
+    expect(await res.text()).toBe("done");
+    const bad = vi.fn().mockImplementation(async () => hop());
+    await expect(
+      fetchFollowingRedirectsPreservingMethod("http://example.com/a", { fetchImpl: bad })
+    ).rejects.toThrow("exceeded 5 redirects");
+    expect(bad).toHaveBeenCalledTimes(6);
+  });
+});
+
 describe("parseCookiePairs", () => {
   it("parses pairs and skips malformed segments", () => {
     expect(parseCookiePairs("a=1; junk; b=2=3")).toEqual([
