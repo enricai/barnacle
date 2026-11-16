@@ -898,7 +898,7 @@ export function selectRateLimitTargets(
         )?.[1];
         const isJson = /json/i.test(String(ct ?? ""));
         let tier = isJson ? 2 : 3;
-        // Declared patterns: index 0 is submit, the rest are foldReturn.
+        // Declared patterns: index 0 is submit (when declared), the rest are foldReturn.
         for (let i = 0; i < patterns.length; i++) {
           if (patterns[i]!.test(replay.url)) {
             tier = i === 0 ? 0 : 1;
