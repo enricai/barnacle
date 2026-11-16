@@ -53,7 +53,13 @@ export async function fetchFollowingRedirectsPreservingMethod(
   const strippedHeaders = Object.fromEntries(
     Object.entries(originalHeaders).filter(([name]) => !isCredentialHeader(name))
   );
-  const originalOrigin = new URL(url).origin;
+  // An unparseable URL must reach fetch so it rejects there as before.
+  let originalOrigin: string | null = null;
+  try {
+    originalOrigin = new URL(url).origin;
+  } catch {
+    // left null; fetchImpl reports the invalid URL
+  }
   let leftOriginalOrigin = false;
   // Cookies minted by intermediate hops, by name, newest winning. A login or
   // consent redirect commonly sets the session cookie on the 302 itself, so
