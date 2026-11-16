@@ -53,7 +53,7 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
               body,
               cookie: req.headers.cookie ?? "",
               xtest: req.headers["x-test"] ?? "",
-            }),
+            })
           );
         }
       });
@@ -71,22 +71,16 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
     headers: { "X-Test": "yes" },
   };
 
-  it.each([301, 302, 303, 307, 308])(
-    "%i re-issues method, headers and body",
-    async (status) => {
-      const res = await fetchFollowingRedirectsPreservingMethod(
-        `${base}/r${status}`,
-        post,
-      );
-      const j = await res.json();
-      expect(j).toMatchObject({
-        url: "/final",
-        method: "POST",
-        body: '{"a":1}',
-        xtest: "yes",
-      });
-    },
-  );
+  it.each([301, 302, 303, 307, 308])("%i re-issues method, headers and body", async (status) => {
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/r${status}`, post);
+    const j = await res.json();
+    expect(j).toMatchObject({
+      url: "/final",
+      method: "POST",
+      body: '{"a":1}',
+      xtest: "yes",
+    });
+  });
 
   it.each([
     ["Headers instance", () => new Headers({ "X-Test": "yes", Cookie: "z=9" })],
@@ -99,13 +93,10 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
         ] as [string, string][],
     ],
   ])("keeps %s headers across cookie-setting hops", async (_n, mk) => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/cookie1`,
-      {
-        method: "GET",
-        headers: mk(),
-      },
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/cookie1`, {
+      method: "GET",
+      headers: mk(),
+    });
     const j = (await res.json()) as { xtest: string; cookie: string };
     expect(j.xtest).toBe("yes");
     expect(j.cookie).toBe("z=9; a=1; b=2");
@@ -119,56 +110,38 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
   });
 
   it("resolves relative Location", async () => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/abs`,
-      post,
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/abs`, post);
     expect(((await res.json()) as { url: string }).url).toBe("/sub/page");
   });
 
   it("throws past the hop limit", async () => {
-    await expect(
-      fetchFollowingRedirectsPreservingMethod(`${base}/loop`, post),
-    ).rejects.toThrow("exceeded 5 redirects");
+    await expect(fetchFollowingRedirectsPreservingMethod(`${base}/loop`, post)).rejects.toThrow(
+      "exceeded 5 redirects"
+    );
   });
 
   it("returns a redirect without Location as-is", async () => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/noloc`,
-      post,
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/noloc`, post);
     expect(res.status).toBe(302);
     expect(await res.text()).toBe("nolocation");
   });
 
   it("returns non-redirect responses directly", async () => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/plain`,
-      post,
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/plain`, post);
     expect(res.status).toBe(200);
   });
 
   it("merges hop cookies with the caller's Cookie", async () => {
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      `${base}/cookie1`,
-      {
-        method: "GET",
-        headers: { Cookie: "mine=0" },
-      },
-    );
-    expect(((await res.json()) as { cookie: string }).cookie).toBe(
-      "mine=0; a=1; b=2",
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/cookie1`, {
+      method: "GET",
+      headers: { Cookie: "mine=0" },
+    });
+    expect(((await res.json()) as { cookie: string }).cookie).toBe("mine=0; a=1; b=2");
   });
 
   it("calls onHop for every response", async () => {
     const onHop = vi.fn();
-    await fetchFollowingRedirectsPreservingMethod(
-      `${base}/cookie1`,
-      { method: "GET" },
-      onHop,
-    );
+    await fetchFollowingRedirectsPreservingMethod(`${base}/cookie1`, { method: "GET" }, onHop);
     expect(onHop.mock.calls.map((c) => c[0].status)).toEqual([302, 302, 200]);
     expect(onHop.mock.calls[0]?.[0].url).toBe(`${base}/cookie1`);
   });
@@ -177,19 +150,14 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
     const ac = new AbortController();
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(
-        new Response(null, { status: 307, headers: { Location: "/x" } }),
-      )
+      .mockResolvedValueOnce(new Response(null, { status: 307, headers: { Location: "/x" } }))
       .mockResolvedValueOnce(new Response("ok", { status: 200 }));
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      "http://example.com/a",
-      {
-        method: "POST",
-        body: "b",
-        signal: ac.signal,
-        fetchImpl,
-      },
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      method: "POST",
+      body: "b",
+      signal: ac.signal,
+      fetchImpl,
+    });
     expect(await res.text()).toBe("ok");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl.mock.calls[1]?.[0]).toBe("http://example.com/x");
@@ -206,9 +174,7 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
 
 describe("fetchFollowingRedirectsPreservingMethod caller inputs", () => {
   it("forces redirect:manual even when the caller asks for follow", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const fetchImpl = vi.fn().mockResolvedValueOnce(new Response("ok", { status: 200 }));
     await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
       method: "POST",
       redirect: "follow",
@@ -218,8 +184,7 @@ describe("fetchFollowingRedirectsPreservingMethod caller inputs", () => {
   });
 
   it("follows exactly five hops but throws on the sixth", async () => {
-    const hop = () =>
-      new Response(null, { status: 302, headers: { Location: "/n" } });
+    const hop = () => new Response(null, { status: 302, headers: { Location: "/n" } });
     const ok = vi
       .fn()
       .mockResolvedValueOnce(hop())
@@ -228,20 +193,17 @@ describe("fetchFollowingRedirectsPreservingMethod caller inputs", () => {
       .mockResolvedValueOnce(hop())
       .mockResolvedValueOnce(hop())
       .mockResolvedValueOnce(new Response("done", { status: 200 }));
-    const res = await fetchFollowingRedirectsPreservingMethod(
-      "http://example.com/a",
-      {
-        method: "POST",
-        body: "b",
-        fetchImpl: ok,
-      },
-    );
+    const res = await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      method: "POST",
+      body: "b",
+      fetchImpl: ok,
+    });
     expect(await res.text()).toBe("done");
     const bad = vi.fn().mockImplementation(async () => hop());
     await expect(
       fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
         fetchImpl: bad,
-      }),
+      })
     ).rejects.toThrow("exceeded 5 redirects");
     expect(bad).toHaveBeenCalledTimes(6);
   });
@@ -271,17 +233,13 @@ describe("fetchFollowingRedirectsPreservingMethod header characterization", () =
       headers: { "X-Test": "yes" },
       fetchImpl,
     });
-    expect(
-      Object.fromEntries(new Headers(fetchImpl.mock.calls[1]?.[1].headers)),
-    ).toEqual({
+    expect(Object.fromEntries(new Headers(fetchImpl.mock.calls[1]?.[1].headers))).toEqual({
       "x-test": "yes",
       cookie: "sid=1",
     });
   });
 
-  const shapes: Array<
-    [string, () => ConstructorParameters<typeof Headers>[0]]
-  > = [
+  const shapes: Array<[string, () => ConstructorParameters<typeof Headers>[0]]> = [
     ["Headers instance", () => new Headers({ "X-Test": "yes", Cookie: "z=9" })],
     [
       "tuple array",
@@ -294,28 +252,23 @@ describe("fetchFollowingRedirectsPreservingMethod header characterization", () =
   ];
 
   describe.each([301, 302, 303])("%i", (status) => {
-    it.each(shapes)(
-      "keeps method, body, header and merged Cookie for %s",
-      async (_n, mk) => {
-        const fetchImpl = vi
-          .fn()
-          .mockResolvedValueOnce(
-            redirect(status, { "Set-Cookie": "sid=1; Path=/" }),
-          )
-          .mockResolvedValueOnce(new Response("ok", { status: 200 }));
-        await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
-          method: "POST",
-          body: "b",
-          headers: mk(),
-          fetchImpl,
-        });
-        const init = fetchImpl.mock.calls[1]?.[1];
-        expect(init).toMatchObject({ method: "POST", body: "b" });
-        const h = new Headers(init.headers);
-        expect(h.get("x-test")).toBe("yes");
-        expect(h.get("cookie")).toBe("z=9; sid=1");
-      },
-    );
+    it.each(shapes)("keeps method, body, header and merged Cookie for %s", async (_n, mk) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect(status, { "Set-Cookie": "sid=1; Path=/" }))
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+      await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+        method: "POST",
+        body: "b",
+        headers: mk(),
+        fetchImpl,
+      });
+      const init = fetchImpl.mock.calls[1]?.[1];
+      expect(init).toMatchObject({ method: "POST", body: "b" });
+      const h = new Headers(init.headers);
+      expect(h.get("x-test")).toBe("yes");
+      expect(h.get("cookie")).toBe("z=9; sid=1");
+    });
   });
 
   it("lets a hop cookie win over the caller's cookie of the same name", async () => {
@@ -327,9 +280,7 @@ describe("fetchFollowingRedirectsPreservingMethod header characterization", () =
       headers: { cookie: "sid=old; keep=1" },
       fetchImpl,
     });
-    expect(
-      Object.fromEntries(new Headers(fetchImpl.mock.calls[1]?.[1].headers)),
-    ).toEqual({
+    expect(Object.fromEntries(new Headers(fetchImpl.mock.calls[1]?.[1].headers))).toEqual({
       cookie: "sid=new; keep=1",
     });
   });
@@ -353,6 +304,6 @@ describe("fetchFollowingRedirectsPreservingMethod header characterization", () =
         method: "POST",
         body: "b",
       });
-    },
+    }
   );
 });
