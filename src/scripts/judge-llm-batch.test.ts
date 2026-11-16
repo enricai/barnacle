@@ -508,6 +508,13 @@ describe("runJudge", () => {
     expect(verdict.aggregate.n).toBe(0);
   });
 
+  it("builds a real Anthropic scorer when not dry-run and no scorerFn is injected", async () => {
+    // No matching samples → the constructed scorer is never invoked (no network).
+    writeSamples([makeSample({ callType: "observe" })]);
+    const { verdict } = await runJudge({ callsNdjsonPath, callType: "act", outDir });
+    expect(verdict.aggregate.n).toBe(0);
+  });
+
   it("throws when the calls NDJSON file does not exist", async () => {
     await expect(
       runJudge({

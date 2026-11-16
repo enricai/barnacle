@@ -491,6 +491,23 @@ describe("phaseLlmHeal", () => {
     expect(report).toContain("| iter | pass_rate |");
   });
 
+  it("builds a real Anthropic scorer when not dry-run and no scorerFn is injected", async () => {
+    writeVerdictFile(makeVerdict());
+    const { verdict } = await phaseLlmHeal({
+      verdictPath,
+      callType: "act",
+      maxIterations: 5,
+      nReplays: 1,
+      successThreshold: 0.9,
+      plateauDelta: 0.03,
+      plateauWindow: 3,
+      outDir,
+      replayFn: makeReplayFnWithRates([0.2, 0.95]),
+      requestPatchFn: makeMockRequestPatch(),
+    });
+    expect(verdict).toBe("SUCCESS");
+  });
+
   it("BUDGET_EXHAUSTED: maxIterations reached without convergence", async () => {
     writeVerdictFile(makeVerdict());
     // Vary rates slightly so plateau doesn't trigger first.
