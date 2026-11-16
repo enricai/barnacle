@@ -139,6 +139,28 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
     expect(((await res.json()) as { cookie: string }).cookie).toBe("mine=0; a=1; b=2");
   });
 
+  it("does not send a host-only hop cookie to another host", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: [
+            ["Location", "http://other.example.net/x"],
+            ["Set-Cookie", "sid=1; Path=/"],
+          ],
+        })
+      )
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      method: "GET",
+      headers: { Cookie: "mine=0" },
+      fetchImpl,
+    });
+    const headers = fetchImpl.mock.calls[1]?.[1].headers as Record<string, string>;
+    expect(headers.Cookie ?? headers.cookie).toBeUndefined();
+  });
+
   it("calls onHop for every response", async () => {
     const onHop = vi.fn();
     await fetchFollowingRedirectsPreservingMethod(`${base}/cookie1`, { method: "GET" }, onHop);

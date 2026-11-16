@@ -1,3 +1,5 @@
+import { RedirectCookieJar } from "./redirect-cookie-jar.js";
+
 /**
  * Maximum redirect hops followed while preserving the request method.
  * Bounds a redirect loop; five matches the conventional browser limit.
@@ -56,7 +58,7 @@ export async function fetchFollowingRedirectsPreservingMethod(
   // Cookies minted by intermediate hops, by name, newest winning. A login or
   // consent redirect commonly sets the session cookie on the 302 itself, so
   // dropping these makes the final request arrive unauthenticated.
-  const hopCookies = new Map<string, string>();
+  const jar = new RedirectCookieJar();
   let currentUrl = url;
   for (let hop = 0; hop <= MAX_METHOD_PRESERVING_REDIRECTS; hop += 1) {
     const response = await fetchImpl(currentUrl, currentInit);
@@ -74,21 +76,19 @@ export async function fetchFollowingRedirectsPreservingMethod(
     // rather than a synthesized error.
     if (location === null || location === "") return response;
 
-    // `Set-Cookie` is `name=value; Path=/; HttpOnly` — the FIRST pair is the
-    // cookie and the rest are attributes, so only the first is carried
-    // forward. Attributes (Domain, Path, Expires) are deliberately not
-    // honored: this is a short-lived redirect chain inside one logical
-    // request, not a cookie jar.
+    // Hop-minted cookies go into a jar that only returns what a real cookie
+    // jar would send to the next URL (host/domain, path, Secure, expiry).
     const nextUrl = new URL(location, currentUrl);
+    const hopUrl = new URL(currentUrl);
     for (const setCookie of response.headers.getSetCookie()) {
-      const [first] = parseCookiePairs(setCookie);
-      if (first !== undefined) hopCookies.set(first[0], first[1]);
+      jar.add(setCookie, hopUrl);
     }
     const crossOrigin = nextUrl.origin !== originalOrigin;
     if (hasCallerHeaders) {
       currentInit.headers = { ...(crossOrigin ? strippedHeaders : originalHeaders) };
     }
-    if (hopCookies.size > 0) {
+    const hopCookies = jar.select(nextUrl);
+    if (hopCookies.length > 0) {
       const headers = new Headers(currentInit.headers);
       // Merge rather than replace, so a cookie the caller sent survives
       // alongside the hop's — and a hop setting the same name wins, since it
