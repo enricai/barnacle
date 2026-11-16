@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 
 import { createHttpClient } from "@/scraper/http-client";
+import { createTimeoutFetch } from "@/scraper/session-shared";
 
 const passThruLimiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
 const EchoSchema = z.object({
@@ -13,6 +14,7 @@ const EchoSchema = z.object({
   body: z.string(),
   hops: z.number(),
   cookie: z.string(),
+  xtest: z.string().optional(),
 });
 type Echo = z.infer<typeof EchoSchema>;
 
@@ -35,23 +37,51 @@ describe("http-client redirect policy", () => {
         const reply = (hops: number): void => {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
-            JSON.stringify({ method: req.method, body, hops, cookie: req.headers.cookie ?? "" })
+            JSON.stringify({
+              method: req.method,
+              body,
+              hops,
+              cookie: req.headers.cookie ?? "",
+              xtest: req.headers["x-test"] ?? "",
+            }),
           );
         };
-        if (req.url === "/cookiehop") {
-          res.writeHead(302, { Location: "/final", "Set-Cookie": "sess=abc123; Path=/; HttpOnly" });
+        const hopMatch = /^\/c(\d{3})$/.exec(req.url ?? "");
+        if (hopMatch) {
+          res.writeHead(Number(hopMatch[1]), {
+            Location: "/final",
+            "Set-Cookie": "sess=abc123; Path=/",
+          });
+          res.end();
+        } else if (req.url === "/cookiehop") {
+          res.writeHead(302, {
+            Location: "/final",
+            "Set-Cookie": "sess=abc123; Path=/; HttpOnly",
+          });
           res.end();
         } else if (req.url === "/twohops") {
-          res.writeHead(302, { Location: "/twohops2", "Set-Cookie": "first=1; Path=/" });
+          res.writeHead(302, {
+            Location: "/twohops2",
+            "Set-Cookie": "first=1; Path=/",
+          });
           res.end();
         } else if (req.url === "/samename") {
-          res.writeHead(302, { Location: "/samename2", "Set-Cookie": "tok=HOP1; Path=/" });
+          res.writeHead(302, {
+            Location: "/samename2",
+            "Set-Cookie": "tok=HOP1; Path=/",
+          });
           res.end();
         } else if (req.url === "/samename2") {
-          res.writeHead(302, { Location: "/final", "Set-Cookie": "tok=HOP2; Path=/" });
+          res.writeHead(302, {
+            Location: "/final",
+            "Set-Cookie": "tok=HOP2; Path=/",
+          });
           res.end();
         } else if (req.url === "/twohops2") {
-          res.writeHead(302, { Location: "/final", "Set-Cookie": "second=2; Path=/" });
+          res.writeHead(302, {
+            Location: "/final",
+            "Set-Cookie": "second=2; Path=/",
+          });
           res.end();
         } else if (req.url === "/r301") {
           res.writeHead(301, { Location: "/final" });
@@ -94,7 +124,10 @@ describe("http-client redirect policy", () => {
     return createHttpClient<Echo>({
       schema: EchoSchema,
       bottleneck: passThruLimiter,
-      baseHeaders: { "Content-Type": "application/json", Accept: "application/json" },
+      baseHeaders: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
     });
   }
 
@@ -111,22 +144,28 @@ describe("http-client redirect policy", () => {
       expect(result.method).toBe("POST");
       expect(result.body).toBe(JSON.stringify({ q: "cabins" }));
       expect(seen.map((s) => s.method)).toEqual(["POST", "POST"]);
-    }
+    },
   );
 
-  it.each([307, 308])("preserves POST, headers and body across a %i redirect", async (status) => {
-    seen.length = 0;
-    const result = await client()(`${base}/r${status}`, {
-      method: "POST",
-      body: JSON.stringify({ q: "cabins" }),
-      headers: { Cookie: "caller=keepme" },
-    });
-    expect(result.method).toBe("POST");
-    expect(result.body).toBe(JSON.stringify({ q: "cabins" }));
-    expect(result.cookie).toContain("caller=keepme");
-    expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([`POST /r${status}`, "POST /final"]);
-    expect(seen.at(-1)?.body).toBe(JSON.stringify({ q: "cabins" }));
-  });
+  it.each([307, 308])(
+    "preserves POST, headers and body across a %i redirect",
+    async (status) => {
+      seen.length = 0;
+      const result = await client()(`${base}/r${status}`, {
+        method: "POST",
+        body: JSON.stringify({ q: "cabins" }),
+        headers: { Cookie: "caller=keepme" },
+      });
+      expect(result.method).toBe("POST");
+      expect(result.body).toBe(JSON.stringify({ q: "cabins" }));
+      expect(result.cookie).toContain("caller=keepme");
+      expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
+        `POST /r${status}`,
+        "POST /final",
+      ]);
+      expect(seen.at(-1)?.body).toBe(JSON.stringify({ q: "cabins" }));
+    },
+  );
 
   it("re-sends the method and body on a 303", async () => {
     seen.length = 0;
@@ -149,22 +188,27 @@ describe("http-client redirect policy", () => {
   });
 
   it("gives up on a redirect loop instead of spinning forever", async () => {
-    await expect(client()(`${base}/loop`, { method: "POST", body: "x" })).rejects.toThrow(
-      /exceeded 5 redirects/
-    );
+    await expect(
+      client()(`${base}/loop`, { method: "POST", body: "x" }),
+    ).rejects.toThrow(/exceeded 5 redirects/);
   });
 
   it("returns the 3xx itself when Location is missing, so status classification sees the real response", async () => {
     // A 301 with no Location is not followable. It must surface as the upstream
     // status rather than a synthesized transport error.
-    await expect(client()(`${base}/nolocation`, { method: "POST", body: "x" })).rejects.toThrow();
+    await expect(
+      client()(`${base}/nolocation`, { method: "POST", body: "x" }),
+    ).rejects.toThrow();
   });
 
   it("carries a Set-Cookie minted on a redirect hop onto the follow-up request", async () => {
     // The regression: a site that mints its session cookie on the 302 itself
     // had that cookie dropped, so the final request arrived unauthenticated.
     seen.length = 0;
-    const result = await client()(`${base}/cookiehop`, { method: "POST", body: "x" });
+    const result = await client()(`${base}/cookiehop`, {
+      method: "POST",
+      body: "x",
+    });
     expect(result.cookie).toContain("sess=abc123");
     // Attributes are not cookies: only the first pair is carried.
     expect(result.cookie).not.toContain("HttpOnly");
@@ -173,7 +217,10 @@ describe("http-client redirect policy", () => {
 
   it("accumulates cookies across several hops", async () => {
     seen.length = 0;
-    const result = await client()(`${base}/twohops`, { method: "POST", body: "x" });
+    const result = await client()(`${base}/twohops`, {
+      method: "POST",
+      body: "x",
+    });
     expect(result.cookie).toContain("first=1");
     expect(result.cookie).toContain("second=2");
   });
@@ -196,9 +243,15 @@ describe("http-client redirect policy", () => {
     const withObserver = createHttpClient<Echo>({
       schema: EchoSchema,
       bottleneck: passThruLimiter,
-      baseHeaders: { "Content-Type": "application/json", Accept: "application/json" },
+      baseHeaders: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
       onResponse: (info) =>
-        observed.push({ status: info.status, setCookie: info.headers.getSetCookie() }),
+        observed.push({
+          status: info.status,
+          setCookie: info.headers.getSetCookie(),
+        }),
     });
     await withObserver(`${base}/cookiehop`, { method: "POST", body: "x" });
     expect(observed.map((o) => o.status)).toEqual([302, 200]);
@@ -224,12 +277,64 @@ describe("http-client redirect policy", () => {
     const withBinding = createHttpClient<Echo>({
       schema: EchoSchema,
       bottleneck: passThruLimiter,
-      baseHeaders: { "Content-Type": "application/json", Accept: "application/json" },
-      bind: [{ sourceHeader: "set-cookie", cookieName: "sess", targetHeader: "X-Session" }],
+      baseHeaders: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      bind: [
+        {
+          sourceHeader: "set-cookie",
+          cookieName: "sess",
+          targetHeader: "X-Session",
+        },
+      ],
       onResponse: (info) => bound.push(String(info.status)),
     });
-    const result = await withBinding(`${base}/cookiehop`, { method: "POST", body: "x" });
+    const result = await withBinding(`${base}/cookiehop`, {
+      method: "POST",
+      body: "x",
+    });
     expect(result.cookie).toContain("sess=abc123");
     expect(bound).toEqual(["302", "200"]);
   });
+
+  describe.each([301, 302, 303])(
+    "timeout fetch wrapper across a cookie-setting %i",
+    (status) => {
+      const shapes: Array<[string, () => HeadersInit]> = [
+        [
+          "Headers instance",
+          () => new Headers({ "X-Test": "yes", Cookie: "z=9" }),
+        ],
+        [
+          "tuple array",
+          () => [
+            ["X-Test", "yes"],
+            ["Cookie", "z=9"],
+          ],
+        ],
+        ["plain object", () => ({ "X-Test": "yes", Cookie: "z=9" })],
+      ];
+      it.each(shapes)(
+        "keeps method, body, header and merged Cookie for %s",
+        async (_n, mk) => {
+          seen.length = 0;
+          const res = await createTimeoutFetch(5000)(`${base}/c${status}`, {
+            method: "POST",
+            body: "payload",
+            headers: mk(),
+          });
+          const j = (await res.json()) as Echo;
+          expect(j.method).toBe("POST");
+          expect(j.body).toBe("payload");
+          expect(j.xtest).toBe("yes");
+          expect(j.cookie).toBe("z=9; sess=abc123");
+          expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
+            `POST /c${status}`,
+            "POST /final",
+          ]);
+        },
+      );
+    },
+  );
 });
