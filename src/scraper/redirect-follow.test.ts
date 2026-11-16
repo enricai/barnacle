@@ -431,18 +431,22 @@ describe("fetchFollowingRedirectsPreservingMethod same-origin characterization",
   );
 
   it("attaches a consent cookie on the next hop and keeps it on a second same-host hop", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(redirect(302, "/consent", { "Set-Cookie": "consent=yes; Path=/" }))
-      .mockResolvedValueOnce(redirect(302, "/final"))
-      .mockResolvedValueOnce(ok());
+    // The follower mutates one init object across hops, so snapshot headers at call time.
+    const seen: unknown[] = [];
+    const responses = [
+      redirect(302, "/consent", { "Set-Cookie": "consent=yes; Path=/" }),
+      redirect(302, "/final"),
+      ok(),
+    ];
+    const fetchImpl = vi.fn(async (_u: unknown, init?: RequestInit) => {
+      seen.push(init?.headers === undefined ? undefined : { ...(init.headers as object) });
+      return responses.shift() as Response;
+    });
     await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
       method: "GET",
-      fetchImpl,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    expect(fetchImpl.mock.calls[0]?.[1].headers).toBeUndefined();
-    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ Cookie: "consent=yes" });
-    expect(fetchImpl.mock.calls[2]?.[1].headers).toEqual({ Cookie: "consent=yes" });
+    expect(seen).toEqual([undefined, { Cookie: "consent=yes" }, { Cookie: "consent=yes" }]);
   });
 
   it("merges a hop cookie with the caller's Cookie and other headers", async () => {
