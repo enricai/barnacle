@@ -139,7 +139,7 @@ export function isCredentialHeader(name: string): boolean {
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */
-function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {
+function headersToRecord(headers: RequestInit["headers"] | undefined): Record<string, string> {
   if (headers === undefined) return {};
   if (headers instanceof Headers) return Object.fromEntries(headers.entries());
   if (Array.isArray(headers)) return Object.fromEntries(headers);
