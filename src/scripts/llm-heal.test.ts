@@ -738,12 +738,12 @@ describe("phaseLlmHeal Anthropic client redirect wiring", () => {
       outDir,
       dryRun: false,
       replayFn: async ({ samples, scorerFn }) => {
-        await scorerFn(samples[0]);
+        await scorerFn(samples[0]!);
         return { passRate: 1 } as never;
       },
       requestPatchFn: makeMockRequestPatch(),
     }).catch(() => undefined);
     expect(followerStub).toHaveBeenCalled();
-    expect(String(followerStub.mock.calls[0][0])).toContain("/v1/messages");
+    expect(String(followerStub.mock.calls[0]![0])).toContain("/v1/messages");
   });
 });

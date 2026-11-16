@@ -541,6 +541,6 @@ describe("runJudge", () => {
       outDir,
     }).catch(() => undefined);
     expect(followerStub).toHaveBeenCalled();
-    expect(String(followerStub.mock.calls[0][0])).toContain("/v1/messages");
+    expect(String(followerStub.mock.calls[0]![0])).toContain("/v1/messages");
   });
 });
