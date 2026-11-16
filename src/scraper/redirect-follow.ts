@@ -76,19 +76,16 @@ export async function fetchFollowingRedirectsPreservingMethod(
       if (first !== undefined) hopCookies.set(first[0], first[1]);
     }
     if (hopCookies.size > 0) {
-      const headers = {
-        ...(currentInit.headers as Record<string, string> | undefined),
-      };
-      const existingKey =
-        Object.keys(headers).find((k) => k.toLowerCase() === "cookie") ?? "Cookie";
+      const headers = new Headers(currentInit.headers);
       // Merge rather than replace, so a cookie the caller sent survives
       // alongside the hop's — and a hop setting the same name wins, since it
       // is the more current value.
-      const merged = new Map(parseCookiePairs(headers[existingKey] ?? ""));
+      const merged = new Map(parseCookiePairs(headers.get("cookie") ?? ""));
       for (const [name, value] of hopCookies) merged.set(name, value);
-      headers[existingKey] = [...merged.entries()]
-        .map(([name, value]) => `${name}=${value}`)
-        .join("; ");
+      headers.set(
+        "cookie",
+        [...merged.entries()].map(([name, value]) => `${name}=${value}`).join("; "),
+      );
       currentInit.headers = headers;
     }
 
