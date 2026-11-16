@@ -57,8 +57,8 @@ import {
   adoptReconRunRoot,
   type ReplayResult,
   readDeclaredEndpointPatterns,
-  readSubmitEndpointPattern,
   readOwnBackendHostnames,
+  readSubmitEndpointPattern,
   replayPassed,
   replayReachable,
   resolveLatestReconRunRoot,
@@ -903,7 +903,11 @@ export function selectRateLimitTargets(
         // Declared patterns: only the explicit submit pattern is tier 0; the rest (foldReturn) tier 1.
         for (let i = 0; i < patterns.length; i++) {
           if (patterns[i]!.test(replay.url)) {
-            tier = submitEndpointPattern !== undefined && declaredEndpointPatterns[i] === submitEndpointPattern ? 0 : 1;
+            tier =
+              submitEndpointPattern !== undefined &&
+              declaredEndpointPatterns[i] === submitEndpointPattern
+                ? 0
+                : 1;
             break;
           }
         }
