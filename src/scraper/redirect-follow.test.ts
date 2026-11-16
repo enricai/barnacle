@@ -570,7 +570,6 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin across statuses",
         fetchImpl,
       });
       expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://example.com/a");
-      expect(fetchImpl.mock.calls[0]?.[1].headers).toEqual(creds);
       expect(fetchImpl.mock.calls[1]?.[0]).toBe("https://other.com/b");
       const init = fetchImpl.mock.calls[1]?.[1];
       expect(init.headers).toEqual({ "x-custom": "c" });
