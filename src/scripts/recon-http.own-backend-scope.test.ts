@@ -78,7 +78,7 @@ describe("selectRateLimitTargets relevance order", () => {
     const out = selectRateLimitTargets(
       [
         r("https://shop.example.com/page"),
-        r("https://shop.example.com/beacon", "POST"),
+        r("https://shop.example.com/beacon"),
         json("https://shop.example.com/api/submit"),
         json("https://shop.example.com/api/fold"),
         json("https://shop.example.com/api/other"),
