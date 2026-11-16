@@ -307,3 +307,74 @@ describe("fetchFollowingRedirectsPreservingMethod header characterization", () =
     }
   );
 });
+
+describe("fetchFollowingRedirectsPreservingMethod baseline (characterization)", () => {
+  const redirect = (status: number, location: string, extra: Record<string, string> = {}) =>
+    new Response(null, { status, headers: { Location: location, ...extra } });
+
+  it("keeps Authorization, Cookie and x-api-key on a same-origin redirect", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(302, "https://example.com/b"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "GET",
+      headers: { Authorization: "Bearer t", Cookie: "s=1", "x-api-key": "k" },
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({
+      Authorization: "Bearer t",
+      Cookie: "s=1",
+      "x-api-key": "k",
+    });
+  });
+
+  it.each([301, 302, 303, 307, 308])("%i keeps method and body (mocked)", async (status) => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(status, "/next"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "PUT",
+      body: "payload",
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe("https://example.com/next");
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "PUT", body: "payload" });
+  });
+
+  it("carries a same-host Set-Cookie to the next hop", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(302, "/home", { "Set-Cookie": "sid=abc; Path=/; HttpOnly" }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/login", {
+      method: "GET",
+      headers: { "x-api-key": "k" },
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({
+      "x-api-key": "k",
+      Cookie: "sid=abc",
+    });
+  });
+
+  it("resolves relative Location forms against the producing URL", async () => {
+    const cases: Array<[string, string]> = [
+      ["/abs", "https://example.com/abs"],
+      ["sibling", "https://example.com/dir/sibling"],
+      ["../up", "https://example.com/up"],
+      ["//other.example.com/p", "https://other.example.com/p"],
+    ];
+    for (const [loc, expected] of cases) {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect(301, loc))
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+      await fetchFollowingRedirectsPreservingMethod("https://example.com/dir/page", {
+        fetchImpl,
+      });
+      expect(fetchImpl.mock.calls[1]?.[0]).toBe(expected);
+    }
+  });
+});
