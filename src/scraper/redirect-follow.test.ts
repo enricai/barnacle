@@ -97,7 +97,7 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
       method: "GET",
       headers: mk(),
     });
-    const j = await res.json();
+    const j = (await res.json()) as { xtest: string; cookie: string };
     expect(j.xtest).toBe("yes");
     expect(j.cookie).toBe("z=9; a=1; b=2");
   });
