@@ -39,12 +39,13 @@ export class RedirectCookieJar {
 
   /** Records one Set-Cookie header received from `origin`. */
   add(setCookie: string, origin: URL, now: number = Date.now()): void {
-    const [pair, ...attrs] = setCookie.split(";");
-    const eq = (pair ?? "").indexOf("=");
+    const [rawPair, ...attrs] = setCookie.split(";");
+    const pair = rawPair ?? "";
+    const eq = pair.indexOf("=");
     if (eq === -1) return;
-    const name = pair!.slice(0, eq).trim();
+    const name = pair.slice(0, eq).trim();
     if (name === "") return;
-    const value = pair!.slice(eq + 1).trim();
+    const value = pair.slice(eq + 1).trim();
     const host = origin.hostname.toLowerCase();
     let domain = host;
     let hostOnly = true;

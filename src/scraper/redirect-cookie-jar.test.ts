@@ -35,7 +35,9 @@ describe("RedirectCookieJar", () => {
     expect(sel("a=1; Secure", "https://x.com/", "https://x.com/")).toHaveLength(1);
   });
   it("excludes expired cookies", () => {
-    expect(sel("a=1; Expires=Wed, 01 Jan 2020 00:00:00 GMT", "https://x.com/", "https://x.com/")).toEqual([]);
+    expect(
+      sel("a=1; Expires=Wed, 01 Jan 2020 00:00:00 GMT", "https://x.com/", "https://x.com/")
+    ).toEqual([]);
     expect(sel("a=1; Max-Age=0", "https://x.com/", "https://x.com/")).toEqual([]);
     expect(sel("a=1; Max-Age=-5", "https://x.com/", "https://x.com/")).toEqual([]);
     expect(sel("a=1; Max-Age=60", "https://x.com/", "https://x.com/")).toHaveLength(1);
