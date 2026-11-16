@@ -231,7 +231,42 @@ describe("fetchFollowingRedirectsPreservingMethod header characterization", () =
       headers: { "X-Test": "yes" },
       fetchImpl,
     });
-    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ "X-Test": "yes", Cookie: "sid=1" });
+    expect(Object.fromEntries(new Headers(fetchImpl.mock.calls[1]?.[1].headers))).toEqual({
+      "x-test": "yes",
+      cookie: "sid=1",
+    });
+  });
+
+  const shapes: Array<[string, () => HeadersInit]> = [
+    ["Headers instance", () => new Headers({ "X-Test": "yes", Cookie: "z=9" })],
+    [
+      "tuple array",
+      () => [
+        ["X-Test", "yes"],
+        ["Cookie", "z=9"],
+      ],
+    ],
+    ["plain object", () => ({ "X-Test": "yes", Cookie: "z=9" })],
+  ];
+
+  describe.each([301, 302, 303])("%i", (status) => {
+    it.each(shapes)("keeps method, body, header and merged Cookie for %s", async (_n, mk) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect(status, { "Set-Cookie": "sid=1; Path=/" }))
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+      await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+        method: "POST",
+        body: "b",
+        headers: mk(),
+        fetchImpl,
+      });
+      const init = fetchImpl.mock.calls[1]?.[1];
+      expect(init).toMatchObject({ method: "POST", body: "b" });
+      const h = new Headers(init.headers);
+      expect(h.get("x-test")).toBe("yes");
+      expect(h.get("cookie")).toBe("z=9; sid=1");
+    });
   });
 
   it("lets a hop cookie win over the caller's cookie of the same name", async () => {
@@ -243,7 +278,9 @@ describe("fetchFollowingRedirectsPreservingMethod header characterization", () =
       headers: { cookie: "sid=old; keep=1" },
       fetchImpl,
     });
-    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ cookie: "sid=new; keep=1" });
+    expect(Object.fromEntries(new Headers(fetchImpl.mock.calls[1]?.[1].headers))).toEqual({
+      cookie: "sid=new; keep=1",
+    });
   });
 
   it.each([301, 302, 303, 307, 308])(
