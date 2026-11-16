@@ -13,6 +13,11 @@ import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { followerStub } = vi.hoisted(() => ({ followerStub: vi.fn() }));
+vi.mock("@/scraper/redirect-follow", () => ({
+  fetchFollowingRedirectsPreservingMethod: followerStub,
+}));
+
 vi.mock("@/config", () => ({
   config: {
     scraper: {
@@ -714,5 +719,31 @@ describe("phaseLlmHeal", () => {
         requestPatchFn: makeMockRequestPatch(),
       })
     ).rejects.toThrow();
+  });
+});
+
+describe("phaseLlmHeal Anthropic client redirect wiring", () => {
+  it("routes the real client's fetch through the redirect follower", async () => {
+    followerStub.mockReset();
+    followerStub.mockResolvedValue(new Response("{}", { status: 400 }));
+    writeVerdictFile(makeVerdict());
+    await phaseLlmHeal({
+      verdictPath,
+      callType: "act",
+      maxIterations: 1,
+      nReplays: 1,
+      successThreshold: 0.9,
+      plateauDelta: 0.03,
+      plateauWindow: 3,
+      outDir,
+      dryRun: false,
+      replayFn: async ({ samples, scorerFn }) => {
+        await scorerFn(samples[0]);
+        return { passRate: 1 } as never;
+      },
+      requestPatchFn: makeMockRequestPatch(),
+    }).catch(() => undefined);
+    expect(followerStub).toHaveBeenCalled();
+    expect(String(followerStub.mock.calls[0][0])).toContain("/v1/messages");
   });
 });

@@ -11,6 +11,11 @@ import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { followerStub } = vi.hoisted(() => ({ followerStub: vi.fn() }));
+vi.mock("@/scraper/redirect-follow", () => ({
+  fetchFollowingRedirectsPreservingMethod: followerStub,
+}));
+
 vi.mock("@/config", () => ({
   config: {
     scraper: {
@@ -524,5 +529,18 @@ describe("runJudge", () => {
         dryRun: true,
       })
     ).rejects.toThrow();
+  });
+
+  it("routes the real client's fetch through the redirect follower", async () => {
+    followerStub.mockReset();
+    followerStub.mockResolvedValue(new Response("{}", { status: 400 }));
+    writeSamples([makeSample()]);
+    await runJudge({
+      callsNdjsonPath,
+      callType: "act",
+      outDir,
+    }).catch(() => undefined);
+    expect(followerStub).toHaveBeenCalled();
+    expect(String(followerStub.mock.calls[0][0])).toContain("/v1/messages");
   });
 });
