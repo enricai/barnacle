@@ -84,7 +84,7 @@ export async function fetchFollowingRedirectsPreservingMethod(
       for (const [name, value] of hopCookies) merged.set(name, value);
       headers.set(
         "cookie",
-        [...merged.entries()].map(([name, value]) => `${name}=${value}`).join("; "),
+        [...merged.entries()].map(([name, value]) => `${name}=${value}`).join("; ")
       );
       currentInit.headers = headers;
     }

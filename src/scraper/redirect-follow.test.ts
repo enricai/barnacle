@@ -82,6 +82,26 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
     });
   });
 
+  it.each([
+    ["Headers instance", () => new Headers({ "X-Test": "yes", Cookie: "z=9" })],
+    [
+      "tuple array",
+      () =>
+        [
+          ["X-Test", "yes"],
+          ["Cookie", "z=9"],
+        ] as [string, string][],
+    ],
+  ])("keeps %s headers across cookie-setting hops", async (_n, mk) => {
+    const res = await fetchFollowingRedirectsPreservingMethod(`${base}/cookie1`, {
+      method: "GET",
+      headers: mk(),
+    });
+    const j = await res.json();
+    expect(j.xtest).toBe("yes");
+    expect(j.cookie).toBe("z=9; a=1; b=2");
+  });
+
   it("leaves GET unaffected", async () => {
     const res = await fetchFollowingRedirectsPreservingMethod(`${base}/r301`, {
       method: "GET",
