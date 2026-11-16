@@ -68,3 +68,31 @@ describe("recon-http own-backend scope", () => {
     expect(selectReplayCaptures([cap], true).selected).toHaveLength(1);
   });
 });
+
+describe("selectRateLimitTargets relevance order", () => {
+  it("orders submit, fold, JSON, rest", () => {
+    const json = (u: string, m = "GET"): ReplayResult => ({
+      ...r(u, m),
+      replayHeaders: { "content-type": "application/json" },
+    });
+    const out = selectRateLimitTargets(
+      [
+        r("https://shop.example.com/page"),
+        r("https://shop.example.com/beacon", "POST"),
+        json("https://shop.example.com/api/submit"),
+        json("https://shop.example.com/api/fold"),
+        json("https://shop.example.com/api/other"),
+      ],
+      [],
+      "shop.example.com",
+      ["/api/submit", "/api/fold"]
+    );
+    expect(urls(out)).toEqual([
+      "https://shop.example.com/api/submit",
+      "https://shop.example.com/api/fold",
+      "https://shop.example.com/api/other",
+      "https://shop.example.com/page",
+      "https://shop.example.com/beacon",
+    ]);
+  });
+});
