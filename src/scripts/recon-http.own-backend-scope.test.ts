@@ -85,7 +85,8 @@ describe("selectRateLimitTargets relevance order", () => {
       ],
       [],
       "shop.example.com",
-      ["/api/submit", "/api/fold"]
+      ["/api/submit", "/api/fold"],
+      "/api/submit"
     );
     expect(urls(out)).toEqual([
       "https://shop.example.com/api/submit",
@@ -94,5 +95,24 @@ describe("selectRateLimitTargets relevance order", () => {
       "https://shop.example.com/page",
       "https://shop.example.com/beacon",
     ]);
+  });
+
+  it("ranks a fold below JSON-free submit absence: no submit pattern means fold is tier 1, not 0", () => {
+    const json = (u: string): ReplayResult => ({
+      ...r(u, "GET"),
+      replayHeaders: { "content-type": "application/json" },
+    });
+    const out = selectRateLimitTargets(
+      [
+        json("https://shop.example.com/api/other"),
+        json("https://shop.example.com/api/fold"),
+        json("https://shop.example.com/api/submit"),
+      ],
+      [],
+      "shop.example.com",
+      ["/api/fold", "/api/submit"],
+      "/api/submit"
+    );
+    expect(urls(out)[0]).toBe("https://shop.example.com/api/submit");
   });
 });

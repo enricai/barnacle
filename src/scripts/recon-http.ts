@@ -57,6 +57,7 @@ import {
   adoptReconRunRoot,
   type ReplayResult,
   readDeclaredEndpointPatterns,
+  readSubmitEndpointPattern,
   readOwnBackendHostnames,
   replayPassed,
   replayReachable,
@@ -853,7 +854,8 @@ export function selectRateLimitTargets(
   replays: ReplayResult[],
   ownBackendHostnames: string[],
   fallbackHost: string | null = null,
-  declaredEndpointPatterns: readonly string[] = []
+  declaredEndpointPatterns: readonly string[] = [],
+  submitEndpointPattern?: string
 ): {
   targets: Map<string, { method: string; body: string | null }>;
   skipped: number;
@@ -898,10 +900,10 @@ export function selectRateLimitTargets(
         )?.[1];
         const isJson = /json/i.test(String(ct ?? ""));
         let tier = isJson ? 2 : 3;
-        // Declared patterns: index 0 is submit (when declared), the rest are foldReturn.
+        // Declared patterns: only the explicit submit pattern is tier 0; the rest (foldReturn) tier 1.
         for (let i = 0; i < patterns.length; i++) {
           if (patterns[i]!.test(replay.url)) {
-            tier = i === 0 ? 0 : 1;
+            tier = submitEndpointPattern !== undefined && declaredEndpointPatterns[i] === submitEndpointPattern ? 0 : 1;
             break;
           }
         }
@@ -1109,7 +1111,8 @@ async function main(): Promise<void> {
     replays,
     ownBackendHostnames,
     fallbackHost,
-    flowFile ? readDeclaredEndpointPatterns(flowFile) : []
+    flowFile ? readDeclaredEndpointPatterns(flowFile) : [],
+    flowFile ? readSubmitEndpointPattern(flowFile) : undefined
   );
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +
