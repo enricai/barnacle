@@ -20,13 +20,15 @@ export const ALLOWLIST: Record<string, string> = {
   "src/testmail/client.ts": "testmail probe is a body-less GET; no method/body to preserve",
   "src/scraper/raw-fetch.ts":
     "explicit redirect:manual path that hands redirects to the follower itself",
+  "src/lib/http.ts":
+    "installs the global undici dispatcher (connect timeout only); not a request site and no redirect policy",
   "src/scraper/redirect-follow.ts": "the follower itself; the one place that calls fetch",
 };
 
 const CTOR = /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI)\s*\(/g;
 const BARE = /(?<![\w.])(?:fetch|undiciFetch)\s*\(/;
 const HTTP_CLIENT =
-  /(?<![\w.])(?:axios(?:\.\w+)?|got(?:\.\w+)?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client)\s*\(|\bhttps?\.request\s*\(/;
+  /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client)\s*\(|\bhttps?\.request\s*\(/;
 
 export function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\w"'`])\/\/.*$/gm, "$1");
