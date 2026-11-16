@@ -545,3 +545,60 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin credentials", () 
     expect(seen).toEqual([{ Authorization: "t" }, {}, {}, { Authorization: "t" }]);
   });
 });
+
+describe("fetchFollowingRedirectsPreservingMethod cross-origin across statuses", () => {
+  const creds = {
+    Authorization: "Bearer t",
+    "Proxy-Authorization": "p",
+    Cookie: "s=1",
+    "X-API-Key": "k",
+    "x-custom": "c",
+  };
+  it.each([301, 302, 303, 307, 308])(
+    "%i to another host strips credentials, keeps method/body/other headers",
+    async (status) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(null, { status, headers: { Location: "https://other.com/b" } })
+        )
+        .mockResolvedValueOnce(new Response("ok"));
+      await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+        method: "POST",
+        body: "x",
+        headers: creds,
+        fetchImpl,
+      });
+      expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://example.com/a");
+      expect(fetchImpl.mock.calls[0]?.[1].headers).toEqual(creds);
+      expect(fetchImpl.mock.calls[1]?.[0]).toBe("https://other.com/b");
+      const init = fetchImpl.mock.calls[1]?.[1];
+      expect(init.headers).toEqual({ "x-custom": "c" });
+      expect(init).toMatchObject({ method: "POST", body: "x" });
+    }
+  );
+  it("A->B->A applies the origin rule per hop and keeps body", async () => {
+    const seen: Array<{ url: string; headers: unknown; method?: string; body?: unknown }> = [];
+    const fetchImpl = vi.fn(async (u: string, init?: RequestInit) => {
+      seen.push({
+        url: u,
+        headers: { ...(init?.headers as object) },
+        method: init?.method,
+        body: init?.body,
+      });
+      if (u === "https://a.com/1")
+        return new Response(null, { status: 302, headers: { Location: "https://b.com/2" } });
+      if (u === "https://b.com/2")
+        return new Response(null, { status: 302, headers: { Location: "https://a.com/3" } });
+      return new Response("ok");
+    });
+    await fetchFollowingRedirectsPreservingMethod("https://a.com/1", {
+      method: "POST",
+      body: "x",
+      headers: creds,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(seen.map((s) => s.headers)).toEqual([creds, { "x-custom": "c" }, creds]);
+    expect(seen.every((s) => s.method === "POST" && s.body === "x")).toBe(true);
+  });
+});
