@@ -215,3 +215,50 @@ describe("parseCookiePairs", () => {
     ]);
   });
 });
+
+describe("fetchFollowingRedirectsPreservingMethod header characterization", () => {
+  const redirect = (status: number, extra: Record<string, string> = {}) =>
+    new Response(null, { status, headers: { Location: "/next", ...extra } });
+
+  it("keeps plain-object headers across a cookie-setting hop", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(302, { "Set-Cookie": "sid=1; Path=/" }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      method: "POST",
+      body: "b",
+      headers: { "X-Test": "yes" },
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ "X-Test": "yes", Cookie: "sid=1" });
+  });
+
+  it("lets a hop cookie win over the caller's cookie of the same name", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(301, { "Set-Cookie": "sid=new; Path=/" }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      headers: { cookie: "sid=old; keep=1" },
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ cookie: "sid=new; keep=1" });
+  });
+
+  it.each([301, 302, 303, 307, 308])("%i without cookies leaves headers untouched", async (status) => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(status))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const headers = { "X-Test": "yes" };
+    await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      method: "POST",
+      body: "b",
+      headers,
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[1].headers).toBe(headers);
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "POST", body: "b" });
+  });
+});
