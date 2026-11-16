@@ -246,19 +246,22 @@ describe("fetchFollowingRedirectsPreservingMethod header characterization", () =
     expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ cookie: "sid=new; keep=1" });
   });
 
-  it.each([301, 302, 303, 307, 308])("%i without cookies leaves headers untouched", async (status) => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(redirect(status))
-      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
-    const headers = { "X-Test": "yes" };
-    await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
-      method: "POST",
-      body: "b",
-      headers,
-      fetchImpl,
-    });
-    expect(fetchImpl.mock.calls[1]?.[1].headers).toBe(headers);
-    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "POST", body: "b" });
-  });
+  it.each([301, 302, 303, 307, 308])(
+    "%i without cookies leaves headers untouched",
+    async (status) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect(status))
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+      const headers = { "X-Test": "yes" };
+      await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+        method: "POST",
+        body: "b",
+        headers,
+        fetchImpl,
+      });
+      expect(fetchImpl.mock.calls[1]?.[1].headers).toBe(headers);
+      expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "POST", body: "b" });
+    }
+  );
 });
