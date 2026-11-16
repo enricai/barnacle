@@ -13685,9 +13685,9 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // facet is a DIFFERENT capture of the SAME endpoint, so it stays
       // eligible and gets paired as a per-item drill whenever a facet value
       // happens to equal one of the primary items' own field values. A
-      // carnival itinerary carries shipCode "CB", departurePortCode "MIA" and
-      // dur 7, and the flow's own facet steps request &shipcode=CB, &port=MIA
-      // and &durdays=7 — so the pairing looks plausible and a phantom
+      // listing item carries a vendorCode "AB", originCode "XYZ" and
+      // dur 7, and the flow's own facet steps request &vendor=AB, &origin=XYZ
+      // and &days=7 — so the pairing looks plausible and a phantom
       // self-fold on the search itself is invented, which then dies in
       // assertNoFrozenVaryingDrillParams on the very facet variation the flow
       // author deliberately recorded. A DECLARED self-fold is unaffected: it
