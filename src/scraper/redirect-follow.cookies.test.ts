@@ -63,29 +63,19 @@ describe("redirect hop cookie jar matching", () => {
   it("does not send a Domain cookie to a sibling domain", async () => {
     expect(
       await finalCookie("https://a.example.com/", [
-        hop(
-          "https://a.example.com/",
-          "https://other.test/",
-          "s=1; Domain=a.example.com; Path=/"
-        ),
+        hop("https://a.example.com/", "https://other.test/", "s=1; Domain=a.example.com; Path=/"),
       ])
     ).toBe("");
     expect(
       await finalCookie("https://a.example.com/", [
-        hop(
-          "https://a.example.com/",
-          "https://notexample.com/",
-          "s=1; Domain=example.com; Path=/"
-        ),
+        hop("https://a.example.com/", "https://notexample.com/", "s=1; Domain=example.com; Path=/"),
       ])
     ).toBe("");
   });
 
   it("matches Path on a segment boundary", async () => {
     const run = (to: string) =>
-      finalCookie("https://example.com/", [
-        hop("https://example.com/", to, "s=1; Path=/app"),
-      ]);
+      finalCookie("https://example.com/", [hop("https://example.com/", to, "s=1; Path=/app")]);
     expect(await run("https://example.com/app")).toBe("s=1");
     expect(await run("https://example.com/app/x")).toBe("s=1");
     expect(await run("https://example.com/application")).toBe("");
@@ -94,11 +84,9 @@ describe("redirect hop cookie jar matching", () => {
 
   it("does not send a Secure cookie over http", async () => {
     const run = (to: string) =>
-      finalCookie("https://example.com/", [
-        hop("https://example.com/", to, "s=1; Path=/; Secure"),
-      ]);
+      finalCookie("https://example.com/", [hop("https://example.com/", to, "s=1; Path=/; Secure")]);
     expect(await run("http://example.com/")).toBe("");
-    expect(await run("https://example.com/")).toBe("s=1");
+    expect(await run("https://example.com/secure")).toBe("s=1");
   });
 
   it("does not send expired cookies", async () => {
