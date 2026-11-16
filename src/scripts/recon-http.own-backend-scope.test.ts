@@ -116,3 +116,28 @@ describe("selectRateLimitTargets relevance order", () => {
     expect(urls(out)[0]).toBe("https://shop.example.com/api/submit");
   });
 });
+
+describe("selectRateLimitTargets declared patterns without submit", () => {
+  const json = (u: string): ReplayResult => ({
+    ...r(u, "GET"),
+    replayHeaders: { "content-type": "application/json" },
+  });
+  it("fold-only declaration ranks fold first, JSON next", () => {
+    const out = selectRateLimitTargets(
+      [json("https://shop.example.com/api/other"), json("https://shop.example.com/api/fold")],
+      [],
+      "shop.example.com",
+      ["/api/fold"]
+    );
+    expect(urls(out)[0]).toBe("https://shop.example.com/api/fold");
+  });
+  it("an invalid pattern never matches but keeps alignment", () => {
+    const out = selectRateLimitTargets(
+      [json("https://shop.example.com/api/other"), json("https://shop.example.com/api/fold")],
+      [],
+      "shop.example.com",
+      ["(unclosed", "/api/fold"]
+    );
+    expect(urls(out)[0]).toBe("https://shop.example.com/api/fold");
+  });
+});

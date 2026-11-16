@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   readDeclaredEndpointPatterns,
   readOwnBackendHostnames,
+  readSubmitEndpointPattern,
   readSuccessUrlFragments,
 } from "@/scripts/recon-shared";
 
@@ -64,5 +65,15 @@ describe("readDeclaredEndpointPatterns", () => {
     expect(readDeclaredEndpointPatterns(flow("dep4.json", "{}"))).toEqual([]);
     expect(readDeclaredEndpointPatterns(flow("dep5.json", "nope"))).toEqual([]);
     expect(readDeclaredEndpointPatterns(join(DIR, "missing.json"))).toEqual([]);
+  });
+});
+
+describe("readSubmitEndpointPattern", () => {
+  it("returns the pattern, and undefined for absent/array/unreadable", () => {
+    expect(readSubmitEndpointPattern(flow("s1.json", '{"submitEndpointPattern":"/x"}'))).toBe("/x");
+    expect(readSubmitEndpointPattern(flow("s2.json", "{}"))).toBeUndefined();
+    expect(readSubmitEndpointPattern(flow("s3.json", "[]"))).toBeUndefined();
+    expect(readSubmitEndpointPattern(flow("s4.json", "{bad"))).toBeUndefined();
+    expect(readSubmitEndpointPattern(join(DIR, "missing.json"))).toBeUndefined();
   });
 });
