@@ -43,7 +43,7 @@ describe("http-client redirect policy", () => {
               hops,
               cookie: req.headers.cookie ?? "",
               xtest: req.headers["x-test"] ?? "",
-            }),
+            })
           );
         };
         const hopMatch = /^\/c(\d{3})$/.exec(req.url ?? "");
@@ -144,28 +144,22 @@ describe("http-client redirect policy", () => {
       expect(result.method).toBe("POST");
       expect(result.body).toBe(JSON.stringify({ q: "cabins" }));
       expect(seen.map((s) => s.method)).toEqual(["POST", "POST"]);
-    },
+    }
   );
 
-  it.each([307, 308])(
-    "preserves POST, headers and body across a %i redirect",
-    async (status) => {
-      seen.length = 0;
-      const result = await client()(`${base}/r${status}`, {
-        method: "POST",
-        body: JSON.stringify({ q: "cabins" }),
-        headers: { Cookie: "caller=keepme" },
-      });
-      expect(result.method).toBe("POST");
-      expect(result.body).toBe(JSON.stringify({ q: "cabins" }));
-      expect(result.cookie).toContain("caller=keepme");
-      expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
-        `POST /r${status}`,
-        "POST /final",
-      ]);
-      expect(seen.at(-1)?.body).toBe(JSON.stringify({ q: "cabins" }));
-    },
-  );
+  it.each([307, 308])("preserves POST, headers and body across a %i redirect", async (status) => {
+    seen.length = 0;
+    const result = await client()(`${base}/r${status}`, {
+      method: "POST",
+      body: JSON.stringify({ q: "cabins" }),
+      headers: { Cookie: "caller=keepme" },
+    });
+    expect(result.method).toBe("POST");
+    expect(result.body).toBe(JSON.stringify({ q: "cabins" }));
+    expect(result.cookie).toContain("caller=keepme");
+    expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([`POST /r${status}`, "POST /final"]);
+    expect(seen.at(-1)?.body).toBe(JSON.stringify({ q: "cabins" }));
+  });
 
   it("re-sends the method and body on a 303", async () => {
     seen.length = 0;
@@ -188,17 +182,15 @@ describe("http-client redirect policy", () => {
   });
 
   it("gives up on a redirect loop instead of spinning forever", async () => {
-    await expect(
-      client()(`${base}/loop`, { method: "POST", body: "x" }),
-    ).rejects.toThrow(/exceeded 5 redirects/);
+    await expect(client()(`${base}/loop`, { method: "POST", body: "x" })).rejects.toThrow(
+      /exceeded 5 redirects/
+    );
   });
 
   it("returns the 3xx itself when Location is missing, so status classification sees the real response", async () => {
     // A 301 with no Location is not followable. It must surface as the upstream
     // status rather than a synthesized transport error.
-    await expect(
-      client()(`${base}/nolocation`, { method: "POST", body: "x" }),
-    ).rejects.toThrow();
+    await expect(client()(`${base}/nolocation`, { method: "POST", body: "x" })).rejects.toThrow();
   });
 
   it("carries a Set-Cookie minted on a redirect hop onto the follow-up request", async () => {
@@ -298,43 +290,31 @@ describe("http-client redirect policy", () => {
     expect(bound).toEqual(["302", "200"]);
   });
 
-  describe.each([301, 302, 303])(
-    "timeout fetch wrapper across a cookie-setting %i",
-    (status) => {
-      const shapes: Array<[string, () => HeadersInit]> = [
-        [
-          "Headers instance",
-          () => new Headers({ "X-Test": "yes", Cookie: "z=9" }),
+  describe.each([301, 302, 303])("timeout fetch wrapper across a cookie-setting %i", (status) => {
+    const shapes: Array<[string, () => ConstructorParameters<typeof Headers>[0]]> = [
+      ["Headers instance", () => new Headers({ "X-Test": "yes", Cookie: "z=9" })],
+      [
+        "tuple array",
+        () => [
+          ["X-Test", "yes"],
+          ["Cookie", "z=9"],
         ],
-        [
-          "tuple array",
-          () => [
-            ["X-Test", "yes"],
-            ["Cookie", "z=9"],
-          ],
-        ],
-        ["plain object", () => ({ "X-Test": "yes", Cookie: "z=9" })],
-      ];
-      it.each(shapes)(
-        "keeps method, body, header and merged Cookie for %s",
-        async (_n, mk) => {
-          seen.length = 0;
-          const res = await createTimeoutFetch(5000)(`${base}/c${status}`, {
-            method: "POST",
-            body: "payload",
-            headers: mk(),
-          });
-          const j = (await res.json()) as Echo;
-          expect(j.method).toBe("POST");
-          expect(j.body).toBe("payload");
-          expect(j.xtest).toBe("yes");
-          expect(j.cookie).toBe("z=9; sess=abc123");
-          expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
-            `POST /c${status}`,
-            "POST /final",
-          ]);
-        },
-      );
-    },
-  );
+      ],
+      ["plain object", () => ({ "X-Test": "yes", Cookie: "z=9" })],
+    ];
+    it.each(shapes)("keeps method, body, header and merged Cookie for %s", async (_n, mk) => {
+      seen.length = 0;
+      const res = await createTimeoutFetch(5000)(`${base}/c${status}`, {
+        method: "POST",
+        body: "payload",
+        headers: mk(),
+      });
+      const j = (await res.json()) as Echo;
+      expect(j.method).toBe("POST");
+      expect(j.body).toBe("payload");
+      expect(j.xtest).toBe("yes");
+      expect(j.cookie).toBe("z=9; sess=abc123");
+      expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([`POST /c${status}`, "POST /final"]);
+    });
+  });
 });
