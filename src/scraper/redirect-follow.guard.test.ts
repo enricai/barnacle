@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
  * Allowlisted files (path -> reason) are exempt.
  * Example of a flagged call: `fetch("https://example.com/x")`.
  */
-export const ALLOWLIST: Record<string, string> = {
+const ALLOWLIST: Record<string, string> = {
   "src/scripts/recon-http.ts":
     "robots.txt probe is a body-less GET where a canonical-host redirect is desired; no credentials sent",
   "src/testmail/client.ts": "testmail probe is a body-less GET; no method/body to preserve",
@@ -25,12 +25,13 @@ export const ALLOWLIST: Record<string, string> = {
   "src/scraper/redirect-follow.ts": "the follower itself; the one place that calls fetch",
 };
 
-const CTOR = /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI)\s*\(/g;
+const CTOR =
+  /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI)\s*\(/g;
 const BARE = /(?<![\w.])(?:fetch|undiciFetch)\s*\(/;
 const HTTP_CLIENT =
   /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client)\s*\(|\bhttps?\.request\s*\(/;
 
-export function stripComments(src: string): string {
+function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\w"'`])\/\/.*$/gm, "$1");
 }
 
@@ -45,7 +46,7 @@ function argsAt(s: string, open: number): string {
 }
 
 /** Returns human-readable violations found in a source string. */
-export function scanSource(source: string): string[] {
+function scanSource(source: string): string[] {
   const src = stripComments(source);
   const out: string[] = [];
   if (BARE.test(src)) out.push("bare fetch(");
