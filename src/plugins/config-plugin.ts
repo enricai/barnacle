@@ -40,8 +40,8 @@ import {
 } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { navigateActivePage } from "@/scraper/navigate";
-import { guardedExtract } from "@/scraper/stagehand-guard";
 import { createTimeoutFetch } from "@/scraper/session-shared";
+import { guardedExtract } from "@/scraper/stagehand-guard";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 import { testmailInboxFromAddress } from "@/testmail/client";
 
