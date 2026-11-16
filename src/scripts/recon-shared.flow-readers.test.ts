@@ -22,16 +22,15 @@ describe.each([
   ["readOwnBackendHostnames", readOwnBackendHostnames, "ownBackendHostnames"],
 ] as const)("%s", (_n, fn, key) => {
   it("returns only non-empty strings", () => {
-    expect(
-      fn(flow(`${key}1.json`, JSON.stringify({ [key]: ["a", "", 3, "b"] }))),
-    ).toEqual(["a", "b"]);
+    expect(fn(flow(`${key}1.json`, JSON.stringify({ [key]: ["a", "", 3, "b"] })))).toEqual([
+      "a",
+      "b",
+    ]);
   });
   it("returns [] for bare-array flow, missing key, non-array value", () => {
     expect(fn(flow(`${key}2.json`, "[]"))).toEqual([]);
     expect(fn(flow(`${key}3.json`, "{}"))).toEqual([]);
-    expect(fn(flow(`${key}4.json`, JSON.stringify({ [key]: "x" })))).toEqual(
-      [],
-    );
+    expect(fn(flow(`${key}4.json`, JSON.stringify({ [key]: "x" })))).toEqual([]);
   });
   it("returns [] for malformed or missing files", () => {
     expect(fn(flow(`${key}5.json`, "nope"))).toEqual([]);
@@ -46,7 +45,7 @@ describe("readDeclaredEndpointPatterns", () => {
       JSON.stringify({
         submitEndpointPattern: "/s",
         foldReturn: { endpointPattern: "/f" },
-      }),
+      })
     );
     expect(readDeclaredEndpointPatterns(f)).toEqual(["/s", "/f"]);
   });
@@ -56,7 +55,7 @@ describe("readDeclaredEndpointPatterns", () => {
       JSON.stringify({
         submitEndpointPattern: "/s",
         foldReturn: [{ endpointPattern: "/a" }, {}, { endpointPattern: "/b" }],
-      }),
+      })
     );
     expect(readDeclaredEndpointPatterns(f)).toEqual(["/s", "/a", "/b"]);
   });

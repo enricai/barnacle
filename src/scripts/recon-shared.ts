@@ -74,10 +74,7 @@ export function resolveReconRunDir(): ReconRunDir {
  * subdirs) instead of minting a new one, so a reader-phase script such as
  * recon-http works on the run it was pointed at without nesting a fresh run.
  */
-export function adoptReconRunRoot(
-  root: string,
-  runId: string = basename(root),
-): ReconRunDir {
+export function adoptReconRunRoot(root: string, runId: string = basename(root)): ReconRunDir {
   const runDir: ReconRunDir = {
     runId,
     root,
@@ -127,9 +124,7 @@ export function resolveLatestReconRunRoot(runDir?: string): string {
     .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]?.dir;
 
   if (!latest) {
-    logger.info(
-      `no recon run roots found under ${baseDir}; falling back to legacy path`,
-    );
+    logger.info(`no recon run roots found under ${baseDir}; falling back to legacy path`);
     return baseDir;
   }
 
@@ -239,8 +234,7 @@ export function readCaptureDir(dir: string, exclude: string[] = []): Capture[] {
   return readJsonDir<Capture>(dir, exclude).map((capture) => ({
     ...capture,
     query: typeof capture.query === "string" ? capture.query : null,
-    operationName:
-      typeof capture.operationName === "string" ? capture.operationName : null,
+    operationName: typeof capture.operationName === "string" ? capture.operationName : null,
   }));
 }
 
@@ -257,17 +251,14 @@ export function readSuccessUrlFragments(flowFile: string): string[] {
   try {
     const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
     if (Array.isArray(parsed)) return [];
-    const fragments = (parsed as { successUrlFragments?: unknown })
-      .successUrlFragments;
+    const fragments = (parsed as { successUrlFragments?: unknown }).successUrlFragments;
     if (!Array.isArray(fragments)) return [];
-    return fragments.filter(
-      (f): f is string => typeof f === "string" && f.length > 0,
-    );
+    return fragments.filter((f): f is string => typeof f === "string" && f.length > 0);
   } catch (err) {
     logger.warn(
       `flow file '${flowFile}' unreadable for successUrlFragments, terminal-URL detection disabled: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      }`
     );
     return [];
   }
@@ -284,17 +275,14 @@ export function readOwnBackendHostnames(flowFile: string): string[] {
   try {
     const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
     if (Array.isArray(parsed)) return [];
-    const hostnames = (parsed as { ownBackendHostnames?: unknown })
-      .ownBackendHostnames;
+    const hostnames = (parsed as { ownBackendHostnames?: unknown }).ownBackendHostnames;
     if (!Array.isArray(hostnames)) return [];
-    return hostnames.filter(
-      (h): h is string => typeof h === "string" && h.length > 0,
-    );
+    return hostnames.filter((h): h is string => typeof h === "string" && h.length > 0);
   } catch (err) {
     logger.warn(
       `flow file '${flowFile}' unreadable for ownBackendHostnames, aux-fixture allowlist disabled: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      }`
     );
     return [];
   }
@@ -309,8 +297,7 @@ export function readOwnBackendHostnames(flowFile: string): string[] {
 export function readDeclaredEndpointPatterns(flowFile: string): string[] {
   try {
     const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
-    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object")
-      return [];
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return [];
     const { submitEndpointPattern, foldReturn } = parsed as {
       submitEndpointPattern?: unknown;
       foldReturn?: unknown;
@@ -320,21 +307,16 @@ export function readDeclaredEndpointPatterns(flowFile: string): string[] {
       if (typeof v === "string" && v.length > 0) out.push(v);
     };
     add(submitEndpointPattern);
-    const folds = Array.isArray(foldReturn)
-      ? foldReturn
-      : foldReturn
-        ? [foldReturn]
-        : [];
+    const folds = Array.isArray(foldReturn) ? foldReturn : foldReturn ? [foldReturn] : [];
     for (const f of folds) {
-      if (f && typeof f === "object")
-        add((f as { endpointPattern?: unknown }).endpointPattern);
+      if (f && typeof f === "object") add((f as { endpointPattern?: unknown }).endpointPattern);
     }
     return out;
   } catch (err) {
     logger.warn(
       `flow file '${flowFile}' unreadable for declared endpoint patterns, relevance ordering disabled: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      }`
     );
     return [];
   }
@@ -350,16 +332,12 @@ export function readDeclaredEndpointPatterns(flowFile: string): string[] {
 export function readBrowserFlowOnly(flowFile: string): boolean {
   const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
   if (Array.isArray(parsed)) return false;
-  return (
-    (parsed as { browserFlowOnly?: unknown } | null)?.browserFlowOnly === true
-  );
+  return (parsed as { browserFlowOnly?: unknown } | null)?.browserFlowOnly === true;
 }
 
 /** True when the replay got a 2xx response, whether or not its shape matched the capture. */
 export function replayReachable(r: ReplayResult): boolean {
-  return (
-    r.replayStatus !== null && r.replayStatus >= 200 && r.replayStatus < 300
-  );
+  return r.replayStatus !== null && r.replayStatus >= 200 && r.replayStatus < 300;
 }
 
 /** A replay passes only when its status was ok AND its response shape matches the capture. */
@@ -389,14 +367,12 @@ export const CREDENTIAL_REQUEST_HEADERS: ReadonlySet<string> = new Set([
  * replays it restored when re-sent (`shapeRestoringHeaders`): the request headers
  * re-replay proved load-bearing.
  */
-export function tallyShapeRestoringHeaders(
-  replays: ReplayResult[],
-): Map<string, number> {
+export function tallyShapeRestoringHeaders(replays: ReplayResult[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const replay of replays) {
     if (!replay.shapeDiffers) continue;
     for (const header of new Set(
-      (replay.shapeRestoringHeaders ?? []).map((h) => h.toLowerCase()),
+      (replay.shapeRestoringHeaders ?? []).map((h) => h.toLowerCase())
     )) {
       counts.set(header, (counts.get(header) ?? 0) + 1);
     }
