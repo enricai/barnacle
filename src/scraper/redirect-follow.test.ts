@@ -529,7 +529,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin credentials", () 
       expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ "x-custom": "c" });
     }
   });
-  it("stays dropped on later hops unless back on the original origin", async () => {
+  it("stays dropped on later hops even when back on the original origin", async () => {
     const seen: unknown[] = [];
     const fetchImpl = vi.fn(async (u: string, init?: RequestInit) => {
       seen.push({ ...(init?.headers as object) });
@@ -542,7 +542,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin credentials", () 
       headers: { Authorization: "t" },
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    expect(seen).toEqual([{ Authorization: "t" }, {}, {}, { Authorization: "t" }]);
+    expect(seen).toEqual([{ Authorization: "t" }, {}, {}, {}]);
   });
 });
 
@@ -576,7 +576,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin across statuses",
       expect(init).toMatchObject({ method: "POST", body: "x" });
     }
   );
-  it("A->B->A applies the origin rule per hop and keeps body", async () => {
+  it("A->B->A keeps credentials stripped and keeps body", async () => {
     const seen: Array<{ url: string; headers: unknown; method?: string; body?: unknown }> = [];
     const fetchImpl = vi.fn(async (u: string, init?: RequestInit) => {
       seen.push({
@@ -597,7 +597,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin across statuses",
       headers: creds,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    expect(seen.map((s) => s.headers)).toEqual([creds, { "x-custom": "c" }, creds]);
+    expect(seen.map((s) => s.headers)).toEqual([creds, { "x-custom": "c" }, { "x-custom": "c" }]);
     expect(seen.every((s) => s.method === "POST" && s.body === "x")).toBe(true);
   });
 });

@@ -54,7 +54,7 @@ export async function fetchFollowingRedirectsPreservingMethod(
     Object.entries(originalHeaders).filter(([name]) => !isCredentialHeader(name))
   );
   const originalOrigin = new URL(url).origin;
-  const hasCallerHeaders = rest.headers !== undefined;
+  let leftOriginalOrigin = false;
   // Cookies minted by intermediate hops, by name, newest winning. A login or
   // consent redirect commonly sets the session cookie on the 302 itself, so
   // dropping these makes the final request arrive unauthenticated.
@@ -83,10 +83,12 @@ export async function fetchFollowingRedirectsPreservingMethod(
     for (const setCookie of response.headers.getSetCookie()) {
       jar.add(setCookie, hopUrl);
     }
-    const crossOrigin = nextUrl.origin !== originalOrigin;
-    if (hasCallerHeaders) {
-      currentInit.headers = { ...(crossOrigin ? strippedHeaders : originalHeaders) };
-    }
+    // Once any hop leaves the original origin, credentials stay stripped for
+    // the rest of the chain (Fetch spec); a later hop back cannot restore them.
+    if (nextUrl.origin !== originalOrigin) leftOriginalOrigin = true;
+    // Always rebuild from the snapshot so a cookie attached for an earlier hop
+    // never rides along to a hop the jar no longer selects it for.
+    currentInit.headers = { ...(leftOriginalOrigin ? strippedHeaders : originalHeaders) };
     const hopCookies = jar.select(nextUrl);
     if (hopCookies.length > 0) {
       const headers = new Headers(currentInit.headers);
@@ -130,7 +132,7 @@ const CREDENTIAL_HEADERS: ReadonlySet<string> = new Set([
   "proxy-authorization",
   "cookie",
 ]);
-const CREDENTIAL_NAME_SUFFIX = /(?:^|[-_])(?:token|secret|key|auth|password|passwd|credentials?)$/i;
+const CREDENTIAL_NAME_SUFFIX = /(?:token|secret|key|auth|password|passwd|credentials?|session)$/i;
 
 /** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
