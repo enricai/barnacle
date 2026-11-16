@@ -465,3 +465,61 @@ describe("fetchFollowingRedirectsPreservingMethod same-origin characterization",
     });
   });
 });
+
+describe("fetchFollowingRedirectsPreservingMethod cross-origin credentials", () => {
+  const redirect = (location: string) =>
+    new Response(null, { status: 307, headers: { Location: location } });
+  const creds = {
+    Authorization: "Bearer t",
+    "Proxy-Authorization": "p",
+    Cookie: "s=1",
+    "X-API-Key": "k",
+    "x-custom": "c",
+  };
+  it.each(["https://other.com/b", "http://example.com/b", "https://example.com:8443/b"])(
+    "drops credentials but keeps method, body, other headers for %s",
+    async (loc) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect(loc))
+        .mockResolvedValueOnce(new Response("ok"));
+      await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+        method: "POST",
+        body: "x",
+        headers: creds,
+        fetchImpl,
+      });
+      const init = fetchImpl.mock.calls[1]?.[1];
+      expect(init.headers).toEqual({ "x-custom": "c" });
+      expect(init).toMatchObject({ method: "POST", body: "x" });
+    }
+  );
+  it("accepts Headers and tuple input", async () => {
+    for (const headers of [new Headers(creds), Object.entries(creds)]) {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect("https://other.com/b"))
+        .mockResolvedValueOnce(new Response("ok"));
+      await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+        headers,
+        fetchImpl,
+      });
+      expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ "x-custom": "c" });
+    }
+  });
+  it("stays dropped on later hops unless back on the original origin", async () => {
+    const seen: unknown[] = [];
+    const fetchImpl = vi.fn(async (u: string, init?: RequestInit) => {
+      seen.push({ ...(init?.headers as object) });
+      if (u.endsWith("/a")) return redirect("https://other.com/b");
+      if (u.endsWith("/b")) return redirect("https://other.com/c");
+      if (u.endsWith("/c")) return redirect("https://example.com/d");
+      return new Response("ok");
+    });
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      headers: { Authorization: "t" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(seen).toEqual([{ Authorization: "t" }, {}, {}, { Authorization: "t" }]);
+  });
+});

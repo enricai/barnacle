@@ -44,6 +44,15 @@ export async function fetchFollowingRedirectsPreservingMethod(
 ): Promise<Response> {
   const { fetchImpl = fetch, ...rest } = init;
   const currentInit: RequestInit = { ...rest, redirect: "manual" };
+  // Credentials the caller sent were meant for the original origin only.
+  // Each hop's headers are derived from this snapshot: full when the hop is
+  // back on the original origin, credential-stripped otherwise.
+  const originalHeaders = headersToRecord(rest.headers);
+  const strippedHeaders = Object.fromEntries(
+    Object.entries(originalHeaders).filter(([name]) => !isCredentialHeader(name))
+  );
+  const originalOrigin = new URL(url).origin;
+  const hasCallerHeaders = rest.headers !== undefined;
   // Cookies minted by intermediate hops, by name, newest winning. A login or
   // consent redirect commonly sets the session cookie on the 302 itself, so
   // dropping these makes the final request arrive unauthenticated.
@@ -74,6 +83,10 @@ export async function fetchFollowingRedirectsPreservingMethod(
     for (const setCookie of response.headers.getSetCookie()) {
       const [first] = parseCookiePairs(setCookie);
       if (first !== undefined) hopCookies.set(first[0], first[1]);
+    }
+    const crossOrigin = nextUrl.origin !== originalOrigin;
+    if (hasCallerHeaders) {
+      currentInit.headers = { ...(crossOrigin ? strippedHeaders : originalHeaders) };
     }
     if (hopCookies.size > 0) {
       const headers = new Headers(currentInit.headers);
@@ -110,4 +123,25 @@ export function parseCookiePairs(cookieHeader: string): Array<[string, string]> 
       const eq = pair.indexOf("=");
       return eq === -1 ? [] : [[pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()] as const];
     });
+}
+
+const CREDENTIAL_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+]);
+const CREDENTIAL_NAME_SUFFIX = /(?:^|[-_])(?:token|secret|key|auth|password|passwd|credentials?)$/i;
+
+/** True for headers that carry a credential and must not cross origins. */
+export function isCredentialHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return CREDENTIAL_HEADERS.has(lower) || CREDENTIAL_NAME_SUFFIX.test(lower);
+}
+
+/** Normalizes Headers, tuple arrays or records into a plain record. */
+function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {
+  if (headers === undefined) return {};
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries());
+  if (Array.isArray(headers)) return Object.fromEntries(headers);
+  return { ...(headers as Record<string, string>) };
 }
