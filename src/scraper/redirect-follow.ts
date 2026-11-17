@@ -133,22 +133,15 @@ export function parseCookiePairs(cookieHeader: string): Array<[string, string]> 
     });
 }
 
-// Header names cannot be reliably classified as credential-bearing, so a
-// cross-origin hop keeps only headers known to be content negotiation or
-// client identification; everything else is treated as potentially secret.
-const CROSS_ORIGIN_SAFE_HEADERS: ReadonlySet<string> = new Set([
-  "accept",
-  "accept-language",
-  "accept-encoding",
-  "content-type",
-  "user-agent",
-  "cache-control",
-  "pragma",
-]);
+// Any header whose name mentions a credential concept anywhere (not only as a
+// suffix: x-authorization, x-signature, x-keyid-secret-value) must not cross
+// origins. Matching is on the stem so every spelling of the concept is caught.
+const CREDENTIAL_NAME_STEM =
+  /auth|token|secret|key|sign|pass(?:word|wd)|cred|session|cookie|bearer|jwt|sid\b/i;
 
-/** True for headers that may carry a credential and must not cross origins. */
+/** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
-  return !CROSS_ORIGIN_SAFE_HEADERS.has(name.toLowerCase());
+  return CREDENTIAL_NAME_STEM.test(name);
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */
