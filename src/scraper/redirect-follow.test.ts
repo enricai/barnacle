@@ -9,7 +9,7 @@ import {
 } from "@/scraper/redirect-follow";
 
 /** Lower-cased header record, whatever HeadersInit shape the follower passed. */
-const asRecord = (h: HeadersInit | undefined) => Object.fromEntries(new Headers(h));
+const asRecord = (h: ConstructorParameters<typeof Headers>[0]) => Object.fromEntries(new Headers(h));
 
 describe("fetchFollowingRedirectsPreservingMethod", () => {
   let server: Server;
