@@ -133,17 +133,22 @@ export function parseCookiePairs(cookieHeader: string): Array<[string, string]> 
     });
 }
 
-const CREDENTIAL_HEADERS: ReadonlySet<string> = new Set([
-  "authorization",
-  "proxy-authorization",
-  "cookie",
+// Header names cannot be reliably classified as credential-bearing, so a
+// cross-origin hop keeps only headers known to be content negotiation or
+// client identification; everything else is treated as potentially secret.
+const CROSS_ORIGIN_SAFE_HEADERS: ReadonlySet<string> = new Set([
+  "accept",
+  "accept-language",
+  "accept-encoding",
+  "content-type",
+  "user-agent",
+  "cache-control",
+  "pragma",
 ]);
-const CREDENTIAL_NAME_SUFFIX = /(?:token|secret|key|auth|password|passwd|credentials?|session)$/i;
 
-/** True for headers that carry a credential and must not cross origins. */
+/** True for headers that may carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
-  const lower = name.toLowerCase();
-  return CREDENTIAL_HEADERS.has(lower) || CREDENTIAL_NAME_SUFFIX.test(lower);
+  return !CROSS_ORIGIN_SAFE_HEADERS.has(name.toLowerCase());
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */
