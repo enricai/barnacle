@@ -139,6 +139,28 @@ describe("fetchFollowingRedirectsPreservingMethod", () => {
     expect(((await res.json()) as { cookie: string }).cookie).toBe("mine=0; a=1; b=2");
   });
 
+  it("does not send a host-only hop cookie to another host", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: [
+            ["Location", "http://other.example.net/x"],
+            ["Set-Cookie", "sid=1; Path=/"],
+          ],
+        })
+      )
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("http://example.com/a", {
+      method: "GET",
+      headers: { Cookie: "mine=0" },
+      fetchImpl,
+    });
+    const headers = fetchImpl.mock.calls[1]?.[1].headers as Record<string, string>;
+    expect(headers.Cookie ?? headers.cookie).toBeUndefined();
+  });
+
   it("calls onHop for every response", async () => {
     const onHop = vi.fn();
     await fetchFollowingRedirectsPreservingMethod(`${base}/cookie1`, { method: "GET" }, onHop);
@@ -306,4 +328,276 @@ describe("fetchFollowingRedirectsPreservingMethod header characterization", () =
       });
     }
   );
+});
+
+describe("fetchFollowingRedirectsPreservingMethod baseline (characterization)", () => {
+  const redirect = (status: number, location: string, extra: Record<string, string> = {}) =>
+    new Response(null, { status, headers: { Location: location, ...extra } });
+
+  it("keeps Authorization, Cookie and x-api-key on a same-origin redirect", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(302, "https://example.com/b"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "GET",
+      headers: { Authorization: "Bearer t", Cookie: "s=1", "x-api-key": "k" },
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({
+      Authorization: "Bearer t",
+      Cookie: "s=1",
+      "x-api-key": "k",
+    });
+  });
+
+  it.each([301, 302, 303, 307, 308])("%i keeps method and body (mocked)", async (status) => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(status, "/next"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "PUT",
+      body: "payload",
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe("https://example.com/next");
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "PUT", body: "payload" });
+  });
+
+  it("carries a same-host Set-Cookie to the next hop", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(302, "/home", { "Set-Cookie": "sid=abc; Path=/; HttpOnly" }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/login", {
+      method: "GET",
+      headers: { "x-api-key": "k" },
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({
+      "x-api-key": "k",
+      Cookie: "sid=abc",
+    });
+  });
+
+  it("resolves relative Location forms against the producing URL", async () => {
+    const cases: Array<[string, string]> = [
+      ["/abs", "https://example.com/abs"],
+      ["sibling", "https://example.com/dir/sibling"],
+      ["../up", "https://example.com/up"],
+      ["//other.example.com/p", "https://other.example.com/p"],
+    ];
+    for (const [loc, expected] of cases) {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect(301, loc))
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+      await fetchFollowingRedirectsPreservingMethod("https://example.com/dir/page", {
+        fetchImpl,
+      });
+      expect(fetchImpl.mock.calls[1]?.[0]).toBe(expected);
+    }
+  });
+});
+
+describe("fetchFollowingRedirectsPreservingMethod same-origin characterization", () => {
+  const redirect = (status: number, location: string, extra: Record<string, string> = {}) =>
+    new Response(null, { status, headers: { Location: location, ...extra } });
+  const ok = () => new Response("ok", { status: 200 });
+
+  it("keeps every header on every same-origin hop", async () => {
+    const headers = {
+      Authorization: "Bearer t",
+      "Proxy-Authorization": "Basic p",
+      Cookie: "s=1",
+      "x-api-key": "k",
+      "x-custom": "c",
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(302, "/b"))
+      .mockResolvedValueOnce(redirect(307, "https://example.com/c"))
+      .mockResolvedValueOnce(ok());
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "GET",
+      headers,
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    for (const call of fetchImpl.mock.calls) {
+      expect(call[1].headers).toEqual(headers);
+    }
+  });
+
+  it.each([301, 302, 303, 307, 308])(
+    "%i keeps method, body and all headers on a header-bearing POST",
+    async (status) => {
+      const headers = { Authorization: "Bearer t", "x-api-key": "k", "x-custom": "c" };
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect(status, "/next"))
+        .mockResolvedValueOnce(ok());
+      await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+        method: "POST",
+        body: '{"a":1}',
+        headers,
+        fetchImpl,
+      });
+      expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
+        method: "POST",
+        body: '{"a":1}',
+        headers,
+      });
+    }
+  );
+
+  it("attaches a consent cookie on the next hop and keeps it on a second same-host hop", async () => {
+    // The follower mutates one init object across hops, so snapshot headers at call time.
+    const seen: unknown[] = [];
+    const responses = [
+      redirect(302, "/consent", { "Set-Cookie": "consent=yes; Path=/" }),
+      redirect(302, "/final"),
+      ok(),
+    ];
+    const fetchImpl = vi.fn(async (_u: unknown, init?: RequestInit) => {
+      seen.push(init?.headers === undefined ? undefined : { ...(init.headers as object) });
+      return responses.shift() as Response;
+    });
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "GET",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(seen).toEqual([undefined, { Cookie: "consent=yes" }, { Cookie: "consent=yes" }]);
+  });
+
+  it("merges a hop cookie with the caller's Cookie and other headers", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect(302, "/b", { "Set-Cookie": "sid=abc; Path=/" }))
+      .mockResolvedValueOnce(ok());
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "GET",
+      headers: { Cookie: "mine=0", Authorization: "Bearer t" },
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({
+      Cookie: "mine=0; sid=abc",
+      Authorization: "Bearer t",
+    });
+  });
+});
+
+describe("fetchFollowingRedirectsPreservingMethod cross-origin credentials", () => {
+  const redirect = (location: string) =>
+    new Response(null, { status: 307, headers: { Location: location } });
+  const creds = {
+    Authorization: "Bearer t",
+    "Proxy-Authorization": "p",
+    Cookie: "s=1",
+    "X-API-Key": "k",
+    "x-custom": "c",
+  };
+  it.each(["https://other.com/b", "http://example.com/b", "https://example.com:8443/b"])(
+    "drops credentials but keeps method, body, other headers for %s",
+    async (loc) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect(loc))
+        .mockResolvedValueOnce(new Response("ok"));
+      await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+        method: "POST",
+        body: "x",
+        headers: creds,
+        fetchImpl,
+      });
+      const init = fetchImpl.mock.calls[1]?.[1];
+      expect(init.headers).toEqual({ "x-custom": "c" });
+      expect(init).toMatchObject({ method: "POST", body: "x" });
+    }
+  );
+  it("accepts Headers and tuple input", async () => {
+    for (const headers of [new Headers(creds), Object.entries(creds)]) {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(redirect("https://other.com/b"))
+        .mockResolvedValueOnce(new Response("ok"));
+      await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+        headers,
+        fetchImpl,
+      });
+      expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ "x-custom": "c" });
+    }
+  });
+  it("stays dropped on later hops even when back on the original origin", async () => {
+    const seen: unknown[] = [];
+    const fetchImpl = vi.fn(async (u: string, init?: RequestInit) => {
+      seen.push({ ...(init?.headers as object) });
+      if (u.endsWith("/a")) return redirect("https://other.com/b");
+      if (u.endsWith("/b")) return redirect("https://other.com/c");
+      if (u.endsWith("/c")) return redirect("https://example.com/d");
+      return new Response("ok");
+    });
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      headers: { Authorization: "t" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(seen).toEqual([{ Authorization: "t" }, {}, {}, {}]);
+  });
+});
+
+describe("fetchFollowingRedirectsPreservingMethod cross-origin across statuses", () => {
+  const creds = {
+    Authorization: "Bearer t",
+    "Proxy-Authorization": "p",
+    Cookie: "s=1",
+    "X-API-Key": "k",
+    "x-custom": "c",
+  };
+  it.each([301, 302, 303, 307, 308])(
+    "%i to another host strips credentials, keeps method/body/other headers",
+    async (status) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(null, { status, headers: { Location: "https://other.com/b" } })
+        )
+        .mockResolvedValueOnce(new Response("ok"));
+      await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+        method: "POST",
+        body: "x",
+        headers: creds,
+        fetchImpl,
+      });
+      expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://example.com/a");
+      expect(fetchImpl.mock.calls[1]?.[0]).toBe("https://other.com/b");
+      const init = fetchImpl.mock.calls[1]?.[1];
+      expect(init.headers).toEqual({ "x-custom": "c" });
+      expect(init).toMatchObject({ method: "POST", body: "x" });
+    }
+  );
+  it("A->B->A keeps credentials stripped and keeps body", async () => {
+    const seen: Array<{ url: string; headers: unknown; method?: string; body?: unknown }> = [];
+    const fetchImpl = vi.fn(async (u: string, init?: RequestInit) => {
+      seen.push({
+        url: u,
+        headers: { ...(init?.headers as object) },
+        method: init?.method,
+        body: init?.body,
+      });
+      if (u === "https://a.com/1")
+        return new Response(null, { status: 302, headers: { Location: "https://b.com/2" } });
+      if (u === "https://b.com/2")
+        return new Response(null, { status: 302, headers: { Location: "https://a.com/3" } });
+      return new Response("ok");
+    });
+    await fetchFollowingRedirectsPreservingMethod("https://a.com/1", {
+      method: "POST",
+      body: "x",
+      headers: creds,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(seen.map((s) => s.headers)).toEqual([creds, { "x-custom": "c" }, { "x-custom": "c" }]);
+    expect(seen.every((s) => s.method === "POST" && s.body === "x")).toBe(true);
+  });
 });

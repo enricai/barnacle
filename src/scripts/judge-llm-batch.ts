@@ -34,6 +34,7 @@ import {
 import { config } from "@/config";
 import { JUDGE_VERDICT_SCHEMA } from "@/lib/llm/schemas";
 import { getScriptLogger } from "@/lib/logging";
+import { createTimeoutFetch } from "@/scraper/session-shared";
 
 const logger = getScriptLogger("judge-llm-batch");
 
@@ -331,7 +332,10 @@ export async function runJudge(params: JudgeParams): Promise<JudgeResult> {
       if (!config.scraper.anthropicApiKey) {
         throw new Error("judge:llm requires ANTHROPIC_API_KEY");
       }
-      const client = new Anthropic({ apiKey: config.scraper.anthropicApiKey });
+      const client = new Anthropic({
+        apiKey: config.scraper.anthropicApiKey,
+        fetch: createTimeoutFetch(config.scraper.anthropicTimeoutMs),
+      });
       scorerFn = makeAnthropicScorer(client, judgeModel);
     }
   }

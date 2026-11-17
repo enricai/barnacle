@@ -11,6 +11,11 @@ import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { followerStub } = vi.hoisted(() => ({ followerStub: vi.fn() }));
+vi.mock("@/scraper/redirect-follow", () => ({
+  fetchFollowingRedirectsPreservingMethod: followerStub,
+}));
+
 vi.mock("@/config", () => ({
   config: {
     scraper: {
@@ -508,6 +513,13 @@ describe("runJudge", () => {
     expect(verdict.aggregate.n).toBe(0);
   });
 
+  it("builds a real Anthropic scorer when not dry-run and no scorerFn is injected", async () => {
+    // No matching samples → the constructed scorer is never invoked (no network).
+    writeSamples([makeSample({ callType: "observe" })]);
+    const { verdict } = await runJudge({ callsNdjsonPath, callType: "act", outDir });
+    expect(verdict.aggregate.n).toBe(0);
+  });
+
   it("throws when the calls NDJSON file does not exist", async () => {
     await expect(
       runJudge({
@@ -517,5 +529,18 @@ describe("runJudge", () => {
         dryRun: true,
       })
     ).rejects.toThrow();
+  });
+
+  it("routes the real client's fetch through the redirect follower", async () => {
+    followerStub.mockReset();
+    followerStub.mockResolvedValue(new Response("{}", { status: 400 }));
+    writeSamples([makeSample()]);
+    await runJudge({
+      callsNdjsonPath,
+      callType: "act",
+      outDir,
+    }).catch(() => undefined);
+    expect(followerStub).toHaveBeenCalled();
+    expect(String(followerStub.mock.calls[0]![0])).toContain("/v1/messages");
   });
 });

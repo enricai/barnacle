@@ -2,6 +2,7 @@ import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import type { AISdkClient } from "@browserbasehq/stagehand";
 
 import type { AppConfig } from "@/config";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 
 /** AI SDK `LanguageModel` shape Stagehand's `AISdkClient` accepts. */
 export type StagehandModel = ConstructorParameters<typeof AISdkClient>[0]["model"];
@@ -31,6 +32,12 @@ export function createBedrockModel(bedrockConfig: AppConfig["bedrock"]): Stageha
 
   const provider = createAmazonBedrock({
     region: bedrockConfig.region,
+    // Route through the redirect follower so a 301/302 cannot downgrade a POST.
+    fetch: ((url, init) =>
+      fetchFollowingRedirectsPreservingMethod(
+        typeof url === "string" ? url : url instanceof URL ? url.href : url.url,
+        { ...init }
+      )) as typeof fetch,
     ...(hasExplicitCredentials
       ? {
           accessKeyId: bedrockConfig.accessKeyId as string,

@@ -40,6 +40,7 @@ import {
 } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { navigateActivePage } from "@/scraper/navigate";
+import { createTimeoutFetch } from "@/scraper/session-shared";
 import { guardedExtract } from "@/scraper/stagehand-guard";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 import { testmailInboxFromAddress } from "@/testmail/client";
@@ -188,7 +189,10 @@ function toHealingStep(
 function buildRephraseModelForContext(appConfig: AppConfig): RephraseModel | null {
   if (appConfig.scraper.useBedrock) return createBedrockModel(appConfig.bedrock);
   if (!appConfig.scraper.anthropicApiKey) return null;
-  const provider = createAnthropic({ apiKey: appConfig.scraper.anthropicApiKey });
+  const provider = createAnthropic({
+    apiKey: appConfig.scraper.anthropicApiKey,
+    fetch: createTimeoutFetch(appConfig.scraper.anthropicTimeoutMs),
+  });
   const rawModel = appConfig.scraper.model;
   const modelId = rawModel.startsWith("anthropic/")
     ? rawModel.slice("anthropic/".length)
@@ -365,7 +369,10 @@ export async function buildConfigPlugin(
 
       const steps = spec.flow.steps.map((s) => toHealingStep(s, payload, declaredFields));
       const anthropic = context.config.scraper.anthropicApiKey
-        ? new Anthropic({ apiKey: context.config.scraper.anthropicApiKey })
+        ? new Anthropic({
+            apiKey: context.config.scraper.anthropicApiKey,
+            fetch: createTimeoutFetch(context.config.scraper.anthropicTimeoutMs),
+          })
         : null;
       const rephraseModel = buildRephraseModelForContext(context.config);
       const allocatedInbox = hasEmailStep

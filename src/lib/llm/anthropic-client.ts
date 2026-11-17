@@ -4,6 +4,7 @@ import type { LanguageModel } from "ai";
 
 import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
+import { createTimeoutFetch } from "@/scraper/session-shared";
 
 /**
  * The rephrase call chain's own model type, derived from `ai`'s
@@ -25,7 +26,10 @@ export type RephraseModel = Exclude<LanguageModel, string>;
  */
 export function buildAnthropicClient(): Anthropic | null {
   if (config.scraper.useBedrock || !config.scraper.anthropicApiKey) return null;
-  return new Anthropic({ apiKey: config.scraper.anthropicApiKey });
+  return new Anthropic({
+    apiKey: config.scraper.anthropicApiKey,
+    fetch: createTimeoutFetch(config.scraper.anthropicTimeoutMs),
+  });
 }
 
 /**
@@ -41,7 +45,10 @@ export function buildAnthropicClient(): Anthropic | null {
 export function buildRephraseModel(): RephraseModel | null {
   if (config.scraper.useBedrock) return createBedrockModel(config.bedrock);
   if (!config.scraper.anthropicApiKey) return null;
-  const provider = createAnthropic({ apiKey: config.scraper.anthropicApiKey });
+  const provider = createAnthropic({
+    apiKey: config.scraper.anthropicApiKey,
+    fetch: createTimeoutFetch(config.scraper.anthropicTimeoutMs),
+  });
   const rawModel = config.scraper.model;
   const modelId = rawModel.startsWith("anthropic/")
     ? rawModel.slice("anthropic/".length)

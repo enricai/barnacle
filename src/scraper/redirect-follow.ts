@@ -1,3 +1,5 @@
+import { RedirectCookieJar } from "./redirect-cookie-jar.js";
+
 /**
  * Maximum redirect hops followed while preserving the request method.
  * Bounds a redirect loop; five matches the conventional browser limit.
@@ -44,10 +46,25 @@ export async function fetchFollowingRedirectsPreservingMethod(
 ): Promise<Response> {
   const { fetchImpl = fetch, ...rest } = init;
   const currentInit: RequestInit = { ...rest, redirect: "manual" };
+  // Credentials the caller sent were meant for the original origin only.
+  // Each hop's headers are derived from this snapshot: full when the hop is
+  // back on the original origin, credential-stripped otherwise.
+  const originalHeaders = headersToRecord(rest.headers);
+  const strippedHeaders = Object.fromEntries(
+    Object.entries(originalHeaders).filter(([name]) => !isCredentialHeader(name))
+  );
+  // An unparseable URL must reach fetch so it rejects there as before.
+  let originalOrigin: string | null = null;
+  try {
+    originalOrigin = new URL(url).origin;
+  } catch {
+    // left null; fetchImpl reports the invalid URL
+  }
+  let leftOriginalOrigin = false;
   // Cookies minted by intermediate hops, by name, newest winning. A login or
   // consent redirect commonly sets the session cookie on the 302 itself, so
   // dropping these makes the final request arrive unauthenticated.
-  const hopCookies = new Map<string, string>();
+  const jar = new RedirectCookieJar();
   let currentUrl = url;
   for (let hop = 0; hop <= MAX_METHOD_PRESERVING_REDIRECTS; hop += 1) {
     const response = await fetchImpl(currentUrl, currentInit);
@@ -65,17 +82,21 @@ export async function fetchFollowingRedirectsPreservingMethod(
     // rather than a synthesized error.
     if (location === null || location === "") return response;
 
-    // `Set-Cookie` is `name=value; Path=/; HttpOnly` — the FIRST pair is the
-    // cookie and the rest are attributes, so only the first is carried
-    // forward. Attributes (Domain, Path, Expires) are deliberately not
-    // honored: this is a short-lived redirect chain inside one logical
-    // request, not a cookie jar.
+    // Hop-minted cookies go into a jar that only returns what a real cookie
+    // jar would send to the next URL (host/domain, path, Secure, expiry).
     const nextUrl = new URL(location, currentUrl);
+    const hopUrl = new URL(currentUrl);
     for (const setCookie of response.headers.getSetCookie()) {
-      const [first] = parseCookiePairs(setCookie);
-      if (first !== undefined) hopCookies.set(first[0], first[1]);
+      jar.add(setCookie, hopUrl);
     }
-    if (hopCookies.size > 0) {
+    // Once any hop leaves the original origin, credentials stay stripped for
+    // the rest of the chain (Fetch spec); a later hop back cannot restore them.
+    if (nextUrl.origin !== originalOrigin) leftOriginalOrigin = true;
+    // Always rebuild from the snapshot so a cookie attached for an earlier hop
+    // never rides along to a hop the jar no longer selects it for.
+    currentInit.headers = { ...(leftOriginalOrigin ? strippedHeaders : originalHeaders) };
+    const hopCookies = jar.select(nextUrl);
+    if (hopCookies.length > 0) {
       const headers = new Headers(currentInit.headers);
       // Merge rather than replace, so a cookie the caller sent survives
       // alongside the hop's — and a hop setting the same name wins, since it
@@ -110,4 +131,23 @@ export function parseCookiePairs(cookieHeader: string): Array<[string, string]> 
       const eq = pair.indexOf("=");
       return eq === -1 ? [] : [[pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()] as const];
     });
+}
+
+// Any header whose name mentions a credential concept anywhere (not only as a
+// suffix: x-authorization, x-signature, x-keyid-secret-value) must not cross
+// origins. Matching is on the stem so every spelling of the concept is caught.
+const CREDENTIAL_NAME_STEM =
+  /auth|token|secret|key|sign|pass(?:word|wd)|cred|session|cookie|bearer|jwt|sid\b/i;
+
+/** True for headers that carry a credential and must not cross origins. */
+export function isCredentialHeader(name: string): boolean {
+  return CREDENTIAL_NAME_STEM.test(name);
+}
+
+/** Normalizes Headers, tuple arrays or records into a plain record. */
+function headersToRecord(headers: RequestInit["headers"] | undefined): Record<string, string> {
+  if (headers === undefined) return {};
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries());
+  if (Array.isArray(headers)) return Object.fromEntries(headers);
+  return { ...(headers as Record<string, string>) };
 }

@@ -29,7 +29,6 @@ import { join } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { formatISO } from "date-fns";
-
 import { type JudgeVerdict, judgeVerdictSchema, type LlmCallSample } from "@/api/schemas/telemetry";
 import { config } from "@/config";
 import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
@@ -41,6 +40,7 @@ import {
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_LLM_PROMPT_PATCH } from "@/lib/telemetry/call-types";
+import { createTimeoutFetch } from "@/scraper/session-shared";
 import {
   makeAnthropicScorer,
   makeDryRunScorer,
@@ -565,7 +565,10 @@ export async function phaseLlmHeal(params: LlmHealParams): Promise<LlmHealResult
     if (!config.scraper.anthropicApiKey) {
       throw new Error("llm-heal requires ANTHROPIC_API_KEY");
     }
-    const client = new Anthropic({ apiKey: config.scraper.anthropicApiKey });
+    const client = new Anthropic({
+      apiKey: config.scraper.anthropicApiKey,
+      fetch: createTimeoutFetch(config.scraper.anthropicTimeoutMs),
+    });
     resolvedScorerFn = makeAnthropicScorer(client, judgeModel);
   }
 
