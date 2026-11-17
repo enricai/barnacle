@@ -68,3 +68,76 @@ describe("recon-http own-backend scope", () => {
     expect(selectReplayCaptures([cap], true).selected).toHaveLength(1);
   });
 });
+
+describe("selectRateLimitTargets relevance order", () => {
+  it("orders submit, fold, JSON, rest", () => {
+    const json = (u: string, m = "GET"): ReplayResult => ({
+      ...r(u, m),
+      replayHeaders: { "content-type": "application/json" },
+    });
+    const out = selectRateLimitTargets(
+      [
+        r("https://shop.example.com/page"),
+        r("https://shop.example.com/beacon"),
+        json("https://shop.example.com/api/submit"),
+        json("https://shop.example.com/api/fold"),
+        json("https://shop.example.com/api/other"),
+      ],
+      [],
+      "shop.example.com",
+      ["/api/submit", "/api/fold"],
+      "/api/submit"
+    );
+    expect(urls(out)).toEqual([
+      "https://shop.example.com/api/submit",
+      "https://shop.example.com/api/fold",
+      "https://shop.example.com/api/other",
+      "https://shop.example.com/page",
+      "https://shop.example.com/beacon",
+    ]);
+  });
+
+  it("ranks a fold below JSON-free submit absence: no submit pattern means fold is tier 1, not 0", () => {
+    const json = (u: string): ReplayResult => ({
+      ...r(u, "GET"),
+      replayHeaders: { "content-type": "application/json" },
+    });
+    const out = selectRateLimitTargets(
+      [
+        json("https://shop.example.com/api/other"),
+        json("https://shop.example.com/api/fold"),
+        json("https://shop.example.com/api/submit"),
+      ],
+      [],
+      "shop.example.com",
+      ["/api/fold", "/api/submit"],
+      "/api/submit"
+    );
+    expect(urls(out)[0]).toBe("https://shop.example.com/api/submit");
+  });
+});
+
+describe("selectRateLimitTargets declared patterns without submit", () => {
+  const json = (u: string): ReplayResult => ({
+    ...r(u, "GET"),
+    replayHeaders: { "content-type": "application/json" },
+  });
+  it("fold-only declaration ranks fold first, JSON next", () => {
+    const out = selectRateLimitTargets(
+      [json("https://shop.example.com/api/other"), json("https://shop.example.com/api/fold")],
+      [],
+      "shop.example.com",
+      ["/api/fold"]
+    );
+    expect(urls(out)[0]).toBe("https://shop.example.com/api/fold");
+  });
+  it("an invalid pattern never matches but keeps alignment", () => {
+    const out = selectRateLimitTargets(
+      [json("https://shop.example.com/api/other"), json("https://shop.example.com/api/fold")],
+      [],
+      "shop.example.com",
+      ["(unclosed", "/api/fold"]
+    );
+    expect(urls(out)[0]).toBe("https://shop.example.com/api/fold");
+  });
+});

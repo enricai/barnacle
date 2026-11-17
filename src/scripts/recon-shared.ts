@@ -289,6 +289,52 @@ export function readOwnBackendHostnames(flowFile: string): string[] {
 }
 
 /**
+ * Reads the flow file's declared endpoint patterns: `submitEndpointPattern`
+ * first, then every `foldReturn` `endpointPattern` (single object or array).
+ * Tolerant like `readOwnBackendHostnames`: `[]` for bare-array flows and on
+ * read/parse failure.
+ */
+export function readDeclaredEndpointPatterns(flowFile: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return [];
+    const { submitEndpointPattern, foldReturn } = parsed as {
+      submitEndpointPattern?: unknown;
+      foldReturn?: unknown;
+    };
+    const out: string[] = [];
+    const add = (v: unknown): void => {
+      if (typeof v === "string" && v.length > 0) out.push(v);
+    };
+    add(submitEndpointPattern);
+    const folds = Array.isArray(foldReturn) ? foldReturn : foldReturn ? [foldReturn] : [];
+    for (const f of folds) {
+      if (f && typeof f === "object") add((f as { endpointPattern?: unknown }).endpointPattern);
+    }
+    return out;
+  } catch (err) {
+    logger.warn(
+      `flow file '${flowFile}' unreadable for declared endpoint patterns, relevance ordering disabled: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return [];
+  }
+}
+
+/** Reads the flow file's `submitEndpointPattern` alone (undefined when absent/unreadable). */
+export function readSubmitEndpointPattern(flowFile: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return undefined;
+    const v = (parsed as { submitEndpointPattern?: unknown }).submitEndpointPattern;
+    return typeof v === "string" && v.length > 0 ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Reads the explicit top-level `browserFlowOnly` opt-in out of a recon flow file.
  *
  * Throws on an unreadable or malformed file so a broken flow is reported rather

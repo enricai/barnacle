@@ -4,7 +4,12 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { readOwnBackendHostnames, readSuccessUrlFragments } from "@/scripts/recon-shared";
+import {
+  readDeclaredEndpointPatterns,
+  readOwnBackendHostnames,
+  readSubmitEndpointPattern,
+  readSuccessUrlFragments,
+} from "@/scripts/recon-shared";
 
 const DIR = mkdtempSync(join(tmpdir(), "flow-readers-"));
 const flow = (name: string, body: string): string => {
@@ -31,5 +36,44 @@ describe.each([
   it("returns [] for malformed or missing files", () => {
     expect(fn(flow(`${key}5.json`, "nope"))).toEqual([]);
     expect(fn(join(DIR, "missing.json"))).toEqual([]);
+  });
+});
+
+describe("readDeclaredEndpointPatterns", () => {
+  it("returns submit pattern first, then foldReturn object", () => {
+    const f = flow(
+      "dep1.json",
+      JSON.stringify({
+        submitEndpointPattern: "/s",
+        foldReturn: { endpointPattern: "/f" },
+      })
+    );
+    expect(readDeclaredEndpointPatterns(f)).toEqual(["/s", "/f"]);
+  });
+  it("returns all foldReturn array patterns", () => {
+    const f = flow(
+      "dep2.json",
+      JSON.stringify({
+        submitEndpointPattern: "/s",
+        foldReturn: [{ endpointPattern: "/a" }, {}, { endpointPattern: "/b" }],
+      })
+    );
+    expect(readDeclaredEndpointPatterns(f)).toEqual(["/s", "/a", "/b"]);
+  });
+  it("returns [] for bare array, neither field, malformed, missing", () => {
+    expect(readDeclaredEndpointPatterns(flow("dep3.json", "[]"))).toEqual([]);
+    expect(readDeclaredEndpointPatterns(flow("dep4.json", "{}"))).toEqual([]);
+    expect(readDeclaredEndpointPatterns(flow("dep5.json", "nope"))).toEqual([]);
+    expect(readDeclaredEndpointPatterns(join(DIR, "missing.json"))).toEqual([]);
+  });
+});
+
+describe("readSubmitEndpointPattern", () => {
+  it("returns the pattern, and undefined for absent/array/unreadable", () => {
+    expect(readSubmitEndpointPattern(flow("s1.json", '{"submitEndpointPattern":"/x"}'))).toBe("/x");
+    expect(readSubmitEndpointPattern(flow("s2.json", "{}"))).toBeUndefined();
+    expect(readSubmitEndpointPattern(flow("s3.json", "[]"))).toBeUndefined();
+    expect(readSubmitEndpointPattern(flow("s4.json", "{bad"))).toBeUndefined();
+    expect(readSubmitEndpointPattern(join(DIR, "missing.json"))).toBeUndefined();
   });
 });

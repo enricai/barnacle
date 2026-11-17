@@ -56,7 +56,9 @@ import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   adoptReconRunRoot,
   type ReplayResult,
+  readDeclaredEndpointPatterns,
   readOwnBackendHostnames,
+  readSubmitEndpointPattern,
   replayPassed,
   replayReachable,
   resolveLatestReconRunRoot,
@@ -851,14 +853,24 @@ export function isOwnBackendTarget(
 export function selectRateLimitTargets(
   replays: ReplayResult[],
   ownBackendHostnames: string[],
-  fallbackHost: string | null = null
+  fallbackHost: string | null = null,
+  declaredEndpointPatterns: readonly string[] = [],
+  submitEndpointPattern?: string
 ): {
   targets: Map<string, { method: string; body: string | null }>;
   skipped: number;
 } {
-  const targets = new Map<string, { method: string; body: string | null }>();
+  const collected = new Map<string, { method: string; body: string | null; tier: number }>();
   const seenEndpoints = new Set<string>();
   let skipped = 0;
+  const patterns: RegExp[] = [];
+  for (const p of declaredEndpointPatterns) {
+    try {
+      patterns.push(new RegExp(p));
+    } catch {
+      patterns.push(/(?!)/); // invalid pattern: keep index alignment, never matches
+    }
+  }
   for (const replay of replays) {
     if (!replayReachable(replay)) continue;
     if (!isReplayResultSafe(replay)) continue;
@@ -883,15 +895,36 @@ export function selectRateLimitTargets(
       const endpointKey = `${u.origin}${u.pathname}`;
       if (!seenEndpoints.has(endpointKey)) {
         seenEndpoints.add(endpointKey);
-        targets.set(`${endpointKey}${u.search}`, {
+        const ct = Object.entries(replay.replayHeaders ?? {}).find(
+          ([k]) => k.toLowerCase() === "content-type"
+        )?.[1];
+        const isJson = /json/i.test(String(ct ?? ""));
+        let tier = isJson ? 2 : 3;
+        // Declared patterns: only the explicit submit pattern is tier 0; the rest (foldReturn) tier 1.
+        for (let i = 0; i < patterns.length; i++) {
+          if (patterns[i]!.test(replay.url)) {
+            tier =
+              submitEndpointPattern !== undefined &&
+              declaredEndpointPatterns[i] === submitEndpointPattern
+                ? 0
+                : 1;
+            break;
+          }
+        }
+        collected.set(`${endpointKey}${u.search}`, {
           method: replay.method,
           body: replay.requestBody,
+          tier,
         });
       }
     } catch {
       // skip unparseable urls
     }
   }
+  // Stable sort: relevance tier, then capture order.
+  const targets = new Map<string, { method: string; body: string | null }>();
+  const ordered = [...collected.entries()].sort((a, b) => a[1].tier - b[1].tier);
+  for (const [k, { method, body }] of ordered) targets.set(k, { method, body });
   return { targets, skipped };
 }
 
@@ -1081,7 +1114,9 @@ async function main(): Promise<void> {
   const { targets: probeTargets, skipped: skippedAsNoise } = selectRateLimitTargets(
     replays,
     ownBackendHostnames,
-    fallbackHost
+    fallbackHost,
+    flowFile ? readDeclaredEndpointPatterns(flowFile) : [],
+    flowFile ? readSubmitEndpointPattern(flowFile) : undefined
   );
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +
