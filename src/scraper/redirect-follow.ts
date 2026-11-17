@@ -92,27 +92,36 @@ export async function fetchFollowingRedirectsPreservingMethod(
     // Once any hop leaves the original origin, credentials stay stripped for
     // the rest of the chain (Fetch spec); a later hop back cannot restore them.
     if (nextUrl.origin !== originalOrigin) leftOriginalOrigin = true;
-    // Always rebuild from the snapshot so a cookie attached for an earlier hop
-    // never rides along to a hop the jar no longer selects it for.
-    currentInit.headers = { ...(leftOriginalOrigin ? strippedHeaders : originalHeaders) };
+    // Always rebuild from the caller's headers (or their stripped snapshot) so
+    // a cookie attached for an earlier hop never rides along to a hop the jar
+    // no longer selects it for. With no hop cookies the caller's object passes
+    // through untouched.
+    const baseHeaders = leftOriginalOrigin ? strippedHeaders : rest.headers;
     const hopCookies = jar.select(nextUrl);
-    if (hopCookies.length > 0) {
-      const headers = new Headers(currentInit.headers);
-      // Merge rather than replace, so a cookie the caller sent survives
-      // alongside the hop's — and a hop setting the same name wins, since it
-      // is the more current value.
-      const merged = new Map(parseCookiePairs(headers.get("cookie") ?? ""));
-      for (const [name, value] of hopCookies) merged.set(name, value);
-      headers.set(
-        "cookie",
-        [...merged.entries()].map(([name, value]) => `${name}=${value}`).join("; ")
-      );
-      currentInit.headers = headers;
-    }
+    currentInit.headers =
+      hopCookies.length > 0 ? mergeHopCookies(baseHeaders, hopCookies) : baseHeaders;
 
     currentUrl = nextUrl.toString();
   }
   throw new Error(`exceeded ${MAX_METHOD_PRESERVING_REDIRECTS} redirects starting at ${url}`);
+}
+
+/**
+ * Merges hop-minted cookies into the outgoing headers as a plain record, so
+ * the caller's header names and casing survive. Merging rather than replacing
+ * keeps a cookie the caller sent alongside the hop's, and a hop setting the
+ * same name wins since it is the more current value.
+ */
+function mergeHopCookies(
+  headers: RequestInit["headers"] | undefined,
+  hopCookies: Array<[string, string]>
+): Record<string, string> {
+  const record = headersToRecord(headers);
+  const cookieKey = Object.keys(record).find((name) => name.toLowerCase() === "cookie") ?? "Cookie";
+  const merged = new Map(parseCookiePairs(record[cookieKey] ?? ""));
+  for (const [name, value] of hopCookies) merged.set(name, value);
+  record[cookieKey] = [...merged.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
+  return record;
 }
 
 /**
