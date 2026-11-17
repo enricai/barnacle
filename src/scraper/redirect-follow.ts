@@ -65,7 +65,7 @@ export async function fetchFollowingRedirectsPreservingMethod(
     url = input instanceof URL ? input.href : input;
     rest = initRest;
   }
-  let currentInit: RequestInit = { ...rest, redirect: "manual" };
+  const currentInit: RequestInit = { ...rest, redirect: "manual" };
   // Credentials the caller sent were meant for the original origin only.
   // Each hop's headers are derived from this snapshot: full when the hop is
   // back on the original origin, credential-stripped otherwise.
@@ -162,15 +162,46 @@ export function parseCookiePairs(cookieHeader: string): Array<[string, string]> 
     });
 }
 
-// Any header whose name mentions a credential concept anywhere (not only as a
-// suffix: x-authorization, x-signature, x-keyid-secret-value) must not cross
-// origins. Matching is on the stem so every spelling of the concept is caught.
-const CREDENTIAL_NAME_STEM =
-  /auth|token|secret|key|sign|pass(?:word|wd)|cred|session|cookie|bearer|jwt|sid\b/i;
+// A header is a credential when any hyphen/underscore-delimited word of its
+// name IS a credential word (x-api-key, x-auth-token, proxy-authorization).
+// Whole words, not substrings, so x-author-name is not mistaken for "auth".
+const CREDENTIAL_WORDS = new Set([
+  "auth",
+  "authorization",
+  "authentication",
+  "authenticate",
+  "token",
+  "tokens",
+  "secret",
+  "secrets",
+  "key",
+  "keys",
+  "apikey",
+  "signature",
+  "sign",
+  "signed",
+  "password",
+  "passwd",
+  "pass",
+  "cred",
+  "creds",
+  "credential",
+  "credentials",
+  "session",
+  "sessionid",
+  "cookie",
+  "cookies",
+  "bearer",
+  "jwt",
+  "sid",
+]);
 
 /** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
-  return CREDENTIAL_NAME_STEM.test(name);
+  return name
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((word) => CREDENTIAL_WORDS.has(word));
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */
