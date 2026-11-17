@@ -6690,3 +6690,55 @@ describe("classifySubmissionFlow", () => {
     ).toBe(true);
   });
 });
+
+describe("recon-generate CLI — classifySubmissionFlow call site", () => {
+  const REPO_ROOT = join(__dirname, "..", "..");
+  const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+  const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
+  let workDir: string | null = null;
+  let siteOutDir: string | null = null;
+
+  afterEach(() => {
+    if (workDir) rmSync(workDir, { recursive: true, force: true });
+    if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
+    workDir = null;
+    siteOutDir = null;
+  });
+
+  it("generates a contract for a single read-only GET search capture through the real CLI", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cli-classify-"));
+    const runRoot = join(workDir, "run");
+    mkdirSync(join(runRoot, "graphql"), { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    writeFileSync(
+      join(runRoot, "graphql", "000-search.json"),
+      JSON.stringify({
+        timestamp: "2024-01-01T00:00:00Z",
+        phase: "action",
+        method: "GET",
+        url: "https://api.example.com/books/search?q=a",
+        status: 200,
+        requestHeaders: {},
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { results: { books: [{ isbn: "1", title: "A" }] } },
+        operationName: null,
+        query: null,
+        variables: null,
+        decodedParams: null,
+      } satisfies Capture)
+    );
+    const siteId = `recon-cli-classify-test-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--force"],
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(join(siteOutDir, "contract.ts"), "utf8")).toContain(siteId);
+  }, 30_000);
+});
