@@ -76,34 +76,6 @@ describe("createTimeoutFetch", () => {
 
     vi.advanceTimersByTime(1000);
   });
-});
-
-describe("closeStagehandBounded", () => {
-  beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
-
-  it("resolves and warns when close never settles", async () => {
-    const logger = { warn: vi.fn() };
-    const p = closeStagehandBounded({ close: () => new Promise<void>(() => {}) }, logger);
-    await vi.advanceTimersByTimeAsync(STAGEHAND_CLOSE_TIMEOUT_MS);
-    await expect(p).resolves.toBeUndefined();
-    expect(logger.warn).toHaveBeenCalledTimes(1);
-  });
-
-  it("warns and resolves when close rejects", async () => {
-    const logger = { warn: vi.fn() };
-    await expect(
-      closeStagehandBounded({ close: () => Promise.reject(new Error("boom")) }, logger)
-    ).resolves.toBeUndefined();
-    expect(logger.warn).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not warn on a fast close", async () => {
-    const logger = { warn: vi.fn() };
-    await closeStagehandBounded({ close: () => Promise.resolve() }, logger);
-    expect(logger.warn).not.toHaveBeenCalled();
-  });
-
   describe("Request input", () => {
     const ok = () => new Response("ok");
     const redirect = (location: string) =>
@@ -174,5 +146,32 @@ describe("closeStagehandBounded", () => {
     expect(fetchStub.mock.calls[0]?.[0]).toBe("https://example.com/u");
     expect(fetchStub.mock.calls[1]?.[0]).toBe("https://example.com/s");
     expect((fetchStub.mock.calls[1]?.[1] as RequestInit).method).toBe("POST");
+  });
+});
+
+describe("closeStagehandBounded", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("resolves and warns when close never settles", async () => {
+    const logger = { warn: vi.fn() };
+    const p = closeStagehandBounded({ close: () => new Promise<void>(() => {}) }, logger);
+    await vi.advanceTimersByTimeAsync(STAGEHAND_CLOSE_TIMEOUT_MS);
+    await expect(p).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns and resolves when close rejects", async () => {
+    const logger = { warn: vi.fn() };
+    await expect(
+      closeStagehandBounded({ close: () => Promise.reject(new Error("boom")) }, logger)
+    ).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not warn on a fast close", async () => {
+    const logger = { warn: vi.fn() };
+    await closeStagehandBounded({ close: () => Promise.resolve() }, logger);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
