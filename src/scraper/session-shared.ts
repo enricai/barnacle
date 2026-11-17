@@ -122,11 +122,31 @@ export function createTimeoutFetch(timeoutMs: number): typeof fetch {
       (s): s is AbortSignal => s instanceof AbortSignal
     );
     const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-    const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
-    return fetchFollowingRedirectsPreservingMethod(target, {
-      ...init,
-      signal,
-    }).finally(() => clearTimeout(timer));
+    const run = (target: string, base: RequestInit): Promise<Response> =>
+      fetchFollowingRedirectsPreservingMethod(target, {
+        ...base,
+        ...init,
+        signal,
+      }).finally(() => clearTimeout(timer));
+    if (url instanceof Request) {
+      // A Request carries its own method, headers and body; seed the follower
+      // with them (init overrides) so it can preserve them and strip
+      // credentials cross-origin.
+      const request = url;
+      const hasBody = request.method !== "GET" && request.method !== "HEAD";
+      return (async (): Promise<Response> => {
+        const body = hasBody ? await request.clone().arrayBuffer() : undefined;
+        return run(request.url, {
+          method: request.method,
+          headers: request.headers,
+          ...(body !== undefined ? { body } : {}),
+        });
+      })().catch((error: unknown) => {
+        clearTimeout(timer);
+        throw error;
+      });
+    }
+    return run(typeof url === "string" ? url : url.href, {});
   };
 }
 
