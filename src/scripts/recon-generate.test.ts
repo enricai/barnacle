@@ -6615,3 +6615,43 @@ describe("inferChainStepResponseSchema", () => {
     expect(out).toContain("foo");
   });
 });
+
+describe("read-only GET catalog search with facet captures and no foldReturn", () => {
+  const BASE = "https://api.example.com";
+  const items = [
+    { isbn: "978-1", genre: "SF", pages: 7, title: "A" },
+    { isbn: "978-2", genre: "FANT", pages: 9, title: "B" },
+  ];
+  const cap = (qs: string) => ({
+    capture: {
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "GET",
+      url: `${BASE}/books/search?${qs}`,
+      status: 200,
+      requestHeaders: {},
+      requestPostData: null,
+      responseHeaders: {},
+      responseBody: { results: { books: items } },
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    },
+    isMultipart: false,
+  });
+  const facets = [cap("q=a"), cap("q=a&genre=SF"), cap("q=a&genre=FANT&pages=9")];
+
+  it("extractActionSequence yields no submission steps (GETs are dropped)", () => {
+    expect(extractActionSequence(facets.map((f) => f.capture))).toEqual([]);
+  });
+
+  it("resolveFoldPlan invents no self-fold from facet re-queries", () => {
+    expect(resolveFoldPlan(facets)).toEqual([]);
+    expect(resolveFoldPlan(facets, null)).toEqual([]);
+  });
+
+  it("selectEffectiveResponseBody on a non-submission flow ignores folds", () => {
+    expect(() => selectEffectiveResponseBody(false, facets, null)).not.toThrow();
+  });
+});
