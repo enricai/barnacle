@@ -277,6 +277,16 @@ export function responseShapeDiffers(captured: unknown, replayed: unknown): bool
   return false;
 }
 
+/**
+ * True when the capture's body parses as JSON and the replay's does not, or the
+ * reverse: a different kind of response. Kept apart from `responseShapeDiffers`,
+ * whose lenient contract leaves unstructured captures uncompared.
+ */
+export function bodyTypeDiffers(captured: unknown, replayed: unknown): boolean {
+  if (captured == null || replayed == null) return false;
+  return (parseBody(captured) !== undefined) !== (parseBody(replayed) !== undefined);
+}
+
 /** Captured request header names (lowercased) the replay did not send. */
 export function omittedHeaders(
   captured: Record<string, string> | undefined,
@@ -478,7 +488,10 @@ export async function replayCapture(
     });
 
     const statusOk = response.status >= 200 && response.status < 300;
-    const shapeDiffers = statusOk && responseShapeDiffers(capture.responseBody, replayBody);
+    const shapeDiffers =
+      statusOk &&
+      (bodyTypeDiffers(capture.responseBody, replayBody) ||
+        responseShapeDiffers(capture.responseBody, replayBody));
     const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, headers);
     const omittedAsCaptured = omittedHeaders(capture.requestHeaders, headers, true);
     // A replay passes only when its response matches the capture's shape; a 2xx

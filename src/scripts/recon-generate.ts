@@ -16694,6 +16694,24 @@ export function contractUsesApplicantContactSchema(opts: {
   );
 }
 
+/** Decides whether a flow is a multi-step submission. A read-only GET flow
+ * (e.g. a catalog search with facet re-queries) is never one. */
+export function classifySubmissionFlow(o: {
+  noReplayableActionFlow: boolean;
+  isReadOnlyGetFlow: boolean;
+  actionStepCount: number;
+  gql: boolean;
+  actionCaptureMethods: Array<string | null | undefined>;
+  graphqlActionSequenceHasMutation: boolean;
+}): boolean {
+  if (o.noReplayableActionFlow) return true;
+  if (o.isReadOnlyGetFlow || o.actionStepCount <= 1) return false;
+  return o.gql
+    ? o.graphqlActionSequenceHasMutation
+    : // A read flow whose manifest holds only GET captures is not a submission.
+      o.actionCaptureMethods.some((m) => (m ?? "").toUpperCase() !== "GET");
+}
+
 /** Generates a complete contract.ts source string for a plugin — exported so
  * unit tests can drive the emitter directly without spawning the CLI. */
 export function emitContractTs(opts: Parameters<typeof emitContractTsParts>[0]): string {
@@ -20621,14 +20639,14 @@ async function main(): Promise<void> {
     const actionSteps = isReadOnlyGetFlow && !readFlowHasDeclaredDrill ? [] : compiledActionSteps;
     const noReplayableActionFlow =
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
-    const isSubmissionFlow =
-      noReplayableActionFlow ||
-      (!isReadOnlyGetFlow &&
-        actionSteps.length > 1 &&
-        (!gql
-          ? // A read flow whose manifest holds only GET captures is not a submission.
-            actionCaptures.some((a) => (a.capture.method ?? "").toUpperCase() !== "GET")
-          : graphqlActionSequenceHasMutation));
+    const isSubmissionFlow = classifySubmissionFlow({
+      noReplayableActionFlow,
+      isReadOnlyGetFlow,
+      actionStepCount: actionSteps.length,
+      gql: !!gql,
+      actionCaptureMethods: actionCaptures.map((a) => a.capture.method),
+      graphqlActionSequenceHasMutation,
+    });
 
     // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
     // whose every action capture is landing-phase is almost certainly page-chrome

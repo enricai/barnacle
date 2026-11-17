@@ -7768,6 +7768,49 @@ describe("recon-browser/writeSubmitManifest read flows + auditFinalSubmitMatch s
     expect(warns.some((w) => w.includes("no capture matched"))).toBe(false);
   });
 
+  it("populates the manifest from query-string GET searches; a no-match run warns with an empty manifest", () => {
+    warns.length = 0;
+    const hit = setup([
+      { method: "GET", url: `${BASE}/api/search?pagesize=4&dest=C`, status: 200 },
+      { method: "GET", url: `${BASE}/api/search?pagesize=4&dest=A`, status: 200 },
+    ]);
+    const hitOutcome = writeSubmitManifest({
+      runRoot: hit.runRoot,
+      capturesDir: hit.capturesDir,
+      submitEndpointPattern: "/api/search",
+      submitBodyPattern: null,
+      logger: lg,
+    });
+    expect(hitOutcome).toBe("get-fallback");
+    expect(manifest(hit.runRoot).map((e) => e.index)).toEqual([0, 1]);
+    expect(warns.some((w) => w.includes("no capture matched"))).toBe(false);
+
+    const miss = setup([{ method: "GET", url: `${BASE}/other?x=1`, status: 200 }]);
+    const missOutcome = writeSubmitManifest({
+      runRoot: miss.runRoot,
+      capturesDir: miss.capturesDir,
+      submitEndpointPattern: "/api/search",
+      submitBodyPattern: null,
+      logger: lg,
+    });
+    expect(missOutcome).toBe("no-match");
+    const skipped = setup([{ method: "GET", url: `${BASE}/api/search?x=1`, status: 500 }]);
+    expect(
+      writeSubmitManifest({
+        runRoot: skipped.runRoot,
+        capturesDir: skipped.capturesDir,
+        submitEndpointPattern: "/api/search",
+        submitBodyPattern: null,
+        logger: lg,
+      })
+    ).toBe("get-skipped");
+    expect(manifest(miss.runRoot)).toEqual([]);
+    expect(warns.some((w) => w.includes("no capture matched"))).toBe(true);
+    expect(warns.some((w) => w.includes("matched submitEndpointPattern but were skipped"))).toBe(
+      true
+    );
+  });
+
   it("keeps only the POST when a same-URL GET exists", () => {
     const { runRoot, capturesDir } = setup([
       { method: "GET", url: `${BASE}/submit`, status: 200 },

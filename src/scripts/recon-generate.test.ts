@@ -13,6 +13,7 @@ import {
   assertRequiredUrlFieldsReferenced,
   buildKnownFieldValues,
   buildSingleEntityWarning,
+  classifySubmissionFlow,
   collectHeaderBindings,
   collectUnboundLiterals,
   compileActionSteps,
@@ -6614,4 +6615,130 @@ describe("inferChainStepResponseSchema", () => {
     expect(out).toContain("data");
     expect(out).toContain("foo");
   });
+});
+
+describe("read-only GET catalog search with facet captures and no foldReturn", () => {
+  const BASE = "https://api.example.com";
+  const items = [
+    { isbn: "978-1", genre: "SF", pages: 7, title: "A" },
+    { isbn: "978-2", genre: "FANT", pages: 9, title: "B" },
+  ];
+  const cap = (qs: string) => ({
+    capture: {
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "GET",
+      url: `${BASE}/books/search?${qs}`,
+      status: 200,
+      requestHeaders: {},
+      requestPostData: null,
+      responseHeaders: {},
+      responseBody: { results: { books: items } },
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    },
+    isMultipart: false,
+  });
+  const facets = [cap("q=a"), cap("q=a&genre=SF"), cap("q=a&genre=FANT&pages=9")];
+
+  it("extractActionSequence yields no submission steps (GETs are dropped)", () => {
+    expect(extractActionSequence(facets.map((f) => f.capture))).toEqual([]);
+  });
+
+  it("resolveFoldPlan invents no self-fold from facet re-queries", () => {
+    expect(resolveFoldPlan(facets)).toEqual([]);
+    expect(resolveFoldPlan(facets, null)).toEqual([]);
+  });
+
+  it("selectEffectiveResponseBody on a non-submission flow ignores folds", () => {
+    expect(() => selectEffectiveResponseBody(false, facets, null)).not.toThrow();
+  });
+});
+
+describe("classifySubmissionFlow", () => {
+  const base = {
+    noReplayableActionFlow: false,
+    isReadOnlyGetFlow: false,
+    actionStepCount: 2,
+    gql: false,
+    actionCaptureMethods: ["POST", "POST"] as string[],
+    graphqlActionSequenceHasMutation: false,
+  };
+  it("is false for a read-only GET flow even with several steps and POSTs", () => {
+    expect(classifySubmissionFlow({ ...base, isReadOnlyGetFlow: true })).toBe(false);
+  });
+  it("is false when every action capture is a GET", () => {
+    expect(classifySubmissionFlow({ ...base, actionCaptureMethods: ["GET", "get"] })).toBe(false);
+  });
+  it("is true for a multi-step flow with a non-GET capture", () => {
+    expect(classifySubmissionFlow(base)).toBe(true);
+  });
+  it("is false for a single step", () => {
+    expect(classifySubmissionFlow({ ...base, actionStepCount: 1 })).toBe(false);
+  });
+  it("follows mutation presence for GraphQL", () => {
+    expect(classifySubmissionFlow({ ...base, gql: true })).toBe(false);
+    expect(
+      classifySubmissionFlow({ ...base, gql: true, graphqlActionSequenceHasMutation: true })
+    ).toBe(true);
+  });
+  it("is true when no replayable action flow", () => {
+    expect(
+      classifySubmissionFlow({ ...base, noReplayableActionFlow: true, actionStepCount: 0 })
+    ).toBe(true);
+  });
+});
+
+describe("recon-generate CLI — classifySubmissionFlow call site", () => {
+  const REPO_ROOT = join(__dirname, "..", "..");
+  const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+  const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
+  let workDir: string | null = null;
+  let siteOutDir: string | null = null;
+
+  afterEach(() => {
+    if (workDir) rmSync(workDir, { recursive: true, force: true });
+    if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
+    workDir = null;
+    siteOutDir = null;
+  });
+
+  it("generates a contract for a single read-only GET search capture through the real CLI", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cli-classify-"));
+    const runRoot = join(workDir, "run");
+    mkdirSync(join(runRoot, "graphql"), { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    writeFileSync(
+      join(runRoot, "graphql", "000-search.json"),
+      JSON.stringify({
+        timestamp: "2024-01-01T00:00:00Z",
+        phase: "action",
+        method: "GET",
+        url: "https://api.example.com/books/search?q=a",
+        status: 200,
+        requestHeaders: {},
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { results: { books: [{ isbn: "1", title: "A" }] } },
+        operationName: null,
+        query: null,
+        variables: null,
+        decodedParams: null,
+      } satisfies Capture)
+    );
+    const siteId = `recon-cli-classify-test-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--force"],
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(join(siteOutDir, "contract.ts"), "utf8")).toContain(siteId);
+  }, 30_000);
 });
