@@ -943,3 +943,45 @@ describe("probeIntrospection — redirects preserve method and body", () => {
     }
   });
 });
+
+describe("selectRateLimitTargets — relevance tiering", () => {
+  const json = { "content-type": "application/json" };
+  const html = { "content-type": "text/html" };
+
+  it("orders submit pattern, foldReturn pattern, JSON, then the rest regardless of capture order", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://www.example.com/page", replayHeaders: html }),
+      replay({ url: "https://www.example.com/sensor/abc", replayHeaders: html }),
+      replay({ url: "https://www.example.com/other/json", replayHeaders: json }),
+      replay({ url: "https://www.example.com/api/fold?x=1", replayHeaders: json }),
+      replay({ url: "https://www.example.com/api/submit", method: "GET", replayHeaders: json }),
+    ];
+    const { targets } = selectRateLimitTargets(
+      replays,
+      [],
+      "example.com",
+      ["/api/fold", "/api/submit"],
+      "/api/submit"
+    );
+    expect(Array.from(targets.keys())).toEqual([
+      "https://www.example.com/api/submit",
+      "https://www.example.com/api/fold?x=1",
+      "https://www.example.com/other/json",
+      "https://www.example.com/page",
+      "https://www.example.com/sensor/abc",
+    ]);
+  });
+
+  it("keeps every target in the map so a 429 on one does not drop the others", () => {
+    const { targets } = selectRateLimitTargets(
+      [
+        replay({ url: "https://www.example.com/unrelated", replayHeaders: html }),
+        replay({ url: "https://www.example.com/api/search", replayHeaders: json }),
+      ],
+      [],
+      "example.com",
+      ["/api/search"]
+    );
+    expect(targets.size).toBe(2);
+  });
+});
