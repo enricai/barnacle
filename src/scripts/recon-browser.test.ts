@@ -7774,24 +7774,36 @@ describe("recon-browser/writeSubmitManifest read flows + auditFinalSubmitMatch s
       { method: "GET", url: `${BASE}/api/search?pagesize=4&dest=C`, status: 200 },
       { method: "GET", url: `${BASE}/api/search?pagesize=4&dest=A`, status: 200 },
     ]);
-    writeSubmitManifest({
+    const hitOutcome = writeSubmitManifest({
       runRoot: hit.runRoot,
       capturesDir: hit.capturesDir,
       submitEndpointPattern: "/api/search",
       submitBodyPattern: null,
       logger: lg,
     });
+    expect(hitOutcome).toBe("get-fallback");
     expect(manifest(hit.runRoot).map((e) => e.index)).toEqual([0, 1]);
     expect(warns.some((w) => w.includes("no capture matched"))).toBe(false);
 
     const miss = setup([{ method: "GET", url: `${BASE}/other?x=1`, status: 200 }]);
-    writeSubmitManifest({
+    const missOutcome = writeSubmitManifest({
       runRoot: miss.runRoot,
       capturesDir: miss.capturesDir,
       submitEndpointPattern: "/api/search",
       submitBodyPattern: null,
       logger: lg,
     });
+    expect(missOutcome).toBe("no-match");
+    const skipped = setup([{ method: "GET", url: `${BASE}/api/search?x=1`, status: 500 }]);
+    expect(
+      writeSubmitManifest({
+        runRoot: skipped.runRoot,
+        capturesDir: skipped.capturesDir,
+        submitEndpointPattern: "/api/search",
+        submitBodyPattern: null,
+        logger: lg,
+      })
+    ).toBe("get-skipped");
     expect(manifest(miss.runRoot)).toEqual([]);
     expect(warns.some((w) => w.includes("no capture matched"))).toBe(true);
   });

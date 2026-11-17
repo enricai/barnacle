@@ -540,6 +540,15 @@ interface SubmitManifestEntry {
  * lexicographic order == numeric order; `recon-generate`'s `readJsonDir` sorts
  * identically, making the recorded `index` a stable cross-tool key.
  */
+/** Structured result of writeSubmitManifest; "get-skipped" = only non-2xx GETs matched. */
+type SubmitManifestOutcome =
+  | "no-pattern"
+  | "unreadable"
+  | "matched"
+  | "get-fallback"
+  | "get-skipped"
+  | "no-match";
+
 function writeSubmitManifest(params: {
   runRoot: string;
   capturesDir: string;
@@ -548,10 +557,10 @@ function writeSubmitManifest(params: {
   /** Own-backend host gate shared with the audit; empty/absent = no host gate. */
   ownBackendHostnames?: readonly string[];
   logger: Logger;
-}): void {
+}): SubmitManifestOutcome {
   const { runRoot, capturesDir, submitEndpointPattern, submitBodyPattern, logger } = params;
   const ownBackendHostnames = params.ownBackendHostnames ?? [];
-  if (submitEndpointPattern === null) return;
+  if (submitEndpointPattern === null) return "no-pattern";
   const endpointRx = new RegExp(submitEndpointPattern);
   const bodyRx = submitBodyPattern === null ? null : new RegExp(submitBodyPattern);
   let entries: string[];
@@ -561,9 +570,10 @@ function writeSubmitManifest(params: {
     logger.warn(
       `submit-manifest: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
     );
-    return;
+    return "unreadable";
   }
   const matched: SubmitManifestEntry[] = [];
+  let getSkipped = 0;
   // Read flows: 2xx GET captures that match, used only when no non-GET matches.
   const getMatched: SubmitManifestEntry[] = [];
   for (const [index, filename] of entries.entries()) {
@@ -585,6 +595,7 @@ function writeSubmitManifest(params: {
         continue;
       if (data.method === "GET") {
         if (isSuccessStatus(data.status)) getMatched.push({ index, filename, url: data.url });
+        else getSkipped++;
         continue;
       }
       // A non-GET that returned an error status never landed the submission;
@@ -595,19 +606,23 @@ function writeSubmitManifest(params: {
       // Ignore unparseable/non-capture files, as the audit does.
     }
   }
+  let outcome: SubmitManifestOutcome = "matched";
   if (matched.length === 0 && getMatched.length > 0) {
+    outcome = "get-fallback";
     matched.push(...getMatched);
     logger.info(
       `submit-manifest: no non-GET capture matched; recording ${getMatched.length} 2xx GET capture(s) (read flow)`
     );
   }
   if (matched.length === 0) {
+    outcome = getSkipped > 0 ? "get-skipped" : "no-match";
     logger.warn(
       `submit-manifest: no capture matched submitEndpointPattern${submitBodyPattern !== null ? " + submitBodyPattern" : ""} — writing empty manifest so generate reports the gap rather than silently re-guessing`
     );
   }
   writeFileSync(join(runRoot, "submit-manifest.json"), `${JSON.stringify(matched, null, 2)}\n`);
   logger.info(`submit-manifest: recorded ${matched.length} submission capture(s)`);
+  return outcome;
 }
 
 export function findWizardRestartSignal(params: {
