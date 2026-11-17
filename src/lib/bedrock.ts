@@ -34,10 +34,7 @@ export function createBedrockModel(bedrockConfig: AppConfig["bedrock"]): Stageha
     region: bedrockConfig.region,
     // Route through the redirect follower so a 301/302 cannot downgrade a POST.
     fetch: ((url, init) =>
-      fetchFollowingRedirectsPreservingMethod(
-        typeof url === "string" ? url : url instanceof URL ? url.href : url.url,
-        { ...init }
-      )) as typeof fetch,
+      fetchFollowingRedirectsPreservingMethod(url, { ...init })) as typeof fetch,
     ...(hasExplicitCredentials
       ? {
           accessKeyId: bedrockConfig.accessKeyId as string,

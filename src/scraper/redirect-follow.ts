@@ -40,12 +40,32 @@ export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 30
  * redirect.
  */
 export async function fetchFollowingRedirectsPreservingMethod(
-  url: string,
-  init: RequestInit & { fetchImpl?: typeof fetch },
+  input: string | URL | Request,
+  init: RequestInit & { fetchImpl?: typeof fetch } = {},
   onHop?: (hop: { status: number; headers: Headers; url: string }) => void
 ): Promise<Response> {
-  const { fetchImpl = fetch, ...rest } = init;
-  const currentInit: RequestInit = { ...rest, redirect: "manual" };
+  const { fetchImpl = fetch, ...initRest } = init;
+  // Every fetch input shape is accepted so no caller has to flatten a Request
+  // to its URL (which would silently drop its method, headers and body). A
+  // Request seeds the method, headers and body; `init` overrides, as in fetch.
+  let url: string;
+  let rest: RequestInit;
+  if (input instanceof Request) {
+    url = input.url;
+    const hasBody = input.method !== "GET" && input.method !== "HEAD" && input.body !== null;
+    const body = hasBody ? await input.clone().arrayBuffer() : undefined;
+    rest = {
+      method: input.method,
+      headers: input.headers,
+      ...(body !== undefined ? { body } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...initRest,
+    };
+  } else {
+    url = input instanceof URL ? input.href : input;
+    rest = initRest;
+  }
+  let currentInit: RequestInit = { ...rest, redirect: "manual" };
   // Credentials the caller sent were meant for the original origin only.
   // Each hop's headers are derived from this snapshot: full when the hop is
   // back on the original origin, credential-stripped otherwise.
@@ -156,7 +176,20 @@ export function isCredentialHeader(name: string): boolean {
 /** Normalizes Headers, tuple arrays or records into a plain record. */
 function headersToRecord(headers: RequestInit["headers"] | undefined): Record<string, string> {
   if (headers === undefined) return {};
+  // Names keep the caller's casing, so a same-origin hop re-sends exactly what
+  // was passed in. Repeated names in a tuple list are combined, not dropped.
   if (headers instanceof Headers) return Object.fromEntries(headers.entries());
-  if (Array.isArray(headers)) return Object.fromEntries(headers);
-  return { ...(headers as Record<string, string>) };
+  const entries = Array.isArray(headers) ? headers : Object.entries(headers);
+  const out: Record<string, string> = {};
+  const seen = new Map<string, string>();
+  for (const [name = "", value = ""] of entries) {
+    const key = seen.get(name.toLowerCase());
+    if (key === undefined) {
+      seen.set(name.toLowerCase(), name);
+      out[name] = value;
+    } else {
+      out[key] = `${out[key] ?? ""}, ${value}`;
+    }
+  }
+  return out;
 }

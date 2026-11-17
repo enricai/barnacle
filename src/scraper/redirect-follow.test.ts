@@ -605,3 +605,49 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin across statuses",
     expect(seen.every((s) => s.method === "POST" && s.body === "x")).toBe(true);
   });
 });
+
+describe("fetchFollowingRedirectsPreservingMethod fetch input shapes", () => {
+  const redirect = (to: string): Response =>
+    new Response(null, { status: 307, headers: { location: to } });
+
+  it("seeds method, headers and body from a Request and strips credentials cross-origin", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect("https://other.example.net/next"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const request = new Request("https://example.com/api", {
+      method: "POST",
+      headers: { authorization: "Bearer t", "x-trace": "1" },
+      body: '{"a":1}',
+    });
+    await fetchFollowingRedirectsPreservingMethod(request, { fetchImpl });
+    const first = fetchImpl.mock.calls[0]?.[1] as RequestInit;
+    const second = fetchImpl.mock.calls[1]?.[1] as RequestInit;
+    expect(first.method).toBe("POST");
+    expect(new Headers(first.headers).get("authorization")).toBe("Bearer t");
+    expect(second.method).toBe("POST");
+    expect(second.body).toBeDefined();
+    expect(new Headers(second.headers).get("authorization")).toBeNull();
+    expect(new Headers(second.headers).get("x-trace")).toBe("1");
+  });
+
+  it("accepts a URL object and keeps tuple-list headers on a same-origin hop", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirect("/next"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    await fetchFollowingRedirectsPreservingMethod(new URL("https://example.com/a"), {
+      headers: [
+        ["Authorization", "Bearer t"],
+        ["X-Multi", "a"],
+        ["x-multi", "b"],
+      ],
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe("https://example.com/next");
+    expect(fetchImpl.mock.calls[1]?.[1]?.headers).toEqual({
+      Authorization: "Bearer t",
+      "X-Multi": "a, b",
+    });
+  });
+});
