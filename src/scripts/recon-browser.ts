@@ -616,9 +616,16 @@ function writeSubmitManifest(params: {
   }
   if (matched.length === 0) {
     outcome = getSkipped > 0 ? "get-skipped" : "no-match";
-    logger.warn(
-      `submit-manifest: no capture matched submitEndpointPattern${submitBodyPattern !== null ? " + submitBodyPattern" : ""} — writing empty manifest so generate reports the gap rather than silently re-guessing`
-    );
+    const patterns = `submitEndpointPattern${submitBodyPattern !== null ? " + submitBodyPattern" : ""}`;
+    if (getSkipped > 0) {
+      logger.warn(
+        `submit-manifest: ${getSkipped} GET capture(s) matched ${patterns} but were skipped for a non-2xx status — writing empty manifest so generate reports the gap rather than silently re-guessing`
+      );
+    } else {
+      logger.warn(
+        `submit-manifest: no capture matched ${patterns} — writing empty manifest so generate reports the gap rather than silently re-guessing`
+      );
+    }
   }
   writeFileSync(join(runRoot, "submit-manifest.json"), `${JSON.stringify(matched, null, 2)}\n`);
   logger.info(`submit-manifest: recorded ${matched.length} submission capture(s)`);

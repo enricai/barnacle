@@ -7806,6 +7806,9 @@ describe("recon-browser/writeSubmitManifest read flows + auditFinalSubmitMatch s
     ).toBe("get-skipped");
     expect(manifest(miss.runRoot)).toEqual([]);
     expect(warns.some((w) => w.includes("no capture matched"))).toBe(true);
+    expect(warns.some((w) => w.includes("matched submitEndpointPattern but were skipped"))).toBe(
+      true
+    );
   });
 
   it("keeps only the POST when a same-URL GET exists", () => {
