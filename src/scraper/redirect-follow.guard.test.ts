@@ -23,10 +23,16 @@ const ALLOWLIST: Record<string, string> = {
   "src/lib/http.ts":
     "installs the global undici dispatcher (connect timeout only); not a request site and no redirect policy",
   "src/scraper/redirect-follow.ts": "the follower itself; the one place that calls fetch",
+  "src/lib/telemetry/s3-sink.ts":
+    "AWS SDK S3 client has no fetch option and never follows redirects (a 3xx surfaces as an error)",
+  "src/lib/telemetry/submissions-s3-reader.ts":
+    "AWS SDK S3 client has no fetch option and never follows redirects (a 3xx surfaces as an error)",
+  "src/lib/telemetry/submissions-s3-objects.ts":
+    "AWS SDK S3 client has no fetch option and never follows redirects (a 3xx surfaces as an error)",
 };
 
 const CTOR =
-  /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI|createAmazonBedrock|new\s+Browserbase|new\s+Stagehand)\s*\(/g;
+  /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI|createAmazonBedrock|new\s+Browserbase|new\s+Steel|new\s+S3Client|new\s+Stagehand)\s*\(/g;
 const BARE = /(?<![\w.])(?:fetch|undiciFetch)\s*\(/;
 const HTTP_CLIENT =
   /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client)\s*\(|\bhttps?\.request\s*\(/;
@@ -101,6 +107,11 @@ describe("redirect-policy guard", () => {
     it("flags a Stagehand constructor unless a fetch option is passed", () => {
       expect(scanSource("new Stagehand({ env: 'LOCAL' })")).toHaveLength(1);
       expect(scanSource("new Stagehand({ model: { fetch: f(1) } })")).toEqual([]);
+    });
+    it("flags Steel and S3 clients lacking a fetch option", () => {
+      expect(scanSource("new Steel({ steelAPIKey: k })")).toHaveLength(1);
+      expect(scanSource("new S3Client({ region })")).toHaveLength(1);
+      expect(scanSource("new Steel({ steelAPIKey: k, fetch: f(1) })")).toEqual([]);
     });
     it("passes constructors that pass fetch", () => {
       expect(scanSource("new Anthropic({ apiKey, fetch: f(1) })")).toEqual([]);

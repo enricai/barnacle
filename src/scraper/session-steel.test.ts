@@ -122,6 +122,14 @@ describe("scraper/session-steel keepAlive", () => {
     expect(stagehandArg.keepAlive).toBe(true);
   });
 
+  it("constructs the Steel client with a fetch option so it obeys the shared redirect policy", async () => {
+    await createSteelBrowserSession();
+
+    const steelArg = vi.mocked(Steel).mock.calls.at(-1)?.[0] as { fetch?: unknown };
+
+    expect(typeof steelArg.fetch).toBe("function");
+  });
+
   it("starts the CDP heartbeat against stagehand.context.conn and stops it before steel.sessions.release() on close()", async () => {
     const session = await createSteelBrowserSession();
 

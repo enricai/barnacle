@@ -1,5 +1,5 @@
 import { AISdkClient, type ModelConfiguration, Stagehand } from "@browserbasehq/stagehand";
-import Steel from "steel-sdk";
+import Steel, { type ClientOptions } from "steel-sdk";
 
 import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
@@ -20,6 +20,9 @@ import type { Logger } from "@/types/logging";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 
 const logger = getLogger({ name: "scraper/session-steel" });
+
+/** Per-request cap for Steel control-plane calls (the SDK default). */
+const STEEL_API_TIMEOUT_MS = 60_000;
 
 /** Mirrors Browserbase: providers overshoot their configured lifetime, never undershoot. */
 const STEEL_TIMEOUT_TOLERANCE_SECONDS = 15;
@@ -85,7 +88,15 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     throw new Error("ANTHROPIC_API_KEY is required for the Stagehand LLM client");
   }
 
-  const steel = new Steel({ steelAPIKey: config.scraper.steelApiKey });
+  // Route the control-plane calls through the redirect follower too, so every
+  // outbound request obeys one redirect policy. 60s matches the SDK's own
+  // per-request default.
+  const steel = new Steel({
+    steelAPIKey: config.scraper.steelApiKey,
+    // The SDK types `fetch` against node-fetch's Request; at runtime it passes
+    // a URL string or the global Request the follower already handles.
+    fetch: createTimeoutFetch(STEEL_API_TIMEOUT_MS) as unknown as ClientOptions["fetch"],
+  });
 
   const viewport = pickRandomViewport();
   const sessionProxy = config.scraper.sessionProxy;
