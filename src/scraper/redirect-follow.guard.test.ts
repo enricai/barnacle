@@ -26,7 +26,7 @@ const ALLOWLIST: Record<string, string> = {
 };
 
 const CTOR =
-  /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI|createAmazonBedrock|new\s+Browserbase)\s*\(/g;
+  /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI|createAmazonBedrock|new\s+Browserbase|new\s+Stagehand)\s*\(/g;
 const BARE = /(?<![\w.])(?:fetch|undiciFetch)\s*\(/;
 const HTTP_CLIENT =
   /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client)\s*\(|\bhttps?\.request\s*\(/;
@@ -97,6 +97,10 @@ describe("redirect-policy guard", () => {
       expect(scanSource("createOpenAI({ apiKey: k })")).toHaveLength(1);
       expect(scanSource("createGoogleGenerativeAI()")).toHaveLength(1);
       expect(scanSource("createAnthropic({ apiKey, fetch: other(1) })")).toEqual([]);
+    });
+    it("flags a Stagehand constructor unless a fetch option is passed", () => {
+      expect(scanSource("new Stagehand({ env: 'LOCAL' })")).toHaveLength(1);
+      expect(scanSource("new Stagehand({ model: { fetch: f(1) } })")).toEqual([]);
     });
     it("passes constructors that pass fetch", () => {
       expect(scanSource("new Anthropic({ apiKey, fetch: f(1) })")).toEqual([]);
