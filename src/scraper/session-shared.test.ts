@@ -126,7 +126,7 @@ describe("createTimeoutFetch", () => {
         body: "p",
       });
       await createTimeoutFetch(1000)(req);
-      const h = new Headers((fetchStub.mock.calls[1]?.[1] as RequestInit).headers);
+      const h = new Headers((fetchStub.mock.calls[1]?.[1] as RequestInit | undefined)?.headers);
       expect(h.get("x-api-key")).toBe("k");
     });
 
@@ -135,7 +135,7 @@ describe("createTimeoutFetch", () => {
       await createTimeoutFetch(1000)(new Request("https://example.com/a", { method: "DELETE" }), {
         method: "PUT",
       });
-      expect((fetchStub.mock.calls[0]?.[1] as RequestInit).method).toBe("PUT");
+      expect((fetchStub.mock.calls[0]?.[1] as RequestInit | undefined)?.method).toBe("PUT");
     });
   });
 
@@ -145,7 +145,7 @@ describe("createTimeoutFetch", () => {
     await createTimeoutFetch(1000)("https://example.com/s", { method: "POST" });
     expect(fetchStub.mock.calls[0]?.[0]).toBe("https://example.com/u");
     expect(fetchStub.mock.calls[1]?.[0]).toBe("https://example.com/s");
-    expect((fetchStub.mock.calls[1]?.[1] as RequestInit).method).toBe("POST");
+    expect((fetchStub.mock.calls[1]?.[1] as RequestInit | undefined)?.method).toBe("POST");
   });
 });
 
