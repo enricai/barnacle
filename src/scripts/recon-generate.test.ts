@@ -24,6 +24,7 @@ import {
   emitContractTs,
   emitMultiStepExecuteHttp,
   evaluateSingleEntityEvidence,
+  classifySubmissionFlow,
   extractActionSequence,
   extractGraphQLActionSequence,
   extractStepPersonaValue,
@@ -6653,5 +6654,39 @@ describe("read-only GET catalog search with facet captures and no foldReturn", (
 
   it("selectEffectiveResponseBody on a non-submission flow ignores folds", () => {
     expect(() => selectEffectiveResponseBody(false, facets, null)).not.toThrow();
+  });
+});
+
+describe("classifySubmissionFlow", () => {
+  const base = {
+    noReplayableActionFlow: false,
+    isReadOnlyGetFlow: false,
+    actionStepCount: 2,
+    gql: false,
+    actionCaptureMethods: ["POST", "POST"] as string[],
+    graphqlActionSequenceHasMutation: false,
+  };
+  it("is false for a read-only GET flow even with several steps and POSTs", () => {
+    expect(classifySubmissionFlow({ ...base, isReadOnlyGetFlow: true })).toBe(false);
+  });
+  it("is false when every action capture is a GET", () => {
+    expect(classifySubmissionFlow({ ...base, actionCaptureMethods: ["GET", "get"] })).toBe(false);
+  });
+  it("is true for a multi-step flow with a non-GET capture", () => {
+    expect(classifySubmissionFlow(base)).toBe(true);
+  });
+  it("is false for a single step", () => {
+    expect(classifySubmissionFlow({ ...base, actionStepCount: 1 })).toBe(false);
+  });
+  it("follows mutation presence for GraphQL", () => {
+    expect(classifySubmissionFlow({ ...base, gql: true })).toBe(false);
+    expect(
+      classifySubmissionFlow({ ...base, gql: true, graphqlActionSequenceHasMutation: true })
+    ).toBe(true);
+  });
+  it("is true when no replayable action flow", () => {
+    expect(
+      classifySubmissionFlow({ ...base, noReplayableActionFlow: true, actionStepCount: 0 })
+    ).toBe(true);
   });
 });
