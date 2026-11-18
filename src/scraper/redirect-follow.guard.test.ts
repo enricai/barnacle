@@ -16,13 +16,11 @@ import { describe, expect, it } from "vitest";
  */
 const ALLOWLIST: Record<string, string> = {
   "src/scripts/recon-http.ts":
-    "robots.txt probe is a body-less GET where a canonical-host redirect is desired; no credentials sent",
-  "src/testmail/client.ts": "testmail probe is a body-less GET; no method/body to preserve",
-  "src/scraper/raw-fetch.ts":
-    "explicit redirect:manual path that hands redirects to the follower itself",
+    "body-less, header-less GET probe with no credential in a header; default redirects leak no header",
+  "src/testmail/client.ts":
+    "body-less, header-less GET whose apikey is in the URL query string, not a header; default redirects leak no header",
   "src/lib/http.ts":
     "installs the global undici dispatcher (connect timeout only); not a request site and no redirect policy",
-  "src/scraper/redirect-follow.ts": "the follower itself; the one place that calls fetch",
   "src/lib/telemetry/s3-sink.ts":
     "AWS SDK S3 client has no fetch option and never follows redirects (a 3xx surfaces as an error)",
   "src/lib/telemetry/submissions-s3-reader.ts":
@@ -97,6 +95,15 @@ describe("redirect-policy guard", () => {
     }
   });
 
+  it("every allowlist entry still contains a flagged pattern (no stale entries)", () => {
+    for (const path of Object.keys(ALLOWLIST)) {
+      expect(
+        scanSource(readFileSync(path, "utf8")).length,
+        `stale allowlist entry: ${path}`
+      ).toBeGreaterThan(0);
+    }
+  });
+
   describe("scanSource", () => {
     it("flags SDK constructors lacking a fetch option", () => {
       expect(scanSource("const c = new Anthropic({ apiKey });")).toHaveLength(1);
@@ -122,6 +129,13 @@ describe("redirect-policy guard", () => {
       expect(scanSource("undiciFetch(u)")).toHaveLength(1);
       expect(scanSource("axios.get(u)")).toHaveLength(1);
       expect(scanSource("https.request(o)")).toHaveLength(1);
+      expect(scanSource("http.request(o)")).toHaveLength(1);
+      expect(scanSource("got(u)")).toHaveLength(1);
+      expect(scanSource("got.post(u)")).toHaveLength(1);
+      expect(scanSource("axios(u)")).toHaveLength(1);
+      expect(scanSource("new Agent({})")).toHaveLength(1);
+      expect(scanSource("new undici.Pool(u)")).toHaveLength(1);
+      expect(scanSource("new Client(u)")).toHaveLength(1);
       expect(scanSource("// new Anthropic({})\n/* fetch(x) */")).toEqual([]);
       expect(scanSource("x.fetch(u); undiciFetch as T")).toEqual([]);
     });
