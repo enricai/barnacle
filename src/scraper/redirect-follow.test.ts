@@ -713,3 +713,63 @@ describe("credential header classifier at the redirect chokepoint", () => {
     expect(init).toMatchObject({ method: "POST", body: "x" });
   });
 });
+
+describe("fetchFollowingRedirectsPreservingMethod credential header spellings", () => {
+  const credentialNames = [
+    "x-amz-security-token",
+    "x-goog-api-key",
+    "private-token",
+    "x-session-id",
+    "x-csrf-token",
+    "X-Access-Key-Id",
+    "xApiKey",
+  ];
+  const lookAlikes = {
+    "x-design-system": "d",
+    "x-compass-region": "r",
+    "content-type": "application/json",
+  };
+  const run = async (names: string[], location: string) => {
+    const headers: Record<string, string> = { ...lookAlikes };
+    for (const n of names) headers[n] = "secret-value";
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 307, headers: { Location: location } }))
+      .mockResolvedValueOnce(new Response("ok"));
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "POST",
+      body: "payload",
+      headers,
+      fetchImpl,
+    });
+    return fetchImpl.mock.calls[1]?.[1];
+  };
+
+  describe.each(credentialNames)("%s", (name) => {
+    it.each(["https://other.com/b", "http://example.com/b", "https://example.com:8443/b"])(
+      "is dropped on cross-origin hop to %s; look-alikes, method and body survive",
+      async (loc) => {
+        const init = await run([name], loc);
+        expect(init.headers).toEqual(lookAlikes);
+        expect(init).toMatchObject({ method: "POST", body: "payload" });
+      }
+    );
+    it("is kept on a same-origin hop", async () => {
+      const init = await run([name], "https://example.com/b");
+      expect(init.headers).toEqual({ ...lookAlikes, [name]: "secret-value" });
+      expect(init).toMatchObject({ method: "POST", body: "payload" });
+    });
+    it("is classified as a credential header", () => {
+      expect(isCredentialHeader(name)).toBe(true);
+    });
+  });
+
+  it("drops all spellings together cross-origin", async () => {
+    const init = await run(credentialNames, "https://other.com/b");
+    expect(init.headers).toEqual(lookAlikes);
+  });
+
+  it.each(Object.keys(lookAlikes))("%s is not a credential header", (name) => {
+    expect(isCredentialHeader(name)).toBe(false);
+  });
+});
