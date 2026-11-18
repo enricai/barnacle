@@ -202,10 +202,13 @@ const CREDENTIAL_WORDS = new Set([
 
 /** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
-  return name
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .some((word) => CREDENTIAL_WORDS.has(word));
+  return (
+    name
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      // A trailing counter (cookie2, token1) does not make a word harmless.
+      .some((word) => CREDENTIAL_WORDS.has(word) || CREDENTIAL_WORDS.has(word.replace(/\d+$/, "")))
+  );
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */
