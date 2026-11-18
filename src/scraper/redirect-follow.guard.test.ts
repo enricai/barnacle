@@ -27,6 +27,10 @@ const ALLOWLIST: Record<string, string> = {
     "AWS SDK S3 client has no fetch option and never follows redirects (a 3xx surfaces as an error)",
   "src/lib/telemetry/submissions-s3-objects.ts":
     "AWS SDK S3 client has no fetch option and never follows redirects (a 3xx surfaces as an error)",
+  "src/scraper/session-browserbase.ts":
+    "Stagehand has no top-level fetch option; its Browserbase API client uses the SDK transport, and only model.fetch (LLM calls) can be routed through the follower",
+  "src/scraper/session-steel.ts":
+    "Stagehand (LOCAL, CDP to Steel) has no top-level fetch option; only model.fetch (LLM calls) is routed through the follower",
 };
 
 const CTOR =
@@ -34,6 +38,18 @@ const CTOR =
 const BARE = /(?<![\w.])(?:fetch|undiciFetch)\s*\(/;
 const HTTP_CLIENT =
   /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client)\s*\(|\bhttps?\.request\s*\(/;
+
+/** True when `fetch` appears as an option of the constructor's own top-level object (not nested). */
+function hasTopLevelFetch(args: string): boolean {
+  let flat = "";
+  let depth = 0;
+  for (const ch of args) {
+    if (ch === "{" || ch === "(" || ch === "[") depth++;
+    if (depth <= 1) flat += ch;
+    if (ch === "}" || ch === ")" || ch === "]") depth--;
+  }
+  return /(^|[\s,{])fetch\s*[:,}]|(^|[\s,{])fetch\s*$/.test(flat);
+}
 
 function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\w"'`])\/\/.*$/gm, "$1");
@@ -57,7 +73,7 @@ function scanSource(source: string): string[] {
   if (HTTP_CLIENT.test(src)) out.push("raw HTTP client without follower");
   for (const m of src.matchAll(CTOR)) {
     const args = argsAt(src, m.index + m[0].length - 1);
-    if (!/(^|[\s,{])fetch\s*[:,}]|(^|[\s,{])fetch\s*$/.test(args)) {
+    if (!hasTopLevelFetch(args)) {
       out.push(`${m[0].replace(/\s+/g, " ")} without fetch option`);
     }
   }
@@ -117,7 +133,8 @@ describe("redirect-policy guard", () => {
     });
     it("flags a Stagehand constructor unless a fetch option is passed", () => {
       expect(scanSource("new Stagehand({ env: 'LOCAL' })")).toHaveLength(1);
-      expect(scanSource("new Stagehand({ model: { fetch: f(1) } })")).toEqual([]);
+      expect(scanSource("new Stagehand({ model: { fetch: f(1) } })")).toHaveLength(1);
+      expect(scanSource("new Stagehand({ fetch: f(1) })")).toEqual([]);
     });
     it("flags Steel and S3 clients lacking a fetch option", () => {
       expect(scanSource("new Steel({ steelAPIKey: k })")).toHaveLength(1);
