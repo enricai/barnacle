@@ -1,5 +1,5 @@
-import { stripToSafeHeaders } from "./redirect-credential-headers.js";
 import { RedirectCookieJar } from "./redirect-cookie-jar.js";
+import { stripToSafeHeaders } from "./redirect-credential-headers.js";
 
 /**
  * Maximum redirect hops followed while preserving the request method.
