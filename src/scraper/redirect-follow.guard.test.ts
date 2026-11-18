@@ -16,13 +16,15 @@ import { describe, expect, it } from "vitest";
  */
 const ALLOWLIST: Record<string, string> = {
   "src/scripts/recon-http.ts":
-    "robots.txt probe is a body-less GET where a canonical-host redirect is desired; no credentials sent",
-  "src/testmail/client.ts": "testmail probe is a body-less GET; no method/body to preserve",
+    "body-less, header-less GET probe with no credential in a header; default redirects leak no header",
+  "src/testmail/client.ts":
+    "body-less, header-less GET whose apikey is in the URL query string, not a header; default redirects leak no header",
   "src/scraper/raw-fetch.ts":
     "explicit redirect:manual path that hands redirects to the follower itself",
   "src/lib/http.ts":
     "installs the global undici dispatcher (connect timeout only); not a request site and no redirect policy",
-  "src/scraper/redirect-follow.ts": "the follower itself; the one place that calls fetch",
+  "src/scraper/redirect-follow.ts":
+    "the follower itself; the one place that calls fetch",
   "src/lib/telemetry/s3-sink.ts":
     "AWS SDK S3 client has no fetch option and never follows redirects (a 3xx surfaces as an error)",
   "src/lib/telemetry/submissions-s3-reader.ts":
@@ -38,7 +40,9 @@ const HTTP_CLIENT =
   /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client)\s*\(|\bhttps?\.request\s*\(/;
 
 function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\w"'`])\/\/.*$/gm, "$1");
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:\w"'`])\/\/.*$/gm, "$1");
 }
 
 /** Body of the balanced parens starting at index of "(" in s. */
@@ -71,7 +75,11 @@ function walk(dir: string, out: string[] = []): string[] {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) {
       if (name !== "node_modules") walk(p, out);
-    } else if (/\.ts$/.test(name) && !/\.test\.ts$/.test(name) && !name.endsWith(".d.ts")) {
+    } else if (
+      /\.ts$/.test(name) &&
+      !/\.test\.ts$/.test(name) &&
+      !name.endsWith(".d.ts")
+    ) {
       out.push(p);
     }
   }
@@ -97,21 +105,38 @@ describe("redirect-policy guard", () => {
     }
   });
 
+  it("every allowlist entry still contains a flagged pattern (no stale entries)", () => {
+    for (const path of Object.keys(ALLOWLIST)) {
+      expect(
+        scanSource(readFileSync(path, "utf8")).length,
+        `stale allowlist entry: ${path}`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
   describe("scanSource", () => {
     it("flags SDK constructors lacking a fetch option", () => {
-      expect(scanSource("const c = new Anthropic({ apiKey });")).toHaveLength(1);
+      expect(scanSource("const c = new Anthropic({ apiKey });")).toHaveLength(
+        1,
+      );
       expect(scanSource("createOpenAI({ apiKey: k })")).toHaveLength(1);
       expect(scanSource("createGoogleGenerativeAI()")).toHaveLength(1);
-      expect(scanSource("createAnthropic({ apiKey, fetch: other(1) })")).toEqual([]);
+      expect(
+        scanSource("createAnthropic({ apiKey, fetch: other(1) })"),
+      ).toEqual([]);
     });
     it("flags a Stagehand constructor unless a fetch option is passed", () => {
       expect(scanSource("new Stagehand({ env: 'LOCAL' })")).toHaveLength(1);
-      expect(scanSource("new Stagehand({ model: { fetch: f(1) } })")).toEqual([]);
+      expect(scanSource("new Stagehand({ model: { fetch: f(1) } })")).toEqual(
+        [],
+      );
     });
     it("flags Steel and S3 clients lacking a fetch option", () => {
       expect(scanSource("new Steel({ steelAPIKey: k })")).toHaveLength(1);
       expect(scanSource("new S3Client({ region })")).toHaveLength(1);
-      expect(scanSource("new Steel({ steelAPIKey: k, fetch: f(1) })")).toEqual([]);
+      expect(scanSource("new Steel({ steelAPIKey: k, fetch: f(1) })")).toEqual(
+        [],
+      );
     });
     it("passes constructors that pass fetch", () => {
       expect(scanSource("new Anthropic({ apiKey, fetch: f(1) })")).toEqual([]);
@@ -122,6 +147,13 @@ describe("redirect-policy guard", () => {
       expect(scanSource("undiciFetch(u)")).toHaveLength(1);
       expect(scanSource("axios.get(u)")).toHaveLength(1);
       expect(scanSource("https.request(o)")).toHaveLength(1);
+      expect(scanSource("http.request(o)")).toHaveLength(1);
+      expect(scanSource("got(u)")).toHaveLength(1);
+      expect(scanSource("got.post(u)")).toHaveLength(1);
+      expect(scanSource("axios(u)")).toHaveLength(1);
+      expect(scanSource("new Agent({})")).toHaveLength(1);
+      expect(scanSource("new undici.Pool(u)")).toHaveLength(1);
+      expect(scanSource("new Client(u)")).toHaveLength(1);
       expect(scanSource("// new Anthropic({})\n/* fetch(x) */")).toEqual([]);
       expect(scanSource("x.fetch(u); undiciFetch as T")).toEqual([]);
     });
