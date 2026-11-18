@@ -36,9 +36,7 @@ const HTTP_CLIENT =
   /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client)\s*\(|\bhttps?\.request\s*\(/;
 
 function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:\w"'`])\/\/.*$/gm, "$1");
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\w"'`])\/\/.*$/gm, "$1");
 }
 
 /** Body of the balanced parens starting at index of "(" in s. */
@@ -71,11 +69,7 @@ function walk(dir: string, out: string[] = []): string[] {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) {
       if (name !== "node_modules") walk(p, out);
-    } else if (
-      /\.ts$/.test(name) &&
-      !/\.test\.ts$/.test(name) &&
-      !name.endsWith(".d.ts")
-    ) {
+    } else if (/\.ts$/.test(name) && !/\.test\.ts$/.test(name) && !name.endsWith(".d.ts")) {
       out.push(p);
     }
   }
@@ -105,34 +99,26 @@ describe("redirect-policy guard", () => {
     for (const path of Object.keys(ALLOWLIST)) {
       expect(
         scanSource(readFileSync(path, "utf8")).length,
-        `stale allowlist entry: ${path}`,
+        `stale allowlist entry: ${path}`
       ).toBeGreaterThan(0);
     }
   });
 
   describe("scanSource", () => {
     it("flags SDK constructors lacking a fetch option", () => {
-      expect(scanSource("const c = new Anthropic({ apiKey });")).toHaveLength(
-        1,
-      );
+      expect(scanSource("const c = new Anthropic({ apiKey });")).toHaveLength(1);
       expect(scanSource("createOpenAI({ apiKey: k })")).toHaveLength(1);
       expect(scanSource("createGoogleGenerativeAI()")).toHaveLength(1);
-      expect(
-        scanSource("createAnthropic({ apiKey, fetch: other(1) })"),
-      ).toEqual([]);
+      expect(scanSource("createAnthropic({ apiKey, fetch: other(1) })")).toEqual([]);
     });
     it("flags a Stagehand constructor unless a fetch option is passed", () => {
       expect(scanSource("new Stagehand({ env: 'LOCAL' })")).toHaveLength(1);
-      expect(scanSource("new Stagehand({ model: { fetch: f(1) } })")).toEqual(
-        [],
-      );
+      expect(scanSource("new Stagehand({ model: { fetch: f(1) } })")).toEqual([]);
     });
     it("flags Steel and S3 clients lacking a fetch option", () => {
       expect(scanSource("new Steel({ steelAPIKey: k })")).toHaveLength(1);
       expect(scanSource("new S3Client({ region })")).toHaveLength(1);
-      expect(scanSource("new Steel({ steelAPIKey: k, fetch: f(1) })")).toEqual(
-        [],
-      );
+      expect(scanSource("new Steel({ steelAPIKey: k, fetch: f(1) })")).toEqual([]);
     });
     it("passes constructors that pass fetch", () => {
       expect(scanSource("new Anthropic({ apiKey, fetch: f(1) })")).toEqual([]);
