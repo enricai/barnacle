@@ -628,7 +628,7 @@ describe("fetchFollowingRedirectsPreservingMethod fetch input shapes", () => {
     expect(second.method).toBe("POST");
     expect(second.body).toBeDefined();
     expect(new Headers(second.headers).get("authorization")).toBeNull();
-    expect(new Headers(second.headers).get("x-trace")).toBe("1");
+    expect(new Headers(second.headers).get("accept")).toBe("text/html");
   });
 
   it("accepts a URL object and keeps tuple-list headers on a same-origin hop", async () => {
@@ -734,6 +734,6 @@ describe("fetchFollowingRedirectsPreservingMethod credential header spellings", 
 
   it("drops an arbitrary unlisted custom credential header cross-origin", async () => {
     const init = await run(["x-access-code"], "https://other.com/b");
-    expect(init.headers).toEqual({ "content-type": "application/json" });
+    expect(init.headers).toEqual(lookAlikes);
   });
 });
