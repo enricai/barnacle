@@ -194,7 +194,7 @@ const CREDENTIAL_STEMS = [
 export function isCredentialHeader(name: string): boolean {
   const collapsed = name
     .toLowerCase()
-    .replace(/author/g, "")
+    .replace(/author(?!iz)/g, "")
     .replace(/[^a-z0-9]+/g, "");
   return CREDENTIAL_STEMS.some((stem) => collapsed.includes(stem));
 }
