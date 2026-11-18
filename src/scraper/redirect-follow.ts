@@ -201,11 +201,12 @@ const CREDENTIAL_NOUN_SUFFIXES = ["token", "key", "secret"];
 
 /** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
-  const words = name
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
+  const split = (n: string) => n.split(/[^a-z0-9]+/).filter(Boolean);
+  // Separator words, plus camelCase humps for separator-free spellings.
+  const words = [
+    ...split(name.toLowerCase()),
+    ...split(name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()),
+  ].map((w) => w.replace(/[0-9]+$/, ""));
   return words.some(
     (w) => CREDENTIAL_WORDS.has(w) || CREDENTIAL_NOUN_SUFFIXES.some((n) => w.endsWith(n))
   );
