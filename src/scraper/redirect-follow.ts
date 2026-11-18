@@ -166,37 +166,49 @@ export function parseCookiePairs(cookieHeader: string): Array<[string, string]> 
     });
 }
 
-// A header is a credential when its separator-free name contains a credential
-// stem. Substring (not word) matching, so spellings with no separators
-// (xApiKey, X-AuthToken, x-apptoken, X-Passphrase, x-hmac) are caught too.
-// "author" is removed first so x-author-name is not mistaken for "auth".
-const CREDENTIAL_STEMS = [
+// A header is a credential when one of its words is a credential word. Words
+// come from the separators and camelCase humps of the name (xApiKey ->
+// x, api, key), so ordinary names that merely contain a stem inside a longer
+// word (x-design-system, x-compass-region) are not matched. A single
+// separator-free word such as "apitoken" or "accesskey" is matched when it
+// ends in a credential noun.
+const CREDENTIAL_WORDS = new Set([
   "auth",
+  "authorization",
+  "authentication",
   "token",
   "secret",
   "key",
-  "sign",
-  "pass",
-  "cred",
+  "signature",
+  "password",
+  "passwd",
+  "passphrase",
+  "credential",
+  "credentials",
   "session",
+  "sessionid",
+  "sid",
   "cookie",
   "bearer",
   "jwt",
   "hmac",
   "otp",
-  "sid",
   "nonce",
   "csrf",
   "xsrf",
-];
+]);
+const CREDENTIAL_NOUN_SUFFIXES = ["token", "key", "secret"];
 
 /** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
-  const collapsed = name
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .toLowerCase()
-    .replace(/author(?!iz)/g, "")
-    .replace(/[^a-z0-9]+/g, "");
-  return CREDENTIAL_STEMS.some((stem) => collapsed.includes(stem));
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  return words.some(
+    (w) => CREDENTIAL_WORDS.has(w) || CREDENTIAL_NOUN_SUFFIXES.some((n) => w.endsWith(n))
+  );
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */
