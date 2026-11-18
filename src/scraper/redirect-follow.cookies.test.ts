@@ -129,7 +129,9 @@ describe("redirect hop cookie jar matching", () => {
 
   it("honours Max-Age and a leading-dot Domain through the hop merge", async () => {
     const run = (attr: string, to: string) =>
-      finalCookie("https://example.com/", [hop("https://example.com/", to, `s=1; Path=/; ${attr}`)]);
+      finalCookie("https://example.com/", [
+        hop("https://example.com/", to, `s=1; Path=/; ${attr}`),
+      ]);
     expect(await run("Max-Age=60", "https://example.com/n")).toBe("s=1");
     expect(await run("Domain=.example.com", "https://sub.example.com/")).toBe("s=1");
     expect(await run("Domain=.example.com", "https://notexample.com/")).toBe("");
