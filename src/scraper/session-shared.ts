@@ -118,15 +118,15 @@ export function createTimeoutFetch(timeoutMs: number): typeof fetch {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     // Merge with any existing signal from the caller (e.g. AI SDK's own abort signal)
     // so both can independently cancel the request.
-    const signals = [controller.signal, init?.signal].filter(
-      (s): s is AbortSignal => s instanceof AbortSignal
-    );
+    const signals = [
+      controller.signal,
+      url instanceof Request ? url.signal : undefined,
+      init?.signal,
+    ].filter((s): s is AbortSignal => s instanceof AbortSignal);
     const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-    const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
-    return fetchFollowingRedirectsPreservingMethod(target, {
-      ...init,
-      signal,
-    }).finally(() => clearTimeout(timer));
+    return fetchFollowingRedirectsPreservingMethod(url, { ...init, signal }).finally(() =>
+      clearTimeout(timer)
+    );
   };
 }
 

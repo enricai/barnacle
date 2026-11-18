@@ -40,12 +40,31 @@ export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 30
  * redirect.
  */
 export async function fetchFollowingRedirectsPreservingMethod(
-  url: string,
-  init: RequestInit & { fetchImpl?: typeof fetch },
+  input: string | URL | Request,
+  init: RequestInit & { fetchImpl?: typeof fetch } = {},
   onHop?: (hop: { status: number; headers: Headers; url: string }) => void
 ): Promise<Response> {
-  const { fetchImpl = fetch, ...rest } = init;
-  const currentInit: RequestInit = { ...rest, redirect: "manual" };
+  const { fetchImpl = fetch, ...initRest } = init;
+  // Every fetch input shape is accepted so no caller has to flatten a Request
+  // to its URL (which would silently drop its method, headers and body). A
+  // Request seeds the method, headers and body; `init` overrides, as in fetch.
+  let url: string;
+  let rest: RequestInit;
+  if (input instanceof Request) {
+    url = input.url;
+    const hasBody = input.method !== "GET" && input.method !== "HEAD" && input.body !== null;
+    const body = hasBody ? await input.clone().arrayBuffer() : undefined;
+    rest = {
+      method: input.method,
+      headers: input.headers,
+      ...(body !== undefined ? { body } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...initRest,
+    };
+  } else {
+    url = input instanceof URL ? input.href : input;
+    rest = initRest;
+  }
   // Credentials the caller sent were meant for the original origin only.
   // Each hop's headers are derived from this snapshot: full when the hop is
   // back on the original origin, credential-stripped otherwise.
@@ -66,8 +85,15 @@ export async function fetchFollowingRedirectsPreservingMethod(
   // dropping these makes the final request arrive unauthenticated.
   const jar = new RedirectCookieJar();
   let currentUrl = url;
+  let currentHeaders = rest.headers;
   for (let hop = 0; hop <= MAX_METHOD_PRESERVING_REDIRECTS; hop += 1) {
-    const response = await fetchImpl(currentUrl, currentInit);
+    // A fresh init per hop: fetchImpl may retain the object it was handed, so
+    // rewriting one shared init would retroactively alter an earlier hop.
+    const response = await fetchImpl(currentUrl, {
+      ...rest,
+      headers: currentHeaders,
+      redirect: "manual",
+    });
     onHop?.({
       status: response.status,
       headers: response.headers,
@@ -92,14 +118,12 @@ export async function fetchFollowingRedirectsPreservingMethod(
     // Once any hop leaves the original origin, credentials stay stripped for
     // the rest of the chain (Fetch spec); a later hop back cannot restore them.
     if (nextUrl.origin !== originalOrigin) leftOriginalOrigin = true;
-    // Always rebuild from the caller's headers (or their stripped snapshot) so
-    // a cookie attached for an earlier hop never rides along to a hop the jar
-    // no longer selects it for. With no hop cookies the caller's object passes
-    // through untouched.
-    const baseHeaders = leftOriginalOrigin ? strippedHeaders : rest.headers;
+    // Always rebuild from the normalized snapshot (full or stripped) so a
+    // cookie attached for an earlier hop never rides along to a hop the jar no
+    // longer selects it for, and repeated tuple-list names stay combined.
+    const baseHeaders = leftOriginalOrigin ? strippedHeaders : originalHeaders;
     const hopCookies = jar.select(nextUrl);
-    currentInit.headers =
-      hopCookies.length > 0 ? mergeHopCookies(baseHeaders, hopCookies) : baseHeaders;
+    currentHeaders = hopCookies.length > 0 ? mergeHopCookies(baseHeaders, hopCookies) : baseHeaders;
 
     currentUrl = nextUrl.toString();
   }
@@ -142,21 +166,65 @@ export function parseCookiePairs(cookieHeader: string): Array<[string, string]> 
     });
 }
 
-// Any header whose name mentions a credential concept anywhere (not only as a
-// suffix: x-authorization, x-signature, x-keyid-secret-value) must not cross
-// origins. Matching is on the stem so every spelling of the concept is caught.
-const CREDENTIAL_NAME_STEM =
-  /auth|token|secret|key|sign|pass(?:word|wd)|cred|session|cookie|bearer|jwt|sid\b/i;
+// A header is a credential when any hyphen/underscore-delimited word of its
+// name IS a credential word (x-api-key, x-auth-token, proxy-authorization).
+// Whole words, not substrings, so x-author-name is not mistaken for "auth".
+const CREDENTIAL_WORDS = new Set([
+  "auth",
+  "authorization",
+  "authentication",
+  "authenticate",
+  "token",
+  "tokens",
+  "secret",
+  "secrets",
+  "key",
+  "keys",
+  "apikey",
+  "signature",
+  "sign",
+  "signed",
+  "password",
+  "passwd",
+  "pass",
+  "cred",
+  "creds",
+  "credential",
+  "credentials",
+  "session",
+  "sessionid",
+  "cookie",
+  "cookies",
+  "bearer",
+  "jwt",
+  "sid",
+]);
 
 /** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
-  return CREDENTIAL_NAME_STEM.test(name);
+  return name
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((word) => CREDENTIAL_WORDS.has(word));
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */
 function headersToRecord(headers: RequestInit["headers"] | undefined): Record<string, string> {
   if (headers === undefined) return {};
+  // Names keep the caller's casing, so a same-origin hop re-sends exactly what
+  // was passed in. Repeated names in a tuple list are combined, not dropped.
   if (headers instanceof Headers) return Object.fromEntries(headers.entries());
-  if (Array.isArray(headers)) return Object.fromEntries(headers);
-  return { ...(headers as Record<string, string>) };
+  const entries = Array.isArray(headers) ? headers : Object.entries(headers);
+  const out: Record<string, string> = {};
+  const seen = new Map<string, string>();
+  for (const [name = "", value = ""] of entries) {
+    const key = seen.get(name.toLowerCase());
+    if (key === undefined) {
+      seen.set(name.toLowerCase(), name);
+      out[name] = value;
+    } else {
+      out[key] = `${out[key] ?? ""}, ${value}`;
+    }
+  }
+  return out;
 }

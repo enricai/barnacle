@@ -76,6 +76,77 @@ describe("createTimeoutFetch", () => {
 
     vi.advanceTimersByTime(1000);
   });
+  describe("Request input", () => {
+    const ok = () => new Response("ok");
+    const redirect = (location: string) =>
+      new Response(null, { status: 307, headers: { location } });
+
+    it("forwards method, headers and body to the first hop", async () => {
+      fetchStub.mockImplementation(async () => ok());
+      const req = new Request("https://example.com/a", {
+        method: "POST",
+        headers: { "x-api-key": "k", Authorization: "Bearer t" },
+        body: "payload",
+      });
+      await createTimeoutFetch(1000)(req);
+      const init = fetchStub.mock.calls[0]?.[1] as RequestInit;
+      expect(init.method).toBe("POST");
+      const h = new Headers(init.headers);
+      expect(h.get("x-api-key")).toBe("k");
+      expect(h.get("authorization")).toBe("Bearer t");
+      expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe("payload");
+    });
+
+    it("strips credentials cross-origin but keeps method and body", async () => {
+      fetchStub
+        .mockImplementationOnce(async () => redirect("https://other.example.org/b"))
+        .mockImplementationOnce(async () => ok());
+      const req = new Request("https://example.com/a", {
+        method: "POST",
+        headers: { "x-api-key": "k", Authorization: "Bearer t", "x-keep": "1" },
+        body: "payload",
+      });
+      await createTimeoutFetch(1000)(req);
+      const init = fetchStub.mock.calls[1]?.[1] as RequestInit;
+      const h = new Headers(init.headers);
+      expect(h.get("x-api-key")).toBeNull();
+      expect(h.get("authorization")).toBeNull();
+      expect(h.get("x-keep")).toBe("1");
+      expect(init.method).toBe("POST");
+      expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe("payload");
+    });
+
+    it("keeps every header on a same-origin redirect", async () => {
+      fetchStub
+        .mockImplementationOnce(async () => redirect("/b"))
+        .mockImplementationOnce(async () => ok());
+      const req = new Request("https://example.com/a", {
+        method: "POST",
+        headers: { "x-api-key": "k" },
+        body: "p",
+      });
+      await createTimeoutFetch(1000)(req);
+      const h = new Headers((fetchStub.mock.calls[1]?.[1] as RequestInit | undefined)?.headers);
+      expect(h.get("x-api-key")).toBe("k");
+    });
+
+    it("lets init override the Request's method", async () => {
+      fetchStub.mockImplementation(async () => ok());
+      await createTimeoutFetch(1000)(new Request("https://example.com/a", { method: "DELETE" }), {
+        method: "PUT",
+      });
+      expect((fetchStub.mock.calls[0]?.[1] as RequestInit | undefined)?.method).toBe("PUT");
+    });
+  });
+
+  it("passes URL and string inputs through as before", async () => {
+    fetchStub.mockImplementation(async () => new Response("ok"));
+    await createTimeoutFetch(1000)(new URL("https://example.com/u"));
+    await createTimeoutFetch(1000)("https://example.com/s", { method: "POST" });
+    expect(fetchStub.mock.calls[0]?.[0]).toBe("https://example.com/u");
+    expect(fetchStub.mock.calls[1]?.[0]).toBe("https://example.com/s");
+    expect((fetchStub.mock.calls[1]?.[1] as RequestInit | undefined)?.method).toBe("POST");
+  });
 });
 
 describe("closeStagehandBounded", () => {
