@@ -617,7 +617,7 @@ describe("fetchFollowingRedirectsPreservingMethod fetch input shapes", () => {
       .mockResolvedValueOnce(new Response("ok", { status: 200 }));
     const request = new Request("https://example.com/api", {
       method: "POST",
-      headers: { authorization: "Bearer t", "x-trace": "1" },
+      headers: { authorization: "Bearer t", accept: "text/html" },
       body: '{"a":1}',
     });
     await fetchFollowingRedirectsPreservingMethod(request, { fetchImpl });
