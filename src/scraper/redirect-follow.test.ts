@@ -676,3 +676,40 @@ describe("isCredentialHeader classifier table", () => {
     }
   );
 });
+
+describe("credential header classifier at the redirect chokepoint", () => {
+  it.each(["api-key", "Api-Key", "AUTHORIZATION", "pRoXy-AuThOrIzAtIoN", "X-Auth-Token", "COOKIE"])(
+    "classifies %s as a credential",
+    (name) => {
+      expect(isCredentialHeader(name)).toBe(true);
+    }
+  );
+
+  it("strips every credential name, in any case, cross-origin and keeps look-alikes", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { Location: "https://other.com/b" } })
+      )
+      .mockResolvedValueOnce(new Response("ok"));
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "POST",
+      body: "x",
+      headers: {
+        AUTHORIZATION: "a",
+        "pRoXy-AuThOrIzAtIoN": "p",
+        COOKIE: "c=1",
+        "X-Api-Key": "k",
+        "api-key": "k2",
+        apikey: "k3",
+        "X-Auth-Token": "t",
+        "x-author-name": "kept",
+        "x-custom": "kept",
+      },
+      fetchImpl,
+    });
+    const init = fetchImpl.mock.calls[1]?.[1];
+    expect(init.headers).toEqual({ "x-author-name": "kept", "x-custom": "kept" });
+    expect(init).toMatchObject({ method: "POST", body: "x" });
+  });
+});
