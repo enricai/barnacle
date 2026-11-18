@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   fetchFollowingRedirectsPreservingMethod,
+  isCredentialHeader,
   parseCookiePairs,
 } from "@/scraper/redirect-follow";
 
@@ -650,4 +651,28 @@ describe("fetchFollowingRedirectsPreservingMethod fetch input shapes", () => {
       "X-Multi": "a, b",
     });
   });
+});
+
+describe("isCredentialHeader classifier table", () => {
+  it.each([
+    "Authorization",
+    "Proxy-Authorization",
+    "Cookie",
+    "Cookie2",
+    "cookie-1",
+    "x-cookie-2",
+    "X-API-Key",
+    "x-api-key",
+    "apikey",
+    "ApiKey",
+    "x-auth-token",
+  ])("treats %s as a credential", (name) => {
+    expect(isCredentialHeader(name)).toBe(true);
+  });
+  it.each(["x-author-name", "content-type", "accept", "user-agent", "x-custom"])(
+    "keeps %s",
+    (name) => {
+      expect(isCredentialHeader(name)).toBe(false);
+    }
+  );
 });

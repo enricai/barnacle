@@ -7,7 +7,9 @@ import { RedirectCookieJar } from "./redirect-cookie-jar.js";
 const MAX_METHOD_PRESERVING_REDIRECTS = 5;
 
 /** The single decision of which redirect statuses are followed. */
-export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([
+  301, 302, 303, 307, 308,
+]);
 
 /**
  * Follows redirects without silently downgrading the request method.
@@ -42,7 +44,7 @@ export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 30
 export async function fetchFollowingRedirectsPreservingMethod(
   input: string | URL | Request,
   init: RequestInit & { fetchImpl?: typeof fetch } = {},
-  onHop?: (hop: { status: number; headers: Headers; url: string }) => void
+  onHop?: (hop: { status: number; headers: Headers; url: string }) => void,
 ): Promise<Response> {
   const { fetchImpl = fetch, ...initRest } = init;
   // Every fetch input shape is accepted so no caller has to flatten a Request
@@ -52,7 +54,8 @@ export async function fetchFollowingRedirectsPreservingMethod(
   let rest: RequestInit;
   if (input instanceof Request) {
     url = input.url;
-    const hasBody = input.method !== "GET" && input.method !== "HEAD" && input.body !== null;
+    const hasBody =
+      input.method !== "GET" && input.method !== "HEAD" && input.body !== null;
     const body = hasBody ? await input.clone().arrayBuffer() : undefined;
     rest = {
       method: input.method,
@@ -70,7 +73,9 @@ export async function fetchFollowingRedirectsPreservingMethod(
   // back on the original origin, credential-stripped otherwise.
   const originalHeaders = headersToRecord(rest.headers);
   const strippedHeaders = Object.fromEntries(
-    Object.entries(originalHeaders).filter(([name]) => !isCredentialHeader(name))
+    Object.entries(originalHeaders).filter(
+      ([name]) => !isCredentialHeader(name),
+    ),
   );
   // An unparseable URL must reach fetch so it rejects there as before.
   let originalOrigin: string | null = null;
@@ -123,11 +128,16 @@ export async function fetchFollowingRedirectsPreservingMethod(
     // longer selects it for, and repeated tuple-list names stay combined.
     const baseHeaders = leftOriginalOrigin ? strippedHeaders : originalHeaders;
     const hopCookies = jar.select(nextUrl);
-    currentHeaders = hopCookies.length > 0 ? mergeHopCookies(baseHeaders, hopCookies) : baseHeaders;
+    currentHeaders =
+      hopCookies.length > 0
+        ? mergeHopCookies(baseHeaders, hopCookies)
+        : baseHeaders;
 
     currentUrl = nextUrl.toString();
   }
-  throw new Error(`exceeded ${MAX_METHOD_PRESERVING_REDIRECTS} redirects starting at ${url}`);
+  throw new Error(
+    `exceeded ${MAX_METHOD_PRESERVING_REDIRECTS} redirects starting at ${url}`,
+  );
 }
 
 /**
@@ -138,13 +148,17 @@ export async function fetchFollowingRedirectsPreservingMethod(
  */
 function mergeHopCookies(
   headers: RequestInit["headers"] | undefined,
-  hopCookies: Array<[string, string]>
+  hopCookies: Array<[string, string]>,
 ): Record<string, string> {
   const record = headersToRecord(headers);
-  const cookieKey = Object.keys(record).find((name) => name.toLowerCase() === "cookie") ?? "Cookie";
+  const cookieKey =
+    Object.keys(record).find((name) => name.toLowerCase() === "cookie") ??
+    "Cookie";
   const merged = new Map(parseCookiePairs(record[cookieKey] ?? ""));
   for (const [name, value] of hopCookies) merged.set(name, value);
-  record[cookieKey] = [...merged.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
+  record[cookieKey] = [...merged.entries()]
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
   return record;
 }
 
@@ -155,14 +169,18 @@ function mergeHopCookies(
  * an operator-authored `baseHeaders` or per-call `init.headers` Cookie value
  * is untrusted input, not a value this module produced.
  */
-export function parseCookiePairs(cookieHeader: string): Array<[string, string]> {
+export function parseCookiePairs(
+  cookieHeader: string,
+): Array<[string, string]> {
   return cookieHeader
     .split(";")
     .map((pair) => pair.trim())
     .filter(Boolean)
     .flatMap((pair) => {
       const eq = pair.indexOf("=");
-      return eq === -1 ? [] : [[pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()] as const];
+      return eq === -1
+        ? []
+        : [[pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()] as const];
     });
 }
 
@@ -202,14 +220,23 @@ const CREDENTIAL_WORDS = new Set([
 
 /** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
-  return name
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .some((word) => CREDENTIAL_WORDS.has(word));
+  return (
+    name
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      // A trailing counter (cookie2, token1) does not make a word harmless.
+      .some(
+        (word) =>
+          CREDENTIAL_WORDS.has(word) ||
+          CREDENTIAL_WORDS.has(word.replace(/\d+$/, "")),
+      )
+  );
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */
-function headersToRecord(headers: RequestInit["headers"] | undefined): Record<string, string> {
+function headersToRecord(
+  headers: RequestInit["headers"] | undefined,
+): Record<string, string> {
   if (headers === undefined) return {};
   // Names keep the caller's casing, so a same-origin hop re-sends exactly what
   // was passed in. Repeated names in a tuple list are combined, not dropped.
