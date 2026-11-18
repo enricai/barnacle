@@ -139,7 +139,7 @@ describe("createTimeoutFetch", () => {
         .mockImplementationOnce(async () => ok());
       const req = new Request("https://example.com/a", {
         method: "POST",
-        headers: { "x-api-key": "k", Authorization: "Bearer t", accept: "text/plain" },
+        headers: { "x-api-key": "k", Authorization: "Bearer t", "x-keep": "1" },
         body: "payload",
       });
       await createTimeoutFetch(1000)(req);
@@ -147,7 +147,7 @@ describe("createTimeoutFetch", () => {
       const h = new Headers(init.headers);
       expect(h.get("x-api-key")).toBeNull();
       expect(h.get("authorization")).toBeNull();
-      expect(h.get("accept")).toBe("text/plain");
+      expect(h.get("x-keep")).toBe("1");
       expect(init.method).toBe("POST");
       expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe("payload");
     });

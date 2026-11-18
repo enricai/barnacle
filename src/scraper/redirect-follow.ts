@@ -1,5 +1,4 @@
 import { RedirectCookieJar } from "./redirect-cookie-jar.js";
-import { stripToSafeHeaders } from "./redirect-credential-headers.js";
 
 /**
  * Maximum redirect hops followed while preserving the request method.
@@ -68,9 +67,11 @@ export async function fetchFollowingRedirectsPreservingMethod(
   }
   // Credentials the caller sent were meant for the original origin only.
   // Each hop's headers are derived from this snapshot: full when the hop is
-  // back on the original origin, reduced to the non-credential allowlist otherwise.
+  // back on the original origin, credential-stripped otherwise.
   const originalHeaders = headersToRecord(rest.headers);
-  const strippedHeaders = stripToSafeHeaders(originalHeaders);
+  const strippedHeaders = Object.fromEntries(
+    Object.entries(originalHeaders).filter(([name]) => !isCredentialHeader(name))
+  );
   // An unparseable URL must reach fetch so it rejects there as before.
   let originalOrigin: string | null = null;
   try {
@@ -163,6 +164,52 @@ export function parseCookiePairs(cookieHeader: string): Array<[string, string]> 
       const eq = pair.indexOf("=");
       return eq === -1 ? [] : [[pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()] as const];
     });
+}
+
+// A header is a credential when one of its words is a credential word. Words
+// come from the separators and camelCase humps of the name (xApiKey ->
+// x, api, key), so ordinary names that merely contain a stem inside a longer
+// word (x-design-system, x-compass-region) are not matched. A single
+// separator-free word such as "apitoken" or "accesskey" is matched when it
+// ends in a credential noun.
+const CREDENTIAL_WORDS = new Set([
+  "auth",
+  "authorization",
+  "authentication",
+  "token",
+  "secret",
+  "key",
+  "signature",
+  "password",
+  "passwd",
+  "passphrase",
+  "credential",
+  "credentials",
+  "session",
+  "sessionid",
+  "sid",
+  "cookie",
+  "bearer",
+  "jwt",
+  "hmac",
+  "otp",
+  "nonce",
+  "csrf",
+  "xsrf",
+]);
+const CREDENTIAL_NOUN_SUFFIXES = ["token", "key", "secret"];
+
+/** True for headers that carry a credential and must not cross origins. */
+export function isCredentialHeader(name: string): boolean {
+  const split = (n: string) => n.split(/[^a-z0-9]+/).filter(Boolean);
+  // Separator words, plus camelCase humps for separator-free spellings.
+  const words = [
+    ...split(name.toLowerCase()),
+    ...split(name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()),
+  ].map((w) => w.replace(/[0-9]+$/, ""));
+  return words.some(
+    (w) => CREDENTIAL_WORDS.has(w) || CREDENTIAL_NOUN_SUFFIXES.some((n) => w.endsWith(n))
+  );
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */

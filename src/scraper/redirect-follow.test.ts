@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   fetchFollowingRedirectsPreservingMethod,
+  isCredentialHeader,
   parseCookiePairs,
 } from "@/scraper/redirect-follow";
 
@@ -416,7 +417,7 @@ describe("fetchFollowingRedirectsPreservingMethod same-origin characterization",
       "Proxy-Authorization": "Basic p",
       Cookie: "s=1",
       "x-api-key": "k",
-      accept: "c",
+      "x-custom": "c",
     };
     const fetchImpl = vi
       .fn()
@@ -437,7 +438,7 @@ describe("fetchFollowingRedirectsPreservingMethod same-origin characterization",
   it.each([301, 302, 303, 307, 308])(
     "%i keeps method, body and all headers on a header-bearing POST",
     async (status) => {
-      const headers = { Authorization: "Bearer t", "x-api-key": "k", accept: "c" };
+      const headers = { Authorization: "Bearer t", "x-api-key": "k", "x-custom": "c" };
       const fetchImpl = vi
         .fn()
         .mockResolvedValueOnce(redirect(status, "/next"))
@@ -500,7 +501,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin credentials", () 
     "Proxy-Authorization": "p",
     Cookie: "s=1",
     "X-API-Key": "k",
-    accept: "c",
+    "x-custom": "c",
   };
   it.each(["https://other.com/b", "http://example.com/b", "https://example.com:8443/b"])(
     "drops credentials but keeps method, body, other headers for %s",
@@ -516,7 +517,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin credentials", () 
         fetchImpl,
       });
       const init = fetchImpl.mock.calls[1]?.[1];
-      expect(init.headers).toEqual({ accept: "c" });
+      expect(init.headers).toEqual({ "x-custom": "c" });
       expect(init).toMatchObject({ method: "POST", body: "x" });
     }
   );
@@ -530,7 +531,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin credentials", () 
         headers,
         fetchImpl,
       });
-      expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ accept: "c" });
+      expect(fetchImpl.mock.calls[1]?.[1].headers).toEqual({ "x-custom": "c" });
     }
   });
   it("stays dropped on later hops even when back on the original origin", async () => {
@@ -556,7 +557,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin across statuses",
     "Proxy-Authorization": "p",
     Cookie: "s=1",
     "X-API-Key": "k",
-    accept: "c",
+    "x-custom": "c",
   };
   it.each([301, 302, 303, 307, 308])(
     "%i to another host strips credentials, keeps method/body/other headers",
@@ -576,7 +577,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin across statuses",
       expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://example.com/a");
       expect(fetchImpl.mock.calls[1]?.[0]).toBe("https://other.com/b");
       const init = fetchImpl.mock.calls[1]?.[1];
-      expect(init.headers).toEqual({ accept: "c" });
+      expect(init.headers).toEqual({ "x-custom": "c" });
       expect(init).toMatchObject({ method: "POST", body: "x" });
     }
   );
@@ -601,7 +602,7 @@ describe("fetchFollowingRedirectsPreservingMethod cross-origin across statuses",
       headers: creds,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    expect(seen.map((s) => s.headers)).toEqual([creds, { accept: "c" }, { accept: "c" }]);
+    expect(seen.map((s) => s.headers)).toEqual([creds, { "x-custom": "c" }, { "x-custom": "c" }]);
     expect(seen.every((s) => s.method === "POST" && s.body === "x")).toBe(true);
   });
 });
@@ -617,7 +618,7 @@ describe("fetchFollowingRedirectsPreservingMethod fetch input shapes", () => {
       .mockResolvedValueOnce(new Response("ok", { status: 200 }));
     const request = new Request("https://example.com/api", {
       method: "POST",
-      headers: { authorization: "Bearer t", accept: "text/html" },
+      headers: { authorization: "Bearer t", "x-trace": "1" },
       body: '{"a":1}',
     });
     await fetchFollowingRedirectsPreservingMethod(request, { fetchImpl });
@@ -628,7 +629,7 @@ describe("fetchFollowingRedirectsPreservingMethod fetch input shapes", () => {
     expect(second.method).toBe("POST");
     expect(second.body).toBeDefined();
     expect(new Headers(second.headers).get("authorization")).toBeNull();
-    expect(new Headers(second.headers).get("accept")).toBe("text/html");
+    expect(new Headers(second.headers).get("x-trace")).toBe("1");
   });
 
   it("accepts a URL object and keeps tuple-list headers on a same-origin hop", async () => {
@@ -652,7 +653,38 @@ describe("fetchFollowingRedirectsPreservingMethod fetch input shapes", () => {
   });
 });
 
-describe("credential header allowlist at the redirect chokepoint", () => {
+describe("isCredentialHeader classifier table", () => {
+  it.each([
+    "Authorization",
+    "Proxy-Authorization",
+    "Cookie",
+    "Cookie2",
+    "cookie-1",
+    "x-cookie-2",
+    "X-API-Key",
+    "x-api-key",
+    "apikey",
+    "ApiKey",
+    "x-auth-token",
+  ])("treats %s as a credential", (name) => {
+    expect(isCredentialHeader(name)).toBe(true);
+  });
+  it.each(["x-author-name", "content-type", "accept", "user-agent", "x-custom"])(
+    "keeps %s",
+    (name) => {
+      expect(isCredentialHeader(name)).toBe(false);
+    }
+  );
+});
+
+describe("credential header classifier at the redirect chokepoint", () => {
+  it.each(["api-key", "Api-Key", "AUTHORIZATION", "pRoXy-AuThOrIzAtIoN", "X-Auth-Token", "COOKIE"])(
+    "classifies %s as a credential",
+    (name) => {
+      expect(isCredentialHeader(name)).toBe(true);
+    }
+  );
+
   it("strips every credential name, in any case, cross-origin and keeps look-alikes", async () => {
     const fetchImpl = vi
       .fn()
@@ -671,12 +703,13 @@ describe("credential header allowlist at the redirect chokepoint", () => {
         "api-key": "k2",
         apikey: "k3",
         "X-Auth-Token": "t",
-        "content-type": "text/plain",
+        "x-author-name": "kept",
+        "x-custom": "kept",
       },
       fetchImpl,
     });
     const init = fetchImpl.mock.calls[1]?.[1];
-    expect(init.headers).toEqual({ "content-type": "text/plain" });
+    expect(init.headers).toEqual({ "x-author-name": "kept", "x-custom": "kept" });
     expect(init).toMatchObject({ method: "POST", body: "x" });
   });
 });
@@ -692,8 +725,9 @@ describe("fetchFollowingRedirectsPreservingMethod credential header spellings", 
     "xApiKey",
   ];
   const lookAlikes = {
+    "x-design-system": "d",
+    "x-compass-region": "r",
     "content-type": "application/json",
-    accept: "*/*",
   };
   const run = async (names: string[], location: string) => {
     const headers: Record<string, string> = { ...lookAlikes };
@@ -725,6 +759,9 @@ describe("fetchFollowingRedirectsPreservingMethod credential header spellings", 
       expect(init.headers).toEqual({ ...lookAlikes, [name]: "secret-value" });
       expect(init).toMatchObject({ method: "POST", body: "payload" });
     });
+    it("is classified as a credential header", () => {
+      expect(isCredentialHeader(name)).toBe(true);
+    });
   });
 
   it("drops all spellings together cross-origin", async () => {
@@ -732,8 +769,7 @@ describe("fetchFollowingRedirectsPreservingMethod credential header spellings", 
     expect(init.headers).toEqual(lookAlikes);
   });
 
-  it("drops an arbitrary unlisted custom credential header cross-origin", async () => {
-    const init = await run(["x-access-code"], "https://other.com/b");
-    expect(init.headers).toEqual(lookAlikes);
+  it.each(Object.keys(lookAlikes))("%s is not a credential header", (name) => {
+    expect(isCredentialHeader(name)).toBe(false);
   });
 });
