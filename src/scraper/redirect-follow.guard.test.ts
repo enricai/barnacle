@@ -90,9 +90,13 @@ describe("redirect-policy guard", () => {
 
   it("every allowlist entry has a reason and exists", () => {
     for (const [path, reason] of Object.entries(ALLOWLIST)) {
-      expect(reason.length, path).toBeGreaterThan(10);
+      expect(reason.trim().length, path).toBeGreaterThan(10);
       expect(() => statSync(path), path).not.toThrow();
     }
+  });
+
+  it("testmail allowlist reason states the apikey is in the query string", () => {
+    expect(ALLOWLIST["src/testmail/client.ts"]).toMatch(/apikey is in the URL query string/);
   });
 
   it("every allowlist entry still contains a flagged pattern (no stale entries)", () => {
@@ -119,6 +123,14 @@ describe("redirect-policy guard", () => {
       expect(scanSource("new Steel({ steelAPIKey: k })")).toHaveLength(1);
       expect(scanSource("new S3Client({ region })")).toHaveLength(1);
       expect(scanSource("new Steel({ steelAPIKey: k, fetch: f(1) })")).toEqual([]);
+    });
+    it("flags a multi-line constructor lacking fetch and passes one with fetch", () => {
+      expect(scanSource("const c = new Anthropic(\n  {\n    apiKey,\n  }\n);")).toHaveLength(1);
+      expect(scanSource("new Anthropic(\n  {\n    apiKey,\n    fetch: f(1),\n  }\n)")).toEqual([]);
+    });
+    it("does not count fetch that appears only in a comment inside a constructor", () => {
+      expect(scanSource("new Anthropic({\n  apiKey,\n  // fetch: f(1),\n})")).toHaveLength(1);
+      expect(scanSource("new OpenAI({ apiKey /* fetch */ })")).toHaveLength(1);
     });
     it("passes constructors that pass fetch", () => {
       expect(scanSource("new Anthropic({ apiKey, fetch: f(1) })")).toEqual([]);

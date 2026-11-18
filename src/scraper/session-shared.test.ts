@@ -76,6 +76,42 @@ describe("createTimeoutFetch", () => {
 
     vi.advanceTimersByTime(1000);
   });
+  describe("SDK-route credential handling (url + init headers)", () => {
+    const redirect = (location: string) =>
+      new Response(null, { status: 307, headers: { location } });
+    const headersOf = (i: number) => new Headers(fetchStub.mock.calls[i]?.[1]?.headers);
+
+    it("forwards x-api-key and Authorization on a same-origin redirect", async () => {
+      fetchStub
+        .mockImplementationOnce(async () => redirect("https://example.com/b"))
+        .mockImplementationOnce(async () => new Response("ok"));
+      await createTimeoutFetch(1000)("https://example.com/a", {
+        method: "POST",
+        headers: { "x-api-key": "k", Authorization: "Bearer t" },
+        body: "p",
+      });
+      expect(fetchStub).toHaveBeenCalledTimes(2);
+      expect(headersOf(1).get("x-api-key")).toBe("k");
+      expect(headersOf(1).get("authorization")).toBe("Bearer t");
+    });
+
+    it("strips x-api-key and Authorization on a cross-origin redirect", async () => {
+      fetchStub
+        .mockImplementationOnce(async () => redirect("https://other.example.net/b"))
+        .mockImplementationOnce(async () => new Response("ok"));
+      await createTimeoutFetch(1000)("https://example.com/a", {
+        method: "POST",
+        headers: { "x-api-key": "k", Authorization: "Bearer t", "content-type": "text/plain" },
+        body: "p",
+      });
+      expect(fetchStub).toHaveBeenCalledTimes(2);
+      expect(headersOf(0).get("x-api-key")).toBe("k");
+      expect(headersOf(1).get("x-api-key")).toBeNull();
+      expect(headersOf(1).get("authorization")).toBeNull();
+      expect(headersOf(1).get("content-type")).toBe("text/plain");
+    });
+  });
+
   describe("Request input", () => {
     const ok = () => new Response("ok");
     const redirect = (location: string) =>
