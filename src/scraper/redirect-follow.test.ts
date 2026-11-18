@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   fetchFollowingRedirectsPreservingMethod,
+  isCredentialHeader,
   parseCookiePairs,
 } from "@/scraper/redirect-follow";
 
@@ -649,5 +650,66 @@ describe("fetchFollowingRedirectsPreservingMethod fetch input shapes", () => {
       Authorization: "Bearer t",
       "X-Multi": "a, b",
     });
+  });
+});
+
+describe("isCredentialHeader classifier table", () => {
+  it.each([
+    "Authorization",
+    "Proxy-Authorization",
+    "Cookie",
+    "Cookie2",
+    "cookie-1",
+    "x-cookie-2",
+    "X-API-Key",
+    "x-api-key",
+    "apikey",
+    "ApiKey",
+    "x-auth-token",
+  ])("treats %s as a credential", (name) => {
+    expect(isCredentialHeader(name)).toBe(true);
+  });
+  it.each(["x-author-name", "content-type", "accept", "user-agent", "x-custom"])(
+    "keeps %s",
+    (name) => {
+      expect(isCredentialHeader(name)).toBe(false);
+    }
+  );
+});
+
+describe("credential header classifier at the redirect chokepoint", () => {
+  it.each(["api-key", "Api-Key", "AUTHORIZATION", "pRoXy-AuThOrIzAtIoN", "X-Auth-Token", "COOKIE"])(
+    "classifies %s as a credential",
+    (name) => {
+      expect(isCredentialHeader(name)).toBe(true);
+    }
+  );
+
+  it("strips every credential name, in any case, cross-origin and keeps look-alikes", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { Location: "https://other.com/b" } })
+      )
+      .mockResolvedValueOnce(new Response("ok"));
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/a", {
+      method: "POST",
+      body: "x",
+      headers: {
+        AUTHORIZATION: "a",
+        "pRoXy-AuThOrIzAtIoN": "p",
+        COOKIE: "c=1",
+        "X-Api-Key": "k",
+        "api-key": "k2",
+        apikey: "k3",
+        "X-Auth-Token": "t",
+        "x-author-name": "kept",
+        "x-custom": "kept",
+      },
+      fetchImpl,
+    });
+    const init = fetchImpl.mock.calls[1]?.[1];
+    expect(init.headers).toEqual({ "x-author-name": "kept", "x-custom": "kept" });
+    expect(init).toMatchObject({ method: "POST", body: "x" });
   });
 });

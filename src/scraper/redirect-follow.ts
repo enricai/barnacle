@@ -166,46 +166,50 @@ export function parseCookiePairs(cookieHeader: string): Array<[string, string]> 
     });
 }
 
-// A header is a credential when any hyphen/underscore-delimited word of its
-// name IS a credential word (x-api-key, x-auth-token, proxy-authorization).
-// Whole words, not substrings, so x-author-name is not mistaken for "auth".
+// A header is a credential when one of its words is a credential word. Words
+// come from the separators and camelCase humps of the name (xApiKey ->
+// x, api, key), so ordinary names that merely contain a stem inside a longer
+// word (x-design-system, x-compass-region) are not matched. A single
+// separator-free word such as "apitoken" or "accesskey" is matched when it
+// ends in a credential noun.
 const CREDENTIAL_WORDS = new Set([
   "auth",
   "authorization",
   "authentication",
-  "authenticate",
   "token",
-  "tokens",
   "secret",
-  "secrets",
   "key",
-  "keys",
-  "apikey",
   "signature",
-  "sign",
-  "signed",
   "password",
   "passwd",
-  "pass",
-  "cred",
-  "creds",
+  "passphrase",
   "credential",
   "credentials",
   "session",
   "sessionid",
+  "sid",
   "cookie",
-  "cookies",
   "bearer",
   "jwt",
-  "sid",
+  "hmac",
+  "otp",
+  "nonce",
+  "csrf",
+  "xsrf",
 ]);
+const CREDENTIAL_NOUN_SUFFIXES = ["token", "key", "secret"];
 
 /** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {
-  return name
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .some((word) => CREDENTIAL_WORDS.has(word));
+  const split = (n: string) => n.split(/[^a-z0-9]+/).filter(Boolean);
+  // Separator words, plus camelCase humps for separator-free spellings.
+  const words = [
+    ...split(name.toLowerCase()),
+    ...split(name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()),
+  ].map((w) => w.replace(/[0-9]+$/, ""));
+  return words.some(
+    (w) => CREDENTIAL_WORDS.has(w) || CREDENTIAL_NOUN_SUFFIXES.some((n) => w.endsWith(n))
+  );
 }
 
 /** Normalizes Headers, tuple arrays or records into a plain record. */

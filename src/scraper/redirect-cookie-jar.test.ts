@@ -42,4 +42,26 @@ describe("RedirectCookieJar", () => {
     expect(sel("a=1; Max-Age=-5", "https://x.com/", "https://x.com/")).toEqual([]);
     expect(sel("a=1; Max-Age=60", "https://x.com/", "https://x.com/")).toHaveLength(1);
   });
+  it("honours Max-Age expiry against an injected clock and overrides Expires", () => {
+    const jar = new RedirectCookieJar();
+    jar.add("a=1; Max-Age=60", u("https://x.com/"), 1_000);
+    expect(jar.select(u("https://x.com/"), 1_000 + 59_000)).toHaveLength(1);
+    expect(jar.select(u("https://x.com/"), 1_000 + 60_000)).toEqual([]);
+    const j2 = new RedirectCookieJar();
+    j2.add("b=1; Expires=Wed, 01 Jan 2020 00:00:00 GMT; Max-Age=60", u("https://x.com/"), 1_000);
+    expect(j2.select(u("https://x.com/"), 2_000)).toHaveLength(1);
+  });
+  it("treats a leading-dot Domain like the bare domain", () => {
+    expect(sel("a=1; Domain=.x.com", "https://x.com/", "https://sub.x.com/")).toHaveLength(1);
+    expect(sel("a=1; Domain=.x.com", "https://www.x.com/", "https://x.com/")).toHaveLength(1);
+    expect(sel("a=1; Domain=.x.com", "https://x.com/", "https://evilx.com/")).toEqual([]);
+  });
+  it("default path of a root-level or deep request", () => {
+    expect(sel("a=1", "https://x.com/page", "https://x.com/other")).toHaveLength(1);
+    expect(sel("a=1", "https://x.com/a/b/c", "https://x.com/a/b/d")).toHaveLength(1);
+    expect(sel("a=1", "https://x.com/a/b/c", "https://x.com/a/x")).toEqual([]);
+  });
+  it("sends a Secure cookie set over https to an https URL", () => {
+    expect(sel("a=1; Secure; Path=/", "https://x.com/", "https://x.com/deep/er")).toHaveLength(1);
+  });
 });

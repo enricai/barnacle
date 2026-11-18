@@ -126,4 +126,51 @@ describe("redirect hop cookie jar matching", () => {
       )
     ).toBe("consent=yes; s=1");
   });
+
+  it("honours Max-Age and a leading-dot Domain through the hop merge", async () => {
+    const run = (attr: string, to: string) =>
+      finalCookie("https://example.com/", [
+        hop("https://example.com/", to, `s=1; Path=/; ${attr}`),
+      ]);
+    expect(await run("Max-Age=60", "https://example.com/n")).toBe("s=1");
+    expect(await run("Domain=.example.com", "https://sub.example.com/")).toBe("s=1");
+    expect(await run("Domain=.example.com", "https://notexample.com/")).toBe("");
+  });
+
+  it("sends a Secure cookie set over https to an https hop", async () => {
+    expect(
+      await finalCookie("https://example.com/", [
+        hop("https://example.com/", "https://example.com/s", "s=1; Path=/; Secure"),
+      ])
+    ).toBe("s=1");
+  });
+
+  it("drops both a hop cookie and the caller cookie on a cross-origin hop", async () => {
+    expect(
+      await finalCookie(
+        "https://a.example.com/",
+        [hop("https://a.example.com/", "https://other.test/", "s=1; Path=/")],
+        { Cookie: "consent=yes" }
+      )
+    ).toBe("");
+  });
+
+  it("carries a hop-1 cookie past a non-matching hop 2 to a matching hop 3", async () => {
+    const steps = [
+      hop("https://example.com/", "https://other.test/", "s=1; Domain=example.com; Path=/"),
+      hop("https://other.test/", "https://sub.example.com/end"),
+    ];
+    const seen: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      seen.push(new Headers(init?.headers).get("cookie") ?? "");
+      const step = steps.find((x) => x.from === url);
+      if (!step) return new Response("ok", { status: 200 });
+      const h = new Headers({ Location: step.to });
+      for (const c of step.setCookie ?? []) h.append("Set-Cookie", c);
+      return new Response(null, { status: 302, headers: h });
+    }) as typeof fetch;
+    await fetchFollowingRedirectsPreservingMethod("https://example.com/", { fetchImpl });
+    expect(seen).toEqual(["", "", "s=1"]);
+  });
 });
