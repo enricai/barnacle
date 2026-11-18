@@ -13,6 +13,15 @@ const SAFE_CROSS_ORIGIN_HEADERS = new Set([
   "user-agent",
   "dnt",
   "upgrade-insecure-requests",
+  // Browser-recon headers that identify the request, not the caller.
+  "origin",
+  "referer",
+  "x-requested-with",
+  "range",
+  "if-none-match",
+  "if-modified-since",
+  "anthropic-version",
+  "anthropic-beta",
 ]);
 
 /** True when a header may be forwarded to a different origin. */
