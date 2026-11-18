@@ -19,12 +19,8 @@ const ALLOWLIST: Record<string, string> = {
     "body-less, header-less GET probe with no credential in a header; default redirects leak no header",
   "src/testmail/client.ts":
     "body-less, header-less GET whose apikey is in the URL query string, not a header; default redirects leak no header",
-  "src/scraper/raw-fetch.ts":
-    "explicit redirect:manual path that hands redirects to the follower itself",
   "src/lib/http.ts":
     "installs the global undici dispatcher (connect timeout only); not a request site and no redirect policy",
-  "src/scraper/redirect-follow.ts":
-    "the follower itself; the one place that calls fetch",
   "src/lib/telemetry/s3-sink.ts":
     "AWS SDK S3 client has no fetch option and never follows redirects (a 3xx surfaces as an error)",
   "src/lib/telemetry/submissions-s3-reader.ts":
