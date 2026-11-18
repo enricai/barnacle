@@ -65,7 +65,6 @@ export async function fetchFollowingRedirectsPreservingMethod(
     url = input instanceof URL ? input.href : input;
     rest = initRest;
   }
-  const currentInit: RequestInit = { ...rest, redirect: "manual" };
   // Credentials the caller sent were meant for the original origin only.
   // Each hop's headers are derived from this snapshot: full when the hop is
   // back on the original origin, credential-stripped otherwise.
@@ -86,8 +85,15 @@ export async function fetchFollowingRedirectsPreservingMethod(
   // dropping these makes the final request arrive unauthenticated.
   const jar = new RedirectCookieJar();
   let currentUrl = url;
+  let currentHeaders = rest.headers;
   for (let hop = 0; hop <= MAX_METHOD_PRESERVING_REDIRECTS; hop += 1) {
-    const response = await fetchImpl(currentUrl, currentInit);
+    // A fresh init per hop: fetchImpl may retain the object it was handed, so
+    // rewriting one shared init would retroactively alter an earlier hop.
+    const response = await fetchImpl(currentUrl, {
+      ...rest,
+      headers: currentHeaders,
+      redirect: "manual",
+    });
     onHop?.({
       status: response.status,
       headers: response.headers,
@@ -112,14 +118,12 @@ export async function fetchFollowingRedirectsPreservingMethod(
     // Once any hop leaves the original origin, credentials stay stripped for
     // the rest of the chain (Fetch spec); a later hop back cannot restore them.
     if (nextUrl.origin !== originalOrigin) leftOriginalOrigin = true;
-    // Always rebuild from the caller's headers (or their stripped snapshot) so
-    // a cookie attached for an earlier hop never rides along to a hop the jar
-    // no longer selects it for. With no hop cookies the caller's object passes
-    // through untouched.
-    const baseHeaders = leftOriginalOrigin ? strippedHeaders : rest.headers;
+    // Always rebuild from the normalized snapshot (full or stripped) so a
+    // cookie attached for an earlier hop never rides along to a hop the jar no
+    // longer selects it for, and repeated tuple-list names stay combined.
+    const baseHeaders = leftOriginalOrigin ? strippedHeaders : originalHeaders;
     const hopCookies = jar.select(nextUrl);
-    currentInit.headers =
-      hopCookies.length > 0 ? mergeHopCookies(baseHeaders, hopCookies) : baseHeaders;
+    currentHeaders = hopCookies.length > 0 ? mergeHopCookies(baseHeaders, hopCookies) : baseHeaders;
 
     currentUrl = nextUrl.toString();
   }
