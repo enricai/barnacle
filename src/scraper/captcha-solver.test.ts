@@ -39,6 +39,12 @@ const { capturedLines, loggerStub } = vi.hoisted(() => {
 });
 vi.mock("@/lib/logging", () => ({ getLogger: () => loggerStub }));
 
+const { followerMock } = vi.hoisted(() => ({ followerMock: vi.fn() }));
+vi.mock("@/scraper/redirect-follow", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/scraper/redirect-follow")>()),
+  fetchFollowingRedirectsPreservingMethod: followerMock,
+}));
+
 import { solveCaptcha } from "@/scraper/captcha-solver";
 
 function jsonResponse(body: unknown): {
@@ -85,6 +91,25 @@ describe("scraper/captcha-solver", () => {
     expect(capturedLines).toContainEqual(
       expect.stringMatching(/^captcha-solve: provider=2captcha ms=\d+ ok=true$/)
     );
+  }, 30000);
+
+  it("routes the default fetch through fetchFollowingRedirectsPreservingMethod", async () => {
+    followerMock.mockImplementation(async (url: string) =>
+      url.endsWith("/in.php")
+        ? jsonResponse({ status: 1, request: "task-123" })
+        : jsonResponse({ status: 1, request: "solved-token" })
+    );
+
+    const result = await solveCaptcha({
+      type: "hcaptcha",
+      siteKey: "site-key",
+      pageUrl: "https://example.com",
+      isInvisible: true,
+    });
+
+    expect(result.token).toBe("solved-token");
+    expect(followerMock).toHaveBeenCalled();
+    expect(followerMock.mock.calls[0]?.[0]).toBe("https://2captcha.com/in.php");
   }, 30000);
 
   it("rejects with a distinct error when no provider key is configured, without calling fetch", async () => {
