@@ -51,13 +51,13 @@ function usesUndiciFetchAsValue(src: string): boolean {
   if (FOLLOWER.test(src)) return false;
   const valueImport =
     /(?<!\btype\s)\bimport\s*\{[^}]*(?<!\btype\s)\bfetch\b[^}]*\}\s*from\s*["']undici["']/.test(
-      src.replace(/\{\s*type\s+fetch\b[^,}]*/g, "{"),
+      src.replace(/\{\s*type\s+fetch\b[^,}]*/g, "{")
     );
   const withoutImports = src
     .replace(/\bimport\s+type\s+[^;]*?from\s*["'][^"']+["'];?/g, "")
     .replace(/\bimport\s*\{[^}]*\}\s*from\s*["'][^"']+["'];?/g, "");
   const ref = /(?<![\w.])undiciFetch\b(?!\s*\()/.test(
-    withoutImports.replace(/\btypeof\s+undiciFetch\b/g, ""),
+    withoutImports.replace(/\btypeof\s+undiciFetch\b/g, "")
   );
   return valueImport || ref;
 }
@@ -75,9 +75,7 @@ function hasTopLevelFetch(args: string): boolean {
 }
 
 function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:\w"'`])\/\/.*$/gm, "$1");
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\w"'`])\/\/.*$/gm, "$1");
 }
 
 /** Body of the balanced parens starting at index of "(" in s. */
@@ -95,8 +93,7 @@ function scanSource(source: string): string[] {
   const src = stripComments(source);
   const out: string[] = [];
   if (BARE.test(src)) out.push("bare fetch(");
-  if (usesUndiciFetchAsValue(src))
-    out.push("undici fetch used as a value without follower");
+  if (usesUndiciFetchAsValue(src)) out.push("undici fetch used as a value without follower");
   if (HTTP_CLIENT.test(src)) out.push("raw HTTP client without follower");
   for (const m of src.matchAll(CTOR)) {
     const args = argsAt(src, m.index + m[0].length - 1);
@@ -112,11 +109,7 @@ function walk(dir: string, out: string[] = []): string[] {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) {
       if (name !== "node_modules") walk(p, out);
-    } else if (
-      /\.ts$/.test(name) &&
-      !/\.test\.ts$/.test(name) &&
-      !name.endsWith(".d.ts")
-    ) {
+    } else if (/\.ts$/.test(name) && !/\.test\.ts$/.test(name) && !name.endsWith(".d.ts")) {
       out.push(p);
     }
   }
@@ -143,59 +136,41 @@ describe("redirect-policy guard", () => {
   });
 
   it("testmail allowlist reason states the apikey is in the query string", () => {
-    expect(ALLOWLIST["src/testmail/client.ts"]).toMatch(
-      /apikey is in the URL query string/,
-    );
+    expect(ALLOWLIST["src/testmail/client.ts"]).toMatch(/apikey is in the URL query string/);
   });
 
   it("every allowlist entry still contains a flagged pattern (no stale entries)", () => {
     for (const path of Object.keys(ALLOWLIST)) {
       expect(
         scanSource(readFileSync(path, "utf8")).length,
-        `stale allowlist entry: ${path}`,
+        `stale allowlist entry: ${path}`
       ).toBeGreaterThan(0);
     }
   });
 
   describe("scanSource", () => {
     it("flags SDK constructors lacking a fetch option", () => {
-      expect(scanSource("const c = new Anthropic({ apiKey });")).toHaveLength(
-        1,
-      );
+      expect(scanSource("const c = new Anthropic({ apiKey });")).toHaveLength(1);
       expect(scanSource("createOpenAI({ apiKey: k })")).toHaveLength(1);
       expect(scanSource("createGoogleGenerativeAI()")).toHaveLength(1);
-      expect(
-        scanSource("createAnthropic({ apiKey, fetch: other(1) })"),
-      ).toEqual([]);
+      expect(scanSource("createAnthropic({ apiKey, fetch: other(1) })")).toEqual([]);
     });
     it("flags a Stagehand constructor unless a fetch option is passed", () => {
       expect(scanSource("new Stagehand({ env: 'LOCAL' })")).toHaveLength(1);
-      expect(
-        scanSource("new Stagehand({ model: { fetch: f(1) } })"),
-      ).toHaveLength(1);
+      expect(scanSource("new Stagehand({ model: { fetch: f(1) } })")).toHaveLength(1);
       expect(scanSource("new Stagehand({ fetch: f(1) })")).toEqual([]);
     });
     it("flags Steel and S3 clients lacking a fetch option", () => {
       expect(scanSource("new Steel({ steelAPIKey: k })")).toHaveLength(1);
       expect(scanSource("new S3Client({ region })")).toHaveLength(1);
-      expect(scanSource("new Steel({ steelAPIKey: k, fetch: f(1) })")).toEqual(
-        [],
-      );
+      expect(scanSource("new Steel({ steelAPIKey: k, fetch: f(1) })")).toEqual([]);
     });
     it("flags a multi-line constructor lacking fetch and passes one with fetch", () => {
-      expect(
-        scanSource("const c = new Anthropic(\n  {\n    apiKey,\n  }\n);"),
-      ).toHaveLength(1);
-      expect(
-        scanSource(
-          "new Anthropic(\n  {\n    apiKey,\n    fetch: f(1),\n  }\n)",
-        ),
-      ).toEqual([]);
+      expect(scanSource("const c = new Anthropic(\n  {\n    apiKey,\n  }\n);")).toHaveLength(1);
+      expect(scanSource("new Anthropic(\n  {\n    apiKey,\n    fetch: f(1),\n  }\n)")).toEqual([]);
     });
     it("does not count fetch that appears only in a comment inside a constructor", () => {
-      expect(
-        scanSource("new Anthropic({\n  apiKey,\n  // fetch: f(1),\n})"),
-      ).toHaveLength(1);
+      expect(scanSource("new Anthropic({\n  apiKey,\n  // fetch: f(1),\n})")).toHaveLength(1);
       expect(scanSource("new OpenAI({ apiKey /* fetch */ })")).toHaveLength(1);
     });
     it("passes constructors that pass fetch", () => {
@@ -227,13 +202,9 @@ describe("redirect-policy guard", () => {
       expect(scanSource("x.fetch(u)")).toEqual([]);
     });
     it("flags undici fetch used as a value without the follower", () => {
-      expect(
-        scanSource("fetchImpl = undiciFetch as unknown as F"),
-      ).toHaveLength(1);
+      expect(scanSource("fetchImpl = undiciFetch as unknown as F")).toHaveLength(1);
       expect(scanSource("const f = undiciFetch as T")).toHaveLength(1);
-      expect(
-        scanSource("import { fetch as undiciFetch } from 'undici';"),
-      ).toHaveLength(1);
+      expect(scanSource("import { fetch as undiciFetch } from 'undici';")).toHaveLength(1);
       expect(scanSource("import { fetch } from 'undici';")).toHaveLength(1);
     });
     it("does not flag undici fetch wrapped by the follower or used only as a type", () => {
@@ -242,19 +213,13 @@ describe("redirect-policy guard", () => {
       expect(scanSource(wrapped)).toEqual([]);
       expect(
         scanSource(
-          "import type { fetch as undiciFetch } from 'undici';\ntype R = ReturnType<typeof undiciFetch>;",
-        ),
+          "import type { fetch as undiciFetch } from 'undici';\ntype R = ReturnType<typeof undiciFetch>;"
+        )
       ).toEqual([]);
     });
     it("does not flag the follower-wrapped raw-fetch.ts and session-browserbase.ts", () => {
-      for (const f of [
-        "src/scraper/raw-fetch.ts",
-        "src/scraper/session-browserbase.ts",
-      ]) {
-        expect(
-          usesUndiciFetchAsValue(stripComments(readFileSync(f, "utf8"))),
-          f,
-        ).toBe(false);
+      for (const f of ["src/scraper/raw-fetch.ts", "src/scraper/session-browserbase.ts"]) {
+        expect(usesUndiciFetchAsValue(stripComments(readFileSync(f, "utf8"))), f).toBe(false);
       }
     });
   });
