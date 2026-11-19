@@ -72,8 +72,9 @@ function hasTopLevelFetch(args: string): boolean {
     if (ch === "}" || ch === ")" || ch === "]") depth--;
   }
   // Shorthand `{ fetch }` or `fetch: fetch|globalThis.fetch|undiciFetch` hands the SDK the platform fetch.
-  if (/(^|[\s,{])fetch\s*(,|}|$)/.test(flat)) return false;
-  if (/(^|[\s,{])fetch\s*:\s*(?:globalThis\.|window\.)?(?:fetch|undiciFetch)\s*(,|}|$)/.test(flat)) return false;
+  if (/[{,]\s*fetch\s*(,|}|$)/.test(flat)) return false;
+  if (/(^|[\s,{])fetch\s*:\s*(?:globalThis\.|window\.)?(?:fetch|undiciFetch)\s*(,|}|$)/.test(flat))
+    return false;
   return /(^|[\s,{])fetch\s*:/.test(flat);
 }
 
@@ -176,9 +177,9 @@ describe("redirect-policy guard", () => {
       expect(scanSource("new Anthropic({\n  apiKey,\n  // fetch: f(1),\n})")).toHaveLength(1);
       expect(scanSource("new OpenAI({ apiKey /* fetch */ })")).toHaveLength(1);
     });
-    it("passes constructors that pass fetch", () => {
+    it("passes constructors that pass a wrapped fetch; flags platform-fetch shorthand", () => {
       expect(scanSource("new Anthropic({ apiKey, fetch: f(1) })")).toEqual([]);
-      expect(scanSource("new OpenAI({ apiKey, fetch })")).toEqual([]);
+      expect(scanSource("new OpenAI({ apiKey, fetch })")).toHaveLength(1);
     });
     it("flags bare fetch and HTTP clients, ignores comments", () => {
       expect(scanSource("await fetch('https://example.com')")).toHaveLength(1);
