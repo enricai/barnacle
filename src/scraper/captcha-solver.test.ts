@@ -39,11 +39,17 @@ const { capturedLines, loggerStub } = vi.hoisted(() => {
 });
 vi.mock("@/lib/logging", () => ({ getLogger: () => loggerStub }));
 
-const { followerMock } = vi.hoisted(() => ({ followerMock: vi.fn() }));
-vi.mock("@/scraper/redirect-follow", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/scraper/redirect-follow")>()),
-  fetchFollowingRedirectsPreservingMethod: followerMock,
+// Spy that delegates to the real follower unless a test overrides it.
+const { followerMock, real } = vi.hoisted(() => ({
+  followerMock: vi.fn(),
+  real: { fn: undefined as unknown as (...a: unknown[]) => unknown },
 }));
+vi.mock("@/scraper/redirect-follow", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/redirect-follow")>();
+  real.fn = actual.fetchFollowingRedirectsPreservingMethod as typeof real.fn;
+  followerMock.mockImplementation(real.fn);
+  return { ...actual, fetchFollowingRedirectsPreservingMethod: followerMock };
+});
 
 import { solveCaptcha } from "@/scraper/captcha-solver";
 
@@ -60,6 +66,8 @@ describe("scraper/captcha-solver", () => {
     configRef.value = { scraper: { twoCaptchaApiKey: "test-2captcha-key" } };
     capturedLines.length = 0;
     vi.clearAllMocks();
+    followerMock.mockReset();
+    followerMock.mockImplementation(real.fn);
   });
 
   it("resolves the token via createTask then a pending-then-ready poll", async () => {
