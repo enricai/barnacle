@@ -196,8 +196,21 @@ const CREDENTIAL_WORDS = new Set([
   "nonce",
   "csrf",
   "xsrf",
+  "pass",
+  "pwd",
+  "pin",
+  "cred",
+  "creds",
+  "passcode",
+  "code",
+  "access",
+  "login",
+  "apikey",
+  "accesskey",
+  "secretkey",
+  "privatekey",
 ]);
-const CREDENTIAL_NOUN_SUFFIXES = ["token", "key", "secret"];
+const CREDENTIAL_NOUN_SUFFIXES = ["token", "secret", "apikey", "accesskey", "password", "passcode"];
 
 /** True for headers that carry a credential and must not cross origins. */
 export function isCredentialHeader(name: string): boolean {

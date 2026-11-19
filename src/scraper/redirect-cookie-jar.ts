@@ -62,6 +62,8 @@ export class RedirectCookieJar {
         // A host may only set a Domain that covers itself.
         if (d === "") continue;
         if (!domainMatches(host, d)) return;
+        // A bare public suffix (no dot, e.g. "com") would span unrelated sites.
+        if (!d.includes(".")) return;
         domain = d;
         hostOnly = false;
       } else if (key === "path") {
