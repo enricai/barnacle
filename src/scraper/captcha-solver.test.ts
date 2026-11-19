@@ -4,6 +4,7 @@
  * path when no API key is configured.
  */
 
+import { fetch as undiciFetch } from "undici";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { isCaptchaSolverUnavailableError } from "@/scraper/errors";
@@ -39,6 +40,18 @@ const { capturedLines, loggerStub } = vi.hoisted(() => {
 });
 vi.mock("@/lib/logging", () => ({ getLogger: () => loggerStub }));
 
+// Spy that delegates to the real follower unless a test overrides it.
+const { followerMock, real } = vi.hoisted(() => ({
+  followerMock: vi.fn(),
+  real: { fn: undefined as unknown as (...a: unknown[]) => unknown },
+}));
+vi.mock("@/scraper/redirect-follow", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/redirect-follow")>();
+  real.fn = actual.fetchFollowingRedirectsPreservingMethod as typeof real.fn;
+  followerMock.mockImplementation(real.fn);
+  return { ...actual, fetchFollowingRedirectsPreservingMethod: followerMock };
+});
+
 import { solveCaptcha } from "@/scraper/captcha-solver";
 
 function jsonResponse(body: unknown): {
@@ -54,6 +67,8 @@ describe("scraper/captcha-solver", () => {
     configRef.value = { scraper: { twoCaptchaApiKey: "test-2captcha-key" } };
     capturedLines.length = 0;
     vi.clearAllMocks();
+    followerMock.mockReset();
+    followerMock.mockImplementation(real.fn);
   });
 
   it("resolves the token via createTask then a pending-then-ready poll", async () => {
@@ -85,6 +100,28 @@ describe("scraper/captcha-solver", () => {
     expect(capturedLines).toContainEqual(
       expect.stringMatching(/^captcha-solve: provider=2captcha ms=\d+ ok=true$/)
     );
+  }, 30000);
+
+  it("routes the default fetch through fetchFollowingRedirectsPreservingMethod", async () => {
+    followerMock.mockImplementation(async (url: string) =>
+      url.endsWith("/in.php")
+        ? jsonResponse({ status: 1, request: "task-123" })
+        : jsonResponse({ status: 1, request: "solved-token" })
+    );
+
+    const result = await solveCaptcha({
+      type: "hcaptcha",
+      siteKey: "site-key",
+      pageUrl: "https://example.com",
+      isInvisible: true,
+    });
+
+    expect(result.token).toBe("solved-token");
+    expect(followerMock).toHaveBeenCalled();
+    expect(followerMock.mock.calls[0]?.[0]).toBe("https://2captcha.com/in.php");
+    // The default fetchImpl handed to the follower must be undici's fetch.
+    const followerOpts = followerMock.mock.calls[0]?.[1] as { fetchImpl: unknown } | undefined;
+    expect(followerOpts?.fetchImpl).toBe(undiciFetch);
   }, 30000);
 
   it("rejects with a distinct error when no provider key is configured, without calling fetch", async () => {

@@ -7,7 +7,6 @@
  */
 
 import pRetry, { AbortError } from "p-retry";
-import { fetch as undiciFetch } from "undici";
 
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
@@ -74,7 +73,7 @@ interface TwoCaptchaGetResultResponse {
 async function postForm(
   path: string,
   params: Record<string, string>,
-  fetchImpl: FetchImpl,
+  fetchImpl: FetchImpl | undefined,
   contextLabel: string
 ): Promise<string> {
   const { rawBody } = await rawFetch(`${TWOCAPTCHA_BASE_URL}${path}`, {
@@ -122,15 +121,7 @@ export async function solveCaptcha(request: SolveCaptchaRequest): Promise<SolveC
     throw new CaptchaSolverUnavailableError();
   }
 
-  const {
-    type,
-    siteKey,
-    pageUrl,
-    isInvisible,
-    userAgent,
-    fetchImpl = undiciFetch as unknown as FetchImpl,
-    proxy,
-  } = request;
+  const { type, siteKey, pageUrl, isInvisible, userAgent, fetchImpl, proxy } = request;
 
   const startedAt = Date.now();
   try {
@@ -164,7 +155,7 @@ interface TwoCaptchaSolveOptions {
   pageUrl: string;
   isInvisible: boolean;
   userAgent?: string;
-  fetchImpl: FetchImpl;
+  fetchImpl?: FetchImpl;
   proxy?: SessionProxyTuple;
 }
 

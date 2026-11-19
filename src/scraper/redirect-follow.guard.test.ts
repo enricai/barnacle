@@ -35,9 +35,32 @@ const ALLOWLIST: Record<string, string> = {
 
 const CTOR =
   /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI|createAmazonBedrock|new\s+Browserbase|new\s+Steel|new\s+S3Client|new\s+Stagehand)\s*\(/g;
-const BARE = /(?<![\w.])(?:fetch|undiciFetch)\s*\(/;
+const BARE = /(?<![\w.])(?:globalThis\.fetch|fetch|undiciFetch)\s*\(/;
 const HTTP_CLIENT =
   /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client|ProxyAgent|Dispatcher)\s*\(|\bhttps?\.request\s*\(|\bnew\s+XMLHttpRequest\s*\(|(?<![\w.])(?:ky|superagent|needle)(?:\.(?:get|post|put|patch|delete|head|request))?\s*\(|\bfrom\s+["'](?:node-fetch|ky|superagent|needle|cross-fetch)["']|\brequire\(\s*["'](?:node-fetch|ky|superagent|needle|cross-fetch)["']\s*\)/;
+
+const FOLLOWER = /\bfetchFollowingRedirectsPreservingMethod\b/;
+
+/**
+ * True when undici's fetch is used as a value (imported, or referenced without a
+ * call such as `fetchImpl = undiciFetch as unknown as F`) in a source that never
+ * references the follower. Type-only uses (`import type`, `typeof undiciFetch`)
+ * are not values.
+ */
+function usesUndiciFetchAsValue(src: string): boolean {
+  if (FOLLOWER.test(src)) return false;
+  const valueImport =
+    /(?<!\btype\s)\bimport\s*\{[^}]*(?<!\btype\s)\bfetch\b[^}]*\}\s*from\s*["']undici["']/.test(
+      src.replace(/\{\s*type\s+fetch\b[^,}]*/g, "{")
+    );
+  const withoutImports = src
+    .replace(/\bimport\s+type\s+[^;]*?from\s*["'][^"']+["'];?/g, "")
+    .replace(/\bimport\s*\{[^}]*\}\s*from\s*["'][^"']+["'];?/g, "");
+  const ref = /(?<![\w.])undiciFetch\b(?!\s*\()/.test(
+    withoutImports.replace(/\btypeof\s+undiciFetch\b/g, "")
+  );
+  return valueImport || ref;
+}
 
 /** True when `fetch` appears as an option of the constructor's own top-level object (not nested). */
 function hasTopLevelFetch(args: string): boolean {
@@ -48,7 +71,11 @@ function hasTopLevelFetch(args: string): boolean {
     if (depth <= 1) flat += ch;
     if (ch === "}" || ch === ")" || ch === "]") depth--;
   }
-  return /(^|[\s,{])fetch\s*[:,}]|(^|[\s,{])fetch\s*$/.test(flat);
+  // Shorthand `{ fetch }` or `fetch: fetch|globalThis.fetch|undiciFetch` hands the SDK the platform fetch.
+  if (/[{,]\s*fetch\s*(,|}|$)/.test(flat)) return false;
+  if (/(^|[\s,{])fetch\s*:\s*(?:globalThis\.|window\.)?(?:fetch|undiciFetch)\s*(,|}|$)/.test(flat))
+    return false;
+  return /(^|[\s,{])fetch\s*:/.test(flat);
 }
 
 function stripComments(src: string): string {
@@ -70,6 +97,7 @@ function scanSource(source: string): string[] {
   const src = stripComments(source);
   const out: string[] = [];
   if (BARE.test(src)) out.push("bare fetch(");
+  if (usesUndiciFetchAsValue(src)) out.push("undici fetch used as a value without follower");
   if (HTTP_CLIENT.test(src)) out.push("raw HTTP client without follower");
   for (const m of src.matchAll(CTOR)) {
     const args = argsAt(src, m.index + m[0].length - 1);
@@ -149,9 +177,9 @@ describe("redirect-policy guard", () => {
       expect(scanSource("new Anthropic({\n  apiKey,\n  // fetch: f(1),\n})")).toHaveLength(1);
       expect(scanSource("new OpenAI({ apiKey /* fetch */ })")).toHaveLength(1);
     });
-    it("passes constructors that pass fetch", () => {
+    it("passes constructors that pass a wrapped fetch; flags platform-fetch shorthand", () => {
       expect(scanSource("new Anthropic({ apiKey, fetch: f(1) })")).toEqual([]);
-      expect(scanSource("new OpenAI({ apiKey, fetch })")).toEqual([]);
+      expect(scanSource("new OpenAI({ apiKey, fetch })")).toHaveLength(1);
     });
     it("flags bare fetch and HTTP clients, ignores comments", () => {
       expect(scanSource("await fetch('https://example.com')")).toHaveLength(1);
@@ -175,7 +203,28 @@ describe("redirect-policy guard", () => {
       expect(scanSource("ky.post(u)")).toHaveLength(1);
       expect(scanSource("needle('get', u)")).toHaveLength(1);
       expect(scanSource("// new Anthropic({})\n/* fetch(x) */")).toEqual([]);
-      expect(scanSource("x.fetch(u); undiciFetch as T")).toEqual([]);
+      expect(scanSource("x.fetch(u)")).toEqual([]);
+    });
+    it("flags undici fetch used as a value without the follower", () => {
+      expect(scanSource("fetchImpl = undiciFetch as unknown as F")).toHaveLength(1);
+      expect(scanSource("const f = undiciFetch as T")).toHaveLength(1);
+      expect(scanSource("import { fetch as undiciFetch } from 'undici';")).toHaveLength(1);
+      expect(scanSource("import { fetch } from 'undici';")).toHaveLength(1);
+    });
+    it("does not flag undici fetch wrapped by the follower or used only as a type", () => {
+      const wrapped =
+        "import { fetch as undiciFetch } from 'undici';\nfetchFollowingRedirectsPreservingMethod(u, { fetchImpl: undiciFetch as unknown as F });";
+      expect(scanSource(wrapped)).toEqual([]);
+      expect(
+        scanSource(
+          "import type { fetch as undiciFetch } from 'undici';\ntype R = ReturnType<typeof undiciFetch>;"
+        )
+      ).toEqual([]);
+    });
+    it("does not flag the follower-wrapped raw-fetch.ts and session-browserbase.ts", () => {
+      for (const f of ["src/scraper/raw-fetch.ts", "src/scraper/session-browserbase.ts"]) {
+        expect(usesUndiciFetchAsValue(stripComments(readFileSync(f, "utf8"))), f).toBe(false);
+      }
     });
   });
 });
