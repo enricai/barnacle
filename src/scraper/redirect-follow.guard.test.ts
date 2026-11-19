@@ -35,7 +35,7 @@ const ALLOWLIST: Record<string, string> = {
 
 const CTOR =
   /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI|createAmazonBedrock|new\s+Browserbase|new\s+Steel|new\s+S3Client|new\s+Stagehand)\s*\(/g;
-const BARE = /(?<![\w.])(?:fetch|undiciFetch)\s*\(/;
+const BARE = /(?<![\w.])(?:globalThis\.fetch|fetch|undiciFetch)\s*\(/;
 const HTTP_CLIENT =
   /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client|ProxyAgent|Dispatcher)\s*\(|\bhttps?\.request\s*\(|\bnew\s+XMLHttpRequest\s*\(|(?<![\w.])(?:ky|superagent|needle)(?:\.(?:get|post|put|patch|delete|head|request))?\s*\(|\bfrom\s+["'](?:node-fetch|ky|superagent|needle|cross-fetch)["']|\brequire\(\s*["'](?:node-fetch|ky|superagent|needle|cross-fetch)["']\s*\)/;
 
@@ -71,7 +71,10 @@ function hasTopLevelFetch(args: string): boolean {
     if (depth <= 1) flat += ch;
     if (ch === "}" || ch === ")" || ch === "]") depth--;
   }
-  return /(^|[\s,{])fetch\s*[:,}]|(^|[\s,{])fetch\s*$/.test(flat);
+  // Shorthand `{ fetch }` or `fetch: fetch|globalThis.fetch|undiciFetch` hands the SDK the platform fetch.
+  if (/(^|[\s,{])fetch\s*(,|}|$)/.test(flat)) return false;
+  if (/(^|[\s,{])fetch\s*:\s*(?:globalThis\.|window\.)?(?:fetch|undiciFetch)\s*(,|}|$)/.test(flat)) return false;
+  return /(^|[\s,{])fetch\s*:/.test(flat);
 }
 
 function stripComments(src: string): string {

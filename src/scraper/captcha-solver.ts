@@ -121,15 +121,7 @@ export async function solveCaptcha(request: SolveCaptchaRequest): Promise<SolveC
     throw new CaptchaSolverUnavailableError();
   }
 
-  const {
-    type,
-    siteKey,
-    pageUrl,
-    isInvisible,
-    userAgent,
-    fetchImpl,
-    proxy,
-  } = request;
+  const { type, siteKey, pageUrl, isInvisible, userAgent, fetchImpl, proxy } = request;
 
   const startedAt = Date.now();
   try {
