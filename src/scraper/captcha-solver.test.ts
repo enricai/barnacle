@@ -4,6 +4,7 @@
  * path when no API key is configured.
  */
 
+import { fetch as undiciFetch } from "undici";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { isCaptchaSolverUnavailableError } from "@/scraper/errors";
@@ -118,6 +119,8 @@ describe("scraper/captcha-solver", () => {
     expect(result.token).toBe("solved-token");
     expect(followerMock).toHaveBeenCalled();
     expect(followerMock.mock.calls[0]?.[0]).toBe("https://2captcha.com/in.php");
+    // The default fetchImpl handed to the follower must be undici's fetch.
+    expect((followerMock.mock.calls[0]?.[1] as { fetchImpl: unknown }).fetchImpl).toBe(undiciFetch);
   }, 30000);
 
   it("rejects with a distinct error when no provider key is configured, without calling fetch", async () => {
