@@ -7,7 +7,6 @@
  */
 
 import pRetry, { AbortError } from "p-retry";
-import { fetch as undiciFetch } from "undici";
 
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
@@ -15,7 +14,6 @@ import { getLogger } from "@/lib/logging";
 import { CaptchaError, CaptchaSolverUnavailableError } from "@/scraper/errors";
 import type { FetchImpl } from "@/scraper/raw-fetch";
 import { rawFetch } from "@/scraper/raw-fetch";
-import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 
 const logger = getLogger({ name: "scraper/captcha-solver" });
@@ -72,19 +70,10 @@ interface TwoCaptchaGetResultResponse {
   request: string;
 }
 
-/** Default transport: undici fetch routed through the shared redirect follower. */
-const defaultFetchImpl: FetchImpl = (url, init) =>
-  fetchFollowingRedirectsPreservingMethod(url, {
-    ...init,
-    body: init.body as RequestInit["body"],
-    redirect: "manual",
-    fetchImpl: undiciFetch as unknown as typeof fetch,
-  }) as unknown as ReturnType<FetchImpl>;
-
 async function postForm(
   path: string,
   params: Record<string, string>,
-  fetchImpl: FetchImpl,
+  fetchImpl: FetchImpl | undefined,
   contextLabel: string
 ): Promise<string> {
   const { rawBody } = await rawFetch(`${TWOCAPTCHA_BASE_URL}${path}`, {
@@ -138,7 +127,7 @@ export async function solveCaptcha(request: SolveCaptchaRequest): Promise<SolveC
     pageUrl,
     isInvisible,
     userAgent,
-    fetchImpl = defaultFetchImpl,
+    fetchImpl,
     proxy,
   } = request;
 
@@ -174,7 +163,7 @@ interface TwoCaptchaSolveOptions {
   pageUrl: string;
   isInvisible: boolean;
   userAgent?: string;
-  fetchImpl: FetchImpl;
+  fetchImpl?: FetchImpl;
   proxy?: SessionProxyTuple;
 }
 
