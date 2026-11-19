@@ -37,7 +37,7 @@ const CTOR =
   /(?<![\w.])(?:new\s+(?:Anthropic|OpenAI)|createAnthropic|createOpenAI|createGoogleGenerativeAI|createAmazonBedrock|new\s+Browserbase|new\s+Steel|new\s+S3Client|new\s+Stagehand)\s*\(/g;
 const BARE = /(?<![\w.])(?:fetch|undiciFetch)\s*\(/;
 const HTTP_CLIENT =
-  /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client)\s*\(|\bhttps?\.request\s*\(/;
+  /(?<![\w.])(?:(?:axios|got)(?:\.(?:get|post|put|patch|delete|head|request|stream))?)\s*\(|(?<![\w])new\s+(?:undici\.)?(?:Agent|Pool|Client|ProxyAgent|Dispatcher)\s*\(|\bhttps?\.request\s*\(|\bnew\s+XMLHttpRequest\s*\(|(?<![\w.])(?:ky|superagent|needle)(?:\.(?:get|post|put|patch|delete|head|request))?\s*\(|\bfrom\s+["'](?:node-fetch|ky|superagent|needle|cross-fetch)["']|\brequire\(\s*["'](?:node-fetch|ky|superagent|needle|cross-fetch)["']\s*\)/;
 
 /** True when `fetch` appears as an option of the constructor's own top-level object (not nested). */
 function hasTopLevelFetch(args: string): boolean {
@@ -165,6 +165,15 @@ describe("redirect-policy guard", () => {
       expect(scanSource("new Agent({})")).toHaveLength(1);
       expect(scanSource("new undici.Pool(u)")).toHaveLength(1);
       expect(scanSource("new Client(u)")).toHaveLength(1);
+      expect(scanSource("new ProxyAgent(u)")).toHaveLength(1);
+      expect(scanSource("new undici.Dispatcher()")).toHaveLength(1);
+      expect(scanSource("new XMLHttpRequest()")).toHaveLength(1);
+      expect(scanSource("import fetch from 'node-fetch';")).toHaveLength(1);
+      expect(scanSource("import ky from 'ky'")).toHaveLength(1);
+      expect(scanSource("const r = require('needle')")).toHaveLength(1);
+      expect(scanSource("superagent.get(u)")).toHaveLength(1);
+      expect(scanSource("ky.post(u)")).toHaveLength(1);
+      expect(scanSource("needle('get', u)")).toHaveLength(1);
       expect(scanSource("// new Anthropic({})\n/* fetch(x) */")).toEqual([]);
       expect(scanSource("x.fetch(u); undiciFetch as T")).toEqual([]);
     });
