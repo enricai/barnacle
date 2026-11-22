@@ -4814,7 +4814,8 @@ export interface VerifyPromptSelectorCommittedResult {
 export async function verifyPromptSelectorCommitted(
   target: FrameTarget,
   selector: string,
-  requestedOption?: string | null
+  requestedOption?: string | null,
+  selectStep = false
 ): Promise<VerifyPromptSelectorCommittedResult | null> {
   const xpath = xpathBodyForEvaluate(selector, target);
   if (xpath === null) return null;
@@ -4826,12 +4827,28 @@ export async function verifyPromptSelectorCommitted(
     const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
     const namesOption = ${PROMPT_NAMES_OPTION_EXPR};
     const want = ${JSON.stringify(requestedOption ?? "")};
+    const selectStep = ${JSON.stringify(selectStep)};
     const xpath = ${JSON.stringify(xpath)};
     const result = ${SHADOW_XPATH_FIRST_NODE}(xpath);
     const el = result;
     if (!el) return { isPromptWidget: false, committed: false };
     const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
-    if (!widget) return { isPromptWidget: false, committed: false };
+    if (!widget) {
+      // A select step resolved to a field outside any trigger widget: read the
+      // field's own committed value. Non-field elements stay untouched.
+      if (!selectStep || !el.tagName || !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) {
+        return { isPromptWidget: false, committed: false };
+      }
+      let fv = "";
+      if (el.tagName === "SELECT") {
+        const so = el.selectedOptions && el.selectedOptions[0];
+        fv = so && (so.value || "") !== "" ? (so.textContent || "") : "";
+      } else {
+        fv = el.value || "";
+      }
+      fv = fv.replace(/\\s+/g, " ").trim().toLowerCase();
+      return { isPromptWidget: true, committed: fv !== "" && (!want || namesOption(fv, want)) };
+    }
     const value = announcedValue(widget) || currentText(widget, valueSel, emptyRx);
     return { isPromptWidget: true, committed: value !== "" && (!want || namesOption(value, want)) };
   })()`;
@@ -15953,7 +15970,8 @@ export async function executeStepWithHealing(params: {
         const promptReadback = await verifyPromptSelectorCommitted(
           readbackTarget,
           readbackSelector,
-          parsePromptSelectorStep(step)?.option
+          parsePromptSelectorStep(step)?.option,
+          parseSelectStep(step) !== null
         );
         if (promptReadback?.isPromptWidget === true && promptReadback.committed === false) {
           promptSelectorRejected = true;

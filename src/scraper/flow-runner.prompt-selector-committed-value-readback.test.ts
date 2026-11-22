@@ -3,7 +3,7 @@ import type { Element } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { executeStepWithHealing } from "@/scraper/flow-runner";
+import { executeStepWithHealing, verifyPromptSelectorCommitted } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
 
@@ -232,5 +232,45 @@ describe("flow-runner/commitPromptOption trusts the widget's announced committed
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining('committed "aaaa" instead of "Aaaaa"')
     );
+  });
+});
+
+describe("verifyPromptSelectorCommitted reads the target field outside any trigger widget", () => {
+  const mk = (html: string): FrameTarget => {
+    const window = new Window({ url: "https://careers.example.com/x" });
+    window.document.body.innerHTML = html;
+    return {
+      evaluate: async (expr: unknown) =>
+        (
+          new window.Function("document", "window", "CSS", `return (${String(expr)});`) as (
+            ...a: unknown[]
+          ) => unknown
+        )(window.document, window, window.CSS),
+      frame: null,
+      frameSelector: null,
+      declaredFrameSelector: null,
+    } as unknown as FrameTarget;
+  };
+  const sel = "xpath=/html[1]/body[1]/div[1]/select[1]";
+  const html = (v: string) =>
+    `<div><select><option value="">Choose</option><option value="a" ${v}>Alpha</option></select></div>`;
+
+  it("unchanged field value is uncommitted", async () => {
+    expect(await verifyPromptSelectorCommitted(mk(html("")), sel, "Alpha", true)).toEqual({
+      isPromptWidget: true,
+      committed: false,
+    });
+  });
+  it("chosen option is committed", async () => {
+    expect(await verifyPromptSelectorCommitted(mk(html("selected")), sel, "Alpha", true)).toEqual({
+      isPromptWidget: true,
+      committed: true,
+    });
+  });
+  it("plain click (not a select step) is not a prompt widget", async () => {
+    expect(await verifyPromptSelectorCommitted(mk(html("")), sel, "Alpha")).toEqual({
+      isPromptWidget: false,
+      committed: false,
+    });
   });
 });
