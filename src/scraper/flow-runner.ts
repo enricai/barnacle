@@ -10526,7 +10526,11 @@ async function tryPromptSelectorPrimitive(params: {
     // Several fuzzy matches ('Country' vs 'Country Code'): an exact
     // (case/whitespace-insensitive) label equality breaks the tie when unique.
     const exactNorm = (s: string) =>
-      s.replace(/\s+/g, " ").replace(/\s*[*:]+\s*$/, "").trim().toLowerCase();
+      s
+        .replace(/\s+/g, " ")
+        .replace(/\s*[*:]+\s*$/, "")
+        .trim()
+        .toLowerCase();
     const exactMatches = labelMatches.filter(
       (c) => exactNorm(stripTrailingEmptyPlaceholder(c.label)) === exactNorm(questionLabel ?? "")
     );
