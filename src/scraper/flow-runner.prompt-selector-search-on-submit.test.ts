@@ -1,7 +1,11 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { executeStepWithHealing } from "@/scraper/flow-runner";
+import {
+  executeStepWithHealing,
+  normPromptOptionText,
+  promptOptionsNameOption,
+} from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
 
@@ -116,26 +120,15 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     expect(committed).toBe("Sweden");
   });
 
-  it("treats an entity-encoded option label as naming the requested option (no Enter)", async () => {
-    const stagehandAct = vi.fn();
-    const { page, target, cdpEvents } = buildPromptWidgetHarness({
-      html: SEARCH_ON_SUBMIT_HTML,
-      popupByWidgetId: {
-        "country-widget": {
-          options: ["Associate&#039;s Degree", "Bachelor&amp;s Degree"],
-          searchOnSubmit: true,
-        },
-      },
-    });
-    const merged = {
-      ...baseParams(page as unknown as Page, stagehandAct, ""),
-      frameTarget: target,
-      step: "for 'Country of residence' select 'Associate's Degree'",
-    };
-    await executeStepWithHealing(
-      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
-    );
-    expect(enterKeyDowns(cdpEvents)).toBe(0);
+  it("decodes HTML character references so an encoded label names the requested option", () => {
+    const names = (text: string, want: string) =>
+      promptOptionsNameOption({ options: [{ text }] }, want);
+    expect(names("Associate&#039;s Degree", "Associate's Degree")).toBe(true);
+    expect(names("Arts &amp; Sciences", "Arts & Sciences")).toBe(true);
+    expect(names("Associate&#x27;s Degree", "Associate's Degree")).toBe(true);
+    expect(names("Master&apos;s", "Master's")).toBe(true);
+    expect(names("Bachelor", "Associate's Degree")).toBe(false);
+    expect(normPromptOptionText("A&#039;s&nbsp;&bogus;")).toBe("a's &bogus;");
   });
 
   it("sends no Enter when the list shows real non-matching options (mismatch)", async () => {

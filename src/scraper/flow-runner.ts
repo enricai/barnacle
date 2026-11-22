@@ -11051,7 +11051,7 @@ const PROMPT_SELECTOR_SEARCH_WAIT_MS = 500;
 const PROMPT_SELECTOR_MAX_ENTER_SUBMITS = 2;
 
 /** Shared option-text normalisation so submit detection and commit agree on a match. */
-function normPromptOptionText(s: string): string {
+export function normPromptOptionText(s: string): string {
   return decodeHtmlCharRefs(s).replace(/\s+/g, " ").trim().toLowerCase();
 }
 
@@ -11087,7 +11087,7 @@ const PROMPT_PLACEHOLDER_RE =
  * names nothing requested. Placeholder entries never count, even when they
  * echo the requested text.
  */
-function promptOptionsNameOption(
+export function promptOptionsNameOption(
   result: { options?: { text: string }[] } | null | undefined,
   option: string
 ): boolean {
