@@ -15245,17 +15245,44 @@ export async function executeStepWithHealing(params: {
         record.technique = "act-string";
         record.instruction = step;
         params.abortSignal?.throwIfAborted();
-        const preCentred = await preCentreNaturalLanguageClick(step);
-        const result = await guardedAct(
-          stagehand,
-          step,
-          { timeout: STEP_WATCHDOG_MS },
-          captureFn,
-          frameTarget ?? mainFrameTarget(page),
-          preCentred
-        );
-        record.actResultSuccess = result.success;
-        record.actResultDescription = result.actionDescription;
+        const attemptTarget = frameTarget ?? mainFrameTarget(page);
+        let vettedAction: Action | null = null;
+        let attemptRefused = false;
+        if (stepDeclaresNonInteractiveTarget(step)) {
+          // Vet what the step resolves to BEFORE acting: act(string) would
+          // click first and be judged only afterwards.
+          const resolvedCandidates = await guardedObserve(
+            stagehand,
+            step,
+            { timeout: STEP_WATCHDOG_MS },
+            captureFn,
+            frameTarget
+          ).catch(() => [] as Action[]);
+          for (const c of resolvedCandidates) if (c.selector) triedSelectors.push(c.selector);
+          vettedAction = await firstVettedCandidateForNonInteractiveStep(
+            step,
+            resolvedCandidates,
+            attemptTarget
+          );
+          if (!vettedAction) {
+            attemptRefused = true;
+            const named = resolvedCandidates[0]?.description ?? "";
+            record.errorMessage = resolvedCandidates.length
+              ? `act-string resolved an element that contradicts the step's target: "${named.slice(0, 60)}"`
+              : "act-string observe resolved no candidate for a non-interactive-target step";
+          }
+        }
+        const preCentred = attemptRefused ? false : await preCentreNaturalLanguageClick(step);
+        const result = attemptRefused
+          ? { success: false, actionDescription: "", actions: [] as Action[] }
+          : await guardedAct(
+              stagehand,
+              vettedAction ?? step,
+              { timeout: STEP_WATCHDOG_MS },
+              captureFn,
+              attemptTarget,
+              vettedAction ? false : preCentred
+            );
         // Deny-list guard (post-hoc): attempt-1 act resolves internally, so we
         // can't block the click, but we refuse to COUNT a wizard-exit control as
         // success — don't set resolvedAction, force failure — so the cascade
