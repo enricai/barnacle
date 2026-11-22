@@ -123,12 +123,12 @@ describe("recon-generate CLI — read-only GET facet search with no declared fol
     const runRoot = join(workDir, "run");
     for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(runRoot, d), { recursive: true });
     writeFileSync(join(runRoot, "replays", "rate-limit.json"), "[]");
-    facetSearchCaptures().forEach((c, i) =>
+    for (const [i, c] of facetSearchCaptures().entries()) {
       writeFileSync(
         join(runRoot, "graphql", `${String(i).padStart(3, "0")}-capture.json`),
         JSON.stringify(c)
-      )
-    );
+      );
+    }
     const siteId = `no-foldreturn-get-e2e-test-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
