@@ -339,13 +339,9 @@ async function tryResolveChildFrame(
       ? await withWatchdog(() => scope.evaluate<string>("location.href"), {
           timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
           label: "frame-target: outer frame location probe",
-        }).catch(() => null)
+        })
       : page.url();
-    try {
-      iframeSrc = base ? new URL(rawSrc, base).href : rawSrc;
-    } catch {
-      iframeSrc = rawSrc;
-    }
+    iframeSrc = base ? new URL(rawSrc, base).href : rawSrc;
   }
 
   // The iframe `src` is empty (a same-tick race before the attribute
