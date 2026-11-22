@@ -7787,14 +7787,7 @@ export function compileActionSteps(
     } catch {
       currentHost = null;
     }
-    // Same-registrable-domain sibling hosts (admitted by the action-sequence gate
-    // via a navigated iframe/form action) are not a cross-domain hop.
-    const isCrossDomain =
-      lastHost !== null &&
-      currentHost !== null &&
-      lastHost !== currentHost &&
-      registrableDomain(lastHost.replace(/:\d+$/, "")) !==
-        registrableDomain(currentHost.replace(/:\d+$/, ""));
+    const isCrossDomain = lastHost !== null && currentHost !== null && lastHost !== currentHost;
     lastHost = currentHost;
 
     // Multipart steps are emitted through a path that cannot read the HTML
@@ -10725,7 +10718,16 @@ export function emitMultiStepExecuteHttp(
       }
     }
 
-    if (bodyTemplate && cap.requestPostData !== REQUEST_BODY_UNAVAILABLE) {
+    if (
+      bodyTemplate &&
+      cap.requestPostData !== REQUEST_BODY_UNAVAILABLE &&
+      // `Answers` is only declared on applicant-contact contracts.
+      contractUsesApplicantContactSchema({
+        inputBody,
+        isSubmissionFlow: true,
+        payloadFieldNames: outDiscoveredFields,
+      })
+    ) {
       bodyTemplate = bindMultipartSelectAnswers(bodyTemplate, cap, prior);
     }
 
