@@ -33,6 +33,7 @@ import {
   isAllowedFixtureHost,
   isNoiseUrl,
   isSamePathFamily,
+  isServerRenderedFormSubmit,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   isZeroVarianceRepeatCapture,
@@ -2752,6 +2753,14 @@ function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
     if (c.method === "GET") return false;
     if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool)) return true;
     const same = occurrences.get(`${c.method} ${endpointKey(c.url)}`) ?? [];
+    // A server-rendered form submit whose body differs from another same-endpoint
+    // capture is a distinct step, not a beacon.
+    if (
+      isServerRenderedFormSubmit(c) &&
+      same.some((o) => o.requestPostData !== c.requestPostData)
+    ) {
+      return false;
+    }
     return (
       same.length >= 2 && (hasNoBusinessRelevantResponseState(c) || answerIgnoresRequest(same))
     );
@@ -3641,7 +3650,8 @@ export function extractActionSequence(
         !issuesTokenReusedLater(captures, index)
       )
         return false;
-      if (capture.status < 200 || capture.status >= 300) return false;
+      if ((capture.status < 200 || capture.status >= 300) && !isServerRenderedFormSubmit(capture))
+        return false;
       if (isNoiseUrl(capture.url)) return false;
       if (index !== firstPrimaryIndex && isZeroVarianceRepeatCapture(capture, captures))
         return false;
@@ -3741,7 +3751,8 @@ export function extractActionSequence(
           const path = hostGatedPaths[i]!;
           const candidateSegments = hostGatedSegments[i]!;
           const denselyNameSpaced =
-            pathStructuralTokens(path).size > 2 || hasNoBusinessRelevantResponseState(capture);
+            pathStructuralTokens(path).size > 2 ||
+            (!isServerRenderedFormSubmit(capture) && hasNoBusinessRelevantResponseState(capture));
           // A same-path-FAMILY pool member does not vouch for the candidate
           // when one of their paths is a pure SEGMENT-PREFIX EXTENSION of the
           // other (e.g. `/marketing-spa/banner` and `/marketing-spa/banner/2`,

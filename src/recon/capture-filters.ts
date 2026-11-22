@@ -606,6 +606,8 @@ type IndexedCapture = {
   responseBody?: unknown;
   operationName?: string | null;
   query?: string | null;
+  status?: number;
+  requestHeaders?: Record<string, string>;
 };
 
 /**
@@ -1238,6 +1240,38 @@ function hasStableOperationIdentity(
   return matchedCount >= 2;
 }
 
+/**
+ * True for a server-rendered form submit: a non-GET request whose content-type
+ * is form-urlencoded or multipart, answered by a 3xx or by a 2xx text/html
+ * page. Beacons (text/plain, 204, JSON answers) are not form submits. Header
+ * lookup is case-insensitive.
+ */
+export function isServerRenderedFormSubmit(capture: {
+  method: string;
+  status?: number;
+  requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
+}): boolean {
+  if (capture.method.toUpperCase() === "GET") return false;
+  const header = (h: Record<string, string> | undefined, name: string): string =>
+    (Object.entries(h ?? {}).find(([k]) => k.toLowerCase() === name)?.[1] ?? "").toLowerCase();
+  const reqType = header(capture.requestHeaders, "content-type");
+  if (
+    !reqType.includes("application/x-www-form-urlencoded") &&
+    !reqType.includes("multipart/form-data")
+  ) {
+    return false;
+  }
+  const status = capture.status;
+  if (typeof status !== "number") return false;
+  if (status >= 300 && status < 400) return true;
+  return (
+    status >= 200 &&
+    status < 300 &&
+    header(capture.responseHeaders, "content-type").includes("text/html")
+  );
+}
+
 export function isZeroVarianceRepeatCapture(
   candidate: {
     method: string;
@@ -1247,6 +1281,8 @@ export function isZeroVarianceRepeatCapture(
     responseBody?: unknown;
     operationName?: string | null;
     query?: string | null;
+    status?: number;
+    requestHeaders?: Record<string, string>;
   },
   allCaptures: readonly {
     method: string;
@@ -1256,6 +1292,8 @@ export function isZeroVarianceRepeatCapture(
     responseBody?: unknown;
     operationName?: string | null;
     query?: string | null;
+    status?: number;
+    requestHeaders?: Record<string, string>;
   }[]
 ): boolean {
   let candidateUrl: URL;
@@ -1271,6 +1309,14 @@ export function isZeroVarianceRepeatCapture(
     captureEndpointIndexFor(allCaptures).byMethodEndpoint.get(
       `${candidate.method}::${candidateEndpoint}`
     ) ?? [];
+  // A server-rendered form's redirect/HTML answer reads as "no response state"
+  // below, but distinct bodies are distinct steps: never zero-variance.
+  if (
+    isServerRenderedFormSubmit(candidate) &&
+    sameEndpoint.some((c) => c.requestPostData !== candidate.requestPostData)
+  ) {
+    return false;
+  }
   if (candidateKeys.length === 0) {
     if (sameEndpoint.length < MIN_QUERYLESS_REPEAT_COUNT) return false;
     const queryLessBodyIdentical = sameEndpoint.every(
