@@ -826,7 +826,9 @@ describe("recon-http main() --methods opt-in wiring", () => {
     try {
       await import("@/scripts/recon-http.js");
       await vi.waitFor(() =>
-        expect(loggerStub.info.mock.calls.filter(isComplete).length).toBeGreaterThan(completedBefore)
+        expect(loggerStub.info.mock.calls.filter(isComplete).length).toBeGreaterThan(
+          completedBefore
+        )
       );
       const urls = fetchSpy.mock.calls.map(([u]) => String(u));
       expect(urls).toContain("https://api.example.com/put");
