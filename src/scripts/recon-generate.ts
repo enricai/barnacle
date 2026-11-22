@@ -8294,6 +8294,16 @@ function interpolateStateValues(
   for (const [value, accessor] of payloadAccessorByValue) {
     bindingByValue.set(value, `\${${accessor}}`);
   }
+  // Caller-owned values reach URLs / form-urlencoded bodies percent-encoded
+  // (`a@b.c` → `a%40b.c`); bind that recorded form too, re-encoding at runtime.
+  if (!isJsonBody) {
+    for (const [value, accessor] of payloadAccessorByValue) {
+      const encoded = encodeURIComponent(value);
+      if (encoded !== value && !bindingByValue.has(encoded) && !payloadAccessorByValue.has(encoded)) {
+        bindingByValue.set(encoded, `\${encodeURIComponent(String(${accessor}))}`);
+      }
+    }
+  }
   const restrictedValues = new Set<string>();
   const unconditionalValues = new Set<string>();
   const sourceNameByValue = new Map<string, string>();

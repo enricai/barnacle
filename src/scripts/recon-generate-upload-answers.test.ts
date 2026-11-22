@@ -46,7 +46,7 @@ describe("urlencoded answers", () => {
   it("binds select fields and leaves others", () => {
     const out = bindMultipartSelectAnswers("q%201=42&name=42&x=1", cap, prior);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder
-    expect(out).toBe('q%201=${payload.Answers["q 1"]}&name=42&x=1');
+    expect(out).toBe('q%201=${encodeURIComponent(String(payload.Answers["q 1"]))}&name=42&x=1');
   });
   it("counts frozen urlencoded selects", async () => {
     const { detectContractGaps } = await import("./recon-generate.js");
