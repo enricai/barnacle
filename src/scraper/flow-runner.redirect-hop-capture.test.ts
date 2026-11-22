@@ -304,27 +304,30 @@ describe("redirect hop capture: additional regressions", () => {
     [302, "POST"],
     [303, "POST"],
     [302, "PUT"],
-  ])("keeps a Set-Cookie arriving just after a %i redirect on the %s capture", async (status, method) => {
-    const t = harness();
-    t.fire("Network.requestWillBeSent", {
-      requestId: "r1",
-      request: { url: "https://example.com/a", method, headers: {}, postData: "x=1" },
-    });
-    // no headers on the redirectResponse; extra-info not yet declared absent
-    t.fire("Network.requestWillBeSent", {
-      requestId: "r1",
-      request: { url: "https://example.com/b", method: "GET", headers: {} },
-      redirectResponse: { status },
-    });
-    t.fire("Network.responseReceivedExtraInfo", {
-      requestId: "r1",
-      headers: { "Set-Cookie": "late=1" },
-    });
-    await t.fire("Network.loadingFinished", { requestId: "r1" });
-    await t.flush();
-    t.teardown();
-    const cap = t.captured.find((c) => c.method === method);
-    expect(typeof cap?.responseHeaders).toBe("object");
-    expect(JSON.stringify(cap?.responseHeaders)).toContain("late=1");
-  });
+  ])(
+    "keeps a Set-Cookie arriving just after a %i redirect on the %s capture",
+    async (status, method) => {
+      const t = harness();
+      t.fire("Network.requestWillBeSent", {
+        requestId: "r1",
+        request: { url: "https://example.com/a", method, headers: {}, postData: "x=1" },
+      });
+      // no headers on the redirectResponse; extra-info not yet declared absent
+      t.fire("Network.requestWillBeSent", {
+        requestId: "r1",
+        request: { url: "https://example.com/b", method: "GET", headers: {} },
+        redirectResponse: { status },
+      });
+      t.fire("Network.responseReceivedExtraInfo", {
+        requestId: "r1",
+        headers: { "Set-Cookie": "late=1" },
+      });
+      await t.fire("Network.loadingFinished", { requestId: "r1" });
+      await t.flush();
+      t.teardown();
+      const cap = t.captured.find((c) => c.method === method);
+      expect(typeof cap?.responseHeaders).toBe("object");
+      expect(JSON.stringify(cap?.responseHeaders)).toContain("late=1");
+    }
+  );
 });
