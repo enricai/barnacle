@@ -116,6 +116,28 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     expect(committed).toBe("Sweden");
   });
 
+  it("treats an entity-encoded option label as naming the requested option (no Enter)", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: {
+        "country-widget": {
+          options: ["Associate&#039;s Degree", "Bachelor&amp;s Degree"],
+          searchOnSubmit: true,
+        },
+      },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Associate's Degree'",
+    };
+    await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+    expect(enterKeyDowns(cdpEvents)).toBe(0);
+  });
+
   it("sends no Enter when the list shows real non-matching options (mismatch)", async () => {
     const stagehandAct = vi.fn();
     const { page, target, window, cdpEvents } = buildPromptWidgetHarness({

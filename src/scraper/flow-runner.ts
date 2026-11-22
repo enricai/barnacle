@@ -11052,7 +11052,26 @@ const PROMPT_SELECTOR_MAX_ENTER_SUBMITS = 2;
 
 /** Shared option-text normalisation so submit detection and commit agree on a match. */
 function normPromptOptionText(s: string): string {
-  return s.replace(/\s+/g, " ").trim().toLowerCase();
+  return decodeHtmlCharRefs(s).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+const HTML_NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
+/** Decodes numeric and common named HTML character references; unknown ones are left as-is. */
+function decodeHtmlCharRefs(s: string): string {
+  return s.replace(/&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|([a-zA-Z]+));/g, (m, dec, hex, name) => {
+    if (name !== undefined) return HTML_NAMED_ENTITIES[name.toLowerCase()] ?? m;
+    const cp = dec !== undefined ? Number.parseInt(dec, 10) : Number.parseInt(hex, 16);
+    if (!(cp > 0 && cp <= 0x10ffff) || (cp >= 0xd800 && cp <= 0xdfff)) return m;
+    return String.fromCodePoint(cp);
+  });
 }
 
 /** Entries a widget renders when it holds no results (e.g. "No Items.", "No results for x"). */
