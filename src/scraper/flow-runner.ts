@@ -870,10 +870,11 @@ const PROMPT_INTERACTIVE_CONTROL_SELECTORS = "button,[role='combobox'],[role='bu
  * aria-required aria-invalid>` beside a `data-automation-id="promptIcon"` icon,
  * with NO `role=combobox` — hence ARIA alone under-selects it).
  */
-const PROMPT_TRIGGER_SELECTORS = [
+export const PROMPT_TRIGGER_SELECTORS = [
   "[role='combobox'][aria-haspopup='listbox']",
   "[role='combobox'][aria-controls]",
   "[role='combobox'][aria-owns]",
+  "[role='combobox'][aria-expanded]",
   "[aria-haspopup='listbox']",
   "[data-uxi-widget-type='selectinput']",
   "[data-uxi-widget-type='multiselect']",
@@ -1007,8 +1008,9 @@ export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
  * `role=searchbox`, only `data-uxi-widget-type='selectinput'` on the input
  * itself). Sibling of {@link PROMPT_TRIGGER_SELECTORS}; same guard treatment.
  */
-const PROMPT_SEARCH_SELECTORS = [
+export const PROMPT_SEARCH_SELECTORS = [
   "[role='searchbox']",
+  "input[role='combobox'][aria-autocomplete='list']",
   "[role='combobox'] input[type='text']",
   "[data-automation-id='searchBox'] input",
   "[data-automation-id='searchBoxInput']",
@@ -1032,7 +1034,7 @@ const PROMPT_VALUE_SELECTORS = [
  * case-insensitively as a whole phrase so a non-empty selection ("1 item
  * selected, …") is correctly read as filled.
  */
-const PROMPT_EMPTY_VALUE_RX =
+export const PROMPT_EMPTY_VALUE_RX =
   /^[\s\-–—]*(?:0\s+items?\s+selected|make\s+an?\s+(?:selection|choice)|(?:please\s+)?(?:select|choose|pick)(?:\s+[^\s]+){0,2}\s*(?:\.{3}|…)?)[\s\-–—]*$/i;
 /**
  * {@link PROMPT_EMPTY_VALUE_RX}'s source and flags as plain strings, passed into
