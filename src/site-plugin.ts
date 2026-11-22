@@ -98,6 +98,13 @@ export interface SitePluginExtraRoute {
    * submissions sink.
    */
   submits?: boolean;
+  /**
+   * When true, core runs the validated body through `dispatch()` (the same
+   * pipeline as `/run`: redaction, tracking, timeout, browser fallback via the
+   * `x-barnacle-execution: browser` header, submission envelope) and replies
+   * with the `/run` success envelope. `handler` is never called.
+   */
+  dispatch?: boolean;
   /** Handles the request and returns the (pre-envelope) response body. */
   handler(request: SitePluginExtraRouteRequest, context: SitePluginContext): Promise<unknown>;
 }
