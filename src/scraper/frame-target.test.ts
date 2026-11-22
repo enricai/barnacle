@@ -60,16 +60,32 @@ let fakeFrameCounter = 0;
  * `nonEmpty` defaults to `true` — a genuine attached wizard frame has content;
  * a test models the "empty same-origin shell" case by passing `false`.
  */
-function makeFakeFrame(url: string, opts: { frameId?: string; nonEmpty?: boolean } = {}) {
+function makeFakeFrame(url: string, opts: {
+    frameId?: string;
+    nonEmpty?: boolean;
+    children?: unknown[];
+    iframes?: Record<string, string>;
+  } = {}
+) {
   const nonEmpty = opts.nonEmpty ?? true;
   return {
     frameId: opts.frameId ?? `fake-frame-${fakeFrameCounter++}`,
     evaluate: async (expr: unknown) => {
       if (expr === "location.href") return url;
+      const m = /document\.querySelector\((.+?)\)/.exec(String(expr));
+      if (m?.[1]) {
+        const sel = JSON.parse(m[1]) as string;
+        const ifr = opts.iframes ?? {};
+        return Object.hasOwn(ifr, sel)
+          ? { matched: true, src: ifr[sel] }
+          : { matched: false, src: null };
+      }
       if (/document\.body/.test(String(expr))) return nonEmpty;
       return `frame-evaluated:${String(expr)}`;
     },
     locator: (selector: string) => ({ scope: "frame" as const, selector }),
+    // Nested frames + per-frame iframe table, for hop-chain resolution.
+    childFrames: async () => opts.children ?? [],
   };
 }
 
@@ -1165,5 +1181,41 @@ describe("readCurrentFrameUrl", () => {
     await expect(readCurrentFrameUrl(page as never, staleTarget)).resolves.toBe(
       "https://careers.example.org/jobs/123"
     );
+  });
+});
+
+describe("resolveFrameTarget: nested hop chains", () => {
+  it("resolves '#outer >> #inner' to the grandchild matching the inner src read inside the outer frame", async () => {
+    const empty = makeFakeFrame("https://example.com/inner", { nonEmpty: false });
+    const real = makeFakeFrame("https://example.com/inner", { nonEmpty: true });
+    const other = makeFakeFrame("https://example.org/x");
+    const outer = makeFakeFrame("https://example.net/outer", {
+      iframes: { "#inner": "https://example.com/inner" },
+      children: [empty, other, real],
+    });
+    // A decoy at top level that would match if the top document were used.
+    const decoy = makeFakeFrame("https://example.com/inner");
+    const page = makeFakePage({
+      mainUrl: "https://example.com/",
+      iframes: { "#outer": "https://example.net/outer" },
+      frames: [outer, decoy, empty, other, real],
+    });
+    const target = await resolveFrameTarget(page as never, "#outer >> #inner", { timeoutMs: 50 });
+    expect(target.frame).toBe(real);
+    expect(target.declaredFrameSelector).toBe("#outer >> #inner");
+    expect(buildHopSelector(target.declaredFrameSelector, "button")).toBe(
+      "#outer >> #inner >> button"
+    );
+  });
+
+  it("does not match when the inner iframe is absent from the outer frame", async () => {
+    const outer = makeFakeFrame("https://example.net/outer", { children: [] });
+    const page = makeFakePage({
+      mainUrl: "https://example.com/",
+      iframes: { "#outer": "https://example.net/outer", "#inner": "https://example.com/inner" },
+      frames: [outer],
+    });
+    const target = await resolveFrameTarget(page as never, "#outer >> #inner", { timeoutMs: 30 });
+    expect(target.frame).toBeNull();
   });
 });
