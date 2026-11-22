@@ -245,9 +245,9 @@ describe("flow-runner banner dismissal is credited as a view-swap (offline fixtu
     expect(signals).not.toContain("reflowed slightly");
   });
 
-  it("still vetoes a reset that removes the target with no visible-text shrink", async () => {
+  it("still vetoes a reset that removes the target with no visible-text change", async () => {
     const h = await buildHarness(
-      `<main data-pad="${"x".repeat(12_000)}"><h1>Headlines</h1><button id="acceptBtn">Accept</button></main>`,
+      `<main data-pad="${"x".repeat(12_000)}"><h1>Headlines</h1><button id="acceptBtn" aria-label="Accept"></button></main>`,
       `<main><h1>Headlines</h1></main>`
     );
     await expect(h.call).rejects.toBeInstanceOf(StepVerificationError);

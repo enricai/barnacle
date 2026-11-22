@@ -394,7 +394,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     expect(result).toBe(true);
   });
 
-  it("rejects an 8000B DOM shrink when the clicked control is gone", () => {
+  it("rejects an 8000B DOM shrink when the clicked control is gone (screen-scale reset)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       submitStep: false,
@@ -406,6 +406,23 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     });
     expect(result).toBe(false);
   });
+
+  it.each([-900, -1654, -3200])(
+    "credits a %iB shrink that changed visible text when the clicked control is gone (dismissal)",
+    (bytesDelta) => {
+      expect(
+        isClickViewSwapVerified({
+          resolvedAction: { method: "click" },
+          submitStep: false,
+          isAdvanceWithPattern: false,
+          networkDelta: 0,
+          bytesDelta,
+          textChanged: true,
+          clickedElementStillPresent: false,
+        })
+      ).toBe(true);
+    }
+  );
 
   it("rejects a zero-delta, unchanged-text click when the clicked control is gone", () => {
     const result = isClickViewSwapVerified({
@@ -520,6 +537,20 @@ describe("flow-runner/describeAttemptEffectSignals — removal vs reflow", () =>
     expect(out).toContain("content-removed");
     expect(out).not.toContain("reflowed slightly");
   });
+
+  it.each([-900, -1654, -3200])(
+    "labels a %iB text-changing shrink as removal even when signature lengths are not informative",
+    (delta) => {
+      const out = describeAttemptEffectSignals(
+        snap(10000, 1000, "a b"),
+        snap(10000 + delta, 1000, "a c"),
+        [],
+        0
+      );
+      expect(out).toContain("content-removed");
+      expect(out).not.toContain("reflowed slightly");
+    }
+  );
 
   it("keeps the reflow wording for a tiny text change", () => {
     const out = describeAttemptEffectSignals(

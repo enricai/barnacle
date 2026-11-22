@@ -2758,8 +2758,22 @@ export function isClickViewSwapVerified(params: {
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
   // A removal that took visible text with it (overlay/banner dismissal) is an
-  // observable client-side effect, not a page reset.
-  if (contentRemoved && !clickedElementStillPresent && bytesDelta < 0) return true;
+  // observable client-side effect, not a page reset. Two readings of "content
+  // left": the caller measured the visible text shrinking (`contentRemoved`),
+  // or the text changed while the body shrank by at least the reveal floor but
+  // less than a whole screen swap (`VIEW_SWAP_MIN_BYTES`) — an element-sized
+  // removal. A shrink at screen-swap scale that also takes its own trigger
+  // stays the reset the veto below targets.
+  if (
+    !clickedElementStillPresent &&
+    bytesDelta < 0 &&
+    (contentRemoved ||
+      (textChanged &&
+        -bytesDelta >= VIEW_SWAP_REVEAL_MIN_BYTES &&
+        -bytesDelta < VIEW_SWAP_MIN_BYTES))
+  ) {
+    return true;
+  }
   if (!clickedElementStillPresent && bytesDelta <= 0) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
@@ -2873,10 +2887,15 @@ export function describeAttemptEffectSignals(
       );
     }
   }
+  // Mirrors the verdict's removal credit: an element-sized body shrink with
+  // changed visible text, or a measured visible-text shrink.
   const contentRemoved =
     networkDelta === 0 &&
     bytesDelta < 0 &&
-    isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature);
+    ((textChanged &&
+      -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold &&
+      -bytesDelta < config.scraper.viewSwapMinBytesThreshold) ||
+      isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature));
   if (contentRemoved) {
     observations.push(
       `content-removed-without-network: visible text and body HTML shrank (body ${bytesDelta}B) with no network — real content left the page (an overlay/banner/target was dismissed), not a slight reflow`
