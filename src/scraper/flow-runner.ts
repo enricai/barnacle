@@ -178,6 +178,11 @@ import type { Capture } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 import type { SessionProxyTuple } from "@/types/session-proxy";
+import {
+  checkFrameDocumentIdentity,
+  type FrameDocumentIdentity,
+  readFrameDocumentIdentity,
+} from "./frame-document-identity";
 
 export { waitForSpaReady } from "@/scraper/spa-readiness";
 export { toFrameRelativeXpath };
@@ -13016,6 +13021,10 @@ export async function executeStepWithHealing(params: {
   // verifier and key event in the cascade reads the page the click navigated to.
   let page = params.page;
   let frameReresolveAttempted = false;
+  // Target frame document identity captured before the act runs; the n+16
+  // fallback compares against it so it never re-clicks a stale xpath on a
+  // document the act's own click replaced.
+  let frameDocBaseline: FrameDocumentIdentity = null;
   // Passive step ("just wait", "do not click anything"): nothing to click, so
   // the click cascade would end phantom-click-exhausted and replan. No-op success.
   if (!upload && !emailStep && !captchaGated && !submitStep && isPassiveNoopStep(step)) {
@@ -13179,6 +13188,7 @@ export async function executeStepWithHealing(params: {
    * already succeeded) returns immediately without probing at all, so
    * main-frame-only flows do zero extra work.
    */
+  let attemptDocBaseline: Awaited<ReturnType<typeof readFrameDocumentIdentity>>;
   const reresolveFrameTargetIfLost = async (): Promise<void> => {
     if (frameReresolveAttempted) return;
     frameReresolveAttempted = true;
@@ -13189,6 +13199,8 @@ export async function executeStepWithHealing(params: {
       `${formatStepPrefix(stepIndex, totalSteps)} frame ${frameTarget.declaredFrameSelector} attached after step entry — re-resolved before deepLocator gate`
     );
     frameTarget = reresolved;
+    frameDocBaseline = await readFrameDocumentIdentity(frameTarget.frame ?? frameTarget);
+    attemptDocBaseline = frameDocBaseline;
   };
   // Read-once to suppress "unused" — knownErrorClassPrefixes is threaded
   // through executeStepWithHealing's signature so the cascade has it in
@@ -14379,6 +14391,13 @@ export async function executeStepWithHealing(params: {
   let lastRankedSubmitCandidates: SubmitCandidate[] | null = null;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     params.abortSignal?.throwIfAborted();
+    // Step-start baseline: captured once on attempt 1 so later attempts that
+    // re-click a selector resolved earlier can detect a document replaced by
+    // an earlier attempt's click.
+    attemptDocBaseline = await readFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page));
+    if (attempt === 1) {
+      frameDocBaseline = attemptDocBaseline;
+    }
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
     // it would burn the attempt slot without exercising new behaviour.
@@ -14800,6 +14819,24 @@ export async function executeStepWithHealing(params: {
         // (an `Input.dispatchMouseEvent`). Both deliver `isTrusted=true`. This is
         // the non-submit sibling of the deep-submit-locator escalation above.
         record.technique = "trusted-click-retry";
+        if (
+          (await checkFrameDocumentIdentity(
+            frameTarget ?? mainFrameTarget(page),
+            attemptDocBaseline
+          )) === "replaced"
+        ) {
+          const failureMessage =
+            "trusted-click-retry skipped: frame document replaced since step start; resolved selector is stale";
+          record.actResultSuccess = false;
+          record.errorMessage = failureMessage;
+          record.triedSelectors = [...triedSelectors];
+          attempts.push(record);
+          failureReasons.push(failureMessage);
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+          );
+          continue;
+        }
         // Carry forward any selector prior attempts already resolved (e.g.
         // attempt-1 act-string's xpath) so a trusted-click-retry that can't
         // resolve a deepLocator candidate doesn't erase the xpath signal
@@ -15384,6 +15421,17 @@ export async function executeStepWithHealing(params: {
         const xpath = lastSelector ? xpathBody(lastSelector, frameTarget) : null;
         if (!xpath) {
           record.errorMessage = "structured-click: no xpath from prior attempt";
+        } else if (
+          (await checkFrameDocumentIdentity(
+            frameTarget ?? mainFrameTarget(page),
+            attemptDocBaseline
+          )) === "replaced"
+        ) {
+          record.errorMessage =
+            "structured-click skipped: frame document replaced since step start; resolved selector is stale";
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+          );
         } else {
           // Trust boundary: xpath comes from Stagehand's own resolved
           // selector during a prior attempt of THIS step, not from URL
@@ -16287,7 +16335,27 @@ export async function executeStepWithHealing(params: {
     // element, wasting STEP_PAUSE_MS + observe latency on a known-good
     // state. Skip the fallback when this evidence is already in the record.
     const priorDomVerified = attempts.some((a) => a.verifiedBy === "dom");
+    let n16DocumentReplaced = false;
     if (
+      !verified &&
+      !priorDomVerified &&
+      record.actResultSuccess === true &&
+      resolvedAction?.method === "click" &&
+      resolvedAction.selector &&
+      (await checkFrameDocumentIdentity(
+        frameTarget ?? mainFrameTarget(page),
+        attemptDocBaseline
+      )) === "replaced"
+    ) {
+      // The act's own click replaced the frame document: the resolved xpath
+      // now names a different control, so neither click may fire.
+      n16DocumentReplaced = true;
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} n+16 fallback skipped: frame document replaced by the act's click; leaving verification to the later gates`
+      );
+    }
+    if (
+      !n16DocumentReplaced &&
       !verified &&
       !priorDomVerified &&
       record.actResultSuccess === true &&
