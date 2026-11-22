@@ -10279,14 +10279,17 @@ async function tryPromptSelectorPrimitive(params: {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
         if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
       }
-      // A label[for] naming a select/input/textarea the user cannot reach in the
-      // trigger's own container (the replaced native control the widget stands
-      // in for). A control the pointer reaches is the field's own, so its label
-      // names that control and not this trigger.
+      // A label[for] naming a select/input/textarea in the trigger's own
+      // container (the replaced native control the widget stands in for). A
+      // control the pointer reaches and the tab order keeps is the field's own
+      // working control, so its label names that control and not this trigger;
+      // the same holds for any reached control when the trigger is a complete
+      // widget (it declares its own popup).
       const cont = w.parentElement;
       if (cont) {
         for (const ctl of Array.from(cont.querySelectorAll("select,input,textarea"))) {
-          if (!ctl.id || w.contains(ctl) || pointerReaches(ctl)) continue;
+          if (!ctl.id || w.contains(ctl)) continue;
+          if (pointerReaches(ctl) && (tabbable(ctl) || w.matches(popupLinkedSel))) continue;
           const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(ctl.id) : ctl.id) + "']");
           if (lab && !w.contains(lab) && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
         }
@@ -11255,7 +11258,15 @@ async function commitPromptOption(params: {
   let optionsResult = params.optionsResult;
   for (let depth = 0; depth <= PROMPT_SELECTOR_MAX_DRILL_DEPTH; depth++) {
     const options = realPromptOptions(optionsResult.options ?? [], option);
-    const detMatch = options.find((o) => norm(o.text) === wantOpt) ?? null;
+    // Exact text first; failing that, a UNIQUE option equal on letters and digits
+    // only (a decorated label such as "— Enter Manually —" names "enter manually").
+    const alnumOnly = (x: string): string => x.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    const wantAlnum = alnumOnly(option);
+    const looseMatches =
+      wantAlnum === "" ? [] : options.filter((o) => alnumOnly(o.text) === wantAlnum);
+    const detMatch =
+      options.find((o) => norm(o.text) === wantOpt) ??
+      (looseMatches.length === 1 ? (looseMatches[0] ?? null) : null);
     if (detMatch === null && (anthropic === null || options.length === 0)) {
       logger.info(
         `prompt-selector primitive: no option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
