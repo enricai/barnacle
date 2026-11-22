@@ -310,15 +310,13 @@ async function tryResolveChildFrame(
 
   let candidates: StagehandFrame[];
   if (scope) {
-    const nested = await withWatchdog(() => scope.childFrames(), {
-      timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
-      label: "frame-target: nested frame enumeration",
-    }).catch((err: unknown) => {
-      if (err instanceof WatchdogTimeoutError) return null;
-      throw err;
-    });
-    if (!nested) return null;
-    candidates = nested.filter((frame) => frame.frameId !== scope.frameId);
+    // `page.frames()` binds each frame to its registry owner session, so a
+    // cross-process (OOPIF) grandchild is reachable; `Frame.childFrames()`
+    // would bind children to the parent's session and omit OOPIFs.
+    const mainFrameId = page.mainFrameId();
+    candidates = page
+      .frames()
+      .filter((frame) => frame.frameId !== mainFrameId && frame.frameId !== scope.frameId);
   } else {
     const mainFrameId = page.mainFrameId();
     candidates = page.frames().filter((frame) => frame.frameId !== mainFrameId);

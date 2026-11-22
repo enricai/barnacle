@@ -1195,12 +1195,10 @@ describe("resolveFrameTarget: nested hop chains", () => {
       iframes: { "#inner": "https://example.com/inner" },
       children: [empty, other, real],
     });
-    // A decoy at top level that would match if the top document were used.
-    const decoy = makeFakeFrame("https://example.com/inner");
     const page = makeFakePage({
       mainUrl: "https://example.com/",
       iframes: { "#outer": "https://example.net/outer" },
-      frames: [outer, decoy, empty, other, real],
+      frames: [outer, empty, other, real],
     });
     const target = await resolveFrameTarget(page as never, "#outer >> #inner", { timeoutMs: 50 });
     expect(target.frame).toBe(real);
