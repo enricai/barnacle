@@ -50,8 +50,9 @@ const testLogger = {
 
 const FRAME_SELECTOR = "iframe#apply_frame";
 const URL = "https://apply.acme.example/jobs/1/apply";
-const STEP =
+const QUOTED_STEP =
   "Click on the 'Application Questions' page heading (an empty, non-interactive spot) to close any dropdown or prompt list that is still open";
+let STEP = QUOTED_STEP;
 const REPHRASED = "click the page header";
 
 function snapshotEvaluator() {
@@ -134,11 +135,12 @@ function wireRephraseResolvesTo(description: string): void {
   });
 }
 
+let OPTIONAL = true;
 async function runOptionalStep(): Promise<void> {
   await runHealingFlow({
     stagehand: {} as unknown as Stagehand,
     page: makeFakePage(),
-    steps: [{ instruction: STEP, optional: true, upload: false, submitStep: false }],
+    steps: [{ instruction: STEP, optional: OPTIONAL, upload: false, submitStep: false }],
     logger: testLogger,
     anthropic: null,
     rephraseModel: { modelId: "test-model" } as unknown as RephraseModel,
@@ -158,6 +160,8 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
     vi.clearAllMocks();
     resetBillingErrorFlagForTests();
     resolveFrameTarget.mockResolvedValue(makeChildFrameTarget());
+    STEP = QUOTED_STEP;
+    OPTIONAL = true;
   });
 
   it("rejects a rephrase that resolves to an unrelated menu button instead of crediting it", async () => {
@@ -186,5 +190,73 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
     await expect(runOptionalStep()).resolves.toBeUndefined();
 
     expect(logged("info")).toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
+  it("does not credit a required quoted-heading step whose rephrase resolves to a menu button", async () => {
+    OPTIONAL = false;
+    wireRephraseResolvesTo("language selector menu button");
+
+    await expect(runOptionalStep()).rejects.toMatchObject({ kind: "cascade-exhausted" });
+    expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
+  it("names the control only in the act's own description, not on the action", async () => {
+    wireRephraseResolvesTo("language selector menu button");
+    const wired = guardedAct.getMockImplementation() as (...a: unknown[]) => Promise<unknown>;
+    guardedAct.mockImplementation(async (...args: unknown[]) =>
+      args[1] === REPHRASED
+        ? {
+            success: true,
+            message: "ok",
+            actionDescription: "language selector menu button",
+            actions: [{ selector: "xpath=//*[@id='t']", method: "click" }],
+          }
+        : wired(...args)
+    );
+
+    await expect(runOptionalStep()).rejects.toMatchObject({ kind: "cascade-exhausted" });
+    expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
+  describe("a step with no quoted target that declares a blank, non-interactive spot", () => {
+    beforeEach(() => {
+      STEP = "Click on a blank area of the page to dismiss any open dropdown";
+    });
+
+    it("is not credited when the click lands on a control", async () => {
+      guardedObserve.mockResolvedValue([
+        { selector: "xpath=//*[@id='m']", description: "settings menu button", method: "click" },
+      ]);
+      guardedAct.mockResolvedValue({
+        success: true,
+        message: "ok",
+        actionDescription: "clicked",
+        actions: [
+          { selector: "xpath=//*[@id='m']", description: "settings menu button", method: "click" },
+        ],
+      });
+      generateObject.mockResolvedValue({
+        object: { outcome: "impossible", reason: "x" },
+        usage: {},
+      });
+
+      await expect(runOptionalStep()).rejects.toMatchObject({ kind: "cascade-exhausted" });
+      expect(logged("info")).not.toMatch(/succeeded on attempt \d+ via act-string/);
+    });
+
+    it("is still credited when the click lands on static content", async () => {
+      guardedObserve.mockResolvedValue([
+        { selector: "xpath=//*[@id='h']", description: "page heading", method: "click" },
+      ]);
+      guardedAct.mockResolvedValue({
+        success: true,
+        message: "ok",
+        actionDescription: "clicked",
+        actions: [{ selector: "xpath=//*[@id='h']", description: "page heading", method: "click" }],
+      });
+
+      await expect(runOptionalStep()).resolves.toBeUndefined();
+      expect(logged("info")).toMatch(/succeeded on attempt 1 via act-string/);
+    });
   });
 });

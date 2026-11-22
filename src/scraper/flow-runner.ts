@@ -5262,19 +5262,70 @@ export function stepQuotesValueNotControlName(step: string): boolean {
 }
 
 /**
- * False when the step quotes a control name and the resolved action's
- * description names none of those phrases (or names a negated one). Same
- * semantics as `vetObserveCandidates`. Value-quoting steps (fill/select/radio)
- * and steps without quoted phrases are exempt (true).
+ * True when the step itself declares its click target to be nothing in
+ * particular — an empty, blank or non-interactive spot, clicked only to
+ * dismiss open UI. Such a step is satisfied by no control at all.
+ */
+export function stepDeclaresNonInteractiveTarget(step: string): boolean {
+  return /\bnon-?interactive\b|\b(?:empty|blank|neutral|inert|dead)\s+(?:\w+\s+)?(?:spot|area|space|region|part)\b|\bwhite-?space\b/i.test(
+    step
+  );
+}
+
+/** Words an act() description uses to name a control rather than static content. */
+const CONTROL_DESCRIPTION_PATTERN =
+  /\b(?:button|link|menu|menuitem|dropdown|drop-down|selector|select|option|checkbox|radio|tab|toggle|switch|combobox|listbox|input|textbox|icon|anchor)\b/i;
+
+/** Elements (or ancestors) a page treats as a control: clicking one acts, it does not merely dismiss. */
+const INTERACTIVE_CONTROL_CSS =
+  "button,a[href],input,select,textarea,summary,[role=button],[role=link],[role=menuitem],[role=option],[role=tab],[role=combobox],[role=switch],[role=checkbox],[role=radio],[aria-haspopup],[aria-expanded]";
+
+/**
+ * Reads whether the resolved click target is itself (or sits inside) an
+ * interactive control. `true` is the only verdict callers act on; a miss, a
+ * non-xpath selector or an evaluate failure yields `false`.
+ */
+async function resolvedClickTargetIsInteractive(
+  target: FrameTarget,
+  selector: string
+): Promise<boolean> {
+  const xpath = xpathBodyForEvaluate(selector, target);
+  if (!xpath) return false;
+  const expr = `(() => {
+    const el = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+    return Boolean(el && el.closest && el.closest(${JSON.stringify(INTERACTIVE_CONTROL_CSS)}));
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * False when the resolved click target contradicts the step's own intent:
+ * the step declares a non-interactive target but the element is a control, or
+ * the step quotes a control name and the resolved action's description names
+ * none of those phrases (or names a negated one; same semantics as
+ * `vetObserveCandidates`). Value-quoting steps (fill/select/radio) are exempt
+ * from the quoted-name check. `description` is what the act reported it
+ * clicked; `isInteractive` is the DOM read of the clicked element.
  */
 export function resolvedActionNamesStepTarget(
   step: string,
-  action: { description?: string }
+  action: { description?: string },
+  options: { isInteractive?: boolean; fallbackDescription?: string } = {}
 ): boolean {
+  const description = action.description || options.fallbackDescription || "";
+  if (stepDeclaresNonInteractiveTarget(step)) {
+    if (options.isInteractive === true || CONTROL_DESCRIPTION_PATTERN.test(description)) {
+      return false;
+    }
+  }
   if (stepQuotesValueNotControlName(step)) return true;
   const phrases = extractTaggedPhrases(step);
-  if (phrases.length === 0) return true;
-  return !vetObserveCandidates([{ description: action.description ?? "" }], phrases).refuse;
+  if (phrases.length === 0 || description === "") return true;
+  return !vetObserveCandidates([{ description }], phrases).refuse;
 }
 
 /**
@@ -15919,10 +15970,21 @@ export async function executeStepWithHealing(params: {
             for (const action of result.actions ?? []) {
               if (action.selector) triedSelectors.push(action.selector);
               if (!resolvedAction) {
-                if (resolvedActionNamesStepTarget(step, action)) {
+                if (
+                  resolvedActionNamesStepTarget(step, action, {
+                    isInteractive:
+                      stepDeclaresNonInteractiveTarget(step) &&
+                      !!action.selector &&
+                      (await resolvedClickTargetIsInteractive(
+                        frameTarget ?? mainFrameTarget(page),
+                        action.selector
+                      )),
+                    fallbackDescription: result.actionDescription,
+                  })
+                ) {
                   resolvedAction = action;
                 } else {
-                  record.errorMessage = `rephrase resolved an element that does not name the step's quoted target: "${(action.description ?? "").slice(0, 60)}"`;
+                  record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${(action.description || result.actionDescription || "").slice(0, 60)}"`;
                   failureReasons.push(record.errorMessage);
                 }
               }
@@ -16188,6 +16250,18 @@ export async function executeStepWithHealing(params: {
       advanceBaseline,
       destinationPlausible,
     });
+    const resolvedTargetNamesStep =
+      resolvedAction === null ||
+      resolvedActionNamesStepTarget(step, resolvedAction, {
+        isInteractive:
+          stepDeclaresNonInteractiveTarget(step) &&
+          !!resolvedAction.selector &&
+          (await resolvedClickTargetIsInteractive(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector
+          )),
+        fallbackDescription: record.actResultDescription ?? undefined,
+      });
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
@@ -16203,8 +16277,7 @@ export async function executeStepWithHealing(params: {
       pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
       contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
-      resolvedElementNamesStepTarget:
-        !resolvedAction?.description || resolvedActionNamesStepTarget(step, resolvedAction),
+      resolvedElementNamesStepTarget: resolvedTargetNamesStep,
     });
     if (
       clickViewSwapVerified === false &&
