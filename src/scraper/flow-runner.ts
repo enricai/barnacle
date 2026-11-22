@@ -453,7 +453,7 @@ export function wireSignalCapture(
     // (e.g. a POST answered 302 with a Location header) before it is replaced.
     if (prior && params.redirectResponse) {
       prior.responseStatus = params.redirectResponse.status;
-      prior.responseHeaders = params.redirectResponse.headers ?? {};
+      prior.responseHeaders = params.redirectResponse.headers;
       const hop = hopOf.get(params.requestId) ?? 0;
       hopOf.set(params.requestId, hop + 1);
       // CDP documents that a hop may have no extra-info event at all; the

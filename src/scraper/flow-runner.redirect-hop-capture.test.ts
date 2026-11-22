@@ -384,7 +384,7 @@ describe("redirect hop capture: additional regressions", () => {
       t.fire("Network.requestWillBeSent", {
         requestId: "r1",
         request: { url: "https://example.com/b", method: "GET", headers: {} },
-        redirectResponse: { status },
+        redirectResponse: { status, headers: {} },
       });
       t.fire("Network.responseReceivedExtraInfo", {
         requestId: "r1",
@@ -488,7 +488,7 @@ describe("redirect hop capture: generic-domain regressions", () => {
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
       request: { url: "https://example.com/b", method: "GET", headers: {} },
-      redirectResponse: { status: 302 },
+      redirectResponse: { status: 302, headers: {} },
     });
     const finished = t.fire("Network.loadingFinished", { requestId: "r1" });
     t.fire("Network.responseReceivedExtraInfo", {
