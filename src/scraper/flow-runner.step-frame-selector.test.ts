@@ -108,9 +108,6 @@ function fakeFlowPage(getUrl: () => string): Page {
 /** Non-submit-shaped, non-select/checkbox/radio instruction — takes the attempt-1 `guardedAct(step, ...)` path. */
 const STEP_A = "Fill in the middle name field";
 
-/** Matches `parseSelectStep`, so `hasUnfilledRequiredControlForStep`'s probe-absent escalation check evaluates its target instead of short-circuiting on an unparsed instruction. */
-const SELECT_STEP = "Select 'Yes' for 'Are you legally authorized to work?'";
-
 function step(overrides: Partial<HealingFlowStep> = {}): HealingFlowStep {
   return { instruction: STEP_A, optional: false, upload: false, submitStep: false, ...overrides };
 }
@@ -144,7 +141,6 @@ function wireVerifiedGuardedAct(urls: { current: string }): void {
     };
   });
 }
-
 
 describe("flow-runner/runHealingFlow — per-step frameSelector", () => {
   beforeEach(() => {
