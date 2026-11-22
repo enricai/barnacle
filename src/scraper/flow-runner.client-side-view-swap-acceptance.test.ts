@@ -5,7 +5,10 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
-import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import {
+  FILLABLE_CANDIDATE_SELECTOR,
+  INTERACTIVE_CANDIDATE_SELECTOR,
+} from "@/scraper/deep-locator-scan";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -46,6 +49,8 @@ const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+/** Fill/select steps resolve over the fillable hop; the same hop object is aliased under it so clicks and fills share element state. */
+const FILL_HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
 
 /** Verbatim step instruction from the bug report's flow, naming the target and negating every decoy in one "Do NOT click" clause. */
 const MANUAL_APPLICATION_STEP =
@@ -331,6 +336,7 @@ describe("flow-runner client-side view-swap acceptance regression (oopif-8, offl
     const order = buildDenseHopOrder(true);
     expect(order.length).toBeGreaterThan(50);
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+    deepLocatorFrame.set(FILL_HOP_SELECTOR, hop);
     const targetIndex = order.length - 1;
     const firstNameIndex = findElementIndex(order, "First Name");
 
@@ -394,7 +400,8 @@ describe("flow-runner client-side view-swap acceptance regression (oopif-8, offl
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
     const order = buildDenseHopOrder(false);
     expect(order.length).toBeGreaterThan(50);
-    registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+    const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+    deepLocatorFrame.set(FILL_HOP_SELECTOR, hop);
 
     const stagehand = makeViewSwapStagehand();
     // No element ever matches "Manual Application", so no index should ever
