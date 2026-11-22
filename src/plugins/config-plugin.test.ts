@@ -370,6 +370,22 @@ describe("buildConfigPlugin", () => {
     ).resolves.toBeDefined();
   });
 
+  it("forwards a per-step frameSelector onto the HealingFlowStep, leaving other steps undefined", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps = [
+      "click apply",
+      { step: "fill the form", frameSelector: "#outer >> #inner" },
+    ];
+    const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const steps = mockRunHealingFlow.mock.calls[0]?.[0]?.steps as { frameSelector?: string }[];
+    expect(steps[0]?.frameSelector).toBeUndefined();
+    expect(steps[1]?.frameSelector).toBe("#outer >> #inner");
+  });
+
   it("forwards spec.flow.frameSelector into the runHealingFlow deps when set", async () => {
     const manifest = baseManifest();
     (manifest.spec as { flow: { frameSelector?: string } }).flow.frameSelector = "#apply_frame";
