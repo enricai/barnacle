@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 
 const src = readFileSync("src/scraper/flow-runner.ts", "utf8");
 const exprSrc =
-  /const OPTION_ACCESSIBLE_LABEL_EXPR = `([\s\S]*?)`;\n/.exec(src)?.[1].replace(/\\\\/g, "\\") ?? "";
+  /const OPTION_ACCESSIBLE_LABEL_EXPR = `([\s\S]*?)`;\n/.exec(src)?.[1]?.replace(/\\\\/g, "\\") ??
+  "";
 
 const run = (html: string) => {
   const win = new Window();
@@ -23,7 +24,9 @@ describe("option accessible label decodes character references", () => {
     expect(r.label).toBe("Associate's Degree");
   });
   it("double-escaped markup stays text and creates no element", () => {
-    const r = run(`<ul><li role="option" aria-label="&lt;img src=x onerror=alert(1)&gt;"></li></ul>`);
+    const r = run(
+      `<ul><li role="option" aria-label="&lt;img src=x onerror=alert(1)&gt;"></li></ul>`
+    );
     expect(r.label).toBe("<img src=x onerror=alert(1)>");
     expect(r.imgs).toBe(0);
   });
