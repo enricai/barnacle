@@ -7487,7 +7487,16 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     if (inner === box) inner = null;
     const labelBox = inner || box;
-    const own = namedBy(labelBox) || ownCaption(labelBox) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ") || Array.from(new Set(segs.map((seg) => ownKey(seg)).filter(Boolean))).join(" ") || soleLegend(labelBox, segs);
+    // A source that is blank or only part words ("Month") names nothing, so it
+    // must not end the chain before the fieldset legend is reached.
+    const named = (text) => (keyOf(text) ? norm(text) : "");
+    const own = [
+      () => namedBy(labelBox),
+      () => ownCaption(labelBox),
+      () => segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" "),
+      () => Array.from(new Set(segs.map((seg) => ownKey(seg)).filter(Boolean))).join(" "),
+      () => soleLegend(labelBox, segs),
+    ].reduce((found, next) => found || named(next()), "");
     const section = sectionOf(labelBox, Boolean(inner));
     groups.push({
       segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
