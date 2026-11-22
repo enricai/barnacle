@@ -3576,7 +3576,16 @@ async function main(): Promise<void> {
             logger.warn(
               `${formatStepPrefix(i, () => plan.length)} optional step cascade exhausted; logged and skipped (${step.instruction.slice(0, 60)})`
             );
-            consecutiveStaleSkips = 0;
+            if (signalCounter.n === lastSuccessNetworkCount && readLiveUrl() === lastSuccessUrl) {
+              consecutiveStaleSkips++;
+            }
+            if (consecutiveStaleSkips >= STUCK_SKIP_THRESHOLD) {
+              consecutiveStaleSkips = 0;
+              throw new StepVerificationError(
+                `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) stuck: ${STUCK_SKIP_THRESHOLD}+ consecutive optional skips with stagnant page`,
+                "probe-absent"
+              );
+            }
             completedSteps.push(step.instruction);
             session.recordStepCompleted?.();
             continue;
