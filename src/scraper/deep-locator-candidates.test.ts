@@ -942,7 +942,12 @@ describe("vetObserveCandidates", () => {
 });
 
 describe("vetFrameCandidates", () => {
-  const f = (accessibleText: string, isNav = false) => ({ index: 0, selector: "", accessibleText, isNav });
+  const f = (accessibleText: string, isNav = false) => ({
+    index: 0,
+    selector: "",
+    accessibleText,
+    isNav,
+  });
   const accept = extractTaggedPhrases("Click 'Accept'");
   it("refuses when no candidate names the quoted phrase", () => {
     const v = vetFrameCandidates([f("Skip to Main Content"), f("Enter Your Information")], accept);
@@ -963,7 +968,7 @@ describe("vetFrameCandidates", () => {
     expect(v.candidate).toBe(hit);
   });
   it("refuses negated phrase matches", () => {
-    const v = vetFrameCandidates([f("Decline")], extractTaggedPhrases("Click 'Accept' not 'Decline'"));
+    const v = vetFrameCandidates([f("Decline")], [{ text: "Decline", negated: true }]);
     expect(v.refuse).toBe(true);
   });
 });
