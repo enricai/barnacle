@@ -5,8 +5,6 @@ import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
 
-const OPTION_MARK = "data-bcl-prompt-opt-idx";
-
 const testLogger = {
   info: vi.fn(),
   warn: vi.fn(),
