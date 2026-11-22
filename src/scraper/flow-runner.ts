@@ -1368,6 +1368,21 @@ const INVALID_MARKER_EL_EXPR = `((el) => {
   const cls = (el.getAttribute && el.getAttribute("class")) || "";
   if (rx.test(cls)) return true;
   if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
+  // Non-class error-node markers: a visible, non-empty error-message / error-banner
+  // node (error hook in data-automation-id / data-testid / data-test-id, or a
+  // role=alert container carrying an error hook). Empty templates don't count.
+  if (el.getAttribute) {
+    const hook = ["data-automation-id", "data-testid", "data-test-id"]
+      .map((a) => el.getAttribute(a) || "").join(" ");
+    const isErrHook = /(^|[-_\\s])(error|errors|errormessage|error-message|errorbanner|error-banner)([-_\\s]|$)|error(message|banner|summary)/i.test(hook);
+    const isAlertErr = el.getAttribute("role") === "alert" &&
+      /error|danger/i.test(cls + " " + hook);
+    if (isErrHook || isAlertErr) {
+      const txt = (el.textContent || "").trim();
+      const hidden = el.hidden === true || el.getAttribute("aria-hidden") === "true";
+      if (txt.length > 0 && !hidden) return true;
+    }
+  }
   return false;
 })`;
 /**
@@ -2826,7 +2841,7 @@ export async function countNgInvalidContainers(target: FrameTarget): Promise<num
   const expr = `(() => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
     let n = 0;
-    for (const el of document.querySelectorAll("[class],[aria-invalid]")) {
+    for (const el of document.querySelectorAll("[class],[aria-invalid],[data-automation-id],[data-testid],[data-test-id],[role=alert]")) {
       if (isInvalid(el)) n++;
     }
     return n;
