@@ -13165,6 +13165,7 @@ export async function executeStepWithHealing(params: {
    * already succeeded) returns immediately without probing at all, so
    * main-frame-only flows do zero extra work.
    */
+  let attemptDocBaseline: Awaited<ReturnType<typeof readFrameDocumentIdentity>>;
   const reresolveFrameTargetIfLost = async (): Promise<void> => {
     if (frameReresolveAttempted) return;
     frameReresolveAttempted = true;
@@ -13176,6 +13177,7 @@ export async function executeStepWithHealing(params: {
     );
     frameTarget = reresolved;
     frameDocBaseline = await readFrameDocumentIdentity(frameTarget.frame ?? frameTarget);
+    attemptDocBaseline = frameDocBaseline;
   };
   // Read-once to suppress "unused" — knownErrorClassPrefixes is threaded
   // through executeStepWithHealing's signature so the cascade has it in
@@ -14361,7 +14363,7 @@ export async function executeStepWithHealing(params: {
     // Step-start baseline: captured once on attempt 1 so later attempts that
     // re-click a selector resolved earlier can detect a document replaced by
     // an earlier attempt's click.
-    const attemptDocBaseline = await readFrameDocumentIdentity(
+    attemptDocBaseline = await readFrameDocumentIdentity(
       frameTarget ?? mainFrameTarget(page)
     );
     if (attempt === 1) {
