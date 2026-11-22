@@ -33,6 +33,8 @@ function facetSearchCaptures() {
     "qty=3&region=C&pageNumber=1",
     "qty=3&region=A&pageNumber=1",
     "qty=3&region=A&brand=AA&pageNumber=1",
+    // Report's literal: facet values collide with the primary's own item fields.
+    "qty=3&region=A&shipcode=CB&port=MIA&durdays=7&pageNumber=1",
   ];
   return facets.map(
     (query, i) =>
@@ -44,7 +46,7 @@ function facetSearchCaptures() {
         responseBody: {
           results: {
             items: [
-              { id: "I1", brandCode: "AA", size: 7, imageUrl: "https://img.example.com/1.png" },
+              { id: "I1", brandCode: "AA", shipCode: "CB", port: "MIA", durdays: 7, size: 7, imageUrl: "https://img.example.com/1.png" },
               { id: "I2", brandCode: "BB", size: 5, imageUrl: "https://img.example.com/2.png" },
             ],
           },
