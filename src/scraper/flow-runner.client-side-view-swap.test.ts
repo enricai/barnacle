@@ -477,3 +477,24 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     expect(result).toBe(true);
   });
 });
+
+describe("flow-runner/isClickViewSwapVerified — content-removal dismissal credit", () => {
+  const base = {
+    resolvedAction: { method: "click" },
+    submitStep: false,
+    isAdvanceWithPattern: false,
+    networkDelta: 0,
+    textChanged: false,
+    clickedElementStillPresent: false,
+  };
+
+  it("credits a small-byte shrink when real visible text was removed", () => {
+    expect(isClickViewSwapVerified({ ...base, bytesDelta: -100, contentRemoved: true })).toBe(true);
+  });
+
+  it("keeps the padding-only reset vetoed when no content was removed", () => {
+    expect(isClickViewSwapVerified({ ...base, bytesDelta: -100, contentRemoved: false })).toBe(
+      false
+    );
+  });
+});
