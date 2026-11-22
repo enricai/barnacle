@@ -1352,18 +1352,19 @@ export const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
   if (w.querySelector("[role='listbox'],[role='option']")) return w;
   if (!ids) {
     // No refs and no inline popup: look at following siblings for a popup
-    // container that owns/controls (or is/contains) a listbox. Prefer one whose
+    // container that contains a listbox or owns/controls one it contains (a bare adjacent
+    // listbox is not a popup container). Prefer one whose
     // aria-expanded tracks the trigger's over bare adjacency.
     const wExp = w.getAttribute("aria-expanded");
     const cands = [];
     let scanned = 0;
     for (let s = w.nextElementSibling; s && scanned < 3; s = s.nextElementSibling, scanned++) {
-      const lb = s.matches("[role='listbox']") ? s : s.querySelector("[role='listbox']");
+      const lb = s.querySelector("[role='listbox']");
       let owned = null;
       const ref = s.getAttribute("aria-owns") || s.getAttribute("aria-controls") || "";
       for (const id of ref.split(/\\s+/)) {
         const t = id && document.getElementById(id);
-        if (t && (t.matches("[role='listbox']") || t.querySelector("[role='listbox']"))) { owned = t; break; }
+        if (t && s.contains(t) && (t.matches("[role='listbox']") || t.querySelector("[role='listbox']"))) { owned = t; break; }
       }
       if (lb || owned) cands.push({ s, tracks: wExp !== null && s.getAttribute("aria-expanded") === wExp });
     }
