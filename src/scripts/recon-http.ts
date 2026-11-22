@@ -956,16 +956,18 @@ export function selectRateLimitTargets(
         const isJson = /json/i.test(String(ct ?? ""));
         let tier = isJson ? 2 : 3;
         // Declared patterns: only the explicit submit pattern is tier 0; the rest (foldReturn) tier 1.
+        let declaredTier: number | null = null;
         for (let i = 0; i < patterns.length; i++) {
           if (patterns[i]!.test(replay.url)) {
-            tier =
+            const t =
               submitEndpointPattern !== undefined &&
               declaredEndpointPatterns[i] === submitEndpointPattern
                 ? 0
                 : 1;
-            break;
+            declaredTier = declaredTier === null ? t : Math.min(declaredTier, t);
           }
         }
+        if (declaredTier !== null) tier = declaredTier;
         // Header values the replay proved load-bearing, as the capture sent them.
         const captured = captureHeadersFor?.(replay) ?? {};
         const provenEntries = (replay.shapeRestoringHeaders ?? [])

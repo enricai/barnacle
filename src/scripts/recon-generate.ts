@@ -18338,10 +18338,9 @@ export function unreferencedRequiredUrlFields(
   const span = payloadSchemaExpr === undefined ? payloadSchemaSpan(contractCode) : null;
   const scanned = payloadSchemaExpr ?? (span ? contractCode.slice(span.start, span.end) : "");
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
-  return [...scanned.matchAll(URL_FIELD_LINE_PATTERN)]
-    .filter((match) => !isOptionalFieldEntry(scanned, match.index))
-    .map((match) => match[1])
-    .filter((name): name is string => name !== undefined)
+  return payloadUrlFieldEntries(scanned)
+    .filter((entry) => !isOptionalFieldEntry(scanned, entry.index))
+    .map((entry) => entry.name)
     .filter((name) => !emittedCode.includes(`payload.${name}`));
 }
 
@@ -18363,7 +18362,28 @@ function isOptionalFieldEntry(schemaText: string, matchStart: number): boolean {
   return /\.optional\(\)\s*$/.test(schemaText.slice(matchStart, end));
 }
 
-const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
+/**
+ * `*Url` field entries of a schema expression, found structurally: a key that
+ * follows an opening `{` or a separating `,` (outside strings, comments and
+ * regexes) and is assigned a `z.<call>(`, wherever it sits on its line.
+ */
+function payloadUrlFieldEntries(schemaText: string): { name: string; index: number }[] {
+  const entries: { name: string; index: number }[] = [];
+  let prev = "";
+  walkCode(schemaText, 0, (ch, i) => {
+    if ((prev === "{" || prev === ",") && /\w/.test(ch) && !/\w/.test(schemaText[i - 1] ?? " ")) {
+      const re = /(\w*Url\w*)\s*:\s*z\s*\.\s*\w+\(/y;
+      re.lastIndex = i;
+      const m = re.exec(schemaText);
+      if (m?.[1]) entries.push({ name: m[1], index: i });
+    }
+    if (!/\s/.test(ch)) prev = ch;
+    return false;
+  });
+  return entries;
+}
+
+const URL_FIELD_LINE_PATTERN = /^[ \t]*(\w*Url\w*):\s*z\s*\.\s*\w+\(.*$/gm;
 
 /**
  * Character span of the payload schema expression inside `contractCode`.
