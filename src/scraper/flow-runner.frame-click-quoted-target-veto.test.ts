@@ -209,9 +209,10 @@ describe("flow-runner frame click quoted-target veto", () => {
   });
 
   it("does not veto a value-quoting step", async () => {
-    const { info } = await run("Enter 'jane@example.com' in the Email field", [
-      "Skip to Main Content",
-    ]);
+    const { info } = await run(
+      "Click the 'Yes' answer for the question 'Are you at least 18 years old?'",
+      ["Skip to Main Content"],
+    );
     expect(info.some((m) => /no frame candidate names a phrase/.test(m))).toBe(
       false,
     );
