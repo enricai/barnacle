@@ -115,30 +115,6 @@ function makeFakeTopPage(
   } as unknown as import("@browserbasehq/stagehand").Page;
 }
 
-async function runSingleStep(instruction: string) {
-  const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
-  const childUrls = { current: CHILD_SRC };
-  const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
-  const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, CANDIDATE_SET);
-  registerDeepLocatorHopElements(deepLocatorFrame, PROBE_HOP_SELECTOR, ["reachability probe"]);
-  const stagehand = makeFakeStagehandWrongResolution();
-  const page = makeFakeTopPage(topUrl, childUrls, deepLocatorFrame);
-
-  const run = () =>
-    runHealingFlow({
-      stagehand,
-      page,
-      steps: [{ instruction, optional: false, upload: false, submitStep: false }],
-      logger: testLogger,
-      anthropic: null,
-      rephraseModel: null,
-      uploadFixture: null,
-      frameSelector: IFRAME_SELECTOR,
-    });
-
-  return { run, hop };
-}
-
 describe("fill step with a tabindex'd label next to its input (bugfix-002)", () => {
   it("writes to the input, never the label, resolving over the fillable universe", async () => {
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
