@@ -185,6 +185,55 @@ import {
   readFrameDocumentIdentity,
 } from "./frame-document-identity";
 
+// Same-site test for the verifier signal. registrableDomain keeps only the last
+// two labels, which merges unrelated hosts under multi-label public suffixes
+// (`a.co.uk` / `b.co.uk`) and IP literals; those must stay "third party".
+const MULTI_LABEL_SUFFIX_SECOND = new Set([
+  "co",
+  "com",
+  "org",
+  "net",
+  "gov",
+  "edu",
+  "ac",
+  "ne",
+  "or",
+]);
+const SHARED_HOSTING_SUFFIXES = new Set([
+  "github.io",
+  "azurewebsites.net",
+  "cloudfront.net",
+  "herokuapp.com",
+  "netlify.app",
+  "vercel.app",
+  "pages.dev",
+  "workers.dev",
+  "appspot.com",
+  "blogspot.com",
+  "s3.amazonaws.com",
+]);
+function siteKey(host: string): string {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(":")) return h;
+  const labels = h.split(".").filter(Boolean);
+  if (labels.length <= 2) return labels.join(".");
+  const last2 = labels.slice(-2).join(".");
+  const last3 = labels.slice(-3).join(".");
+  if (SHARED_HOSTING_SUFFIXES.has(last3)) return labels.slice(-4).join(".");
+  const tld = labels[labels.length - 1] ?? "";
+  const second = labels[labels.length - 2] ?? "";
+  if (
+    SHARED_HOSTING_SUFFIXES.has(last2) ||
+    (tld.length === 2 && MULTI_LABEL_SUFFIX_SECOND.has(second))
+  ) {
+    return labels.slice(-3).join(".");
+  }
+  return last2;
+}
+function sameSiteHost(a: string, b: string): boolean {
+  return siteKey(a) === siteKey(b);
+}
+
 export { waitForSpaReady } from "@/scraper/spa-readiness";
 export { toFrameRelativeXpath };
 
@@ -345,6 +394,8 @@ export function wireSignalCapture(
       postData?: string;
       hasPostData?: boolean;
     };
+    redirectResponse?: { status: number; headers: Record<string, string> };
+    redirectHasExtraInfo?: boolean;
   };
   type ResponseReceivedEvent = {
     requestId: string;
@@ -391,6 +442,30 @@ export function wireSignalCapture(
 
   const onRequest = (params: RequestWillBeSentEvent): void => {
     const prior = inFlight.get(params.requestId);
+    // A redirect reuses the requestId: finalize the prior hop as its own capture
+    // (e.g. a POST answered 302 with a Location header) before it is replaced.
+    if (prior && params.redirectResponse) {
+      prior.responseStatus = params.redirectResponse.status;
+      prior.responseHeaders = params.redirectResponse.headers as Record<string, string>;
+      const hop = hopOf.get(params.requestId) ?? 0;
+      hopOf.set(params.requestId, hop + 1);
+      // CDP documents that a hop may have no extra-info event at all; the
+      // browser says so via redirectHasExtraInfo. Skip that hop's slot so the
+      // next hop's extra-info is not attributed to it.
+      if (params.redirectHasExtraInfo === false) {
+        for (const seq of [respExtraSeq, reqExtraSeq]) {
+          seq.set(params.requestId, Math.max(seq.get(params.requestId) ?? 0, hop + 1));
+        }
+      }
+      const expectExtra =
+        params.redirectHasExtraInfo === true && (respExtraSeq.get(params.requestId) ?? 0) <= hop;
+      void (async () => {
+        // The hop's response extra-info (Set-Cookie) may land after this event.
+        if (expectExtra) await waitForHopExtra(hopKey(params.requestId, hop));
+        foldResponseExtras(prior, params.requestId, hop);
+        await finalizeCapture(prior, params.requestId, false);
+      })().catch(() => {});
+    }
     const inline = params.request.postData;
     const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
     const mayHaveBody = isBodyCapable(params.request.method, params.request.hasPostData);
@@ -439,48 +514,107 @@ export function wireSignalCapture(
     req.responseHeaders = params.response.headers as Record<string, string>;
   };
 
+  // Extra-info events carry only requestId, so the hop is derived here: the
+  // Nth extra-info event of a kind for a requestId belongs to hop N (each hop
+  // yields one of each), which is independent of how it interleaves with the
+  // next requestWillBeSent. `hopOf` is the hop an in-flight entry is on,
+  // advanced at each redirectResponse.
+  const hopKey = (requestId: string, hop: number): string => `${requestId}#${hop}`;
+  const respExtraSeq = new Map<string, number>();
+  const reqExtraSeq = new Map<string, number>();
+  const hopOf = new Map<string, number>();
+  const bufferExtra = (
+    seq: Map<string, number>,
+    buf: Map<string, Record<string, string>>,
+    requestId: string,
+    headers: Record<string, string>
+  ): void => {
+    const hop = seq.get(requestId) ?? 0;
+    seq.set(requestId, hop + 1);
+    const key = hopKey(requestId, hop);
+    buf.set(key, mergeResponseHeaders(buf.get(key) ?? {}, headers));
+    if (seq === respExtraSeq) {
+      hopWaiters.get(key)?.();
+    }
+  };
+
+  // Bounded wait for a redirect hop's response extra-info (arrival order vs the
+  // redirect's requestWillBeSent is not guaranteed).
+  const hopWaiters = new Map<string, () => void>();
+  const waitForHopExtra = (key: string, ms = 500): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        hopWaiters.delete(key);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      hopWaiters.set(key, done);
+    });
+
   const onResponseExtraInfo = (params: ResponseReceivedExtraInfoEvent): void => {
-    // Accumulate — a redirect fires this more than once per requestId. The fold
-    // into the capture happens once, in onFinished, so order with responseReceived
-    // never matters.
-    const merged = mergeResponseHeaders(
-      extraResponseHeaders.get(params.requestId) ?? {},
-      params.headers
-    );
-    extraResponseHeaders.set(params.requestId, merged);
+    bufferExtra(respExtraSeq, extraResponseHeaders, params.requestId, params.headers);
   };
 
   const onRequestExtraInfo = (params: RequestWillBeSentExtraInfoEvent): void => {
-    // Accumulate — can race requestWillBeSent in either order, and a redirect
-    // fires this more than once per requestId. The fold into the capture
-    // happens once, in onFinished, so order with requestWillBeSent never matters.
-    const merged = mergeResponseHeaders(
-      extraRequestHeaders.get(params.requestId) ?? {},
-      params.headers
-    );
-    extraRequestHeaders.set(params.requestId, merged);
+    bufferExtra(reqExtraSeq, extraRequestHeaders, params.requestId, params.headers);
+  };
+
+  // Folds only the current hop's buffered headers into `req` and drains them.
+  const foldResponseExtras = (
+    req: InFlightRequest,
+    requestId: string,
+    hop: number = hopOf.get(requestId) ?? 0
+  ): void => {
+    const key = hopKey(requestId, hop);
+    req.responseHeaders = mergeResponseHeaders(req.responseHeaders, extraResponseHeaders.get(key));
+    extraResponseHeaders.delete(key);
+    req.requestHeaders = mergeResponseHeaders(req.requestHeaders, extraRequestHeaders.get(key));
+    extraRequestHeaders.delete(key);
+  };
+
+  const dropRequestState = (requestId: string): void => {
+    respExtraSeq.delete(requestId);
+    reqExtraSeq.delete(requestId);
+    hopOf.delete(requestId);
+    const prefix = `${requestId}#`;
+    for (const m of [extraResponseHeaders, extraRequestHeaders]) {
+      for (const k of [...m.keys()]) if (k.startsWith(prefix)) m.delete(k);
+    }
   };
 
   const onFinished = async (params: LoadingFinishedEvent): Promise<void> => {
     const req = inFlight.get(params.requestId);
     if (!req) return;
     inFlight.delete(params.requestId);
-    // Fold the accumulated extra-info headers in, once, regardless of the order
-    // they raced responseReceived in. Delete the buffer entry unconditionally so
-    // it can't leak per run.
-    req.responseHeaders = mergeResponseHeaders(
-      req.responseHeaders,
-      extraResponseHeaders.get(params.requestId)
-    );
-    extraResponseHeaders.delete(params.requestId);
-    // Same fold, request side: recovers the outgoing Cookie header that
-    // requestWillBeSent omits by design.
-    req.requestHeaders = mergeResponseHeaders(
-      req.requestHeaders,
-      extraRequestHeaders.get(params.requestId)
-    );
-    extraRequestHeaders.delete(params.requestId);
+    foldResponseExtras(req, params.requestId);
+    // Final hop: also fold every leftover buffer for this id (in hop order).
+    // Extra-info counts can disagree with real hops (several events per hop, or
+    // hops without extra-info), so dropping them would lose the final headers.
+    const leftover = (m: Map<string, Record<string, string>>): Record<string, string> => {
+      const pre = `${params.requestId}#`;
+      let acc: Record<string, string> = {};
+      for (const k of [...m.keys()]
+        .filter((x) => x.startsWith(pre))
+        .sort((a, b) => Number(a.slice(pre.length)) - Number(b.slice(pre.length)))) {
+        acc = mergeResponseHeaders(acc, m.get(k));
+      }
+      return acc;
+    };
+    req.responseHeaders = mergeResponseHeaders(req.responseHeaders, leftover(extraResponseHeaders));
+    req.requestHeaders = mergeResponseHeaders(req.requestHeaders, leftover(extraRequestHeaders));
+    // Drain every remaining buffer for this id so nothing leaks per run.
+    dropRequestState(params.requestId);
+    await finalizeCapture(req, params.requestId, true);
+  };
 
+  // Builds and emits one capture for one hop. `fetchResponseBody` is false for a
+  // redirected hop: its response has no retrievable body.
+  const finalizeCapture = async (
+    req: InFlightRequest,
+    requestId: string,
+    fetchResponseBody: boolean
+  ): Promise<void> => {
     // Non-http(s) URLs (data:, blob:, ...) are never replayable site-flow
     // captures: skip before any counter/recent/onCapture side effect.
     if (!isHttpUrl(req.url)) return;
@@ -488,8 +622,9 @@ export function wireSignalCapture(
     const phase = getCurrentPhase();
     let responseBody: unknown = null;
     try {
+      if (!fetchResponseBody) throw new Error("no response body for a redirected hop");
       const result = await page.sendCDP<GetResponseBodyResponse>("Network.getResponseBody", {
-        requestId: params.requestId,
+        requestId,
       });
       const text = result.base64Encoded
         ? Buffer.from(result.body, "base64").toString("utf8")
@@ -508,7 +643,7 @@ export function wireSignalCapture(
     // A body the browser only exposes once the request has been sent is not
     // readable at requestWillBeSent time; retry once now that loading finished
     // before settling for the unavailable marker.
-    await resolveBody(req, params.requestId, req.hasPostData);
+    await resolveBody(req, requestId, req.hasPostData);
 
     let operationName: string | null = null;
     let query: string | null = null;
@@ -553,9 +688,13 @@ export function wireSignalCapture(
     // captures still get unique filenames on disk.
     let sameOrigin = false;
     try {
-      sameOrigin = new URL(req.url).origin === getCurrentPageOrigin();
+      const pageHost = new URL(getCurrentPageOrigin()).hostname;
+      const reqHost = new URL(req.url).hostname;
+      // Same-site (registrable domain), not strict origin: a redirected
+      // POST hop may land on a sibling subdomain of the page.
+      sameOrigin = pageHost !== "" && sameSiteHost(reqHost, pageHost);
     } catch {
-      // Malformed URL — treat as not same-origin.
+      // Malformed URL or empty page origin — treat as not same-site.
     }
     if (req.method !== "GET" && sameOrigin) {
       signalCounter.n++;
