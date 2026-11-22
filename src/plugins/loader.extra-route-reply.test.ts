@@ -5,10 +5,10 @@ import { z } from "zod/v4";
 
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
-import { CaptchaError, EmptyResultsError, SelectorFailureError } from "@/scraper/errors";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { registerRoutes } from "@/plugins/loader";
+import { CaptchaError, EmptyResultsError, SelectorFailureError } from "@/scraper/errors";
 import type { SitePlugin, SitePluginExtraRoute } from "@/site-plugin";
 
 describe("registerRoutes — extra route handlers receive query, headers and reply", () => {

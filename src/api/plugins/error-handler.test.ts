@@ -12,7 +12,12 @@ import {
   UrlLockedError,
 } from "@/api/errors";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
-import { CaptchaError, EmptyResultsError, SelectorFailureError, SessionTimeoutError } from "@/scraper/errors";
+import {
+  CaptchaError,
+  EmptyResultsError,
+  SelectorFailureError,
+  SessionTimeoutError,
+} from "@/scraper/errors";
 
 /**
  * Narrow tests for the error handler plugin — spin up a minimal Fastify
