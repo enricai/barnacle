@@ -2745,7 +2745,9 @@ function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
   // its request. With no body-bearing response, fall back to all responses.
   const answerIgnoresRequest = (list: Capture[]): boolean => {
     const bodied = list.filter((c) => c.responseBody != null && c.responseBody !== "");
-    const pool2 = bodied.length > 0 ? bodied : list;
+    // One body-bearing response is no evidence of independence (the rest may be
+    // uncaptured bodies), so require two before judging the subset.
+    const pool2 = bodied.length >= 2 ? bodied : list;
     return new Set(pool2.map((c) => JSON.stringify(c.responseBody ?? null))).size === 1;
   };
   return (c) => {
