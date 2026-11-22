@@ -240,7 +240,9 @@ describe("verifyPromptSelectorCommitted reads the target field outside any trigg
     const window = new Window({ url: "https://careers.example.com/x" });
     window.document.body.innerHTML = html;
     (window as unknown as { XPathResult: unknown }).XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
-    (window.document as unknown as { evaluate: (e: string) => unknown }).evaluate = (e: string) => ({
+    (window.document as unknown as { evaluate: (e: string) => unknown }).evaluate = (
+      e: string
+    ) => ({
       singleNodeValue: window.document.getElementById(/'([^']+)'/.exec(e)?.[1] ?? ""),
     });
     return {
