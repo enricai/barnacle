@@ -201,6 +201,10 @@ const MULTI_LABEL_SUFFIX_SECOND = new Set([
   "ac",
   "ne",
   "or",
+  "me",
+  "ltd",
+  "plc",
+  "sch",
 ]);
 const SHARED_HOSTING_SUFFIXES = new Set([
   "github.io",
@@ -214,6 +218,24 @@ const SHARED_HOSTING_SUFFIXES = new Set([
   "appspot.com",
   "blogspot.com",
   "s3.amazonaws.com",
+  "web.app",
+  "firebaseapp.com",
+  "onrender.com",
+  "fly.dev",
+  "surge.sh",
+  "glitch.me",
+  "repl.co",
+  "pythonanywhere.com",
+  "wordpress.com",
+  "wixsite.com",
+  "myshopify.com",
+  "azurestaticapps.net",
+  "run.app",
+  "ngrok.io",
+  "gitlab.io",
+  "bitbucket.io",
+  "netlify.com",
+  "web.core.windows.net",
 ]);
 function siteKey(host: string): string {
   const h = host.toLowerCase().replace(/\.$/, "");
