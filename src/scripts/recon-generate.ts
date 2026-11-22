@@ -28,7 +28,7 @@ import { getScriptLogger } from "@/lib/logging";
 import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
-import { findCaptchaResponseFields } from "@/recon/captcha-detect";
+import { findCaptchaResponseFields, parseMultipartTextParts } from "@/recon/captcha-detect";
 import {
   extractNavigatedHostnames,
   hasNoBusinessRelevantResponseState,
@@ -7978,10 +7978,17 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
  * opaque token (e.g. splicing a "12" into a hyphen-joined "SKU-12-9F3Z"
  * segment) while a standalone occurrence (e.g. "/items/42/") still matches. */
 function buildValueAlternationPattern(sortedValues: string[]): RegExp {
-  return new RegExp(
-    `(?<![A-Za-z0-9][-.])\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?![-.][A-Za-z0-9])`,
-    "g"
-  );
+  // `\b` only anchors an edge that is itself a word character. A value whose
+  // edge is not (a signed number such as `-625857879`, a base64 `=` pad) could
+  // never sit on a `\b` beside the `=`/`&`/quote that normally delimits it, so
+  // such an edge is anchored on "no word character beside it" instead.
+  const alternatives = sortedValues.map((v) => {
+    const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const lead = /^\w/.test(v) ? "\\b" : "(?<!\\w)";
+    const trail = /\w$/.test(v) ? "\\b" : "(?!\\w)";
+    return `${lead}${escaped}${trail}`;
+  });
+  return new RegExp(`(?<![A-Za-z0-9][-.])(?:${alternatives.join("|")})(?![-.][A-Za-z0-9])`, "g");
 }
 
 /** Normalizes a JSON key or a produced var name to a bare comparable token —
@@ -10739,6 +10746,7 @@ export function emitMultiStepExecuteHttp(
         inputBody,
         isSubmissionFlow: true,
         payloadFieldNames: outDiscoveredFields,
+        formBodyFieldNames: collectFormBodyFieldNames(actions),
       })
     ) {
       bodyTemplate = bindMultipartSelectAnswers(bodyTemplate, cap, prior);
@@ -16882,8 +16890,14 @@ export function contractUsesApplicantContactSchema(opts: {
   isSubmissionFlow?: boolean;
   browserFlowOnly?: boolean;
   payloadFieldNames?: Set<string>;
+  /** Field names of the action sequence's text-captured form bodies (see
+   * {@link collectFormBodyFieldNames}): a server-rendered wizard sends
+   * multipart/urlencoded bodies that carry no JSON `inputBody`, so the names of
+   * the fields it submits are the only evidence of what the caller supplies. */
+  formBodyFieldNames?: ReadonlySet<string>;
 }): boolean {
-  const { inputBody, isSubmissionFlow, browserFlowOnly, payloadFieldNames } = opts;
+  const { inputBody, isSubmissionFlow, browserFlowOnly, payloadFieldNames, formBodyFieldNames } =
+    opts;
   // A browser-flow-only submission flow has no HTTP body of its own: whatever
   // inputBody HTTP analysis captured describes a path the plugin won't emit,
   // so it is not evidence about the real caller's shape.
@@ -16898,10 +16912,34 @@ export function contractUsesApplicantContactSchema(opts: {
   }
   return (
     isSubmissionFlow === true &&
-    [...(payloadFieldNames ?? [])].some((name) =>
+    [...(payloadFieldNames ?? []), ...(formBodyFieldNames ?? [])].some((name) =>
       applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
     )
   );
+}
+
+/**
+ * Names of the fields submitted by the text-captured multipart/urlencoded
+ * request bodies of an action sequence. A body whose bytes were never captured
+ * ({@link REQUEST_BODY_UNAVAILABLE}) contributes nothing.
+ */
+export function collectFormBodyFieldNames(
+  steps: readonly { capture: Capture }[]
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const { capture } of steps) {
+    const raw = capture.requestPostData;
+    if (typeof raw !== "string" || raw === REQUEST_BODY_UNAVAILABLE) continue;
+    const contentType = Object.entries(capture.requestHeaders)
+      .find(([k]) => k.toLowerCase() === "content-type")?.[1]
+      ?.toLowerCase();
+    if (contentType?.includes("multipart/form-data")) {
+      for (const part of parseMultipartTextParts(raw)) names.add(part.name);
+    } else if (contentType?.includes("application/x-www-form-urlencoded")) {
+      for (const key of new URLSearchParams(raw).keys()) names.add(key);
+    }
+  }
+  return names;
 }
 
 /** Decides whether a flow is a multi-step submission. A read-only GET flow
@@ -17246,6 +17284,7 @@ export function emitContractTsParts(opts: {
     isSubmissionFlow,
     browserFlowOnly: omitExecuteHttp,
     payloadFieldNames,
+    formBodyFieldNames: collectFormBodyFieldNames(actionSteps),
   });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
@@ -19097,6 +19136,8 @@ export function emitConfigManifest(opts: {
   hasMultipartStep?: boolean;
   /** Browser-flow-only emit (no executeHttp); feeds {@link contractUsesApplicantContactSchema}. */
   browserFlowOnly?: boolean;
+  /** Feeds {@link contractUsesApplicantContactSchema}; see {@link collectFormBodyFieldNames}. */
+  formBodyFieldNames?: ReadonlySet<string>;
   /** Read-only GET flow: no submission, so the request schema omits TrackingUrl (mirrors the .ts contract). */
   readOnlyGet?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
@@ -19115,6 +19156,7 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow = false,
     hasMultipartStep = false,
     browserFlowOnly = false,
+    formBodyFieldNames,
     readOnlyGet = false,
     env = process.env,
   } = opts;
@@ -19124,6 +19166,7 @@ export function emitConfigManifest(opts: {
     inputBody,
     isSubmissionFlow,
     browserFlowOnly,
+    formBodyFieldNames,
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
@@ -19223,6 +19266,7 @@ export function emitConfigManifest(opts: {
     inputBody,
     isSubmissionFlow,
     browserFlowOnly,
+    formBodyFieldNames,
     payloadFieldNames,
   });
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
@@ -19379,6 +19423,7 @@ export function emitBrowserFlowTs(opts: {
   /** Inputs to {@link contractUsesApplicantContactSchema}; the decision is made
    * here, after payload fields are accumulated, to match the contract emitter. */
   inputBody?: unknown;
+  formBodyFieldNames?: ReadonlySet<string>;
   vocabulary?: ReconVocabulary;
   /** CSS selector of a cross-origin `<iframe>` the flow's target elements live
    * inside, from the recon flow file's object-form `frameSelector`. Matches
@@ -19415,6 +19460,7 @@ export function emitBrowserFlowTs(opts: {
     hasMultipartStep = false,
     browserFlowOnly = false,
     inputBody,
+    formBodyFieldNames,
     vocabulary,
     frameSelector,
     capturedFallbackFields = new Set<string>(),
@@ -19427,6 +19473,7 @@ export function emitBrowserFlowTs(opts: {
     inputBody,
     isSubmissionFlow,
     browserFlowOnly,
+    formBodyFieldNames,
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
@@ -20939,6 +20986,7 @@ export async function main(): Promise<void> {
       );
     }
 
+    const formBodyFieldNames = collectFormBodyFieldNames(actionSteps);
     const inputBody = isSubmissionFlow
       ? (() => {
           try {
@@ -20954,6 +21002,7 @@ export async function main(): Promise<void> {
         inputBody,
         isSubmissionFlow,
         browserFlowOnly: false,
+        formBodyFieldNames,
         payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env, false)
           .payloadFieldNames,
       })
@@ -21253,6 +21302,7 @@ export async function main(): Promise<void> {
           isSubmissionFlow,
           hasMultipartStep,
           browserFlowOnly,
+          formBodyFieldNames,
           readOnlyGet: isReadOnlyGetFlow,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
@@ -21283,6 +21333,7 @@ export async function main(): Promise<void> {
       hasMultipartStep,
       browserFlowOnly,
       inputBody,
+      formBodyFieldNames,
       vocabulary,
       frameSelector,
       readOnlyGetFlow: isReadOnlyGetFlow,
