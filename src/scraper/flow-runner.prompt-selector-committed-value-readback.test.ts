@@ -279,4 +279,19 @@ describe("verifyPromptSelectorCommitted reads the target field outside any trigg
       committed: false,
     });
   });
+  const opener = (v: string) =>
+    `<div class="form-field"><button id="o">Industry</button><input id="f" type="text" value="${v}"></div>`;
+  const osel = "xpath=//*[@id='o']";
+  it("popup opener with unchanged target field is uncommitted", async () => {
+    expect(await verifyPromptSelectorCommitted(mk(opener("")), osel, "Alpha", true)).toEqual({
+      isPromptWidget: true,
+      committed: false,
+    });
+  });
+  it("popup opener with a committed target field is committed", async () => {
+    expect(await verifyPromptSelectorCommitted(mk(opener("Alpha")), osel, "Alpha", true)).toEqual({
+      isPromptWidget: true,
+      committed: true,
+    });
+  });
 });

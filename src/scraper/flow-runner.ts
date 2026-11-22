@@ -5127,17 +5127,47 @@ export async function verifyPromptSelectorCommitted(
     if (!el) return { isPromptWidget: false, committed: false };
     const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
     if (!widget) {
-      // A select step resolved to a field outside any trigger widget: read the
-      // field's own committed value. Non-field elements stay untouched.
-      if (!selectStep || !el.tagName || !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) {
-        return { isPromptWidget: false, committed: false };
+      // A select step resolved outside any trigger widget: read the target
+      // field's own committed value. When the element is not itself a field
+      // (a popup opener or label, e.g. an "Industry" multiselect button),
+      // resolve the associated control via label/for, aria-owns/controls or
+      // the closest field container; unresolvable openers stay untouched.
+      const isField = (n) => !!n && !!n.tagName && /^(INPUT|SELECT|TEXTAREA)$/.test(n.tagName);
+      let field = null;
+      if (selectStep && el.tagName) {
+        if (isField(el)) field = el;
+        else {
+          const doc = el.ownerDocument || document;
+          if (el.tagName === "LABEL" && isField(el.control)) field = el.control;
+          if (!field && el.tagName === "LABEL" && el.htmlFor) {
+            const t = doc.getElementById(el.htmlFor);
+            if (isField(t)) field = t;
+          }
+          if (!field) {
+            for (const attr of ["aria-owns", "aria-controls"]) {
+              for (const id of (el.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) {
+                const t = doc.getElementById(id);
+                if (isField(t)) { field = t; break; }
+                const inner = t && t.querySelector ? t.querySelector("select, input:not([type=search]), textarea") : null;
+                if (inner) { field = inner; break; }
+              }
+              if (field) break;
+            }
+          }
+          if (!field) {
+            const box = el.closest("[class*='field'], [class*='form-group'], [role='group'], fieldset, li, .form-row, div");
+            const c = box && box.querySelector ? box.querySelector("select, input:not([type=button]):not([type=submit]):not([type=search]), textarea") : null;
+            if (c) field = c;
+          }
+        }
       }
+      if (!field) return { isPromptWidget: false, committed: false };
       let fv = "";
-      if (el.tagName === "SELECT") {
-        const so = el.selectedOptions && el.selectedOptions[0];
+      if (field.tagName === "SELECT") {
+        const so = field.selectedOptions && field.selectedOptions[0];
         fv = so && (so.value || "") !== "" ? (so.textContent || "") : "";
       } else {
-        fv = el.value || "";
+        fv = field.value || "";
       }
       fv = fv.replace(/\\s+/g, " ").trim().toLowerCase();
       return { isPromptWidget: true, committed: fv !== "" && (!want || namesOption(fv, want)) };
