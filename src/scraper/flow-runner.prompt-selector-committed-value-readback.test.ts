@@ -295,17 +295,46 @@ describe("verifyPromptSelectorCommitted reads the target field outside any trigg
     });
   });
   const cases: Array<[string, string, string]> = [
-    ["label[for]", `<label id="o" for="f">Industry</label><input id="f" value="Alpha">`, "xpath=//*[@id='o']"],
-    ["aria-owns input", `<button id="o" aria-owns="f">Industry</button><input id="f" value="Alpha">`, "xpath=//*[@id='o']"],
-    ["aria-controls inner field", `<button id="o" aria-controls="p">Industry</button><div id="p"><input type="search"><input id="f" value="Alpha"></div>`, "xpath=//*[@id='o']"],
+    [
+      "label[for]",
+      `<label id="o" for="f">Industry</label><input id="f" value="Alpha">`,
+      "xpath=//*[@id='o']",
+    ],
+    [
+      "aria-owns input",
+      `<button id="o" aria-owns="f">Industry</button><input id="f" value="Alpha">`,
+      "xpath=//*[@id='o']",
+    ],
+    [
+      "aria-controls inner field",
+      `<button id="o" aria-controls="p">Industry</button><div id="p"><input type="search"><input id="f" value="Alpha"></div>`,
+      "xpath=//*[@id='o']",
+    ],
   ];
   for (const [name, h, sel] of cases) {
     it(`${name}: resolves the associated control`, async () => {
-      expect(await verifyPromptSelectorCommitted(mk(h), sel, "Alpha", true)).toEqual({ isPromptWidget: true, committed: true });
-      expect(await verifyPromptSelectorCommitted(mk(h.replace('value="Alpha"', 'value=""')), sel, "Alpha", true)).toEqual({ isPromptWidget: true, committed: false });
+      expect(await verifyPromptSelectorCommitted(mk(h), sel, "Alpha", true)).toEqual({
+        isPromptWidget: true,
+        committed: true,
+      });
+      expect(
+        await verifyPromptSelectorCommitted(
+          mk(h.replace('value="Alpha"', 'value=""')),
+          sel,
+          "Alpha",
+          true
+        )
+      ).toEqual({ isPromptWidget: true, committed: false });
     });
   }
   it("opener with no associated field stays untouched", async () => {
-    expect(await verifyPromptSelectorCommitted(mk(`<span><button id="o">x</button></span>`), "xpath=//*[@id='o']", "Alpha", true)).toEqual({ isPromptWidget: false, committed: false });
+    expect(
+      await verifyPromptSelectorCommitted(
+        mk(`<span><button id="o">x</button></span>`),
+        "xpath=//*[@id='o']",
+        "Alpha",
+        true
+      )
+    ).toEqual({ isPromptWidget: false, committed: false });
   });
 });

@@ -5145,7 +5145,7 @@ export async function verifyPromptSelectorCommitted(
           }
           if (!field) {
             for (const attr of ["aria-owns", "aria-controls"]) {
-              for (const id of (el.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) {
+              for (const id of (el.getAttribute(attr) || "").split(/s+/).filter(Boolean)) {
                 const t = doc.getElementById(id);
                 if (isField(t)) { field = t; break; }
                 const inner = t && t.querySelector ? t.querySelector("select, input:not([type=search]), textarea") : null;
