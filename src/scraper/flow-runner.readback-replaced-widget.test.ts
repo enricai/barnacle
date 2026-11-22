@@ -119,3 +119,56 @@ describe("prompt readback when the widget replaces itself", () => {
     expect(logs.some((l) => l.includes("prompt-selector primitive: selected"))).toBe(false);
   });
 });
+
+const SELECT_HTML = (optValue: string) => `
+<div>
+  <span id="src-label">Source</span>
+  <div class="bb-custom-select-container">
+    <span id="src-opener" role="combobox" aria-expanded="false" aria-owns="src-panel"
+          aria-labelledby="src-label" tabindex="0"><span></span></span>
+    <select id="src-select" aria-required="true"><option value="${optValue}"></option></select>
+  </div>
+</div>`;
+
+async function runHiddenSelect(optValue: string) {
+  vi.clearAllMocks();
+  const stagehand = {
+    act: vi.fn(),
+    observe: vi.fn().mockResolvedValue([]),
+  } as unknown as Stagehand;
+  const { page, target, window } = buildPromptWidgetHarness({
+    html: SELECT_HTML(optValue),
+    popupByWidgetId: {
+      "src-opener": {
+        options: ["Referral", "— Enter Manually —"],
+        // the opener itself commits different text, so only the hidden select can corroborate
+        commitsInstead: "Unrelated",
+      },
+    },
+  });
+  // happy-dom has no layout, so stand in for the browser's display:none offsetParent
+  const hidden = window.document.getElementById("src-select");
+  if (hidden) Object.defineProperty(hidden, "offsetParent", { value: null, configurable: true });
+  const params = baseParams(
+    page as unknown as Page,
+    stagehand,
+    "Select '— Enter Manually —' in the 'Source' dropdown",
+    target
+  );
+  await executeStepWithHealing({ ...params, trajectory: [] } as never).catch(() => undefined);
+  return (testLogger.info as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+    String(c[0])
+  );
+}
+
+describe("hidden-select corroboration with an empty-text option", () => {
+  it("credits when the option's value equals the requested text", async () => {
+    const logs = await runHiddenSelect("\u2014 enter manually \u2014");
+
+    expect(logs.some((l) => l.includes("prompt-selector primitive: selected"))).toBe(true);
+  });
+  it("does not credit when the option's value is a different option", async () => {
+    const logs = await runHiddenSelect("referral");
+    expect(logs.some((l) => l.includes("prompt-selector primitive: selected"))).toBe(false);
+  });
+});
