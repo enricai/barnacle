@@ -20,7 +20,6 @@
  *   src/sites/<siteId>/recon-flow.json — plain-English flow steps
  */
 
-import { findCaptchaResponseFields } from "@/recon/captcha-detect";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveCanonicalAtsFieldName } from "@/lib/ats-field-vocabulary";
@@ -29,6 +28,7 @@ import { getScriptLogger } from "@/lib/logging";
 import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
+import { findCaptchaResponseFields } from "@/recon/captcha-detect";
 import {
   hasNoBusinessRelevantResponseState,
   isAllowedFixtureHost,
