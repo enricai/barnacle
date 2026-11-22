@@ -2892,9 +2892,8 @@ export function describeAttemptEffectSignals(
   const contentRemoved =
     networkDelta === 0 &&
     bytesDelta < 0 &&
-    ((textChanged &&
-      -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold &&
-      -bytesDelta < config.scraper.viewSwapMinBytesThreshold) ||
+    ((textChanged && -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold) ||
+      -bytesDelta >= config.scraper.viewSwapMinBytesThreshold ||
       isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature));
   if (contentRemoved) {
     observations.push(
