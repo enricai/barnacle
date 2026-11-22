@@ -950,11 +950,29 @@ interface NormalizedStep {
   // Stamped at resolution time; persisted so cross-run dedup and the replanner
   // recognize an already-covered target regardless of instruction wording.
   targetId?: string;
+  // Per-step frame scope (see RECON_FLOW_STEP_SCHEMA). Overrides the flow-level
+  // frameSelector for this step only.
+  frameSelector?: string;
   origin: "original" | "replan";
   // See RECON_FLOW_STEP_SCHEMA in src/lib/llm/schemas.ts: opts this step into
   // executeNavigateStep (a direct page.goto) instead of the self-heal cascade.
   // Optional for the same reason as submitStep — absence is treated as false.
   navigateTo?: string;
+}
+
+/**
+ * Replanned steps that name no frame of their own inherit the failed step's
+ * own `frameSelector` (when it had one), so a step-scoped frame survives the
+ * replan. With no step-level selector the steps pass through unchanged.
+ */
+export function inheritStepFrameSelector(
+  steps: NormalizedStep[],
+  failedStepFrameSelector: string | undefined
+): NormalizedStep[] {
+  if (failedStepFrameSelector === undefined) return steps;
+  return steps.map((s) =>
+    s.frameSelector === undefined ? { ...s, frameSelector: failedStepFrameSelector } : s
+  );
 }
 
 function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep[] {
@@ -972,6 +990,7 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           payloadField: s.payloadField,
           payloadFieldNone: s.payloadFieldNone,
           targetId: s.targetId,
+          frameSelector: s.frameSelector,
           // Preserve a persisted replan marker across runs; absence = authored.
           origin: s.origin ?? "original",
           navigateTo: s.navigateTo,
@@ -1019,6 +1038,7 @@ function denormalizeStep(step: NormalizedStep):
       payloadField?: string;
       payloadFieldNone?: true;
       targetId?: string;
+      frameSelector?: string;
       origin?: "replan";
       navigateTo?: string;
     } {
@@ -1029,7 +1049,10 @@ function denormalizeStep(step: NormalizedStep):
   // implicit — persisting it on every step would needlessly object-ify the
   // whole flow file.
   const hasIdentity =
-    step.targetId !== undefined || step.origin === "replan" || step.navigateTo !== undefined;
+    step.targetId !== undefined ||
+    step.origin === "replan" ||
+    step.navigateTo !== undefined ||
+    step.frameSelector !== undefined;
   if (
     !step.optional &&
     !step.upload &&
@@ -1052,6 +1075,7 @@ function denormalizeStep(step: NormalizedStep):
     payloadField?: string;
     payloadFieldNone?: true;
     targetId?: string;
+    frameSelector?: string;
     origin?: "replan";
     navigateTo?: string;
   } = {
@@ -1066,6 +1090,7 @@ function denormalizeStep(step: NormalizedStep):
   if (step.payloadField !== undefined) out.payloadField = step.payloadField;
   if (step.payloadFieldNone === true) out.payloadFieldNone = true;
   if (step.targetId !== undefined) out.targetId = step.targetId;
+  if (step.frameSelector !== undefined) out.frameSelector = step.frameSelector;
   if (step.origin === "replan") out.origin = "replan";
   if (step.navigateTo !== undefined) out.navigateTo = step.navigateTo;
   return out;
@@ -2873,6 +2898,25 @@ function loadUploadFixture(
   }
 }
 
+/**
+ * Replan call used by main(): probes the failed step's own frame (falling
+ * back to the flow-level one) and makes replanned steps inherit the failed
+ * step's `frameSelector`.
+ */
+export async function replanForFailedStep(
+  args: Omit<Parameters<typeof replanRemainingFlow>[0], "frameSelector"> & {
+    failedStepFrameSelector: string | undefined;
+    flowFrameSelector: string | null | undefined;
+  }
+): ReturnType<typeof replanRemainingFlow> {
+  const { failedStepFrameSelector, flowFrameSelector, ...rest } = args;
+  const raw = await replanRemainingFlow({
+    ...rest,
+    frameSelector: failedStepFrameSelector ?? flowFrameSelector,
+  });
+  return raw ? inheritStepFrameSelector(raw, failedStepFrameSelector) : raw;
+}
+
 async function main(): Promise<void> {
   const {
     url,
@@ -3195,7 +3239,7 @@ async function main(): Promise<void> {
         // silently reverting to the main frame. `resolveFrameTarget` falls back
         // to the main-frame target when `frameSelector` is null/unresolvable,
         // so this is a no-op for every flow that doesn't declare one.
-        const frameTarget = await resolveFrameTarget(page, frameSelector);
+        const frameTarget = await resolveFrameTarget(page, step.frameSelector ?? frameSelector);
         // Captured against the step's resolved frameTarget (not raw page.url())
         // so hasPageAlreadyAdvancedPastStep's before/after comparison below
         // reflects the frame the step actually ran against — a same-origin
@@ -3616,7 +3660,7 @@ async function main(): Promise<void> {
             `${formatStepPrefix(i, () => plan.length)} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
           );
 
-          const rawNewSteps = await replanRemainingFlow({
+          const rawNewSteps = await replanForFailedStep({
             client: anthropic,
             originalFlow: flow.map((s) => s.instruction),
             completedSteps,
@@ -3625,14 +3669,14 @@ async function main(): Promise<void> {
             failureDumpPath: dumpPath,
             page,
             stagehand,
-            frameSelector,
+            failedStepFrameSelector: step.frameSelector,
+            flowFrameSelector: frameSelector,
             captureFn,
             recentCaptures,
             ownBackendHostnames,
             trajectory,
             priorReplans: replanEvents,
           });
-
           if (!rawNewSteps) {
             logger.error(
               `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`

@@ -173,6 +173,7 @@ function toHealingStep(
     captchaGated: step.captchaGated,
     emailStep: step.emailStep,
     emailStepConfig: step.emailStepConfig,
+    frameSelector: step.frameSelector,
     navigateTo:
       step.navigateTo !== undefined
         ? resolveTemplate(step.navigateTo, payload, declaredFields)

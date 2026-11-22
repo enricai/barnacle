@@ -18713,6 +18713,8 @@ type FlowStepInput =
       emailStep?: boolean;
       emailStepConfig?: EmailStepConfig;
       navigateTo?: string;
+      /** Per-step cross-origin `<iframe>` selector; overrides the flow-level one. */
+      frameSelector?: string;
     };
 
 /**
@@ -18927,6 +18929,7 @@ export function emitConfigManifest(opts: {
 
   const steps = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
+    const frameSelector = isObj ? step.frameSelector : undefined;
     const instruction = isObj ? step.step : step;
     // A config-only manifest has no compiled code to mint a throwaway credential
     // at runtime (unlike emitBrowserFlowTs's generateThrowawayPassword() splice),
@@ -18941,12 +18944,13 @@ export function emitConfigManifest(opts: {
       const submitStep = isObj ? step.submitStep === true : false;
       const emailStep = isObj ? step.emailStep === true : false;
       const emailStepConfig = isObj ? step.emailStepConfig : undefined;
-      if (!optional && !upload && !submitStep && !emailStep) return rewritten;
+      if (!optional && !upload && !submitStep && !emailStep && !frameSelector) return rewritten;
       return {
         step: rewritten,
         optional,
         upload,
         submitStep,
+        ...(frameSelector ? { frameSelector } : {}),
         ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
       };
     }
@@ -18965,12 +18969,13 @@ export function emitConfigManifest(opts: {
     const submitStep = isObj ? step.submitStep === true : false;
     const emailStep = isObj ? step.emailStep === true : false;
     const emailStepConfig = isObj ? step.emailStepConfig : undefined;
-    if (!optional && !upload && !submitStep && !emailStep) return rewritten;
+    if (!optional && !upload && !submitStep && !emailStep && !frameSelector) return rewritten;
     return {
       step: rewritten,
       optional,
       upload,
       submitStep,
+      ...(frameSelector ? { frameSelector } : {}),
       ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
     };
   });
@@ -18990,6 +18995,7 @@ export function emitConfigManifest(opts: {
             optional: lastStep.optional,
             upload: lastStep.upload,
             submitStep: true,
+            ...(lastStep.frameSelector ? { frameSelector: lastStep.frameSelector } : {}),
           };
   }
 
@@ -19328,6 +19334,18 @@ export function emitBrowserFlowTs(opts: {
       /submitStep: (true|false)(?= \},)/,
       "submitStep: true"
     );
+  }
+
+  // Per-step frameSelector: emit it on the step object so the runtime's
+  // `s.frameSelector ?? deps.frameSelector` drives the frame this step names.
+  for (let i = 0; i < stepLiterals.length; i++) {
+    const st = flowSteps[i];
+    if (st !== undefined && typeof st !== "string" && st.frameSelector !== undefined) {
+      stepLiterals[i] = stepLiterals[i]!.replace(
+        / \},$/,
+        ` frameSelector: ${JSON.stringify(st.frameSelector)} },`
+      );
+    }
   }
 
   const flowStepsBlock =

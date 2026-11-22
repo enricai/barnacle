@@ -17,6 +17,9 @@ import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 
+/** Separator between frame hops in a chained frame selector. */
+const HOP_SEPARATOR = " >> ";
+
 const logger = getLogger({ name: "scraper/frame-target" });
 
 /** The frame handle type `Page.frames()` returns, without a deep import into Stagehand's understudy internals. */
@@ -263,17 +266,38 @@ async function tryResolveChildFrame(
 ): Promise<FrameTarget | null> {
   const remainingBudgetMs = (): number => Math.max(0, deadline - Date.now());
 
+  // A hop chain ("#outer >> #inner", e.g. an iframe nested in a frame hosted at
+  // https://example.com/outer): resolve the outer chain recursively, then read
+  // the last hop's `src` inside that outer frame and score only the frames
+  // nested within it. The scoring/tie-break below is shared with the
+  // single-hop path; the bound target carries the full chain.
+  const hops = frameSelector
+    .split(">>")
+    .map((hop) => hop.trim())
+    .filter((hop) => hop.length > 0);
+  const lastHop = hops.length > 1 ? (hops[hops.length - 1] ?? frameSelector) : frameSelector;
+  let outerFrame: StagehandFrame | null = null;
+  if (hops.length > 1) {
+    const outer = await tryResolveChildFrame(
+      page,
+      hops.slice(0, -1).join(HOP_SEPARATOR),
+      evaluateTimeoutMs,
+      deadline
+    );
+    if (!outer?.frame) return null;
+    outerFrame = outer.frame;
+  }
+  const scope = outerFrame;
+
   const iframeSrcExpr = `(() => {
-    const el = document.querySelector(${JSON.stringify(frameSelector)});
+    const el = document.querySelector(${JSON.stringify(lastHop)});
     if (!el || el.tagName !== "IFRAME") return { matched: false, src: null };
     return { matched: true, src: el.getAttribute("src") };
   })()`;
+  type SrcProbe = { matched: boolean; src: string | null };
   const { matched, src: iframeSrc } = await withWatchdog(
     () =>
-      page.evaluate<{
-        matched: boolean;
-        src: string | null;
-      }>(iframeSrcExpr),
+      scope ? scope.evaluate<SrcProbe>(iframeSrcExpr) : page.evaluate<SrcProbe>(iframeSrcExpr),
     {
       timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
       label: "frame-target: iframe src probe",
@@ -284,8 +308,19 @@ async function tryResolveChildFrame(
   });
   if (!matched) return null;
 
-  const mainFrameId = page.mainFrameId();
-  const candidates = page.frames().filter((frame) => frame.frameId !== mainFrameId);
+  let candidates: StagehandFrame[];
+  if (scope) {
+    // `page.frames()` binds each frame to its registry owner session, so a
+    // cross-process (OOPIF) grandchild is reachable; `Frame.childFrames()`
+    // would bind children to the parent's session and omit OOPIFs.
+    const mainFrameId = page.mainFrameId();
+    candidates = page
+      .frames()
+      .filter((frame) => frame.frameId !== mainFrameId && frame.frameId !== scope.frameId);
+  } else {
+    const mainFrameId = page.mainFrameId();
+    candidates = page.frames().filter((frame) => frame.frameId !== mainFrameId);
+  }
 
   // The iframe `src` can't be resolved to an origin — it's empty (a same-tick
   // race before the attribute reflects) or a relative/unparseable value. Fall
@@ -471,8 +506,6 @@ export async function readCurrentFrameUrl(page: Page, target: FrameTarget): Prom
     return reresolved ? reresolved.url() : page.url();
   });
 }
-
-const HOP_SEPARATOR = " >> ";
 
 /**
  * Composes a Stagehand hop-notation scope string from a frame selector and an

@@ -113,6 +113,11 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      */
     targetId: z.string().optional(),
     /**
+     * Per-step frame scope: a selector for the iframe this step acts inside.
+     * Declared so the schema does not strip it.
+     */
+    frameSelector: z.string().min(1).optional(),
+    /**
      * Provenance of the step: `"replan"` marks a step the LLM replanner
      * appended at a cascade-exhausted recovery point; `"original"` (or absent)
      * marks a hand-authored step. Persisted so accretion from a prior run can

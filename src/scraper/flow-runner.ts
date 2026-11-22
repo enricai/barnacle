@@ -17772,6 +17772,11 @@ export interface HealingFlowStep {
    * `executeStepWithHealing`.
    */
   navigateTo?: string;
+  /**
+   * Per-step cross-origin `<iframe>` selector. Overrides the flow-level
+   * `deps.frameSelector` for this step only; absent falls back to it.
+   */
+  frameSelector?: string;
 }
 
 /**
@@ -18031,7 +18036,10 @@ async function runHealingFlowScoped(
         // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
         // falls back to the main-frame target when `frameSelector` is null/unresolvable,
         // so this is a no-op for every flow that doesn't declare one.
-        const frameTarget = await resolveFrameTarget(activePage, deps.frameSelector);
+        const frameTarget = await resolveFrameTarget(
+          activePage,
+          s.frameSelector ?? deps.frameSelector
+        );
         await waitForChildFrameReady(frameTarget);
         stepPromise = executeStepWithHealing({
           stagehand,

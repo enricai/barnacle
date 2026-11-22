@@ -60,16 +60,34 @@ let fakeFrameCounter = 0;
  * `nonEmpty` defaults to `true` — a genuine attached wizard frame has content;
  * a test models the "empty same-origin shell" case by passing `false`.
  */
-function makeFakeFrame(url: string, opts: { frameId?: string; nonEmpty?: boolean } = {}) {
+function makeFakeFrame(
+  url: string,
+  opts: {
+    frameId?: string;
+    nonEmpty?: boolean;
+    children?: unknown[];
+    iframes?: Record<string, string>;
+  } = {}
+) {
   const nonEmpty = opts.nonEmpty ?? true;
   return {
     frameId: opts.frameId ?? `fake-frame-${fakeFrameCounter++}`,
     evaluate: async (expr: unknown) => {
       if (expr === "location.href") return url;
+      const m = /document\.querySelector\((.+?)\)/.exec(String(expr));
+      if (m?.[1]) {
+        const sel = JSON.parse(m[1]) as string;
+        const ifr = opts.iframes ?? {};
+        return Object.hasOwn(ifr, sel)
+          ? { matched: true, src: ifr[sel] }
+          : { matched: false, src: null };
+      }
       if (/document\.body/.test(String(expr))) return nonEmpty;
       return `frame-evaluated:${String(expr)}`;
     },
     locator: (selector: string) => ({ scope: "frame" as const, selector }),
+    // Nested frames + per-frame iframe table, for hop-chain resolution.
+    childFrames: async () => opts.children ?? [],
   };
 }
 
@@ -87,7 +105,7 @@ const FAKE_MAIN_FRAME_ID = "fake-main-frame";
 function makeFakePage(options: {
   mainUrl: string;
   iframes?: Record<string, string>;
-  frames?: ReturnType<typeof makeFakeFrame>[];
+  frames?: unknown[];
 }) {
   const iframes = options.iframes ?? {};
   const frames = options.frames ?? [];
@@ -116,7 +134,7 @@ function makeFakePage(options: {
 function makeMutableFakePage(options: {
   mainUrl: string;
   iframes?: Record<string, string>;
-  frames?: ReturnType<typeof makeFakeFrame>[];
+  frames?: unknown[];
 }) {
   const iframes = { ...(options.iframes ?? {}) };
   const frames = [...(options.frames ?? [])];
@@ -135,7 +153,7 @@ function makeMutableFakePage(options: {
     mountIframe: (selector: string, src: string): void => {
       iframes[selector] = src;
     },
-    attachFrame: (frame: ReturnType<typeof makeFakeFrame>): void => {
+    attachFrame: (frame: unknown): void => {
       frames.push(frame);
     },
   };
@@ -869,7 +887,7 @@ function makeDelayedFakePage(options: {
   mainUrl: string;
   delayMs: number;
   iframes?: Record<string, string>;
-  frames?: ReturnType<typeof makeFakeFrame>[];
+  frames?: unknown[];
 }) {
   const iframes = options.iframes ?? {};
   const frames = options.frames ?? [];
@@ -1165,5 +1183,39 @@ describe("readCurrentFrameUrl", () => {
     await expect(readCurrentFrameUrl(page as never, staleTarget)).resolves.toBe(
       "https://careers.example.org/jobs/123"
     );
+  });
+});
+
+describe("resolveFrameTarget: nested hop chains", () => {
+  it("resolves '#outer >> #inner' to the grandchild matching the inner src read inside the outer frame", async () => {
+    const empty = makeFakeFrame("https://example.com/inner", { nonEmpty: false });
+    const real = makeFakeFrame("https://example.com/inner", { nonEmpty: true });
+    const other = makeFakeFrame("https://example.org/x");
+    const outer = makeFakeFrame("https://example.net/outer", {
+      iframes: { "#inner": "https://example.com/inner" },
+      children: [empty, other, real],
+    });
+    const page = makeFakePage({
+      mainUrl: "https://example.com/",
+      iframes: { "#outer": "https://example.net/outer" },
+      frames: [outer, empty, other, real],
+    });
+    const target = await resolveFrameTarget(page as never, "#outer >> #inner", { timeoutMs: 50 });
+    expect(target.frame).toBe(real);
+    expect(target.declaredFrameSelector).toBe("#outer >> #inner");
+    expect(buildHopSelector(target.declaredFrameSelector, "button")).toBe(
+      "#outer >> #inner >> button"
+    );
+  });
+
+  it("does not match when the inner iframe is absent from the outer frame", async () => {
+    const outer = makeFakeFrame("https://example.net/outer", { children: [] });
+    const page = makeFakePage({
+      mainUrl: "https://example.com/",
+      iframes: { "#outer": "https://example.net/outer", "#inner": "https://example.com/inner" },
+      frames: [outer],
+    });
+    const target = await resolveFrameTarget(page as never, "#outer >> #inner", { timeoutMs: 30 });
+    expect(target.frame).toBeNull();
   });
 });
