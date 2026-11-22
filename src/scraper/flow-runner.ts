@@ -126,6 +126,7 @@ import {
   hasSettledPageAdvanced,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
+  isVisibleTextShrunk,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
@@ -2704,6 +2705,8 @@ export function isClickViewSwapVerified(params: {
   midFlowSubmit?: boolean;
   pageAdvanced?: boolean;
   actSucceeded?: boolean;
+  /** Real content left the page (see isVisibleTextShrunk): a dismissal, not a reset. */
+  contentRemoved?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -2721,6 +2724,7 @@ export function isClickViewSwapVerified(params: {
     midFlowSubmit = false,
     pageAdvanced = textChanged,
     actSucceeded = false,
+    contentRemoved = false,
   } = params;
   // The page advancing is the evidence for a mid-flow submit, so it does not
   // depend on how Stagehand reported the gesture: a successful act that
@@ -2759,6 +2763,23 @@ export function isClickViewSwapVerified(params: {
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
+  // A removal that took visible text with it (overlay/banner dismissal) is an
+  // observable client-side effect, not a page reset. Two readings of "content
+  // left": the caller measured the visible text shrinking (`contentRemoved`),
+  // or the text changed while the body shrank by at least the reveal floor but
+  // less than a whole screen swap (`VIEW_SWAP_MIN_BYTES`) — an element-sized
+  // removal. A shrink at screen-swap scale that also takes its own trigger
+  // stays the reset the veto below targets.
+  if (
+    !clickedElementStillPresent &&
+    bytesDelta < 0 &&
+    (contentRemoved ||
+      (textChanged &&
+        -bytesDelta >= VIEW_SWAP_REVEAL_MIN_BYTES &&
+        -bytesDelta < VIEW_SWAP_MIN_BYTES))
+  ) {
+    return true;
+  }
   if (!clickedElementStillPresent && bytesDelta <= 0) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
@@ -2872,7 +2893,19 @@ export function describeAttemptEffectSignals(
       );
     }
   }
-  if (textChanged && networkDelta === 0 && bytesDelta < 500) {
+  // Mirrors the verdict's removal credit: an element-sized body shrink with
+  // changed visible text, or a measured visible-text shrink.
+  const contentRemoved =
+    networkDelta === 0 &&
+    (isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature) ||
+      (bytesDelta < 0 &&
+        ((textChanged && -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold) ||
+          -bytesDelta >= config.scraper.viewSwapMinBytesThreshold)));
+  if (contentRemoved) {
+    observations.push(
+      `content-removed-without-network: visible text and body HTML shrank (body ${bytesDelta}B) with no network — real content left the page (an overlay/banner/target was dismissed), not a slight reflow`
+    );
+  } else if (textChanged && networkDelta === 0 && bytesDelta < 500) {
     observations.push(
       "visible-text-changed-without-network: page reflowed slightly (likely tooltip/focus state)"
     );
@@ -15952,6 +15985,7 @@ export async function executeStepWithHealing(params: {
       midFlowSubmit,
       pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
+      contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
     });
     if (
       clickViewSwapVerified === false &&

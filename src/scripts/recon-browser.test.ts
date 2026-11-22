@@ -7646,6 +7646,122 @@ describe("recon-browser/main — trailing-grace page title bounded against a nev
   });
 });
 
+describe("recon-browser/main — optional cascade-exhausted step is skipped without replanning", () => {
+  const ORIGINAL_ARGV = process.argv;
+  const ORIGINAL_ANTHROPIC_API_KEY = config.scraper.anthropicApiKey;
+  let runsRoot: string;
+
+  beforeEach(() => {
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-optional-skip-"));
+    process.env.RECON_RUN_ID = "20260725-000000-optskip1";
+    process.env.RECON_OUT_DIR = runsRoot;
+    executeStepWithHealingStub.mockReset();
+    vi.mocked(createBrowserSession).mockReset();
+    loggerStub.warn.mockClear();
+    // No Anthropic client: any step that reaches the replan branch rethrows
+    // its error (`if (!anthropic) throw err`) instead of replanning, so a
+    // rejected main() is the observable "went to the replan path" signal.
+    config.scraper.anthropicApiKey = undefined;
+    const session = { on: (): void => {}, off: (): void => {} };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+        if (typeof expr === "string" && expr.includes("querySelector"))
+          return { matched: false, src: null };
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+  });
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
+    vi.restoreAllMocks();
+    executeStepWithHealingStub.mockReset();
+    config.scraper.anthropicApiKey = ORIGINAL_ANTHROPIC_API_KEY;
+  });
+
+  function runFlow(steps: unknown[]): Promise<void> {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify({ steps }),
+    ];
+    return main();
+  }
+
+  function failFirstStepWith(kind: "cascade-exhausted" | "probe-absent"): void {
+    executeStepWithHealingStub
+      .mockImplementationOnce(() => Promise.reject(new StepVerificationError("boom", kind)))
+      .mockResolvedValue("ok");
+  }
+
+  it("skips a non-trailing optional step that exhausts its cascade and runs the later step", async () => {
+    failFirstStepWith("cascade-exhausted");
+
+    await expect(
+      runFlow([{ step: "Click optional Banner", optional: true }, "Click Apply"])
+    ).resolves.toBeUndefined();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("optional step cascade exhausted")
+    );
+    expect(loggerStub.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("attempting global replan")
+    );
+  });
+
+  it("does not skip a required step that exhausts its cascade (takes the replan path)", async () => {
+    failFirstStepWith("cascade-exhausted");
+
+    await expect(runFlow(["Click Banner", "Click Apply"])).rejects.toBeInstanceOf(
+      StepVerificationError
+    );
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    expect(loggerStub.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("optional step cascade exhausted")
+    );
+  });
+
+  it("does not skip an optional step that fails with probe-absent (takes the replan path)", async () => {
+    failFirstStepWith("probe-absent");
+
+    await expect(
+      runFlow([{ step: "Click optional Banner", optional: true }, "Click Apply"])
+    ).rejects.toBeInstanceOf(StepVerificationError);
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    expect(loggerStub.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("optional step cascade exhausted")
+    );
+  });
+});
+
 describe("recon-browser/decideReplanNoProgress", () => {
   const mk = (instruction: string): NormalizedStep => ({
     instruction,

@@ -289,6 +289,22 @@ function textLengthOf(signature: string | undefined): number | null {
   return match ? Number(match[1]) : null;
 }
 
+/**
+ * Whether real content left the page: the visible-text length shrank by at
+ * least {@link PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA} between the pre/post
+ * signatures (`"<len>:<head>"`). An overlay or banner dismissal shrinks the
+ * text; a padding-only reset does not. False when either length is unparsable.
+ */
+export function isVisibleTextShrunk(
+  preSig: string | undefined,
+  postSig: string | undefined
+): boolean {
+  const preLen = textLengthOf(preSig);
+  const postLen = textLengthOf(postSig);
+  if (preLen === null || postLen === null) return false;
+  return preLen - postLen >= PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA;
+}
+
 function textHeadWords(signature: string): Set<string> {
   const head = signature.slice(signature.indexOf(":") + 1).toLowerCase();
   return new Set(head.split(/\W+/).filter((w) => w !== ""));
