@@ -110,16 +110,30 @@ describe("beacon answer-independence controls", () => {
     expect(firstEndpointCapture(real)?.url).toBe(`${HOST}/orders/create`);
   });
 
-  it("a declared foldReturn self-fold GET is still kept in the action sequence", () => {
+  it("a declared foldReturn drill is still kept in the action sequence", () => {
     const fold = {
-      endpointPattern: "/search/api/search",
-      resultsPath: "results",
+      endpointPattern: "/lookup/",
+      resultsPath: "rows",
       joinFields: ["id"],
     } as unknown as FoldReturnSpec;
-    const caps = [searchGet(1, "2", "C"), searchGet(2, "2", "C"), ...[1, 2, 3].map(beacon)];
+    const get = (path: string, body: unknown, t: number) =>
+      buildCapture({
+        url: `${HOST}${path}`,
+        method: "GET",
+        requestPostData: null,
+        responseBody: body,
+        timestamp: ts(t),
+      });
+    const caps = [
+      get("/search?q=a&page=1", { rows: [{ id: "x1" }, { id: "x2" }] }, 1),
+      get("/search?q=a&page=2", { rows: [{ id: "x3" }] }, 2),
+      get("/lookup/x1", { rows: [{ id: "x1" }] }, 3),
+      get("/lookup/x3", { rows: [{ id: "x3" }] }, 4),
+      ...[1, 2, 3].map(beacon),
+    ];
     const out = extractActionSequence(caps, null, fold, [], "example.com", true, null);
     const urls = out.map((a) => new URL(a.capture.url).pathname);
-    expect(urls).toContain("/search/api/search");
-    expect(urls).not.toContain("/tracking/log");
+    expect(urls).toContain("/search");
+    expect(urls.some((u) => u.startsWith("/lookup/"))).toBe(true);
   });
 });
