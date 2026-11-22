@@ -327,22 +327,9 @@ async function tryResolveChildFrame(
   // cross-process (OOPIF) descendant is reachable; `Frame.childFrames()`
   // would bind children to the parent's session and omit OOPIFs.
   const mainFrameId = page.mainFrameId();
-  // A nested hop must not bind a frame already known to live under a different
-  // frame (e.g. an identically-sourced inner frame of another outer frame).
   const allFrames = page.frames().filter((frame) => frame.frameId !== mainFrameId);
   const scopeOwned = scope ? await collectDescendantFrameIds(scope) : new Set<string>();
-  const foreignOwned = new Set<string>();
-  if (scope) {
-    for (const frame of allFrames) {
-      if (frame.frameId === scope.frameId || scopeOwned.has(frame.frameId)) continue;
-      for (const id of await collectDescendantFrameIds(frame)) foreignOwned.add(id);
-    }
-  }
-  const candidates = allFrames.filter(
-    (frame) =>
-      (!scope || frame.frameId !== scope.frameId) &&
-      (!foreignOwned.has(frame.frameId) || scopeOwned.has(frame.frameId))
-  );
+  const candidates = allFrames.filter((frame) => !scope || frame.frameId !== scope.frameId);
 
   // A relative `src` resolves against the document hosting the iframe: the
   // outer frame's live URL for a nested hop, else the top page's URL.
@@ -365,8 +352,9 @@ async function tryResolveChildFrame(
   // reflects) or unresolvable. Fall back to element identity: exactly one
   // attached child frame must be this iframe's, so bind it.
   const bindOnlyCandidate = (): FrameTarget | null => {
-    const [onlyCandidate] = candidates;
-    return candidates.length === 1 && onlyCandidate
+    const owned = scope ? candidates.filter((f) => scopeOwned.has(f.frameId)) : candidates;
+    const [onlyCandidate] = owned;
+    return owned.length === 1 && onlyCandidate
       ? childFrameTarget(page, onlyCandidate, frameSelector, { evaluateTimeoutMs })
       : null;
   };
@@ -399,8 +387,16 @@ async function tryResolveChildFrame(
     }
   }
 
+  // Frames hosted under the named outer frame win a tie against identically
+  // matching frames hosted elsewhere.
+  if (scope && topByScore.some(({ candidate }) => scopeOwned.has(candidate.frameId))) {
+    for (let i = topByScore.length - 1; i >= 0; i--) {
+      const entry = topByScore[i];
+      if (entry && !scopeOwned.has(entry.candidate.frameId)) topByScore.splice(i, 1);
+    }
+  }
   const [first, ...rest] = topByScore;
-  if (!first) return rawSrc !== iframeSrc ? bindOnlyCandidate() : null;
+  if (!first) return !scope && rawSrc !== iframeSrc ? bindOnlyCandidate() : null;
   // Single best-scoring candidate — no tie to break, so bind it without paying
   // the extra non-empty probe (the common single-frame case).
   if (rest.length === 0) {
