@@ -502,6 +502,21 @@ export function wireSignalCapture(
     if (!req) return;
     inFlight.delete(params.requestId);
     foldResponseExtras(req, params.requestId);
+    // Final hop: also fold every leftover buffer for this id (in hop order).
+    // Extra-info counts can disagree with real hops (several events per hop, or
+    // hops without extra-info), so dropping them would lose the final headers.
+    const leftover = (m: Map<string, Record<string, string>>): Record<string, string> => {
+      const pre = `${params.requestId}#`;
+      let acc: Record<string, string> = {};
+      for (const k of [...m.keys()]
+        .filter((x) => x.startsWith(pre))
+        .sort((a, b) => Number(a.slice(pre.length)) - Number(b.slice(pre.length)))) {
+        acc = mergeResponseHeaders(acc, m.get(k));
+      }
+      return acc;
+    };
+    req.responseHeaders = mergeResponseHeaders(req.responseHeaders, leftover(extraResponseHeaders));
+    req.requestHeaders = mergeResponseHeaders(req.requestHeaders, leftover(extraRequestHeaders));
     // Drain every remaining buffer for this id so nothing leaks per run.
     dropRequestState(params.requestId);
     await finalizeCapture(req, params.requestId, true);
