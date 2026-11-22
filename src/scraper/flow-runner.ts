@@ -17832,7 +17832,12 @@ export async function executeStepWithHealing(params: {
   // buildRankSubmitCandidatesExpr call site's guard in this file, since
   // firing on a non-submit step could complete it by clicking an unrelated
   // submit control in an unrelated same-origin child iframe.
+  // Never click on a document an earlier click of this step already replaced.
+  const docReplacedBeforeFallback =
+    (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
+    "replaced";
   if (
+    !docReplacedBeforeFallback &&
     !frameTarget?.declaredFrameSelector &&
     isStepSubmitShaped({
       step,
