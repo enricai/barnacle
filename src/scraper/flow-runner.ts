@@ -5391,19 +5391,27 @@ async function resolvedClickTargetIsInteractive(
  * `vetObserveCandidates`). Value-quoting steps (fill/select/radio) are exempt
  * from the quoted-name check. `description` is what the act reported it
  * clicked; `isInteractive` is the DOM read of the clicked element.
+ * `requireNamedControl` limits the quoted-name check, for a step that targets
+ * a control, to descriptions that name a control: a terse or opaque
+ * description ("go") is not evidence that a different control was clicked,
+ * only that the act did not echo the label. A step declaring a non-interactive
+ * target keeps the strict check, since any other element contradicts it.
  */
 export function resolvedActionNamesStepTarget(
   step: string,
   action: { description?: string },
-  options: { isInteractive?: boolean; fallbackDescription?: string } = {}
+  options: {
+    isInteractive?: boolean;
+    fallbackDescription?: string;
+    requireNamedControl?: boolean;
+  } = {}
 ): boolean {
   const description = action.description || options.fallbackDescription || "";
-  if (stepDeclaresNonInteractiveTarget(step)) {
-    if (options.isInteractive === true || CONTROL_DESCRIPTION_PATTERN.test(description)) {
-      return false;
-    }
-  }
+  const namesControl = CONTROL_DESCRIPTION_PATTERN.test(description);
+  const nonInteractiveTarget = stepDeclaresNonInteractiveTarget(step);
+  if (nonInteractiveTarget && (options.isInteractive === true || namesControl)) return false;
   if (stepQuotesValueNotControlName(step)) return true;
+  if (options.requireNamedControl === true && !nonInteractiveTarget && !namesControl) return true;
   const phrases = extractTaggedPhrases(step);
   if (phrases.length === 0 || description === "") return true;
   return !vetObserveCandidates([{ description }], phrases).refuse;
@@ -16391,9 +16399,14 @@ export async function executeStepWithHealing(params: {
       advanceBaseline,
       destinationPlausible,
     });
+    // trusted-click-retry re-clicks the target an earlier attempt resolved, and
+    // its description is engine-authored (it embeds the selector), so it says
+    // nothing about which control the page exposed.
     const resolvedTargetNamesStep =
       resolvedAction === null ||
+      record.technique === "trusted-click-retry" ||
       resolvedActionNamesStepTarget(step, resolvedAction, {
+        requireNamedControl: true,
         isInteractive:
           stepDeclaresNonInteractiveTarget(step) &&
           !!resolvedAction.selector &&

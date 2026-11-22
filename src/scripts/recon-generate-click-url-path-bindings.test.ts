@@ -25,6 +25,16 @@ describe("addClickUrlPathBindings", () => {
     expect(out.size).toBe(0);
   });
 
+  it("binds a digit-free slug that directly follows a job id", () => {
+    const out = addClickUrlPathBindings(
+      "https://h.example.com/jobs/48213907/senior-widget-engineer/apply",
+      new Map()
+    );
+    expect(out.get("senior-widget-engineer")).toBe(
+      'new URL(payload.ClickUrl).pathname.split("/")[3]'
+    );
+  });
+
   it("does not overwrite an existing binding for the same segment", () => {
     const into = new Map([["48213907", "payload.id"]]);
     addClickUrlPathBindings("https://h.example.com/jobs/48213907", into);

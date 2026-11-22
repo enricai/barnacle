@@ -28,4 +28,32 @@ describe("resolvedActionNamesStepTarget", () => {
       })
     ).toBe(true);
   });
+  it("with requireNamedControl, treats an opaque description as no contradiction", () => {
+    const controlStep = "Click the 'Create account' button";
+    expect(
+      resolvedActionNamesStepTarget(
+        controlStep,
+        { description: "go" },
+        { requireNamedControl: true }
+      )
+    ).toBe(true);
+    expect(
+      resolvedActionNamesStepTarget(
+        controlStep,
+        { description: "language menu button" },
+        { requireNamedControl: true }
+      )
+    ).toBe(false);
+  });
+  it("with requireNamedControl, keeps the strict check for a non-interactive target", () => {
+    const targetless =
+      "Click on the 'Application Questions' page heading (an empty, non-interactive spot)";
+    expect(
+      resolvedActionNamesStepTarget(
+        targetless,
+        { description: "page heading" },
+        { requireNamedControl: true }
+      )
+    ).toBe(false);
+  });
 });

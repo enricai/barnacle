@@ -2032,17 +2032,23 @@ export function addClickUrlPathBindings(
   } catch {
     return into;
   }
-  u.pathname.split("/").forEach((seg, i) => {
+  const segments = u.pathname.split("/");
+  const isIdSegment = (seg: string | undefined): boolean =>
+    seg !== undefined &&
+    isStateLikeSegment(seg) &&
+    seg.length >= MIN_STATE_VALUE_LENGTH &&
+    /\d/.test(seg);
+  segments.forEach((seg, i) => {
     // Same collision floor as extractEntryUrlParams (a short value matches arbitrary
     // substrings of later bodies/URLs), and require a digit: a purely alphabetic
-    // hyphenated segment (`create-order`) is an endpoint name, not a job identifier.
-    if (
-      !isStateLikeSegment(seg) ||
-      seg.length < MIN_STATE_VALUE_LENGTH ||
-      !/\d/.test(seg) ||
-      into.has(seg)
-    )
-      return;
+    // hyphenated segment (`create-order`) is an endpoint name, not a job identifier
+    // — unless it directly follows an id, where it is that posting's slug
+    // (`/jobs/<id>/<slug>`).
+    const slugAfterId =
+      isStateLikeSegment(seg) &&
+      seg.length >= MIN_STATE_VALUE_LENGTH &&
+      isIdSegment(segments[i - 1]);
+    if ((!isIdSegment(seg) && !slugAfterId) || into.has(seg)) return;
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
   return into;
@@ -11736,6 +11742,34 @@ function emitHtmlFetchLines(
 }
 
 /**
+ * The emitted matcher for a path-segment token. Its sibling state-like
+ * segments (another job id or slug in the same URL) are the recon run's own
+ * values, so they become wildcards (`null`) rather than literals the contract
+ * would replay or require the live page to repeat.
+ */
+function pathSegmentLocator(locatorName: string): {
+  segments: (string | null)[];
+  at: number;
+  display: string;
+} {
+  const raw = locatorName.split("/");
+  const at = raw.indexOf("*");
+  const decode = (seg: string): string => {
+    try {
+      return decodeURIComponent(seg);
+    } catch {
+      return seg;
+    }
+  };
+  const segments = raw.map((seg, k) => (k !== at && isStateLikeSegment(decode(seg)) ? null : seg));
+  return {
+    segments,
+    at,
+    display: segments.map((seg) => seg ?? ":any").join("/"),
+  };
+}
+
+/**
  * Renders the extraction of one HTML-issued token from `textVar`, located by
  * element kind + name (never by the recon literal). Throws when the markup no
  * longer carries it, so a changed page fails loudly instead of replaying a
@@ -11743,7 +11777,9 @@ function emitHtmlFetchLines(
  */
 function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string): string[] {
   const name = JSON.stringify(p.locatorName);
-  const fail = `${indent}if (${p.name} === undefined) throw new Error(\`HTML token ${p.locatorName.replace(/[`$\\]/g, "")} not found in response\`);`;
+  const pathPattern = p.element === "path-segment" ? pathSegmentLocator(p.locatorName) : null;
+  const shownName = pathPattern?.display ?? p.locatorName;
+  const fail = `${indent}if (${p.name} === undefined) throw new Error(\`HTML token ${shownName.replace(/[`$\\]/g, "")} not found in response\`);`;
   if (p.element === "hidden-input") {
     return [
       `${indent}const ${p.name} = (() => {`,
@@ -11759,17 +11795,17 @@ function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string
       fail,
     ];
   }
-  if (p.element === "path-segment") {
+  if (pathPattern) {
     return [
       `${indent}const ${p.name} = (() => {`,
-      `${indent}  const pattern = ${name}.split("/");`,
+      `${indent}  const pattern: (string | null)[] = ${JSON.stringify(pathPattern.segments)};`,
+      `${indent}  const at = ${pathPattern.at};`,
       `${indent}  for (const tag of ${textVar}.match(/<(?:a|form)\\b[^>]*>/gi) ?? []) {`,
       `${indent}    const a = /\\s(?:href|action)\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
       `${indent}    const target = (a?.[1] ?? a?.[2] ?? a?.[3] ?? "").replace(/&amp;/gi, "&").replace(/^[a-z][a-z0-9+.-]*:\\/\\/[^/?#]*/i, "").split(/[?#]/)[0];`,
       `${indent}    const segs = target.split("/");`,
       `${indent}    if (segs.length !== pattern.length) continue;`,
-      `${indent}    const at = pattern.indexOf("*");`,
-      `${indent}    if (!segs.every((s, k) => k === at || s === pattern[k])) continue;`,
+      `${indent}    if (!segs.every((s, k) => k === at || pattern[k] === null || s === pattern[k])) continue;`,
       `${indent}    try { return decodeURIComponent(segs[at]); } catch { return segs[at]; }`,
       `${indent}  }`,
       `${indent}  return undefined;`,

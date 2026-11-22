@@ -1283,7 +1283,6 @@ export function isZeroVarianceRepeatCapture(
     operationName?: string | null;
     query?: string | null;
     status?: number;
-    requestHeaders?: Record<string, string>;
   },
   allCaptures: readonly {
     method: string;
