@@ -826,6 +826,23 @@ export function deriveFillLabelField(instruction: string): string | null {
   return resolveCanonicalAtsFieldName(label) ?? fieldNameToPascalCase(label, null);
 }
 
+/** Overlay persona values persisted by recon-browser (`persona-env.json`) under
+ * `env`; real env values keep precedence. */
+export function withPersistedPersonaEnv(runRoot: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const file = join(runRoot, "persona-env.json");
+  if (!existsSync(file)) return env;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (parsed === null || typeof parsed !== "object") return env;
+    const merged: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") merged[k] = v;
+    for (const [k, v] of Object.entries(env)) if (v !== undefined && v !== "") merged[k] = v;
+    return merged;
+  } catch {
+    return env;
+  }
+}
+
 /**
  * Builds the map from a recon persona VALUE (as it appears in the captured
  * request body) to the `payload.<Field>` accessor that should replace it, by
@@ -20567,7 +20584,11 @@ async function main(): Promise<void> {
     // recon persona's. Both are site-agnostic: persona mapping comes from the
     // consumer vocabulary, job coordinates from the entry URL's own query keys.
     warnUnmatchedFillSteps(flowSteps, vocabulary, (msg) => logger.warn(msg));
-    const personaBindings = harvestPersonaBindings(flowSteps, vocabulary, process.env);
+    const personaBindings = harvestPersonaBindings(
+      flowSteps,
+      vocabulary,
+      withPersistedPersonaEnv(runRoot, process.env)
+    );
     const entryUrlParams = extractEntryUrlParams(activeCaptures[0]?.url ?? "");
     // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
     // action sequence at the position observed during recon, so the existing

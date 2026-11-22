@@ -2967,9 +2967,14 @@ async function main(): Promise<void> {
     );
   }
 
+  const allocatedPersonaEnv: Record<string, string> = {};
+  if (allocateEmailEnvVar && allocatedInbox) {
+    allocatedPersonaEnv[allocateEmailEnvVar] = allocatedInbox.address;
+  }
   if (allocatePhoneEnvVar) {
     const phone = allocateFictionalPhone();
     process.env[allocatePhoneEnvVar] = phone;
+    allocatedPersonaEnv[allocatePhoneEnvVar] = phone;
     logger.info(`bound allocated phone number to env var ${allocatePhoneEnvVar}=${phone}`);
   }
 
@@ -2993,6 +2998,15 @@ async function main(): Promise<void> {
   }
 
   const runDir = resolveReconRunDir();
+  if (Object.keys(allocatedPersonaEnv).length > 0) {
+    // Persist allocated persona values so recon:generate can bind them without
+    // the operator re-exporting env vars.
+    mkdirSync(runDir.root, { recursive: true });
+    writeFileSync(
+      join(runDir.root, "persona-env.json"),
+      `${JSON.stringify(allocatedPersonaEnv, null, 2)}\n`
+    );
+  }
   const uploadFixture = loadUploadFixture(uploadFixturePath);
   // Per-URL partition under the flow file's site directory. Without a flow
   // file (inline --flow mode), telemetry has no durable home and is dropped
