@@ -103,10 +103,9 @@ async function run(html: string, stop?: "stopPropagation" | "stopImmediatePropag
   };
 
   if (stop) {
-    (input as unknown as { addEventListener(t: string, h: (e: Event) => void): void }).addEventListener(
-      "keydown",
-      (e) => e[stop]()
-    );
+    (
+      input as unknown as { addEventListener(t: string, h: (e: Event) => void): void }
+    ).addEventListener("keydown", (e) => e[stop]());
   }
   const keydowns: { defaultPrevented: boolean }[] = [];
   let submits = 0;
