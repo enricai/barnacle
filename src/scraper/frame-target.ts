@@ -258,6 +258,21 @@ function extendsAtSegmentBoundary(longer: string, shorter: string): boolean {
  * existing "rejects rather than silently falling back" contract for real
  * errors.
  */
+async function collectDescendantFrameIds(root: StagehandFrame): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const stack = [root];
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (!frame) break;
+    for (const child of await frame.childFrames()) {
+      if (ids.has(child.frameId)) continue;
+      ids.add(child.frameId);
+      stack.push(child);
+    }
+  }
+  return ids;
+}
+
 async function tryResolveChildFrame(
   page: Page,
   frameSelector: string,
@@ -295,7 +310,7 @@ async function tryResolveChildFrame(
     return { matched: true, src: el.getAttribute("src") };
   })()`;
   type SrcProbe = { matched: boolean; src: string | null };
-  const { matched, src: iframeSrc } = await withWatchdog(
+  const { matched, src: rawSrc } = await withWatchdog(
     () =>
       scope ? scope.evaluate<SrcProbe>(iframeSrcExpr) : page.evaluate<SrcProbe>(iframeSrcExpr),
     {
@@ -312,22 +327,50 @@ async function tryResolveChildFrame(
   // cross-process (OOPIF) descendant is reachable; `Frame.childFrames()`
   // would bind children to the parent's session and omit OOPIFs.
   const mainFrameId = page.mainFrameId();
-  const candidates = page
-    .frames()
-    .filter(
-      (frame) => frame.frameId !== mainFrameId && (!scope || frame.frameId !== scope.frameId)
-    );
+  // A nested hop must not bind a frame already known to live under a different
+  // frame (e.g. an identically-sourced inner frame of another outer frame).
+  const allFrames = page.frames().filter((frame) => frame.frameId !== mainFrameId);
+  const scopeOwned = scope ? await collectDescendantFrameIds(scope) : new Set<string>();
+  const foreignOwned = new Set<string>();
+  if (scope) {
+    for (const frame of allFrames) {
+      if (frame.frameId === scope.frameId || scopeOwned.has(frame.frameId)) continue;
+      for (const id of await collectDescendantFrameIds(frame)) foreignOwned.add(id);
+    }
+  }
+  const candidates = allFrames.filter(
+    (frame) =>
+      (!scope || frame.frameId !== scope.frameId) &&
+      (!foreignOwned.has(frame.frameId) || scopeOwned.has(frame.frameId))
+  );
 
-  // The iframe `src` can't be resolved to an origin — it's empty (a same-tick
-  // race before the attribute reflects) or a relative/unparseable value. Fall
-  // back to element identity: exactly one attached child frame must be this
-  // iframe's, so bind it rather than degrading to the main frame.
-  if (!iframeSrc || originOf(iframeSrc) === null) {
+  // A relative `src` resolves against the document hosting the iframe: the
+  // outer frame's live URL for a nested hop, else the top page's URL.
+  let iframeSrc = rawSrc;
+  if (rawSrc && originOf(rawSrc) === null) {
+    const base = scope
+      ? await withWatchdog(() => scope.evaluate<string>("location.href"), {
+          timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
+          label: "frame-target: outer frame location probe",
+        }).catch(() => null)
+      : page.url();
+    try {
+      iframeSrc = base ? new URL(rawSrc, base).href : rawSrc;
+    } catch {
+      iframeSrc = rawSrc;
+    }
+  }
+
+  // The iframe `src` is empty (a same-tick race before the attribute
+  // reflects) or unresolvable. Fall back to element identity: exactly one
+  // attached child frame must be this iframe's, so bind it.
+  const bindOnlyCandidate = (): FrameTarget | null => {
     const [onlyCandidate] = candidates;
     return candidates.length === 1 && onlyCandidate
       ? childFrameTarget(page, onlyCandidate, frameSelector, { evaluateTimeoutMs })
       : null;
-  }
+  };
+  if (!iframeSrc || originOf(iframeSrc) === null) return bindOnlyCandidate();
 
   // Score every child candidate by how specifically its live URL matches the
   // iframe `src` (one `location.href` probe each), keeping the best-scoring
@@ -357,7 +400,7 @@ async function tryResolveChildFrame(
   }
 
   const [first, ...rest] = topByScore;
-  if (!first) return null;
+  if (!first) return rawSrc !== iframeSrc ? bindOnlyCandidate() : null;
   // Single best-scoring candidate — no tie to break, so bind it without paying
   // the extra non-empty probe (the common single-frame case).
   if (rest.length === 0) {
