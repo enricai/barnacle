@@ -752,17 +752,13 @@ function registerExtraRoutes(
         if (route.dispatch === true) {
           // dispatch() owns redaction registration, tracking, timeout, fallback
           // and the submission envelope; shape the reply exactly as /run does.
-          try {
-            const result = await dispatch(plugin, body, context, {
-              forceFallback: request.headers["x-barnacle-execution"] === "browser",
-            });
-            return successEnvelope({
-              ...(result.data as object),
-              ...(result.metrics && { metrics: result.metrics }),
-            });
-          } finally {
-            releaseSensitiveValues(request.id);
-          }
+          const result = await dispatch(plugin, body, context, {
+            forceFallback: request.headers["x-barnacle-execution"] === "browser",
+          });
+          return successEnvelope({
+            ...(result.data as object),
+            ...(result.metrics && { metrics: result.metrics }),
+          });
         }
         // Extra routes bypass dispatch(), so they register their body here.
         registerSensitiveValues(request.id, body, plugin.meta.redaction);
