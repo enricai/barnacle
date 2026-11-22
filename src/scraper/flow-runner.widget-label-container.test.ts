@@ -37,6 +37,13 @@ async function run(popupId: string, step: string) {
     html: HTML,
     popupByWidgetId: { [popupId]: { options: ["Porto"], portaled: true } },
   });
+  const labels: string[] = [];
+  const origEval = target.evaluate.bind(target);
+  (target as { evaluate: unknown }).evaluate = async (...a: unknown[]) => {
+    const r = await (origEval as (...x: unknown[]) => Promise<unknown>)(...a);
+    for (const c of (r as { candidates?: { label: string }[] })?.candidates ?? []) labels.push(c.label);
+    return r;
+  };
   await executeStepWithHealing({
     stagehand,
     page: page as unknown as Page,
@@ -67,19 +74,19 @@ async function run(popupId: string, step: string) {
     wizardExitButtonLabels: [],
     trajectory: [],
   } as never);
-  return { doc: window.document, clicks };
+  return { doc: window.document, clicks, labels };
 }
 
 describe("widgetLabel container label[for]", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("labels via the sibling select's label, not ancestor text", async () => {
-    const { clicks } = await run("a", "for 'Work authorization' select 'Porto'");
-    expect(clicks.length).toBeGreaterThan(0);
+    const { labels } = await run("a", "for 'Work authorization' select 'Porto'");
+    expect(labels).toContain("Work authorization");
   });
 
   it("keeps a 200-char label untruncated", async () => {
-    const { clicks } = await run("b", `for '${LONG}' select 'Porto'`);
-    expect(clicks.length).toBeGreaterThan(0);
+    const { labels } = await run("b", `for '${LONG}' select 'Porto'`);
+    expect(labels).toContain(LONG);
   });
 });
