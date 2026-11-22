@@ -10711,14 +10711,44 @@ async function sendTrustedKey(
   await send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
 }
 
-/** Dispatches a trusted Enter to the focused element (the filter input) via the target frame's CDP session. */
+/**
+ * Dispatches a trusted Enter to the focused element (the filter input) via the
+ * target frame's CDP session. The browser's implicit submission of an enclosing
+ * form is cancelled for this one keypress (bubble-phase preventDefault, so the
+ * widget's own handlers still run); listeners are removed in a finally.
+ */
 async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> {
-  await sendTrustedKey(
-    page,
-    target,
-    { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 },
-    "\r"
-  );
+  const guardKey = "__leerieNoImplicitSubmit";
+  await target
+    .evaluate(
+      `(() => {
+        const h = (e) => { if (e.key === "Enter") e.preventDefault(); };
+        window.${guardKey} = h;
+        window.addEventListener("keydown", h, false);
+        window.addEventListener("keypress", h, false);
+      })()`
+    )
+    .catch(() => undefined);
+  try {
+    await sendTrustedKey(
+      page,
+      target,
+      { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 },
+      "\r"
+    );
+  } finally {
+    await target
+      .evaluate(
+        `(() => {
+          const h = window.${guardKey};
+          if (!h) return;
+          window.removeEventListener("keydown", h, false);
+          window.removeEventListener("keypress", h, false);
+          delete window.${guardKey};
+        })()`
+      )
+      .catch(() => undefined);
+  }
 }
 
 /** Dispatches a trusted Escape to the focused element via the target frame's CDP session, closing a popup left open. */
