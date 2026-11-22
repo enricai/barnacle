@@ -239,6 +239,10 @@ describe("verifyPromptSelectorCommitted reads the target field outside any trigg
   const mk = (html: string): FrameTarget => {
     const window = new Window({ url: "https://careers.example.com/x" });
     window.document.body.innerHTML = html;
+    (window as unknown as { XPathResult: unknown }).XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
+    (window.document as unknown as { evaluate: (e: string) => unknown }).evaluate = (e: string) => ({
+      singleNodeValue: window.document.getElementById(/'([^']+)'/.exec(e)?.[1] ?? ""),
+    });
     return {
       evaluate: async (expr: unknown) =>
         (
@@ -251,9 +255,9 @@ describe("verifyPromptSelectorCommitted reads the target field outside any trigg
       declaredFrameSelector: null,
     } as unknown as FrameTarget;
   };
-  const sel = "xpath=/html[1]/body[1]/div[1]/select[1]";
+  const sel = "xpath=//*[@id='f']";
   const html = (v: string) =>
-    `<div><select><option value="">Choose</option><option value="a" ${v}>Alpha</option></select></div>`;
+    `<div><select id="f"><option value="">Choose</option><option value="a" ${v}>Alpha</option></select></div>`;
 
   it("unchanged field value is uncommitted", async () => {
     expect(await verifyPromptSelectorCommitted(mk(html("")), sel, "Alpha", true)).toEqual({
