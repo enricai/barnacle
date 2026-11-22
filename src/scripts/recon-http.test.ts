@@ -717,6 +717,9 @@ describe("replayCapture — response shape", () => {
     expect(r?.success).toBe(false);
     expect(r?.shapeDiffers).toBe(true);
     expect(r?.error).toContain("Key-Inflection");
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("response shape differs from the browser capture")
+    );
   });
 
   it("passes when shape matches", async () => {
@@ -952,6 +955,61 @@ describe("probeIntrospection — redirects preserve method and body", () => {
       expect(existsSync(join(dir, "introspection-schema.json"))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("recon-http main() rate-limit probe continuation", () => {
+  it("keeps probing remaining targets after one target triggers 429", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    vi.resetModules();
+    const root = mkdtempSync(join(tmpdir(), "recon-http-rl-"));
+    const caps = join(root, "caps");
+    mkdirSync(caps);
+    const base = { query: null, operationName: null, variables: null, decodedParams: null };
+    for (const [i, path] of ["one", "two"].entries()) {
+      writeFileSync(
+        join(caps, `00${i + 1}.json`),
+        JSON.stringify({
+          ...base,
+          url: `https://api.example.com/${path}`,
+          method: "GET",
+          requestPostData: null,
+        })
+      );
+    }
+    const counts = new Map<string, number>();
+    const fetchSpy = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      if (u.endsWith("/robots.txt")) return new Response("", { status: 404 });
+      const n = (counts.get(u) ?? 0) + 1;
+      counts.set(u, n);
+      if (n === 1)
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      return new Response("{}", { status: u.endsWith("/one") ? 429 : 403 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    loggerStub.warn.mockClear();
+    loggerStub.info.mockClear();
+    const savedArgv = process.argv;
+    const savedOut = process.env.RECON_OUT_DIR;
+    process.env.RECON_OUT_DIR = root;
+    process.argv = ["node", "recon-http.ts", "--captures-dir", caps];
+    try {
+      await import("@/scripts/recon-http.js");
+      await vi.waitFor(() =>
+        expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining("recon-http complete"))
+      );
+      expect(counts.get("https://api.example.com/one")).toBeGreaterThanOrEqual(2);
+      expect(counts.get("https://api.example.com/two")).toBeGreaterThanOrEqual(2);
+      expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("triggered 429"));
+      expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("triggered 403"));
+    } finally {
+      process.argv = savedArgv;
+      if (savedOut === undefined) delete process.env.RECON_OUT_DIR;
+      else process.env.RECON_OUT_DIR = savedOut;
+      vi.unstubAllGlobals();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
