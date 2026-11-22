@@ -10779,6 +10779,20 @@ export function emitMultiStepExecuteHttp(
       const fieldName = headerNameToPayloadFieldName(headerName);
       perCallHeaders[headerName] = `\${payload.${fieldName}}`;
     }
+    // A text-captured multipart body (requestPostData non-null) is sent through
+    // httpClient as a string, so the captured multipart Content-Type (with the
+    // boundary the body uses) must override the JSON baseline in BASE_HEADERS.
+    if (cap.requestPostData !== null && cap.requestPostData !== undefined) {
+      const capturedCt = Object.entries(cap.requestHeaders).find(
+        ([k]) => k.toLowerCase() === "content-type"
+      )?.[1];
+      if (capturedCt?.toLowerCase().includes("multipart/")) {
+        for (const k of Object.keys(perCallHeaders)) {
+          if (k.toLowerCase() === "content-type") delete perCallHeaders[k];
+        }
+        perCallHeaders["Content-Type"] = capturedCt.replace(/[`\\]|\$\{/g, (m) => `\\${m}`);
+      }
+    }
     const headersExpr = Object.keys(perCallHeaders).length
       ? `headers: { ${Object.entries(perCallHeaders)
           .map(([k, v]) => `${JSON.stringify(k)}: \`${v}\``)
