@@ -14361,8 +14361,11 @@ export async function executeStepWithHealing(params: {
     // Step-start baseline: captured once on attempt 1 so later attempts that
     // re-click a selector resolved earlier can detect a document replaced by
     // an earlier attempt's click.
+    const attemptDocBaseline = await readFrameDocumentIdentity(
+      frameTarget ?? mainFrameTarget(page)
+    );
     if (attempt === 1) {
-      frameDocBaseline = await readFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page));
+      frameDocBaseline = attemptDocBaseline;
     }
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
@@ -16281,8 +16284,10 @@ export async function executeStepWithHealing(params: {
       record.actResultSuccess === true &&
       resolvedAction?.method === "click" &&
       resolvedAction.selector &&
-      (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
-        "replaced"
+      (await checkFrameDocumentIdentity(
+        frameTarget ?? mainFrameTarget(page),
+        attemptDocBaseline
+      )) === "replaced"
     ) {
       // The act's own click replaced the frame document: the resolved xpath
       // now names a different control, so neither click may fire.
