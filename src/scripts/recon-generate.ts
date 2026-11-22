@@ -46,13 +46,13 @@ import {
   registrableDomain,
 } from "@/recon/capture-filters";
 import type { ReconFormSchema } from "@/recon/form-schema";
-import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
-import { loadReconValueConstraints, VALUE_CONSTRAINTS_NONE } from "@/recon/load-value-constraints";
 import {
   extractHtmlIssuedTokens,
   type HtmlTokenElement,
   PATH_SEGMENT_MIN_LENGTH,
 } from "@/recon/html-state-producers";
+import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
+import { loadReconValueConstraints, VALUE_CONSTRAINTS_NONE } from "@/recon/load-value-constraints";
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
 import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/value-constraints";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
@@ -3459,7 +3459,12 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
     tokens.add(value);
   }
   for (const { value, element } of extractHtmlIssuedTokens(getCapture.responseBody)) {
-    if (value.length < (element === "path-segment" ? PATH_SEGMENT_MIN_LENGTH : ISSUED_TOKEN_MIN_LENGTH) || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+    if (
+      value.length <
+        (element === "path-segment" ? PATH_SEGMENT_MIN_LENGTH : ISSUED_TOKEN_MIN_LENGTH) ||
+      value.length > ISSUED_TOKEN_MAX_LENGTH
+    )
+      continue;
     if (/\s/.test(value)) continue;
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
