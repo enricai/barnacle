@@ -7465,13 +7465,18 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     seg.setAttribute(attr, prior ? prior + " " + token : token);
   };
   // A fieldset's direct legend names this date only when the fieldset holds
-  // exactly this group's segments; a shared fieldset labels neither group.
+  // exactly this group's segments; a shared fieldset labels neither group. A
+  // legend-less fieldset that is itself the sole owner defers to the next
+  // enclosing fieldset, which is the one that names the date.
   const soleLegend = (node, segs) => {
-    const fs = node.closest("fieldset");
-    if (!fs || spins.filter((sp) => fs.contains(sp)).length !== segs.length) return "";
-    const legend = fs.querySelector(":scope > legend");
-    if (!legend || legend.querySelector("input,[role='spinbutton']")) return "";
-    return norm(legend.textContent);
+    for (let fs = node.closest("fieldset"); fs; fs = fs.parentElement && fs.parentElement.closest("fieldset")) {
+      if (spins.filter((sp) => fs.contains(sp)).length !== segs.length) return "";
+      const legend = fs.querySelector(":scope > legend");
+      if (!legend || legend.querySelector("input,[role='spinbutton']")) continue;
+      const text = norm(legend.textContent);
+      if (keyOf(text)) return text;
+    }
+    return "";
   };
   const addGroup = (segs, box, nested, outer) => {
     const gi = groups.length;

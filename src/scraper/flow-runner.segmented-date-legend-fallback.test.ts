@@ -72,8 +72,9 @@ describe("segmented date legend fallback", () => {
 
   it("lets a legend-less inner fieldset inherit the sole-owner outer fieldset legend", () => {
     const groups = enumerate(
-      `<fieldset><legend>${Q}</legend><fieldset><div>${spin("Month", 12)}${spin("Day", 31)}${spin("Year", 9999)}</div></fieldset></fieldset>`
+      `<fieldset><legend>${Q}</legend><fieldset><div role="group" aria-labelledby="gone">${spin("Month", 12)}${spin("Day", 31)}${spin("Year", 9999)}</div></fieldset></fieldset>`
     );
+    expect(groups[0]?.label).toBe(Q);
     expect(resolveSegmentedDateGroup(`Type '12/02/2026' into '${Q}'`, groups)).toBe(0);
   });
 });
