@@ -828,7 +828,10 @@ export function deriveFillLabelField(instruction: string): string | null {
 
 /** Overlay persona values persisted by recon-browser (`persona-env.json`) under
  * `env`; real env values keep precedence. */
-export function withPersistedPersonaEnv(runRoot: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function withPersistedPersonaEnv(
+  runRoot: string,
+  env: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv {
   const file = join(runRoot, "persona-env.json");
   if (!existsSync(file)) return env;
   try {
