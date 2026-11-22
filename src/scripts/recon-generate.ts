@@ -2030,7 +2030,16 @@ export function addClickUrlPathBindings(
     return into;
   }
   u.pathname.split("/").forEach((seg, i) => {
-    if (!isStateLikeSegment(seg) || into.has(seg)) return;
+    // Same collision floor as extractEntryUrlParams (a short value matches arbitrary
+    // substrings of later bodies/URLs), and require a digit: a purely alphabetic
+    // hyphenated segment (`create-order`) is an endpoint name, not a job identifier.
+    if (
+      !isStateLikeSegment(seg) ||
+      seg.length < MIN_STATE_VALUE_LENGTH ||
+      !/\d/.test(seg) ||
+      into.has(seg)
+    )
+      return;
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
   return into;
@@ -18873,7 +18882,7 @@ export function unreadContractSchemaFieldChecklistLines(contractCode: string): s
     .filter((field) => !new RegExp(`payload\\.${field}(?![\\w$])`).test(emitted))
     .map(
       (field) =>
-        `Payload field ${field} is declared by the contract schema but read by no emitted request — the recon's frozen value is sent instead; bind it or confirm it is unused`
+        `Payload field ${field} is declared by the contract schema but read by no emitted request — the recon's recorded value is sent instead; bind it or confirm it is unused`
     );
 }
 
@@ -21022,7 +21031,21 @@ export async function main(): Promise<void> {
       flowSteps.some((st) => typeof st === "object" && st.submitStep === true);
     const preGaps = detectContractGaps(actionSteps, submitDeclared, matchesDeclaredSubmit);
     const failClosedReasons: string[] = [];
-    if (isSubmissionFlow && preGaps.truncatedSequence)
+    // A read-only (all-GET) sequence whose declared submit pattern targets a GET
+    // is a read flow, not a write submission cut short — leave it on executeHttp.
+    if (
+      isSubmissionFlow &&
+      preGaps.truncatedSequence &&
+      actionSteps.some((s) => s.capture.method.toUpperCase() !== "GET") &&
+      // A declared pattern that many (3+) recorded captures match is a repeated
+      // read endpoint (samples of one read), not a single submit the sequence
+      // cut short — the selection path owns that case.
+      !(
+        submitPatterns !== null &&
+        (submitPatterns.endpoint !== null || submitPatterns.body !== null) &&
+        activeCaptures.filter(matchesDeclaredSubmit).length >= 3
+      )
+    )
       failClosedReasons.push("the action sequence stops short of the flow's submit step");
     if (isSubmissionFlow && preGaps.bodylessUploadSteps > 0)
       failClosedReasons.push("an upload step's request body was unavailable and cannot be bound");
