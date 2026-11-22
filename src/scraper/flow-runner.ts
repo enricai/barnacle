@@ -17543,7 +17543,10 @@ export async function executeStepWithHealing(params: {
               ),
               bytesDelta: retryPost.bodyHtmlLength - pre.bodyHtmlLength,
               textChanged: hasVisibleTextChanged(pre, retryPost),
-              textShrunk: isVisibleTextShrunk(pre.visibleTextSignature, retryPost.visibleTextSignature),
+              textShrunk: isVisibleTextShrunk(
+                pre.visibleTextSignature,
+                retryPost.visibleTextSignature
+              ),
             });
           let retryVerified =
             !clickBlockedByDisabled &&
