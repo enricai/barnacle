@@ -449,7 +449,7 @@ export function wireSignalCapture(
     // (e.g. a POST answered 302 with a Location header) before it is replaced.
     if (prior && params.redirectResponse) {
       prior.responseStatus = params.redirectResponse.status;
-      prior.responseHeaders = params.redirectResponse.headers as Record<string, string>;
+      prior.responseHeaders = params.redirectResponse.headers ?? {};
       const hop = hopOf.get(params.requestId) ?? 0;
       hopOf.set(params.requestId, hop + 1);
       // CDP documents that a hop may have no extra-info event at all; the
@@ -460,13 +460,24 @@ export function wireSignalCapture(
           seq.set(params.requestId, Math.max(seq.get(params.requestId) ?? 0, hop + 1));
         }
       }
+      // Wait unless the browser declared there is no extra-info for this hop.
       const expectExtra =
-        params.redirectHasExtraInfo === true && (respExtraSeq.get(params.requestId) ?? 0) <= hop;
+        params.redirectHasExtraInfo !== false && (respExtraSeq.get(params.requestId) ?? 0) <= hop;
+      pendingHops.set(params.requestId, (pendingHops.get(params.requestId) ?? 0) + 1);
       void (async () => {
-        // The hop's response extra-info (Set-Cookie) may land after this event.
-        if (expectExtra) await waitForHopExtra(hopKey(params.requestId, hop));
-        foldResponseExtras(prior, params.requestId, hop);
-        await finalizeCapture(prior, params.requestId, false);
+        try {
+          // The hop's response extra-info (Set-Cookie) may land after this event.
+          if (expectExtra) await waitForHopExtra(hopKey(params.requestId, hop));
+          foldResponseExtras(prior, params.requestId, hop);
+          await finalizeCapture(prior, params.requestId, false);
+        } finally {
+          const left = (pendingHops.get(params.requestId) ?? 1) - 1;
+          if (left > 0) pendingHops.set(params.requestId, left);
+          else {
+            pendingHops.delete(params.requestId);
+            if (finishedIds.delete(params.requestId)) dropRequestState(params.requestId);
+          }
+        }
       })().catch(() => {});
     }
     const inline = params.request.postData;
@@ -526,6 +537,11 @@ export function wireSignalCapture(
   const respExtraSeq = new Map<string, number>();
   const reqExtraSeq = new Map<string, number>();
   const hopOf = new Map<string, number>();
+  // Redirect hops whose finalizer is still running, per requestId, and ids
+  // whose loadingFinished already fired: their state is dropped once the last
+  // pending hop finalizer completes, so it never loses a hop's buffers.
+  const pendingHops = new Map<string, number>();
+  const finishedIds = new Set<string>();
   const bufferExtra = (
     seq: Map<string, number>,
     buf: Map<string, Record<string, string>>,
@@ -590,6 +606,7 @@ export function wireSignalCapture(
     const req = inFlight.get(params.requestId);
     if (!req) return;
     inFlight.delete(params.requestId);
+    const finalHop = hopOf.get(params.requestId) ?? 0;
     foldResponseExtras(req, params.requestId);
     // Final hop: also fold every leftover buffer for this id (in hop order).
     // Extra-info counts can disagree with real hops (several events per hop, or
@@ -598,7 +615,7 @@ export function wireSignalCapture(
       const pre = `${params.requestId}#`;
       let acc: Record<string, string> = {};
       for (const k of [...m.keys()]
-        .filter((x) => x.startsWith(pre))
+        .filter((x) => x.startsWith(pre) && Number(x.slice(pre.length)) >= finalHop)
         .sort((a, b) => Number(a.slice(pre.length)) - Number(b.slice(pre.length)))) {
         acc = mergeResponseHeaders(acc, m.get(k));
       }
@@ -607,7 +624,10 @@ export function wireSignalCapture(
     req.responseHeaders = mergeResponseHeaders(req.responseHeaders, leftover(extraResponseHeaders));
     req.requestHeaders = mergeResponseHeaders(req.requestHeaders, leftover(extraRequestHeaders));
     // Drain every remaining buffer for this id so nothing leaks per run.
-    dropRequestState(params.requestId);
+    // Hops below the final one that a pending redirect finalizer owns are kept
+    // until it completes.
+    if (pendingHops.has(params.requestId)) finishedIds.add(params.requestId);
+    else dropRequestState(params.requestId);
     await finalizeCapture(req, params.requestId, true);
   };
 
