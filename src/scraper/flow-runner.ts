@@ -465,6 +465,49 @@ export function wireSignalCapture(
     if (!entry.requestPostData) entry.requestPostData = REQUEST_BODY_UNAVAILABLE;
   };
 
+  // The verifier reads `signalCounter` (not `counter`) so background polls
+  // and page-load chrome don't poison the "did this action cause something"
+  // signal. We approximate "action-driven" with two closed-set
+  // discriminators:
+  //   1. Non-GET method (real form submits/uploads/state-changes are
+  //      POST/PUT/PATCH/DELETE; GETs are page-load chrome and polls).
+  //   2. Same-origin as the page. Cross-origin POSTs are tracking-pixel
+  //      beacons (analytics, ad networks, bot-protection telemetry) that
+  //      fire on any click. Counting them poisons the verifier: a
+  //      submit-button click that fired only telemetry would be
+  //      indistinguishable from one that fired the real submit XHR, and
+  //      the cascade would silently declare victory while no actual
+  //      submission happened.
+  //
+  // The method discriminator replaces a prior URL-shape regex
+  // (POLLING_URL_PATTERNS) that misclassified jQuery-cache-busted
+  // page-load GETs as polls. See feedback_no_regex_open_sets — URL
+  // classification is an open-set problem; HTTP method and origin
+  // are closed-set discriminators.
+  //
+  // Filename indexing stays on `counter` so polls and cross-origin
+  // captures still get unique filenames on disk.
+  //
+  // Decided once per hop, when its response completes (a redirected hop at
+  // its redirect event, before its capture waits on extra-info), so the
+  // verifier sees the hop's signal as soon as the hop has happened.
+  const creditSignal = (req: InFlightRequest): boolean => {
+    if (req.actionSignal !== undefined) return req.actionSignal;
+    let sameSite = false;
+    try {
+      const pageHost = new URL(getCurrentPageOrigin()).hostname;
+      const reqHost = new URL(req.url).hostname;
+      // Same-site (registrable domain), not strict origin: a redirected
+      // POST hop may land on a sibling subdomain of the page.
+      sameSite = pageHost !== "" && sameSiteHost(reqHost, pageHost);
+    } catch {
+      // Malformed URL or empty page origin — treat as not same-site.
+    }
+    req.actionSignal = isHttpUrl(req.url) && req.method !== "GET" && sameSite;
+    if (req.actionSignal) signalCounter.n++;
+    return req.actionSignal;
+  };
+
   // Per-requestId chain of detached redirect-hop finalizations; the final hop
   // awaits it so captures/counter indices follow network order.
   const hopChains = new Map<string, Promise<void>>();
@@ -476,6 +519,7 @@ export function wireSignalCapture(
     if (prior && params.redirectResponse) {
       prior.responseStatus = params.redirectResponse.status;
       prior.responseHeaders = params.redirectResponse.headers ?? {};
+      creditSignal(prior);
       const hop = hopOf.get(params.requestId) ?? 0;
       hopOf.set(params.requestId, hop + 1);
       // CDP documents that a hop may have no extra-info event at all; the
@@ -722,41 +766,7 @@ export function wireSignalCapture(
     }
 
     const idx = String(counter.n++).padStart(3, "0");
-    // The verifier reads `signalCounter` (not `counter`) so background polls
-    // and page-load chrome don't poison the "did this action cause something"
-    // signal. We approximate "action-driven" with two closed-set
-    // discriminators:
-    //   1. Non-GET method (real form submits/uploads/state-changes are
-    //      POST/PUT/PATCH/DELETE; GETs are page-load chrome and polls).
-    //   2. Same-origin as the page. Cross-origin POSTs are tracking-pixel
-    //      beacons (analytics, ad networks, bot-protection telemetry) that
-    //      fire on any click. Counting them poisons the verifier: a
-    //      submit-button click that fired only telemetry would be
-    //      indistinguishable from one that fired the real submit XHR, and
-    //      the cascade would silently declare victory while no actual
-    //      submission happened.
-    //
-    // The method discriminator replaces a prior URL-shape regex
-    // (POLLING_URL_PATTERNS) that misclassified jQuery-cache-busted
-    // page-load GETs as polls. See feedback_no_regex_open_sets — URL
-    // classification is an open-set problem; HTTP method and origin
-    // are closed-set discriminators.
-    //
-    // Filename indexing stays on `counter` so polls and cross-origin
-    // captures still get unique filenames on disk.
-    let sameOrigin = false;
-    try {
-      const pageHost = new URL(getCurrentPageOrigin()).hostname;
-      const reqHost = new URL(req.url).hostname;
-      // Same-site (registrable domain), not strict origin: a redirected
-      // POST hop may land on a sibling subdomain of the page.
-      sameOrigin = pageHost !== "" && sameSiteHost(reqHost, pageHost);
-    } catch {
-      // Malformed URL or empty page origin — treat as not same-site.
-    }
-    if (req.method !== "GET" && sameOrigin) {
-      signalCounter.n++;
-    }
+    const actionSignal = creditSignal(req);
     // Capture filename uses <counter>-<phase>-<unix-ms>-<short-hash> to
     // guarantee bounded length regardless of URL shape. Previously we used
     // the URL's path tail verbatim, which crashed the run with ENAMETOOLONG
@@ -811,7 +821,7 @@ export function wireSignalCapture(
     // RECENT_CAPTURES_WINDOW) doesn't get washed out by SPA chunk loads or GA
     // pings between meaningful mutations. Same discriminator signalCounter
     // uses for the per-step verifier.
-    if (capture.method !== "GET" && sameOrigin) {
+    if (actionSignal) {
       recentCaptureMeta.push({
         method: capture.method,
         status: capture.status,
@@ -1539,6 +1549,8 @@ type InFlightRequest = {
   bodyPending?: Promise<void>;
   responseStatus: number;
   responseHeaders: Record<string, string>;
+  /** Whether this hop counts toward `signalCounter`; decided once, when its response completes. */
+  actionSignal?: boolean;
 };
 
 /**
