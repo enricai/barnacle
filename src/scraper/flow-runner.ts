@@ -13142,8 +13142,9 @@ export async function executeStepWithHealing(params: {
   }
   // Frame-path counterpart of the main-frame `vetObserveCandidates` check: a
   // click step that quotes a control must only actuate a frame candidate whose
-  // accessible text names a quoted phrase. Returns true when the walk must be
-  // refused. fill/select keep their own guards; value-quoting steps are exempt.
+  // accessible text names a quoted phrase. Returns the candidates that do (empty
+  // when the walk must be refused). fill/select keep their own guards;
+  // value-quoting steps are exempt.
   const narrowFrameClickCandidates = <T extends Parameters<typeof vetFrameCandidates>[0][number]>(
     frameCandidates: T[]
   ): T[] => {
@@ -13151,11 +13152,15 @@ export async function executeStepWithHealing(params: {
     if (stepQuotesValueNotControlName(step)) return frameCandidates;
     const phrases = extractTaggedPhrases(step);
     if (phrases.length === 0) return frameCandidates;
-    const verdict = vetFrameCandidates(frameCandidates, phrases);
-    // Keep only candidates that name a quoted phrase so a not-actionable
-    // rejection can never fall through to an unrelated control.
-    if (verdict.refuse || !verdict.candidate) return [];
-    return frameCandidates.filter((c) => !vetFrameCandidates([c], phrases).refuse);
+    // A step that quotes a control may only actuate a candidate that names it:
+    // a candidate scoring 0 (unrelated text, or no accessible text at all) is
+    // as unrelated as a vetoed one. With only negated phrases there is nothing
+    // to name, so only the veto applies.
+    const namesControl = phrases.some((p) => !p.negated);
+    return frameCandidates.filter((c) => {
+      const verdict = vetFrameCandidates([c], phrases);
+      return !verdict.refuse && (!namesControl || verdict.score > 0);
+    });
   };
   /**
    * Re-resolves a frame that lost the attach race at step entry —

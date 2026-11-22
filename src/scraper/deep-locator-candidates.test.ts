@@ -885,6 +885,19 @@ describe("extractTaggedPhrases contractions", () => {
     ]);
   });
 
+  it("extracts a double-quoted phrase and tags its negation", () => {
+    expect(extractTaggedPhrases('click "Sign In", do not click "Cancel"')).toEqual([
+      { text: "Sign In", negated: false },
+      { text: "Cancel", negated: true },
+    ]);
+  });
+
+  it("treats a double quote inside a single-quoted span as that span's content", () => {
+    expect(extractTaggedPhrases(`click 'Say "hi"' now`)).toEqual([
+      { text: 'Say "hi"', negated: false },
+    ]);
+  });
+
   it("leaves plain quoted phrases unchanged", () => {
     expect(extractTaggedPhrases("click 'Sign In'")).toEqual([{ text: "Sign In", negated: false }]);
   });

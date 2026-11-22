@@ -157,6 +157,9 @@ function candidateSelector(hopSelector: string, index: number): string {
  */
 const NEGATION_MARKERS = /\b(?:do\s+not|don't|never|avoid)\b/gi;
 
+/** A double-quoted span in instruction copy; see {@link extractTaggedPhrases}. */
+const DOUBLE_QUOTED_SPAN = /"([^"]+)"/g;
+
 /** One quoted phrase from an instruction, tagged with whether a negation marker (`NEGATION_MARKERS`) governs it. See {@link extractTaggedPhrases}. */
 export interface TaggedPhrase {
   text: string;
@@ -164,7 +167,7 @@ export interface TaggedPhrase {
 }
 
 /**
- * Extracts every single-quoted phrase from `instruction`, tagging each as
+ * Extracts every single- or double-quoted phrase from `instruction`, tagging each as
  * negated when a negation marker (`NEGATION_MARKERS`) precedes it within the
  * same sentence — flow instructions keep each "Do NOT click 'X', 'Y', ..."
  * clause as one sentence listing every negated phrase, so a sentence
@@ -179,7 +182,15 @@ export interface TaggedPhrase {
  * duplicating this logic.
  */
 export function extractTaggedPhrases(instruction: string): TaggedPhrase[] {
-  const spans = findQuotedSpans(instruction);
+  const singleSpans = findQuotedSpans(instruction);
+  // A double-quoted phrase names a control just as a single-quoted one does; one
+  // that sits inside a single-quoted span is that span's own content, not a phrase.
+  const doubleSpans = Array.from(instruction.matchAll(DOUBLE_QUOTED_SPAN), (match) => ({
+    text: match[1] ?? "",
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  })).filter((d) => !singleSpans.some((single) => d.start < single.end && single.start < d.end));
+  const spans = [...singleSpans, ...doubleSpans].sort((a, b) => a.start - b.start);
   const negationStarts = [...instruction.matchAll(NEGATION_MARKERS)]
     .map((m) => m.index)
     .filter((idx) => !spans.some((span) => idx >= span.start && idx < span.end));

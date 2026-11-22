@@ -101,7 +101,7 @@ const ACCEPT_STEP = "If a cookie consent banner is shown, click 'Accept' to dism
 const NEXT_STEP =
   "Click the 'Next' button to submit the email and advance to the Candidate Profile step";
 
-async function run(instruction: string, texts: string[]) {
+async function run(instruction: string, texts: string[], optional = false) {
   const urls = { current: "https://apply.example.com/jobs/1/apply" };
   const frame = new Map();
   const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
@@ -136,7 +136,7 @@ async function run(instruction: string, texts: string[]) {
   await runHealingFlow({
     stagehand: makeStagehand(),
     page,
-    steps: [{ instruction, optional: false, upload: false, submitStep: false }],
+    steps: [{ instruction, optional, upload: false, submitStep: false }],
     logger,
     anthropic: null,
     rephraseModel: null,
@@ -180,5 +180,34 @@ describe("flow-runner frame click quoted-target veto", () => {
       ["Skip to Main Content"]
     );
     expect(info.some((m) => /no frame candidate names a phrase/.test(m))).toBe(false);
+  });
+
+  it("refuses an optional 'Accept' step when no candidate names it", async () => {
+    const { clicks } = await run(ACCEPT_STEP, ["Skip to Main Content", "Privacy Policy"], true);
+    expect(clicks()).toBe(0);
+  });
+
+  it("refuses a double-quoted label that no candidate names", async () => {
+    const { clicks, info } = await run('Click "Accept" to dismiss the banner', [
+      "Skip to Main Content",
+      "Privacy Policy",
+    ]);
+    expect(clicks()).toBe(0);
+    expect(info.some((m) => REFUSAL.test(m))).toBe(true);
+  });
+
+  it("refuses a lone candidate that does not name the quoted label", async () => {
+    const { clicks } = await run("Click 'Accept'", ["Skip to Main Content"]);
+    expect(clicks()).toBe(0);
+  });
+
+  it("refuses a candidate with no accessible text", async () => {
+    const { clicks } = await run("Click 'Accept'", [""]);
+    expect(clicks()).toBe(0);
+  });
+
+  it("never clicks a submit-like first control for the 'Next' step", async () => {
+    const { clicks } = await run(NEXT_STEP, ["Submit Profile", "Application FAQs"]);
+    expect(clicks()).toBe(0);
   });
 });
