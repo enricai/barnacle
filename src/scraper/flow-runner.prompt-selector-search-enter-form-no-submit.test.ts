@@ -88,7 +88,7 @@ function enterKeyDowns(cdpEvents: { method: string; params: unknown }[]): number
   }).length;
 }
 
-async function run(html: string) {
+async function run(html: string, stop?: "stopPropagation" | "stopImmediatePropagation") {
   const harness = buildPromptWidgetHarness({
     html,
     popupByWidgetId: {
@@ -102,6 +102,12 @@ async function run(html: string) {
     closest(s: string): { dispatchEvent(e: unknown): boolean } | null;
   };
 
+  if (stop) {
+    (input as unknown as { addEventListener(t: string, h: (e: Event) => void): void }).addEventListener(
+      "keydown",
+      (e) => e[stop]()
+    );
+  }
   const keydowns: { defaultPrevented: boolean }[] = [];
   let submits = 0;
   doc.addEventListener("submit", ((e: { preventDefault(): void }) => {
@@ -172,6 +178,17 @@ describe("flow-runner/tryPromptSelectorPrimitive search Enter inside a form", ()
       (harness.window as unknown as { __leerieNoImplicitSubmit?: unknown }).__leerieNoImplicitSubmit
     ).toBeUndefined();
   });
+
+  it.each(["stopPropagation", "stopImmediatePropagation"] as const)(
+    "cancels implicit submission even when a widget handler calls %s",
+    async (stop) => {
+      const { result, keydowns, submits, leftoverPrevented } = await run(FORM_HTML, stop);
+      expect(result).toBe("completed");
+      expect(keydowns).toEqual([{ defaultPrevented: true }]);
+      expect(submits()).toBe(0);
+      expect(leftoverPrevented).toBe(false);
+    }
+  );
 
   it("still dispatches Enter without a form", async () => {
     const { result, harness, keydowns, submits } = await run(NO_FORM_HTML);
