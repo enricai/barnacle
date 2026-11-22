@@ -59,4 +59,10 @@ describe("captcha detection", () => {
     expect(run("a=b")).toEqual([]);
     expect(run(JSON.stringify({ a: "b" }))).toEqual([]);
   });
+  it("finds captcha fields nested inside JSON arrays", () => {
+    const body = JSON.stringify({ items: [{ a: 1 }, [{ "g-recaptcha-response": "tok" }]] });
+    expect(findCaptchaResponseFields(body)).toEqual([
+      { name: "g-recaptcha-response", value: "tok" },
+    ]);
+  });
 });
