@@ -18929,6 +18929,7 @@ export function emitConfigManifest(opts: {
 
   const steps = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
+    const frameSelector = isObj ? step.frameSelector : undefined;
     const instruction = isObj ? step.step : step;
     // A config-only manifest has no compiled code to mint a throwaway credential
     // at runtime (unlike emitBrowserFlowTs's generateThrowawayPassword() splice),
@@ -18943,12 +18944,13 @@ export function emitConfigManifest(opts: {
       const submitStep = isObj ? step.submitStep === true : false;
       const emailStep = isObj ? step.emailStep === true : false;
       const emailStepConfig = isObj ? step.emailStepConfig : undefined;
-      if (!optional && !upload && !submitStep && !emailStep) return rewritten;
+      if (!optional && !upload && !submitStep && !emailStep && !frameSelector) return rewritten;
       return {
         step: rewritten,
         optional,
         upload,
         submitStep,
+        ...(frameSelector ? { frameSelector } : {}),
         ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
       };
     }
@@ -18967,12 +18969,13 @@ export function emitConfigManifest(opts: {
     const submitStep = isObj ? step.submitStep === true : false;
     const emailStep = isObj ? step.emailStep === true : false;
     const emailStepConfig = isObj ? step.emailStepConfig : undefined;
-    if (!optional && !upload && !submitStep && !emailStep) return rewritten;
+    if (!optional && !upload && !submitStep && !emailStep && !frameSelector) return rewritten;
     return {
       step: rewritten,
       optional,
       upload,
       submitStep,
+      ...(frameSelector ? { frameSelector } : {}),
       ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
     };
   });
@@ -18992,6 +18995,7 @@ export function emitConfigManifest(opts: {
             optional: lastStep.optional,
             upload: lastStep.upload,
             submitStep: true,
+            ...(lastStep.frameSelector ? { frameSelector: lastStep.frameSelector } : {}),
           };
   }
 
