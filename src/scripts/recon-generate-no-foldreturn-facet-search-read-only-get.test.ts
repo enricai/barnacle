@@ -46,7 +46,15 @@ function facetSearchCaptures() {
         responseBody: {
           results: {
             items: [
-              { id: "I1", brandCode: "AA", shipCode: "CB", port: "MIA", durdays: 7, size: 7, imageUrl: "https://img.example.com/1.png" },
+              {
+                id: "I1",
+                brandCode: "AA",
+                shipCode: "CB",
+                port: "MIA",
+                durdays: 7,
+                size: 7,
+                imageUrl: "https://img.example.com/1.png",
+              },
               { id: "I2", brandCode: "BB", size: 5, imageUrl: "https://img.example.com/2.png" },
             ],
           },
