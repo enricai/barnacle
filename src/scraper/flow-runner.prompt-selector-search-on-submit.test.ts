@@ -468,7 +468,7 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
   });
   it("never sends Enter when the implicit-submit guard cannot be installed", async () => {
     const stagehandAct = vi.fn();
-    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+    const { page, target, cdpEvents } = buildPromptWidgetHarness({
       html: SEARCH_ON_SUBMIT_HTML,
       popupByWidgetId: { "country-widget": { options: OPTIONS, searchOnSubmit: true } },
     });
