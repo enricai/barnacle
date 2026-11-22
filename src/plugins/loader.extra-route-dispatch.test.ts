@@ -10,7 +10,19 @@ import { getLogger } from "@/lib/logging";
 import { registerRoutes } from "@/plugins/loader";
 import type { SitePlugin } from "@/site-plugin";
 
-describe("registerRoutes — extra route with dispatch: true", () => {
+const mockCaptureSubmissionEnvelope = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("@/lib/telemetry/submission-capture", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/telemetry/submission-capture")>()),
+  captureSubmissionEnvelope: mockCaptureSubmissionEnvelope,
+}));
+
+const mockCaptureBeaconEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("@/lib/telemetry/beacon-capture", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/telemetry/beacon-capture")>()),
+  captureBeaconEvent: mockCaptureBeaconEvent,
+}));
+
+describe("registerRoutes — opt-in dispatch on extra routes", () => {
   const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
   const saved = { b: process.env.DEV_BYPASS_AUTH, n: process.env.NODE_ENV };
 
@@ -23,47 +35,62 @@ describe("registerRoutes — extra route with dispatch: true", () => {
     else process.env.DEV_BYPASS_AUTH = saved.b;
     if (saved.n === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = saved.n;
+    vi.clearAllMocks();
   });
 
-  it("runs execute via dispatch and never calls the route handler", async () => {
-    const handler = vi.fn();
-    const execute = vi.fn();
-    const executeHttp = vi.fn(async () => ({ data: { ok: 1 } }));
+  async function appWith(dispatch: boolean | undefined) {
+    const handler = vi.fn(async () => ({ from: "handler" }));
+    const executeHttp = vi.fn(async (_body: unknown) => ({ data: { from: "executeHttp" } }));
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
-        siteId: "dispatch-site",
-        displayName: "dispatch-site",
-        bodySchema: z.object({}),
+        siteId: "example-site",
+        displayName: "example-site",
+        bodySchema: z.looseObject({}),
         responseSchema: z.unknown(),
         extraRoutes: [
-          {
-            method: "post",
-            path: "/v1/dispatch-site/other",
-            dispatch: true,
-            handler,
-          },
+          { method: "post", path: "/v1/example-site/apply", handler, dispatch, envelope: false },
         ],
       },
-      execute,
+      execute: vi.fn(),
       executeHttp,
     } as unknown as SitePlugin<unknown, unknown>;
-    const app = Fastify({
-      loggerInstance: getLogger({ name: "loader-extra-route-dispatch-test" }),
-    });
+    const app = Fastify({ loggerInstance: getLogger({ name: "loader-extra-route-dispatch-test" }) });
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     await app.register(errorHandlerPlugin);
     await app.register(authPlugin);
     await registerRoutes(app, cfgStub, [plugin]);
     await app.ready();
-    const res = await app.inject({
-      method: "POST",
-      url: "/v1/dispatch-site/other",
-      payload: {},
-    });
+    return { app, handler, executeHttp };
+  }
+
+  const payload = { Email: "user@example.com", reply1: "yes", reply2: "no" };
+
+  it("with dispatch: true runs executeHttp with the replies and never the handler", async () => {
+    const { app, handler, executeHttp } = await appWith(true);
+
+    const res = await app.inject({ method: "POST", url: "/v1/example-site/apply", payload });
+
+    expect(res.statusCode).toBe(200);
     expect(handler).not.toHaveBeenCalled();
-    expect(executeHttp).toHaveBeenCalled();
-    expect(res.json()).toMatchObject({ ok: 1 });
+    expect(executeHttp).toHaveBeenCalledTimes(1);
+    expect(executeHttp.mock.calls[0]?.[0]).toMatchObject(payload);
+    const json = res.json();
+    expect(json.from).toBe("executeHttp");
+    expect(json.status).toEqual(
+      expect.objectContaining({ httpStatus: expect.any(String), details: expect.any(Array) })
+    );
+    await app.close();
+  });
+
+  it("without the flag runs the handler and not the dispatch pipeline", async () => {
+    const { app, handler, executeHttp } = await appWith(undefined);
+
+    const res = await app.inject({ method: "POST", url: "/v1/example-site/apply", payload });
+
+    expect(res.statusCode).toBe(200);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(executeHttp).not.toHaveBeenCalled();
     await app.close();
   });
 });
