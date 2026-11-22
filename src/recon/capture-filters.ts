@@ -1436,3 +1436,53 @@ export function isAllowedFixtureHost(
   if (!allowed) return false;
   return primaryHost === null || host === primaryHost.toLowerCase();
 }
+
+/**
+ * Hostnames the walked flow navigated to: the `src` of an `<iframe>` and the
+ * `action` of a `<form>` found in any HTML string response body. Only
+ * absolute http(s) URLs yield a host (relative ones stay on the page's own
+ * host). Used by the action-sequence gate to admit same-registrable-domain
+ * sibling hosts a submission flow was actually sent to, without loosening
+ * {@link isAllowedFixtureHost} for any other caller.
+ */
+export function extractNavigatedHostnames(bodies: unknown[]): Set<string> {
+  const out = new Set<string>();
+  const tagRx = /<(iframe|form)\b[^>]*>/gi;
+  for (const body of bodies) {
+    if (typeof body !== "string" || !body.includes("<")) continue;
+    for (const m of body.matchAll(tagRx)) {
+      const attrName = m[1]!.toLowerCase() === "iframe" ? "src" : "action";
+      const a = new RegExp(`\\s${attrName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(
+        m[0]
+      );
+      const raw = (a?.[1] ?? a?.[2] ?? a?.[3] ?? "").replace(/&amp;/gi, "&").trim();
+      if (!/^https?:\/\//i.test(raw) && !raw.startsWith("//")) continue;
+      try {
+        out.add(new URL(raw.startsWith("//") ? `https:${raw}` : raw).hostname.toLowerCase());
+      } catch {
+        /* ignore malformed */
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * True when `hostname` is a navigated sibling host: one the flow navigated to
+ * ({@link extractNavigatedHostnames}) that shares a registrable domain with
+ * the flow's own-backend hosts (or `fallbackDomain`). Independent of
+ * `primaryHost`, so a sibling is admitted where the strict primary-host check
+ * would drop it; an unrelated registrable domain never qualifies.
+ */
+export function isNavigatedSiblingHost(
+  hostname: string,
+  navigatedHosts: Set<string>,
+  ownBackendHostnames: string[],
+  fallbackDomain: string | null
+): boolean {
+  const host = hostname.toLowerCase();
+  if (!navigatedHosts.has(host)) return false;
+  const reg = registrableDomain(host);
+  if (fallbackDomain !== null && registrableDomain(fallbackDomain) === reg) return true;
+  return ownBackendHostnames.some((h) => registrableDomain(h) === reg);
+}

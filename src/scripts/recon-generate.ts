@@ -32,6 +32,8 @@ import { findCaptchaResponseFields } from "@/recon/captcha-detect";
 import {
   hasNoBusinessRelevantResponseState,
   isAllowedFixtureHost,
+  extractNavigatedHostnames,
+  isNavigatedSiblingHost,
   isNoiseUrl,
   isSamePathFamily,
   isServerRenderedFormSubmit,
@@ -3669,6 +3671,7 @@ export function extractActionSequence(
       !matchesFoldReturn(c) &&
       resolvesResultsArray(c)
   );
+  const navigatedHosts = extractNavigatedHostnames(captures.map((c) => c.responseBody));
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture, index }) => {
@@ -3694,6 +3697,15 @@ export function extractActionSequence(
           ownBackendHostnames,
           fallbackDomain,
           primaryHost
+        ) &&
+        !(
+          capture.method !== "GET" &&
+          isNavigatedSiblingHost(
+            captureHostname(capture.url),
+            navigatedHosts,
+            ownBackendHostnames,
+            fallbackDomain
+          )
         )
       )
         return false;
@@ -7762,7 +7774,14 @@ export function compileActionSteps(
     } catch {
       currentHost = null;
     }
-    const isCrossDomain = lastHost !== null && currentHost !== null && lastHost !== currentHost;
+    // Same-registrable-domain sibling hosts (admitted by the action-sequence gate
+    // via a navigated iframe/form action) are not a cross-domain hop.
+    const isCrossDomain =
+      lastHost !== null &&
+      currentHost !== null &&
+      lastHost !== currentHost &&
+      registrableDomain(lastHost.replace(/:\d+$/, "")) !==
+        registrableDomain(currentHost.replace(/:\d+$/, ""));
     lastHost = currentHost;
 
     // Multipart steps are emitted through a path that cannot read the HTML
