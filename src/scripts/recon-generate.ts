@@ -35,6 +35,7 @@ import {
   isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
+  isServerRenderedFormSubmit,
   isZeroVarianceRepeatCapture,
   matchesAnyTelemetryPattern,
   parsedOperationName,
@@ -3641,7 +3642,8 @@ export function extractActionSequence(
         !issuesTokenReusedLater(captures, index)
       )
         return false;
-      if (capture.status < 200 || capture.status >= 300) return false;
+      if ((capture.status < 200 || capture.status >= 300) && !isServerRenderedFormSubmit(capture))
+        return false;
       if (isNoiseUrl(capture.url)) return false;
       if (index !== firstPrimaryIndex && isZeroVarianceRepeatCapture(capture, captures))
         return false;
