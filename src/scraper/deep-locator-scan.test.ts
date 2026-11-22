@@ -9,11 +9,14 @@ import {
 import {
   buildClickFrameCandidateExpr,
   buildFillFrameCandidateExpr,
+  buildReadBackFrameCandidateExpr,
   buildScanFrameCandidatesExpr,
   buildSelectFrameCandidateExpr,
+  FILLABLE_CANDIDATE_SELECTOR,
   type FrameCandidateClickResult,
   type FrameCandidateScanResult,
   type FrameCandidateWriteResult,
+  INTERACTIVE_CANDIDATE_SELECTOR,
   isNodeNotActionableError,
 } from "@/scraper/deep-locator-scan";
 
@@ -1185,5 +1188,92 @@ describe("deep-locator-scan/isNodeNotActionableError", () => {
 
   it("returns false for a non-Error value", () => {
     expect(isNodeNotActionableError("-32000 Node does not have a layout object")).toBe(false);
+  });
+});
+
+describe("deep-locator-scan label-vs-control resolution (happy-dom)", () => {
+  const MARKUP =
+    '<label tabindex="-1" id="label_rcf_pw2" for="pw2">Password (Re-enter)</label> <input type="password" id="pw2" autocomplete="new-password">';
+
+  /** Builds a happy-dom frame with the markup and evaluates `expr` against it, exposing the window's prototypes/Event the expressions reference as globals. */
+  async function run(build: (win: import("happy-dom").Window) => string): Promise<{
+    result: unknown;
+    input: { value: string };
+  }> {
+    const { Window } = await import("happy-dom");
+    const win = new Window();
+    win.document.body.innerHTML = MARKUP;
+    const input = win.document.getElementById("pw2") as unknown as { value: string };
+    for (const el of win.document.querySelectorAll("label, input")) {
+      (el as unknown as { getBoundingClientRect: () => unknown }).getBoundingClientRect = () => ({
+        width: 100,
+        height: 20,
+        top: 0,
+        left: 0,
+        right: 100,
+        bottom: 20,
+      });
+    }
+    const result = runInNewContext(build(win), {
+      document: win.document,
+      getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+      HTMLInputElement: win.HTMLInputElement,
+      HTMLTextAreaElement: win.HTMLTextAreaElement,
+      HTMLSelectElement: win.HTMLSelectElement,
+      Event: win.Event,
+      console,
+    });
+    return { result, input };
+  }
+
+  it("fillable universe excludes the label and ranks the input by its label-derived name", async () => {
+    const { result } = await run(() => buildScanFrameCandidatesExpr(FILLABLE_CANDIDATE_SELECTOR));
+    const scan = result as FrameCandidateScanResult[];
+    expect(scan).toHaveLength(1);
+    expect(scan[0]?.index).toBe(0);
+    expect(scan[0]?.text).toContain("Password (Re-enter)");
+  });
+
+  it("fill and read-back at the resolved index act on the input without throwing", async () => {
+    const { result, input } = await run(() =>
+      buildFillFrameCandidateExpr(FILLABLE_CANDIDATE_SELECTOR, 0, "s3cret-value")
+    );
+    expect((result as FrameCandidateWriteResult).written).toBe(true);
+    expect(input.value).toBe("s3cret-value");
+
+    const { Window } = await import("happy-dom");
+    const win = new Window();
+    win.document.body.innerHTML = MARKUP;
+    const el = win.document.getElementById("pw2") as unknown as { value: string };
+    el.value = "s3cret-value";
+    (el as unknown as { getBoundingClientRect: () => unknown }).getBoundingClientRect = () => ({
+      width: 100,
+      height: 20,
+    });
+    const back = runInNewContext(buildReadBackFrameCandidateExpr(FILLABLE_CANDIDATE_SELECTOR, 0), {
+      document: win.document,
+      getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+      console,
+    }) as { value?: string };
+    expect(back.value).toBe("s3cret-value");
+  });
+
+  it("select expression at the fillable index does not throw on a non-select (not-actionable)", async () => {
+    const { result } = await run(() =>
+      buildSelectFrameCandidateExpr(FILLABLE_CANDIDATE_SELECTOR, 0, "x")
+    );
+    expect((result as FrameCandidateWriteResult).written).toBe(false);
+  });
+
+  it("interactive universe is unchanged: label and input both present, click at the label index succeeds", async () => {
+    const { result } = await run(() =>
+      buildScanFrameCandidatesExpr(INTERACTIVE_CANDIDATE_SELECTOR)
+    );
+    const scan = result as FrameCandidateScanResult[];
+    expect(scan).toHaveLength(2);
+    const clicked = await run(() =>
+      buildClickFrameCandidateExpr(INTERACTIVE_CANDIDATE_SELECTOR, 1)
+    );
+    expect((clicked.result as FrameCandidateClickResult).clicked).toBe(true);
   });
 });
