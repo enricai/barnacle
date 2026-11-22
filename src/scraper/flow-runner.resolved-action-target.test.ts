@@ -12,6 +12,6 @@ describe("resolvedActionNamesStepTarget", () => {
   it("exempts value-quoting steps", () => {
     expect(resolvedActionNamesStepTarget("Fill the 'Email' field with 'a@b.com'", { description: "x" })).toBe(true);
     expect(resolvedActionNamesStepTarget("Select 'Yes' from the 'Authorized' dropdown", { description: "x" })).toBe(true);
-    expect(resolvedActionNamesStepTarget("Select the 'Yes' radio button", { description: "x" })).toBe(true);
+    expect(resolvedActionNamesStepTarget("Click the 'Yes' radio button for the 'Are you 18?' question", { description: "x" })).toBe(true);
   });
 });
