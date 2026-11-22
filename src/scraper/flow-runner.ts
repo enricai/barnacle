@@ -12551,14 +12551,20 @@ async function probeFormValidityBeforeSubmit(params: {
 }
 
 /**
- * Resolves deepLocator candidates over the narrowest candidate universe the
- * step's actuation needs, widening one universe at a time only when the
- * narrower pass finds nothing: a click step starts at
- * `INTERACTIVE_CANDIDATE_SELECTOR`; a fill/select step (see
- * {@link resolveDeepLocatorActuation}) starts at `FILLABLE_CANDIDATE_SELECTOR`,
- * whose matches are only controls that can hold the value, so a focusable
- * `<label tabindex>` naming the field can never outrank the input it labels.
- * Either chain ends at the unscoped `"*"` hop. `INTERACTIVE_CANDIDATE_SELECTOR` is what makes a dense OOPIF
+ * Resolves deepLocator candidates scoped to `INTERACTIVE_CANDIDATE_SELECTOR`,
+ * widening once to the unscoped `"*"` hop when the scoped pass finds
+ * nothing. A fill/select step (see {@link resolveDeepLocatorActuation}) over
+ * a non-empty scoped pass is then narrowed to its `FILLABLE_CANDIDATE_SELECTOR`
+ * subset — only controls that can hold the value, so a focusable
+ * `<label tabindex>` naming the field can never outrank the input it labels —
+ * whenever that subset actually excludes a scoped candidate and still holds
+ * the step's named field. Because the subset is contained in the scoped
+ * pass, an equal count means the two universes coincide, so that frame keeps
+ * resolving on the interactive hop exactly as before; a field only a custom
+ * widget carries also keeps the interactive universe, where a label still
+ * writes only through its `label.control` (`deep-locator-scan.ts`). The
+ * fillable subset is never consulted when the scoped pass is empty.
+ * `INTERACTIVE_CANDIDATE_SELECTOR` is what makes a dense OOPIF
  * form's candidate set tractable (371 nodes down to a handful — see
  * `deep-locator-candidates.ts`'s module docblock), but it over-narrows a
  * `div`/`span` tile that carries only a click handler — no `role`/
@@ -12576,19 +12582,31 @@ async function resolveDeepLocatorCandidatesWithWidening(
   instruction: string | null | undefined,
   timeoutOptions: DeepLocatorTimeoutOptions
 ): Promise<{ candidates: DeepLocatorCandidate[]; innerSelector: string }> {
-  const writesValue = !!instruction && resolveDeepLocatorActuation(instruction).kind !== "click";
-  const scopedUniverses = writesValue
-    ? [FILLABLE_CANDIDATE_SELECTOR, INTERACTIVE_CANDIDATE_SELECTOR]
-    : [INTERACTIVE_CANDIDATE_SELECTOR];
-  for (const innerSelector of scopedUniverses) {
-    const scoped = await resolveDeepLocatorCandidates(
-      page,
-      frameSelector,
-      innerSelector,
-      instruction,
-      timeoutOptions
-    );
-    if (scoped.length > 0) return { candidates: scoped, innerSelector };
+  const scoped = await resolveDeepLocatorCandidates(
+    page,
+    frameSelector,
+    INTERACTIVE_CANDIDATE_SELECTOR,
+    instruction,
+    timeoutOptions
+  );
+  if (scoped.length > 0) {
+    if (instruction && resolveDeepLocatorActuation(instruction).kind !== "click") {
+      const fillable = await resolveDeepLocatorCandidates(
+        page,
+        frameSelector,
+        FILLABLE_CANDIDATE_SELECTOR,
+        instruction,
+        timeoutOptions
+      );
+      const fieldLabel = parseFieldLabelTarget(instruction)?.fieldLabel;
+      const excludesNonFillable = fillable.length > 0 && fillable.length < scoped.length;
+      const holdsField =
+        !fieldLabel || findDeepLocatorCandidateByFieldLabel(fillable, fieldLabel) !== null;
+      if (excludesNonFillable && holdsField) {
+        return { candidates: fillable, innerSelector: FILLABLE_CANDIDATE_SELECTOR };
+      }
+    }
+    return { candidates: scoped, innerSelector: INTERACTIVE_CANDIDATE_SELECTOR };
   }
   const widened = await resolveDeepLocatorCandidates(
     page,

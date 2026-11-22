@@ -15,7 +15,6 @@ import {
 import {
   buildFillFrameCandidateExpr,
   buildReadBackFrameCandidateExpr,
-  FILLABLE_CANDIDATE_SELECTOR,
   INTERACTIVE_CANDIDATE_SELECTOR,
 } from "@/scraper/deep-locator-scan";
 import {
@@ -473,7 +472,7 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
 
   it("fill step: actuates fillDeepLocatorCandidate (not click), with the value parsed from the step, and synthesizes resolvedAction.method='fill'", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const scopedHopSelector = `${FRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     registerDeepLocatorHopElements(frame, scopedHopSelector, ["First Name"]);
     // The pre-cascade probe (`probeStepBeforeAttempts`) deliberately keeps
     // requesting the unscoped "*" hop (see the sibling test above) — it
@@ -498,7 +497,7 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     expect(fillSpy).toHaveBeenCalledWith(
       page,
       FRAME_SELECTOR,
-      FILLABLE_CANDIDATE_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
       0,
       "Reginald",
       expect.objectContaining({ frameTarget: expect.anything() })
@@ -515,7 +514,7 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
 
   it("select step: actuates selectDeepLocatorCandidateOption (not click) with the option parsed from the step, and synthesizes resolvedAction.method='selectOption'", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const scopedHopSelector = `${FRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     registerDeepLocatorHopElements(frame, scopedHopSelector, ["Country"]);
     registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Country");
     const page = makeDeepLocatorPage(frame);
@@ -532,7 +531,7 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     expect(selectSpy).toHaveBeenCalledWith(
       page,
       FRAME_SELECTOR,
-      FILLABLE_CANDIDATE_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
       0,
       "United States",
       expect.objectContaining({ frameTarget: expect.anything() })
@@ -554,7 +553,7 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
 
   it("a not-actionable (-32000) rejection on a fill still advances to the next ranked candidate across attempts, and the step ultimately completes", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const scopedHopSelector = `${FRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     // Element 0 has no layout box (unrendered) — the fake rejects fill()
     // with NODE_NOT_ACTIONABLE_MESSAGE the same way a real -32000 CDP error
     // would. Element 1 is rendered and should receive the fill instead.
@@ -585,38 +584,6 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     expect(hop?.elements[1]?.filledWith).toBe("Reginald");
 
     fillSpy.mockRestore();
-  });
-
-  it("fill step 'Password (Re-enter)': candidates resolve at FILLABLE_CANDIDATE_SELECTOR (never '*' or the interactive universe) and the fill actuation receives that same innerSelector", async () => {
-    const frame: FakeDeepLocatorFrame = new Map();
-    const scopedHopSelector = `${FRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
-    registerDeepLocatorHopElements(frame, scopedHopSelector, ["Password", "Password (Re-enter)"]);
-    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Password (Re-enter)");
-    const page = makeDeepLocatorPage(frame);
-
-    const resolveSpy = vi.spyOn(deepLocatorCandidatesModule, "resolveDeepLocatorCandidates");
-    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
-    const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
-    const attemptsByFailure: AttemptRecord[][] = [];
-
-    await runStep(page, "Fill the 'Password (Re-enter)' field with 'x'", attemptsByFailure);
-
-    // Exclude the probe's own "*" call (no instruction arg) — a distinct seam.
-    const cascadeCalls = resolveSpy.mock.calls.filter((call) => call[3] !== undefined);
-    for (const call of cascadeCalls) {
-      expect(call[2]).toBe(FILLABLE_CANDIDATE_SELECTOR);
-      expect(call[2]).not.toBe("*");
-      expect(call[2]).not.toBe(INTERACTIVE_CANDIDATE_SELECTOR);
-    }
-    expect(fillSpy).toHaveBeenCalled();
-    for (const call of fillSpy.mock.calls) {
-      expect(call[2]).toBe(FILLABLE_CANDIDATE_SELECTOR);
-    }
-    expect(clickSpy).not.toHaveBeenCalled();
-
-    resolveSpy.mockRestore();
-    fillSpy.mockRestore();
-    clickSpy.mockRestore();
   });
 
   it("a plain click step (no fill/select verb) still routes to clickDeepLocatorCandidate unchanged", async () => {
@@ -677,7 +644,7 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
 
   it("fill step: fillDeepLocatorCandidate's 6th argument carries the step's already-resolved frameTarget, so the batched write path is taken even though the internal zero-timeout resolveFrameTarget pass (page.evaluate resolving generically to null) would miss — zero legacy nth(index).fill()/.inputValue() delegate calls", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const scopedHopSelector = `${FRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     registerDeepLocatorHopElements(frame, scopedHopSelector, ["First Name"]);
     registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "First Name");
 
@@ -735,8 +702,8 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
     // this one CAN resolve). Its own `evaluate` answers the batched fill
     // expression `fillDeepLocatorCandidate` issues for index 0 — matched by
     // containment because the date-segment guard wraps it before dispatch.
-    const fillExpr = buildFillFrameCandidateExpr(FILLABLE_CANDIDATE_SELECTOR, 0, "Reginald");
-    const readBackExpr = buildReadBackFrameCandidateExpr(FILLABLE_CANDIDATE_SELECTOR, 0);
+    const fillExpr = buildFillFrameCandidateExpr(INTERACTIVE_CANDIDATE_SELECTOR, 0, "Reginald");
+    const readBackExpr = buildReadBackFrameCandidateExpr(INTERACTIVE_CANDIDATE_SELECTOR, 0);
     const fillByIndex = makeFakeFrameFillByIndex(frame, scopedHopSelector);
     const stepFrameTarget: FrameTarget = {
       frame: {} as FrameTarget["frame"],
@@ -771,7 +738,7 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
     expect(fillSpy).toHaveBeenCalledWith(
       page,
       FRAME_SELECTOR,
-      FILLABLE_CANDIDATE_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
       0,
       "Reginald",
       { frameTarget: stepFrameTarget }
@@ -785,7 +752,7 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
 
   it("select step with an un-quoted question label ('Select 'Yes' for the question about requiring visa sponsorship') refuses rather than actuating an option-value-ranked candidate, when two <select> candidates both tie for 'Yes' relevance", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const scopedHopSelector = `${FRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     const selectScopedHopSelector = `${FRAME_SELECTOR} >> select`;
     // Neither candidate's own accessible name mentions "Yes" — both tie at
     // relevance score 0 against the step's only quoted phrase (the option),
@@ -841,7 +808,7 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
 
   it("select step with an un-quoted question label does NOT refuse on a dense form whose only tie is against unrelated non-<select> decoys (a 'First Name' input, a 'Submit Application' button) sharing the single genuine <select>'s score of 0 — the walk still reaches and selects the one true target", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const scopedHopSelector = `${FRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     const selectScopedHopSelector = `${FRAME_SELECTOR} >> select`;
     // None of the three interactive-scoped candidates' accessible names
     // mention "Yes" — every ordinary dense form control (an unrelated text
@@ -886,7 +853,7 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
     expect(selectSpy).toHaveBeenCalledWith(
       page,
       FRAME_SELECTOR,
-      FILLABLE_CANDIDATE_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
       2,
       "Yes",
       expect.objectContaining({ frameTarget: expect.anything() })

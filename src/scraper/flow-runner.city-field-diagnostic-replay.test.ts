@@ -4,7 +4,7 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
-import { FILLABLE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -42,7 +42,7 @@ const TOP_ORIGIN = "https://careers.example.org";
 const CHILD_ORIGIN = "https://apply.example.com";
 const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/9092a0da-ff56-4c5a-b0d6-41ff0f818cb1`;
-const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
+const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 const PROBE_HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
 
 /** Verbatim step instruction from the diagnostic's `originalStep`. */

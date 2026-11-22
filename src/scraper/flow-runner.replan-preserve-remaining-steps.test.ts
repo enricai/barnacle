@@ -5,10 +5,7 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
-import {
-  FILLABLE_CANDIDATE_SELECTOR,
-  INTERACTIVE_CANDIDATE_SELECTOR,
-} from "@/scraper/deep-locator-scan";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { filterReplanDuplicatingNextAuthored } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
@@ -53,8 +50,6 @@ const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
 /** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
-/** Fill/select steps resolve over the fillable hop; the same hop object is aliased under it so clicks and fills share element state. */
-const FILL_HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
 const ENTRY_OPEN_URL = `${CHILD_ORIGIN}/application/abc-123/work-history#entry-open`;
 const ENTRY_CURRENT_TOGGLED_URL = `${CHILD_ORIGIN}/application/abc-123/work-history/entry-current`;
 const ENTRY_SAVED_URL = `${CHILD_ORIGIN}/application/abc-123/work-history#entry-saved`;
@@ -289,10 +284,10 @@ function makeAcceptanceTopPage(
   );
   const fakeDeepLocator = makeFakeDeepLocator(deepLocatorFrame);
   const requiredFieldsFilled = () =>
-    state.filledWith.has(`deeplocator=${FILL_HOP_SELECTOR} >> nth=${indexes.companyName}`) &&
-    state.filledWith.has(`deeplocator=${FILL_HOP_SELECTOR} >> nth=${indexes.jobTitle}`) &&
-    state.filledWith.has(`deeplocator=${FILL_HOP_SELECTOR} >> nth=${indexes.description}`) &&
-    state.filledWith.has(`deeplocator=${FILL_HOP_SELECTOR} >> nth=${indexes.startDate}`) &&
+    state.filledWith.has(`deeplocator=${HOP_SELECTOR} >> nth=${indexes.companyName}`) &&
+    state.filledWith.has(`deeplocator=${HOP_SELECTOR} >> nth=${indexes.jobTitle}`) &&
+    state.filledWith.has(`deeplocator=${HOP_SELECTOR} >> nth=${indexes.description}`) &&
+    state.filledWith.has(`deeplocator=${HOP_SELECTOR} >> nth=${indexes.startDate}`) &&
     state.filledWith.has(`deeplocator=${HOP_SELECTOR} >> nth=${indexes.current}`);
 
   const wrappedDeepLocator = (selector: string) => {
@@ -447,7 +442,6 @@ describe("flow-runner replan-preserve-remaining-steps acceptance regression (oop
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
     const order = buildDenseHopOrder();
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
-    deepLocatorFrame.set(FILL_HOP_SELECTOR, hop);
 
     const indexes = {
       reveal: findElementIndex(order, REVEAL_ELEMENT_TEXT),
@@ -505,9 +499,9 @@ describe("flow-runner replan-preserve-remaining-steps acceptance regression (oop
     expect(hop.elements[indexes.companyName]?.filledWith).toBe("General Hospital");
     expect(hop.elements[indexes.jobTitle]?.filledWith).toBe("Registered Nurse");
     expect(hop.elements[indexes.description]?.filledWith).toBe("Provided direct patient care");
-    expect(
-      state.filledWith.get(`deeplocator=${FILL_HOP_SELECTOR} >> nth=${indexes.startDate}`)
-    ).toBe("2020");
+    expect(state.filledWith.get(`deeplocator=${HOP_SELECTOR} >> nth=${indexes.startDate}`)).toBe(
+      "2020"
+    );
     expect(hop.elements[indexes.done]?.clicks).toBeGreaterThanOrEqual(1);
 
     // (3) The completed entry was NOT flagged Requires Attention.
@@ -526,9 +520,9 @@ describe("flow-runner replan-preserve-remaining-steps acceptance regression (oop
     // report's real post-submit surface (an intermediate `.../gq` child URL,
     // then the TOP window on the site's own thank-you page) — was asserted
     // true.
-    expect(
-      state.filledWith.get(`deeplocator=${FILL_HOP_SELECTOR} >> nth=${indexes.screening}`)
-    ).toBe("Yes");
+    expect(state.filledWith.get(`deeplocator=${HOP_SELECTOR} >> nth=${indexes.screening}`)).toBe(
+      "Yes"
+    );
     expect(state.submitted).toBe(true);
     expect(result.submitStepSkipped).toBe(false);
     expect(result.submitVerified).toBe(true);
@@ -605,7 +599,6 @@ describe("flow-runner replan-preserve-remaining-steps acceptance regression (oop
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
     const order = buildDenseHopOrder();
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
-    deepLocatorFrame.set(FILL_HOP_SELECTOR, hop);
 
     const indexes = {
       reveal: findElementIndex(order, REVEAL_ELEMENT_TEXT),
