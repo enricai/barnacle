@@ -7071,6 +7071,15 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const prior = seg.getAttribute(attr);
     seg.setAttribute(attr, prior ? prior + " " + token : token);
   };
+  // A fieldset's direct legend names this date only when the fieldset holds
+  // exactly this group's segments; a shared fieldset labels neither group.
+  const soleLegend = (node, segs) => {
+    const fs = node.closest("fieldset");
+    if (!fs || spins.filter((sp) => fs.contains(sp)).length !== segs.length) return "";
+    const legend = fs.querySelector(":scope > legend");
+    if (!legend || legend.querySelector("input,[role='spinbutton']")) return "";
+    return norm(legend.textContent);
+  };
   const addGroup = (segs, box, nested, outer) => {
     const gi = groups.length;
     segs.forEach((seg, si) => mark(seg, gi + ":" + si));
@@ -7085,7 +7094,7 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     if (inner === box) inner = null;
     const labelBox = inner || box;
-    const own = namedBy(labelBox) || ownCaption(labelBox) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ") || Array.from(new Set(segs.map((seg) => ownKey(seg)).filter(Boolean))).join(" ");
+    const own = namedBy(labelBox) || ownCaption(labelBox) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ") || Array.from(new Set(segs.map((seg) => ownKey(seg)).filter(Boolean))).join(" ") || soleLegend(labelBox, segs);
     const section = sectionOf(labelBox, Boolean(inner));
     groups.push({
       segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
