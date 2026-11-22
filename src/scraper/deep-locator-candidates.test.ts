@@ -21,6 +21,7 @@ import {
   extractTaggedPhrases,
   resolveDeepLocatorCandidates,
   scoreCandidate,
+  vetFrameCandidates,
   vetObserveCandidates,
 } from "@/scraper/deep-locator-candidates";
 import {
@@ -884,6 +885,19 @@ describe("extractTaggedPhrases contractions", () => {
     ]);
   });
 
+  it("extracts a double-quoted phrase and tags its negation", () => {
+    expect(extractTaggedPhrases('click "Sign In", do not click "Cancel"')).toEqual([
+      { text: "Sign In", negated: false },
+      { text: "Cancel", negated: true },
+    ]);
+  });
+
+  it("treats a double quote inside a single-quoted span as that span's content", () => {
+    expect(extractTaggedPhrases(`click 'Say "hi"' now`)).toEqual([
+      { text: 'Say "hi"', negated: false },
+    ]);
+  });
+
   it("leaves plain quoted phrases unchanged", () => {
     expect(extractTaggedPhrases("click 'Sign In'")).toEqual([{ text: "Sign In", negated: false }]);
   });
@@ -937,5 +951,37 @@ describe("vetObserveCandidates", () => {
     const verdict = vetObserveCandidates([first, c("other")], []);
     expect(verdict.candidate).toBe(first);
     expect(verdict.refuse).toBe(false);
+  });
+});
+
+describe("vetFrameCandidates", () => {
+  const f = (accessibleText: string, isNav = false) => ({
+    index: 0,
+    selector: "",
+    accessibleText,
+    isNav,
+  });
+  const accept = extractTaggedPhrases("Click 'Accept'");
+  it("refuses when no candidate names the quoted phrase", () => {
+    const v = vetFrameCandidates([f("Skip to Main Content"), f("Enter Your Information")], accept);
+    expect(v.refuse).toBe(true);
+  });
+  it("returns the exact-match candidate", () => {
+    const next = extractTaggedPhrases("Click 'Next'");
+    const hit = f("Next");
+    const v = vetFrameCandidates([f("Skip"), hit], next);
+    expect(v.refuse).toBe(false);
+    expect(v.candidate).toBe(hit);
+  });
+  it("honors aliases", () => {
+    const next = extractTaggedPhrases("Click 'Next'");
+    const hit = f("Continue");
+    const v = vetFrameCandidates([f("Skip"), hit], next);
+    expect(v.refuse).toBe(false);
+    expect(v.candidate).toBe(hit);
+  });
+  it("refuses negated phrase matches", () => {
+    const v = vetFrameCandidates([f("Decline")], [{ text: "Decline", negated: true }]);
+    expect(v.refuse).toBe(true);
   });
 });

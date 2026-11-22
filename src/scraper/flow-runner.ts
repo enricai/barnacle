@@ -95,6 +95,7 @@ import {
   extractTaggedPhrases,
   resolveDeepLocatorCandidates,
   scoreCandidate,
+  vetFrameCandidates,
   vetObserveCandidates,
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
@@ -13139,6 +13140,28 @@ export async function executeStepWithHealing(params: {
       step = spliceEmailStepFillValue(step, code);
     }
   }
+  // Frame-path counterpart of the main-frame `vetObserveCandidates` check: a
+  // click step that quotes a control must only actuate a frame candidate whose
+  // accessible text names a quoted phrase. Returns the candidates that do (empty
+  // when the walk must be refused). fill/select keep their own guards;
+  // value-quoting steps are exempt.
+  const narrowFrameClickCandidates = <T extends Parameters<typeof vetFrameCandidates>[0][number]>(
+    frameCandidates: T[]
+  ): T[] => {
+    if (resolveDeepLocatorActuation(step).kind !== "click") return frameCandidates;
+    if (stepQuotesValueNotControlName(step)) return frameCandidates;
+    const phrases = extractTaggedPhrases(step);
+    if (phrases.length === 0) return frameCandidates;
+    // A step that quotes a control may only actuate a candidate that names it:
+    // a candidate scoring 0 (unrelated text, or no accessible text at all) is
+    // as unrelated as a vetoed one. With only negated phrases there is nothing
+    // to name, so only the veto applies.
+    const namesControl = phrases.some((p) => !p.negated);
+    return frameCandidates.filter((c) => {
+      const verdict = vetFrameCandidates([c], phrases);
+      return !verdict.refuse && (!namesControl || verdict.score > 0);
+    });
+  };
   /**
    * Re-resolves a frame that lost the attach race at step entry —
    * `resolveFrameTarget`'s per-step poll (called once in the runner's step
@@ -14266,7 +14289,7 @@ export async function executeStepWithHealing(params: {
         }
       }
       await reresolveFrameTargetIfLost();
-      const { candidates, innerSelector } = await resolveDeepLocatorCandidatesWithWidening(
+      let { candidates, innerSelector } = await resolveDeepLocatorCandidatesWithWidening(
         page,
         frameTarget.frameSelector,
         step,
@@ -14274,6 +14297,14 @@ export async function executeStepWithHealing(params: {
       );
       if (candidates.length === 0) {
         return { delivered: false, reason: "no-candidate", message: "no candidates resolved" };
+      }
+      candidates = narrowFrameClickCandidates(candidates);
+      if (candidates.length === 0) {
+        return {
+          delivered: false,
+          reason: "no-candidate",
+          message: "no frame candidate names a phrase quoted in the step",
+        };
       }
       let lastCandidateError = "";
       for (const candidate of candidates) {
@@ -14890,12 +14921,26 @@ export async function executeStepWithHealing(params: {
             await resolveDeepLocatorCandidatesWithWidening(page, frameTarget.frameSelector, step, {
               frameTarget,
             });
-          const deepLocatorCandidates = retryCandidates.filter(
+          let deepLocatorCandidates = retryCandidates.filter(
             (c) => !triedSelectors.includes(c.selector)
           );
           if (deepLocatorCandidates.length === 0) {
             const failureMessage =
               "trusted-click-retry: no deepLocator candidate resolved for the phantomed target";
+            record.actResultSuccess = false;
+            record.errorMessage = failureMessage;
+            record.triedSelectors = [...triedSelectors];
+            attempts.push(record);
+            failureReasons.push(failureMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+            );
+            continue;
+          }
+          deepLocatorCandidates = narrowFrameClickCandidates(deepLocatorCandidates);
+          if (deepLocatorCandidates.length === 0) {
+            const failureMessage =
+              "trusted-click-retry: no frame candidate names a phrase quoted in the step (refusing to click an unrelated control)";
             record.actResultSuccess = false;
             record.errorMessage = failureMessage;
             record.triedSelectors = [...triedSelectors];
@@ -14961,7 +15006,7 @@ export async function executeStepWithHealing(params: {
             : null;
         const deepLocatorInnerSelector =
           deepLocatorResolution?.innerSelector ?? INTERACTIVE_CANDIDATE_SELECTOR;
-        const deepLocatorCandidates = (deepLocatorResolution?.candidates ?? []).filter(
+        let deepLocatorCandidates = (deepLocatorResolution?.candidates ?? []).filter(
           (c) => !triedSelectors.includes(c.selector)
         );
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
@@ -14978,6 +15023,19 @@ export async function executeStepWithHealing(params: {
           const fieldTarget = parseFieldLabelTarget(step);
           if (fieldTarget) {
             const failureMessage = `deepLocator: no candidate matched field "${fieldTarget.fieldLabel}" (refusing to click an unrelated control)`;
+            record.actResultSuccess = false;
+            record.errorMessage = failureMessage;
+            attempts.push(record);
+            failureReasons.push(failureMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+            );
+            continue;
+          }
+          deepLocatorCandidates = narrowFrameClickCandidates(deepLocatorCandidates);
+          if (deepLocatorCandidates.length === 0) {
+            const failureMessage =
+              "deepLocator: no frame candidate names a phrase quoted in the step (refusing to click an unrelated control)";
             record.actResultSuccess = false;
             record.errorMessage = failureMessage;
             attempts.push(record);

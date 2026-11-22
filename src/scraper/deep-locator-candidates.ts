@@ -157,6 +157,9 @@ function candidateSelector(hopSelector: string, index: number): string {
  */
 const NEGATION_MARKERS = /\b(?:do\s+not|don't|never|avoid)\b/gi;
 
+/** A double-quoted span in instruction copy; see {@link extractTaggedPhrases}. */
+const DOUBLE_QUOTED_SPAN = /"([^"]+)"/g;
+
 /** One quoted phrase from an instruction, tagged with whether a negation marker (`NEGATION_MARKERS`) governs it. See {@link extractTaggedPhrases}. */
 export interface TaggedPhrase {
   text: string;
@@ -164,7 +167,7 @@ export interface TaggedPhrase {
 }
 
 /**
- * Extracts every single-quoted phrase from `instruction`, tagging each as
+ * Extracts every single- or double-quoted phrase from `instruction`, tagging each as
  * negated when a negation marker (`NEGATION_MARKERS`) precedes it within the
  * same sentence — flow instructions keep each "Do NOT click 'X', 'Y', ..."
  * clause as one sentence listing every negated phrase, so a sentence
@@ -179,7 +182,15 @@ export interface TaggedPhrase {
  * duplicating this logic.
  */
 export function extractTaggedPhrases(instruction: string): TaggedPhrase[] {
-  const spans = findQuotedSpans(instruction);
+  const singleSpans = findQuotedSpans(instruction);
+  // A double-quoted phrase names a control just as a single-quoted one does; one
+  // that sits inside a single-quoted span is that span's own content, not a phrase.
+  const doubleSpans = Array.from(instruction.matchAll(DOUBLE_QUOTED_SPAN), (match) => ({
+    text: match[1] ?? "",
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  })).filter((d) => !singleSpans.some((single) => d.start < single.end && single.start < d.end));
+  const spans = [...singleSpans, ...doubleSpans].sort((a, b) => a.start - b.start);
   const negationStarts = [...instruction.matchAll(NEGATION_MARKERS)]
     .map((m) => m.index)
     .filter((idx) => !spans.some((span) => idx >= span.start && idx < span.end));
@@ -300,7 +311,7 @@ function withAliases(positives: string[]): string[] {
 }
 
 /** Outcome of {@link vetObserveCandidates}: the best-scoring candidate, its score, and whether the caller should refuse to act on it. */
-export interface ObserveCandidateVerdict<T extends { description: string }> {
+export interface ObserveCandidateVerdict<T> {
   candidate: T | undefined;
   score: number;
   refuse: boolean;
@@ -317,28 +328,56 @@ export function vetObserveCandidates<T extends { description: string }>(
   candidates: T[],
   phrases: TaggedPhrase[]
 ): ObserveCandidateVerdict<T> {
+  return vetCandidatesCore(candidates, phrases, (c) => c.description);
+}
+
+/**
+ * Frame-scoped counterpart of {@link vetObserveCandidates}: vets
+ * {@link DeepLocatorCandidate}s by `accessibleText`/`isNav` with the identical
+ * rule, so a click step that quotes a control never actuates a frame candidate
+ * that names none of the quoted phrases.
+ */
+export function vetFrameCandidates<T extends { accessibleText: string; isNav?: boolean }>(
+  candidates: T[],
+  phrases: TaggedPhrase[]
+): ObserveCandidateVerdict<T> {
+  return vetCandidatesCore(
+    candidates,
+    phrases,
+    (c) => c.accessibleText,
+    (c) => c.isNav === true
+  );
+}
+
+/** Shared veto rule behind {@link vetObserveCandidates} and {@link vetFrameCandidates}. */
+function vetCandidatesCore<T>(
+  candidates: T[],
+  phrases: TaggedPhrase[],
+  textOf: (c: T) => string,
+  isNavOf: (c: T) => boolean = () => false
+): ObserveCandidateVerdict<T> {
   const first = candidates[0];
   if (!first || phrases.length === 0) return { candidate: first, score: 0, refuse: false };
   const aliasPositives = withAliases(
     phrases.filter((p) => !p.negated).map((p) => normalize(p.text))
   );
-  const aliasHit = candidates.find((c) => aliasPositives.includes(normalize(c.description)));
+  const aliasHit = candidates.find((c) => aliasPositives.includes(normalize(textOf(c))));
   if (
     aliasHit &&
-    scoreCandidate(aliasHit.description, phrases) === 0 &&
-    !phrases.some((p) => p.negated && normalize(aliasHit.description).includes(normalize(p.text)))
+    scoreCandidate(textOf(aliasHit), phrases, isNavOf(aliasHit)) === 0 &&
+    !phrases.some((p) => p.negated && normalize(textOf(aliasHit)).includes(normalize(p.text)))
   ) {
     return { candidate: aliasHit, score: 2, refuse: false };
   }
   const scored = candidates.map((candidate) => ({
     candidate,
-    score: scoreCandidate(candidate.description, phrases),
+    score: scoreCandidate(textOf(candidate), phrases, isNavOf(candidate)),
   }));
   const best = scored.reduce((a, b) => (b.score > a.score ? b : a));
   if (best.score < 0) return { candidate: best.candidate, score: best.score, refuse: true };
   if (best.score > 0) return { candidate: best.candidate, score: best.score, refuse: false };
   const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));
-  const text = normalize(best.candidate.description);
+  const text = normalize(textOf(best.candidate));
   const betterExists = scored.some((s) => s.score > 0);
   // A context phrase ("under the text 'X'") adds a second positive, so require the
   // candidate to overlap none of them rather than exactly one.
