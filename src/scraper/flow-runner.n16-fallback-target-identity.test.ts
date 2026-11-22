@@ -80,7 +80,8 @@ function resolveTailXPathAll(root: HappyDomElement, tailXp: string): HappyDomEle
   return out;
 }
 
-function buildHarness(buttonLabel: string) {
+function buildHarness(buttonLabel: string, opts: { replaceDocument?: boolean } = {}) {
+  let identityReads = 0;
   const window = new Window({ url: BASE_URL });
   const document = window.document;
   document.body.innerHTML = `
@@ -119,6 +120,10 @@ function buildHarness(buttonLabel: string) {
   const session = { on: () => {}, off: () => {} };
   const page: Page = {
     evaluate: async (expr: unknown): Promise<unknown> => {
+      if (opts.replaceDocument && expr === "performance.timeOrigin") {
+        identityReads += 1;
+        return 1000 + identityReads;
+      }
       const fn = new window.Function("document", "XPathResult", `return (${String(expr)});`) as (
         d: unknown,
         x: unknown
@@ -273,6 +278,28 @@ describe("flow-runner n+16 fallback — tail-retarget phrase identity", () => {
     ).catch(() => undefined);
 
     expect(getClicks()).toBeGreaterThan(0);
+  });
+});
+
+describe("flow-runner n+16 fallback — replaced frame document", () => {
+  it("skips both clicks and credits navigation when the document identity changed", async () => {
+    const { page, stagehand, getClicks } = buildHarness("Create Account", {
+      replaceDocument: true,
+    });
+    const lines: string[] = [];
+    await executeStepWithHealing(
+      baseArgs(
+        stagehand,
+        page,
+        makeLogger(lines),
+        "Click the 'Create Account' button to switch to the registration form",
+        () => null
+      )
+    ).catch(() => undefined);
+    expect(lines.some((l) => l.includes("n+16 fallback skipped: frame document replaced"))).toBe(
+      true
+    );
+    expect(getClicks()).toBe(0);
   });
 });
 
