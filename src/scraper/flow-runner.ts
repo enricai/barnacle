@@ -10943,12 +10943,6 @@ async function tryPromptSelectorPrimitive(params: {
         optionsFiltered = live;
         continue;
       }
-      // Real options listed but none match: a mismatch, not an unsubmitted
-      // search. Only a placeholder or empty list warrants a trusted Enter.
-      if (realPromptOptions(live.options ?? [], option).length > 0) {
-        optionsFiltered = live;
-        break;
-      }
       logger.info(
         `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
       );
@@ -11184,7 +11178,8 @@ async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> 
   // A failed install throws: Enter is never sent unguarded (the caller's catch breaks out).
   await target.evaluate(
     `(() => {
-      const h = (e) => { if (e.key === "Enter") e.preventDefault(); };
+      const deepActive = () => { let a = document.activeElement; while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement; return a; };
+      const h = (e) => { if (e.key !== "Enter") return; const a = deepActive(); if (a && a.form) e.preventDefault(); };
       window.${guardKey} = h;
       window.addEventListener("keydown", h, true);
       window.addEventListener("keypress", h, true);
