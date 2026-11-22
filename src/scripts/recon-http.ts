@@ -137,12 +137,15 @@ function loadCaptures(dir: string): Array<{ filename: string; capture: Capture }
   });
 }
 
-function deduplicateCaptures(
+export function deduplicateCaptures(
   captures: Array<{ filename: string; capture: Capture }>
 ): Array<{ filename: string; capture: Capture }> {
   const seen = new Set<string>();
   return captures.filter(({ capture }) => {
-    const key = `${capture.url}|${capture.operationName ?? ""}|${JSON.stringify(capture.variables ?? {})}`;
+    const headers = Object.entries(capture.requestHeaders ?? {})
+      .map(([k, v]) => [k.toLowerCase(), v] as const)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const key = `${(capture.method ?? "").toUpperCase()}|${capture.url}|${capture.operationName ?? ""}|${JSON.stringify(capture.variables ?? {})}|${JSON.stringify(headers)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

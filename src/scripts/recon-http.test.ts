@@ -997,3 +997,29 @@ describe("selectRateLimitTargets — relevance tiering", () => {
     expect(targets.size).toBe(2);
   });
 });
+
+describe("deduplicateCaptures header/method awareness", () => {
+  const mk = (method: string, requestHeaders: Record<string, string>) => ({
+    filename: "f",
+    capture: {
+      method,
+      url: "https://x.test/a",
+      operationName: null,
+      variables: null,
+      requestHeaders,
+    } as never,
+  });
+  it("keeps captures differing in headers or method; collapses identical", async () => {
+    const { deduplicateCaptures } = await import("./recon-http.js");
+    expect(
+      deduplicateCaptures([mk("GET", {}), mk("GET", { "Key-Inflection": "camel" })])
+    ).toHaveLength(2);
+    expect(deduplicateCaptures([mk("GET", {}), mk("POST", {})])).toHaveLength(2);
+    expect(
+      deduplicateCaptures([
+        mk("GET", { A: "1", "Key-Inflection": "camel" }),
+        mk("get", { "key-inflection": "camel", a: "1" }),
+      ])
+    ).toHaveLength(1);
+  });
+});
