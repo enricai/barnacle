@@ -185,6 +185,53 @@ import {
   readFrameDocumentIdentity,
 } from "./frame-document-identity";
 
+// Same-site test for the verifier signal. registrableDomain keeps only the last
+// two labels, which merges unrelated hosts under multi-label public suffixes
+// (`a.co.uk` / `b.co.uk`) and IP literals; those must stay "third party".
+const MULTI_LABEL_SUFFIX_SECOND = new Set([
+  "co",
+  "com",
+  "org",
+  "net",
+  "gov",
+  "edu",
+  "ac",
+  "ne",
+  "or",
+]);
+const SHARED_HOSTING_SUFFIXES = new Set([
+  "github.io",
+  "azurewebsites.net",
+  "cloudfront.net",
+  "herokuapp.com",
+  "netlify.app",
+  "vercel.app",
+  "pages.dev",
+  "workers.dev",
+  "appspot.com",
+  "blogspot.com",
+  "s3.amazonaws.com",
+]);
+function siteKey(host: string): string {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(":")) return h;
+  const labels = h.split(".").filter(Boolean);
+  if (labels.length <= 2) return labels.join(".");
+  const last2 = labels.slice(-2).join(".");
+  const tld = labels[labels.length - 1] ?? "";
+  const second = labels[labels.length - 2] ?? "";
+  if (
+    SHARED_HOSTING_SUFFIXES.has(last2) ||
+    (tld.length === 2 && MULTI_LABEL_SUFFIX_SECOND.has(second))
+  ) {
+    return labels.slice(-3).join(".");
+  }
+  return last2;
+}
+function sameSiteHost(a: string, b: string): boolean {
+  return siteKey(a) === siteKey(b);
+}
+
 export { waitForSpaReady } from "@/scraper/spa-readiness";
 export { toFrameRelativeXpath };
 
@@ -346,6 +393,7 @@ export function wireSignalCapture(
       hasPostData?: boolean;
     };
     redirectResponse?: { status: number; headers: Record<string, string> };
+    redirectHasExtraInfo?: boolean;
   };
   type ResponseReceivedEvent = {
     requestId: string;
@@ -397,9 +445,25 @@ export function wireSignalCapture(
     if (prior && params.redirectResponse) {
       prior.responseStatus = params.redirectResponse.status;
       prior.responseHeaders = params.redirectResponse.headers as Record<string, string>;
-      foldResponseExtras(prior, params.requestId);
-      hopOf.set(params.requestId, (hopOf.get(params.requestId) ?? 0) + 1);
-      void finalizeCapture(prior, params.requestId, false).catch(() => {});
+      const hop = hopOf.get(params.requestId) ?? 0;
+      hopOf.set(params.requestId, hop + 1);
+      // CDP documents that a hop may have no extra-info event at all; the
+      // browser says so via redirectHasExtraInfo. Skip that hop's slot so the
+      // next hop's extra-info is not attributed to it.
+      if (params.redirectHasExtraInfo === false) {
+        respExtraSeq.set(
+          params.requestId,
+          Math.max(respExtraSeq.get(params.requestId) ?? 0, hop + 1)
+        );
+      }
+      const expectExtra =
+        params.redirectHasExtraInfo === true && (respExtraSeq.get(params.requestId) ?? 0) <= hop;
+      void (async () => {
+        // The hop's response extra-info (Set-Cookie) may land after this event.
+        if (expectExtra) await waitForHopExtra(hopKey(params.requestId, hop));
+        foldResponseExtras(prior, params.requestId, hop);
+        await finalizeCapture(prior, params.requestId, false);
+      })().catch(() => {});
     }
     const inline = params.request.postData;
     const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
@@ -468,7 +532,24 @@ export function wireSignalCapture(
     seq.set(requestId, hop + 1);
     const key = hopKey(requestId, hop);
     buf.set(key, mergeResponseHeaders(buf.get(key) ?? {}, headers));
+    if (seq === respExtraSeq) {
+      hopWaiters.get(key)?.();
+    }
   };
+
+  // Bounded wait for a redirect hop's response extra-info (arrival order vs the
+  // redirect's requestWillBeSent is not guaranteed).
+  const hopWaiters = new Map<string, () => void>();
+  const waitForHopExtra = (key: string, ms = 500): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        hopWaiters.delete(key);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      hopWaiters.set(key, done);
+    });
 
   const onResponseExtraInfo = (params: ResponseReceivedExtraInfoEvent): void => {
     bufferExtra(respExtraSeq, extraResponseHeaders, params.requestId, params.headers);
@@ -479,8 +560,12 @@ export function wireSignalCapture(
   };
 
   // Folds only the current hop's buffered headers into `req` and drains them.
-  const foldResponseExtras = (req: InFlightRequest, requestId: string): void => {
-    const key = hopKey(requestId, hopOf.get(requestId) ?? 0);
+  const foldResponseExtras = (
+    req: InFlightRequest,
+    requestId: string,
+    hop: number = hopOf.get(requestId) ?? 0
+  ): void => {
+    const key = hopKey(requestId, hop);
     req.responseHeaders = mergeResponseHeaders(req.responseHeaders, extraResponseHeaders.get(key));
     extraResponseHeaders.delete(key);
     req.requestHeaders = mergeResponseHeaders(req.requestHeaders, extraRequestHeaders.get(key));
@@ -606,7 +691,7 @@ export function wireSignalCapture(
       const reqHost = new URL(req.url).hostname;
       // Same-site (registrable domain), not strict origin: a redirected
       // POST hop may land on a sibling subdomain of the page.
-      sameOrigin = pageHost !== "" && registrableDomain(reqHost) === registrableDomain(pageHost);
+      sameOrigin = pageHost !== "" && sameSiteHost(reqHost, pageHost);
     } catch {
       // Malformed URL or empty page origin — treat as not same-site.
     }
