@@ -3751,7 +3751,8 @@ export function extractActionSequence(
           const path = hostGatedPaths[i]!;
           const candidateSegments = hostGatedSegments[i]!;
           const denselyNameSpaced =
-            pathStructuralTokens(path).size > 2 || hasNoBusinessRelevantResponseState(capture);
+            pathStructuralTokens(path).size > 2 ||
+            (!isServerRenderedFormSubmit(capture) && hasNoBusinessRelevantResponseState(capture));
           // A same-path-FAMILY pool member does not vouch for the candidate
           // when one of their paths is a pure SEGMENT-PREFIX EXTENSION of the
           // other (e.g. `/marketing-spa/banner` and `/marketing-spa/banner/2`,
