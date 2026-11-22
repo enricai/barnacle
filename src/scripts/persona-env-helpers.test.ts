@@ -40,10 +40,15 @@ describe("harvestRunPersonaBindings", () => {
   it("uses persisted env when process env is empty", () => {
     const root = mkdtempSync(join(tmpdir(), "pe-"));
     writeFileSync(join(root, "persona-env.json"), JSON.stringify({ RECON_EMAIL: "z@q.io" }));
-    const steps = ["Fill in the Email field with '${RECON_EMAIL}'"];
-    const vocab = { exclusions: [] } as never;
+    const steps = ["Fill in the First Name field with '${RECON_EMAIL}'"];
+    const vocab = {
+      subject: /\b(the\s+)?(test\s+)?(candidate|applicant)'?s\b/i,
+      exclusions: [],
+      table: [[/\bfirst name\b/i, "FirstName"]],
+    } as never;
     const got = harvestRunPersonaBindings(steps as never, vocab, root, {});
     const want = harvestPersonaBindings(steps as never, vocab, { RECON_EMAIL: "z@q.io" });
     expect([...got]).toEqual([...want]);
+    expect(got.get("z@q.io")).toBeDefined();
   });
 });
