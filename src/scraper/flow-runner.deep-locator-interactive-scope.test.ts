@@ -587,6 +587,38 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     fillSpy.mockRestore();
   });
 
+  it("fill step 'Password (Re-enter)': candidates resolve at FILLABLE_CANDIDATE_SELECTOR (never '*' or the interactive universe) and the fill actuation receives that same innerSelector", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHopElements(frame, scopedHopSelector, ["Password", "Password (Re-enter)"]);
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Password (Re-enter)");
+    const page = makeDeepLocatorPage(frame);
+
+    const resolveSpy = vi.spyOn(deepLocatorCandidatesModule, "resolveDeepLocatorCandidates");
+    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
+    const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
+    const attemptsByFailure: AttemptRecord[][] = [];
+
+    await runStep(page, "Fill the 'Password (Re-enter)' field with 'x'", attemptsByFailure);
+
+    // Exclude the probe's own "*" call (no instruction arg) — a distinct seam.
+    const cascadeCalls = resolveSpy.mock.calls.filter((call) => call[3] !== undefined);
+    for (const call of cascadeCalls) {
+      expect(call[2]).toBe(FILLABLE_CANDIDATE_SELECTOR);
+      expect(call[2]).not.toBe("*");
+      expect(call[2]).not.toBe(INTERACTIVE_CANDIDATE_SELECTOR);
+    }
+    expect(fillSpy).toHaveBeenCalled();
+    for (const call of fillSpy.mock.calls) {
+      expect(call[2]).toBe(FILLABLE_CANDIDATE_SELECTOR);
+    }
+    expect(clickSpy).not.toHaveBeenCalled();
+
+    resolveSpy.mockRestore();
+    fillSpy.mockRestore();
+    clickSpy.mockRestore();
+  });
+
   it("a plain click step (no fill/select verb) still routes to clickDeepLocatorCandidate unchanged", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
     const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
