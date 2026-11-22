@@ -1274,7 +1274,7 @@ const PROMPT_RENDERED_EXPR = `((el) => {
  * scope Element/Document; callers query options/search within it, which stops a
  * sibling widget's options from being picked on a multi-widget page.
  */
-const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
+export const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
   const refAttr = (el) => (el && (el.getAttribute("aria-controls") || el.getAttribute("aria-owns"))) || "";
   let ids = refAttr(w);
   if (!ids) {
@@ -1292,6 +1292,25 @@ const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
   // No referenced listbox: try the inline popup in the widget's own subtree
   // BEFORE falling back to a resolved-but-listbox-less ref, then to document.
   if (w.querySelector("[role='listbox'],[role='option']")) return w;
+  if (!ids) {
+    // No refs and no inline popup: look at following siblings for a popup
+    // container that owns/controls (or is/contains) a listbox. Prefer one whose
+    // aria-expanded tracks the trigger's over bare adjacency.
+    const wExp = w.getAttribute("aria-expanded");
+    const cands = [];
+    for (let s = w.nextElementSibling; s && cands.length < 3; s = s.nextElementSibling) {
+      const lb = s.matches("[role='listbox']") ? s : s.querySelector("[role='listbox']");
+      let owned = null;
+      const ref = s.getAttribute("aria-owns") || s.getAttribute("aria-controls") || "";
+      for (const id of ref.split(/\\s+/)) {
+        const t = id && document.getElementById(id);
+        if (t && (t.matches("[role='listbox']") || t.querySelector("[role='listbox']"))) { owned = t; break; }
+      }
+      if (lb || owned) cands.push({ s, tracks: wExp !== null && s.getAttribute("aria-expanded") === wExp });
+    }
+    const pick = cands.find((c) => c.tracks) || cands[0];
+    if (pick) return pick.s;
+  }
   if (ids) {
     const refs = ids.split(/\\s+/).map((id) => document.getElementById(id)).filter(Boolean);
     if (refs.length) return refs[0];
