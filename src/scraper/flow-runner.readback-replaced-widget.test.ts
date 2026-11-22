@@ -75,7 +75,11 @@ async function runReplaced(typed: string, html: string = REPLACED_HTML) {
   } as unknown as Stagehand;
   const { page, target, window } = buildPromptWidgetHarness({
     html,
-    popupByWidgetId: { [html === ISSUE_HTML ? "src-trigger" : "src-opener"]: { options: ["Referral", "\u2014 Enter Manually \u2014"] } },
+    popupByWidgetId: {
+      [html === ISSUE_HTML ? "src-trigger" : "src-opener"]: {
+        options: ["Referral", "\u2014 Enter Manually \u2014"],
+      },
+    },
   });
   const realEval = (target as unknown as { evaluate: (e: string) => Promise<unknown> }).evaluate;
   (target as unknown as { evaluate: unknown }).evaluate = async (expr: string) => {
