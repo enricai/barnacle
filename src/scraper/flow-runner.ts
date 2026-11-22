@@ -14976,28 +14976,6 @@ export async function executeStepWithHealing(params: {
     // judge against the step-start baseline before `pre` absorbs the advance.
     if (attempt > 1 && (await creditStepStartAdvance(`attempt-${attempt}-entry`)))
       return "completed";
-    // Document replaced by an earlier attempt's click but not credited: this
-    // attempt must not act on the new page at all — neither re-click the act's
-    // now-stale resolved selector nor re-act the instruction against the new
-    // document. Every later attempt is skipped the same way (each re-checks, so
-    // a late advance can still be credited by the entry check above).
-    if (attempt > 1 && (await actDocumentReplaced())) {
-      const retargetsResolvedSelector =
-        wouldBeTechnique === "structured-click" ||
-        (wouldBeTechnique === "trusted-click-retry" &&
-          !isStepSubmitShaped({
-            step,
-            submitStep,
-            isFinalStep,
-            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-          }));
-      const msg = retargetsResolvedSelector
-        ? `attempt ${attempt}: ${wouldBeTechnique} skipped: frame document replaced since step start; resolved selector is stale`
-        : `attempt ${attempt} skipped: frame document replaced since step start; not re-acting on the new document`;
-      logger.info(`${formatStepPrefix(stepIndex, totalSteps)} ${msg}`);
-      failureReasons.push(msg);
-      continue;
-    }
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
@@ -15040,6 +15018,34 @@ export async function executeStepWithHealing(params: {
       verifiedBy: null,
       phantomClickVerdict: null,
     };
+    // Document replaced by an earlier attempt's click but not credited: this
+    // attempt must not act on the new page at all — neither re-click the act's
+    // now-stale resolved selector nor re-act the instruction against the new
+    // document. Every later attempt is skipped the same way (each re-checks, so
+    // a late advance can still be credited by the entry check above), and its
+    // record carries the selectors resolved so far, like any skipped technique.
+    if (attempt > 1 && (await actDocumentReplaced())) {
+      const retargetsResolvedSelector =
+        wouldBeTechnique === "structured-click" ||
+        (wouldBeTechnique === "trusted-click-retry" &&
+          !isStepSubmitShaped({
+            step,
+            submitStep,
+            isFinalStep,
+            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+          }));
+      const msg = retargetsResolvedSelector
+        ? `attempt ${attempt}: ${wouldBeTechnique} skipped: frame document replaced since step start; resolved selector is stale`
+        : `attempt ${attempt} skipped: frame document replaced since step start; not re-acting on the new document`;
+      record.technique = wouldBeTechnique;
+      record.actResultSuccess = false;
+      record.errorMessage = msg;
+      record.triedSelectors = [...triedSelectors];
+      attempts.push(record);
+      failureReasons.push(msg);
+      logger.info(`${formatStepPrefix(stepIndex, totalSteps)} ${msg}`);
+      continue;
+    }
 
     // First resolved action from Stagehand's `act` result — used to decide
     // whether this attempt's signal should come from the network/URL pair or
