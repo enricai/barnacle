@@ -125,6 +125,7 @@ import {
   hasSettledPageAdvanced,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
+  isVisibleTextShrunk,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
@@ -2698,6 +2699,8 @@ export function isClickViewSwapVerified(params: {
   midFlowSubmit?: boolean;
   pageAdvanced?: boolean;
   actSucceeded?: boolean;
+  /** Real content left the page (see isVisibleTextShrunk): a dismissal, not a reset. */
+  contentRemoved?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -2715,6 +2718,7 @@ export function isClickViewSwapVerified(params: {
     midFlowSubmit = false,
     pageAdvanced = textChanged,
     actSucceeded = false,
+    contentRemoved = false,
   } = params;
   // The page advancing is the evidence for a mid-flow submit, so it does not
   // depend on how Stagehand reported the gesture: a successful act that
@@ -2753,6 +2757,9 @@ export function isClickViewSwapVerified(params: {
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
+  // A removal that took visible text with it (overlay/banner dismissal) is an
+  // observable client-side effect, not a page reset.
+  if (contentRemoved && !clickedElementStillPresent && bytesDelta < 0) return true;
   if (!clickedElementStillPresent && bytesDelta <= 0) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
@@ -15807,6 +15814,7 @@ export async function executeStepWithHealing(params: {
       midFlowSubmit,
       pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
+      contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
     });
     if (
       clickViewSwapVerified === false &&
