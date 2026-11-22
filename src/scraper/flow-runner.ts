@@ -631,18 +631,16 @@ export function wireSignalCapture(
     }
   };
 
-  // Bounded wait for a redirect hop's response extra-info (arrival order vs the
-  // redirect's requestWillBeSent is not guaranteed).
+  // Wait for a redirect hop's response extra-info (arrival order vs the
+  // redirect's requestWillBeSent is not guaranteed). Released by that hop's
+  // extra-info event, or at teardown so nothing waits forever.
   const hopWaiters = new Map<string, () => void>();
-  const waitForHopExtra = (key: string, ms = 500): Promise<void> =>
+  const waitForHopExtra = (key: string): Promise<void> =>
     new Promise<void>((resolve) => {
-      const done = (): void => {
-        clearTimeout(timer);
+      hopWaiters.set(key, () => {
         hopWaiters.delete(key);
         resolve();
-      };
-      const timer = setTimeout(done, ms);
-      hopWaiters.set(key, done);
+      });
     });
 
   const onResponseExtraInfo = (params: ResponseReceivedExtraInfoEvent): void => {
@@ -850,6 +848,7 @@ export function wireSignalCapture(
   void Promise.resolve(session.send?.("Runtime.enable")).catch(() => {});
 
   return (): void => {
+    for (const release of [...hopWaiters.values()]) release();
     session.off("Network.requestWillBeSent", onRequest);
     session.off("Network.requestWillBeSentExtraInfo", onRequestExtraInfo);
     session.off("Network.responseReceived", onResponse);
