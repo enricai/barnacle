@@ -48,6 +48,7 @@ import {
 import type { ReconFormSchema } from "@/recon/form-schema";
 import {
   extractHtmlIssuedTokens,
+  extractHtmlSelectOptions,
   type HtmlTokenElement,
   isStateLikeSegment,
   PATH_SEGMENT_MIN_LENGTH,
@@ -2033,6 +2034,37 @@ export function addClickUrlPathBindings(
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
   return into;
+}
+
+/**
+ * In a text-captured multipart body, rebinds each part whose name is a
+ * `<select>` rendered by a prior HTML response and whose value is one of that
+ * select's option ids to `payload.Answers[<name>]`, so the caller's answer —
+ * not the recon persona's frozen option id — is submitted.
+ */
+export function bindMultipartSelectAnswers(
+  body: string,
+  cap: Capture,
+  prior: readonly { capture: Capture }[]
+): string {
+  const ct = Object.entries(cap.requestHeaders).find(([k]) => k.toLowerCase() === "content-type");
+  if (!(ct?.[1] ?? "").toLowerCase().includes("multipart/")) return body;
+  const selects = new Map<string, Set<string>>();
+  for (const p of prior) {
+    for (const [name, values] of extractHtmlSelectOptions(p.capture.responseBody)) {
+      const merged = selects.get(name) ?? new Set<string>();
+      for (const v of values) merged.add(v);
+      selects.set(name, merged);
+    }
+  }
+  if (selects.size === 0) return body;
+  return body.replace(
+    /(Content-Disposition: form-data; name="([^"]+)"\r?\n\r?\n)([^\r\n]*)(?=\r?\n--)/g,
+    (whole, head: string, name: string, value: string) =>
+      selects.get(name)?.has(value) && !value.includes("${")
+        ? `${head}\${payload.Answers[${JSON.stringify(name)}]}`
+        : whole
+  );
 }
 
 const IGNORE_REQUEST_HEADERS = new Set([
@@ -7737,7 +7769,8 @@ export function compileActionSteps(
       ([k]) => k.toLowerCase() === "content-type"
     );
     const isMultipart =
-      (ct?.[1] ?? "").toLowerCase().includes("multipart/") && capture.requestPostData === null;
+      (ct?.[1] ?? "").toLowerCase().includes("multipart/") &&
+      (capture.requestPostData === null || capture.requestPostData === REQUEST_BODY_UNAVAILABLE);
 
     let currentHost: string | null = null;
     try {
@@ -10681,6 +10714,10 @@ export function emitMultiStepExecuteHttp(
       for (const key of collectUnboundLiterals(bodyTemplate, parsedBody, shieldedUuids)) {
         unboundLiteralKeys.add(key);
       }
+    }
+
+    if (bodyTemplate && cap.requestPostData !== REQUEST_BODY_UNAVAILABLE) {
+      bodyTemplate = bindMultipartSelectAnswers(bodyTemplate, cap, prior);
     }
 
     const joinCarryingHeaderNames = joinCarryingHeaderNamesByStep.get(i);
@@ -18748,6 +18785,21 @@ function unreadDeclaredPayloadFields(
  * Review-checklist lines for declared payload fields no emitted request reads,
  * so a reviewer sees the silently-optionalized field outside the log stream.
  */
+/**
+ * Checklist lines for the base applicant-contract payload fields (`Resume`,
+ * `Answers`, `ClickUrl`) the emitted contract declares but no request reads.
+ */
+export function unreadContractSchemaFieldChecklistLines(contractCode: string): string[] {
+  if (!/\bApplicantContactSchema\b/.test(contractCode)) return [];
+  const emitted = stripNonCodeText(contractCode);
+  return ["Resume", "Answers", "ClickUrl"]
+    .filter((field) => !new RegExp(`payload\\.${field}(?![\\w$])`).test(emitted))
+    .map(
+      (field) =>
+        `Payload field ${field} is declared by the contract schema but read by no emitted request — the recon's frozen value is sent instead; bind it or confirm it is unused`
+    );
+}
+
 export function unreadPayloadFieldChecklistLines(fields: ReadonlySet<string>): string[] {
   return [...fields].map(
     (field) =>
@@ -21274,6 +21326,7 @@ async function main(): Promise<void> {
     ...unreadPayloadFieldChecklistLines(
       unreadDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
     ),
+    ...unreadContractSchemaFieldChecklistLines(final.contractCode),
   ];
   logger.info(
     `review checklist for ${outDir}/contract.ts:\n${checklist.map((item) => `  [ ] ${item}`).join("\n")}`

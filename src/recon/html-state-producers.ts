@@ -98,3 +98,27 @@ export function extractHtmlIssuedTokens(body: unknown): HtmlIssuedToken[] {
   }
   return out;
 }
+
+/**
+ * Maps each named `<select>` in an HTML string body to the `value`s of its
+ * `<option>`s. Returns an empty map for non-string or non-HTML bodies.
+ */
+export function extractHtmlSelectOptions(body: unknown): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  if (typeof body !== "string" || !body.includes("<")) return out;
+  const attr = (tag: string, name: string): string | undefined => {
+    const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
+    return m ? decodeHtmlEntities(m[1] ?? m[2] ?? m[3] ?? "") : undefined;
+  };
+  for (const sel of body.matchAll(/<select\b([^>]*)>([\s\S]*?)<\/select>/gi)) {
+    const name = attr(`<select ${sel[1] ?? ""}>`, "name");
+    if (!name) continue;
+    const values = out.get(name) ?? new Set<string>();
+    for (const opt of (sel[2] ?? "").matchAll(/<option\b[^>]*>/gi)) {
+      const v = attr(opt[0], "value");
+      if (v) values.add(v);
+    }
+    out.set(name, values);
+  }
+  return out;
+}
