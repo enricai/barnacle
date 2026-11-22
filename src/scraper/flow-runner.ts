@@ -893,6 +893,28 @@ const PROMPT_OPTION_SELECTORS = [
   "[data-uxi-widget-type='selectinputlistitem']",
 ].join(",");
 /**
+ * Whether a real click can reach a prompt trigger (shared by enumeration and the
+ * paired-hidden-select definition so both apply one reachability rule).
+ */
+const PROMPT_TRIGGER_REACHABLE_EL_EXPR = `(t) => {
+      const pageLaidOut = (() => { const r = document.documentElement.getBoundingClientRect(); return r.width > 0 && r.height > 0; })();
+      for (let n = t; n && n.nodeType === 1; n = n.parentElement) {
+        if (getComputedStyle(n).display === "none") return false;
+      }
+      const cs = getComputedStyle(t);
+      if (cs.visibility === "hidden" || cs.visibility === "collapse") return false;
+      if (parseFloat(cs.opacity) === 0) return false;
+      if (!pageLaidOut) return true;
+      if (t.getClientRects().length === 0) return false;
+      const r = t.getBoundingClientRect();
+      if (r.width <= 1 || r.height <= 1) return false;
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      if (cx < 0 || cy < 0 || cx >= window.innerWidth || cy >= window.innerHeight) return true;
+      const hit = document.elementFromPoint(cx, cy);
+      return !hit || hit === t || t.contains(hit);
+    }`;
+/**
  * In-page predicate source for `(el) => boolean`: true when `el` is a
  * `<select>` that is a design-system combobox opener's paired-but-hidden
  * shadow control (Base Web `bb-customSelect` and any other vendor matching
@@ -975,6 +997,7 @@ export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
     })();
     const isHidden = el.offsetParent === null || (rect.width === 0 && rect.height === 0) || style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0 || isOffscreen || hasTinyFootprint || isClipZeroArea || hasClipPath || hasZeroScale || isAncestorClipped;
     if (!isHidden) return false;
+    const triggerReachable = ${PROMPT_TRIGGER_REACHABLE_EL_EXPR};
     const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
     const optionSel = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
     const hasRenderedPanel = (opener, allowUnresolvedDeclaration) => {
@@ -998,6 +1021,14 @@ export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
       // by scanning the whole climbed ancestor, which would credit an
       // unrelated already-open widget elsewhere in a shared ancestor.
       if (openers.some((opener) => opener !== el && hasRenderedPanel(opener, depth === 0))) return true;
+      // A trigger sharing its container with the select, where every other opener
+      // in that container is unreachable, is the select's visible face.
+      for (const opener of openers) {
+        const c = opener.parentElement;
+        if (opener === el || !c || !c.contains(el) || !triggerReachable(opener)) continue;
+        const others = Array.from(c.querySelectorAll(triggerSel)).filter((o) => o !== opener && o !== el);
+        if (others.every((o) => !triggerReachable(o))) return true;
+      }
       node = node.parentElement;
     }
     return false;
@@ -10381,23 +10412,7 @@ async function tryPromptSelectorPrimitive(params: {
     // visibility:hidden, display:none, opacity:0, a box of 1px or less, or an
     // in-viewport centre whose hit is neither the trigger nor a descendant.
     // Off-screen triggers cannot be hit-tested and are kept.
-    const triggerReachable = (t) => {
-      for (let n = t; n && n.nodeType === 1; n = n.parentElement) {
-        if (getComputedStyle(n).display === "none") return false;
-      }
-      const cs = getComputedStyle(t);
-      if (cs.visibility === "hidden" || cs.visibility === "collapse") return false;
-      if (parseFloat(cs.opacity) === 0) return false;
-      if (!pageLaidOut) return true;
-      if (t.getClientRects().length === 0) return false;
-      const r = t.getBoundingClientRect();
-      if (r.width <= 1 || r.height <= 1) return false;
-      const cx = r.left + r.width / 2;
-      const cy = r.top + r.height / 2;
-      if (cx < 0 || cy < 0 || cx >= window.innerWidth || cy >= window.innerHeight) return true;
-      const hit = document.elementFromPoint(cx, cy);
-      return !hit || hit === t || t.contains(hit);
-    };
+    const triggerReachable = ${PROMPT_TRIGGER_REACHABLE_EL_EXPR};
     for (const w of widgets) if (w.tagName !== "SELECT" && !triggerReachable(w)) unreachable.add(w);
     const tabbable = (sel) => {
       const ti = sel.getAttribute("tabindex");
@@ -10470,6 +10485,7 @@ async function tryPromptSelectorPrimitive(params: {
     for (const w of widgets) {
       if (collapsed.has(w) || unreachable.has(w) || !isUnfilled(w)) continue;
       w.setAttribute(markAttr, String(idx));
+      if (w.parentElement) w.parentElement.setAttribute(markAttr + "-ctr", String(idx));
       for (const [m, host] of collapsed) if (host === w && !layerHost.has(m)) m.setAttribute(markAttr + "-mate", String(idx));
       if (layerHost.size > 0 && Array.from(layerHost.values()).includes(w)) w.setAttribute(markAttr + "-layered", "1");
       candidates.push({ wIdx: idx, label: widgetLabel(w) });
@@ -11331,13 +11347,27 @@ async function commitPromptOption(params: {
     const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+      const triggerReachable = ${PROMPT_TRIGGER_REACHABLE_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
       const namesOption = ${PROMPT_NAMES_OPTION_EXPR};
       const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
-      if (!w) return { ok: false, id: "", stillInvalid: false };
+      if (!w) {
+        // The widget replaced itself after the commit: credit only a control now in
+        // its stamped container holding exactly the requested option (letters/digits only).
+        const alnum = (x) => (x || "").toLowerCase().replace(/[^\\p{L}\\p{N}]/gu, "");
+        const ctr = document.querySelector("[" + markAttr + '-ctr="' + wIdx + '"]');
+        const want = alnum(wantText);
+        if (ctr && want) {
+          for (const c of Array.from(ctr.querySelectorAll("input, textarea, select, [role='combobox']"))) {
+            const v = c.tagName === "SELECT" ? (c.selectedIndex >= 0 && c.options[c.selectedIndex] ? c.options[c.selectedIndex].textContent : "") : (c.value !== undefined && c.value !== "" ? c.value : c.textContent);
+            if (alnum(v) === want) return { ok: true, id: c.id || "", stillInvalid: false };
+          }
+        }
+        return { ok: false, id: "", stillInvalid: false };
+      }
       const text = currentText(w, valueSel, emptyRx);
       const textMatches = wantText ? text.includes(wantText) : text !== "";
       let node = w;
@@ -11378,6 +11408,10 @@ async function commitPromptOption(params: {
               }
               snode = snode.parentElement;
             }
+            if (!pairedWithW) {
+              const wc = w.parentElement;
+              pairedWithW = !!wc && wc.contains(sel) && Array.from(wc.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== w && o !== sel).every((o) => !triggerReachable(o));
+            }
             if (!pairedWithW) continue;
             const v = (sel.value || "").trim();
             if (!v) continue;
@@ -11387,6 +11421,7 @@ async function commitPromptOption(params: {
             // carries no corroborating signal — treating it as a match would credit
             // ANY selection change, including a different option than requested.
             if (wantText && optText && optText.includes(wantText)) { hiddenSelectMatches = true; break; }
+            if (wantText && !optText && selOpt && [selOpt.getAttribute("value"), selOpt.getAttribute("text")].some((a) => norm(a) === wantText)) { hiddenSelectMatches = true; break; }
           }
           cnode = cnode.parentElement;
         }
