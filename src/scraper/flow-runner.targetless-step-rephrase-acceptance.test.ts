@@ -231,7 +231,19 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
     expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
   });
 
-  it("still credits a rephrase that resolves to the quoted heading", async () => {
+  it("skips an optional step whose rephrase heal is evidenced only by a view-swap", async () => {
+    wireRephraseResolvesTo("Application Questions page heading");
+
+    await expect(runOptionalStep()).resolves.toBeUndefined();
+
+    expect(logged("info")).toMatch(
+      /skipped \(optional, llm-rephrase credited only by view-swap; network=false url=false dom=false\)/
+    );
+    expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
+  it("still credits a required step whose rephrase resolves to the quoted heading", async () => {
+    OPTIONAL = false;
     wireRephraseResolvesTo("Application Questions page heading");
 
     await expect(runOptionalStep()).resolves.toBeUndefined();
