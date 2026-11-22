@@ -16796,7 +16796,10 @@ export function detectContractGaps(
     actionSteps.length > 0 &&
     !actionSteps.some((s) => isWrite(s.capture) && matchesSubmit(s.capture));
   let frozenScreeningAnswers = 0;
-  if (emittedBody !== undefined) {
+  // A body binding answers by non-literal expression (`payload.Answers[key]`) is treated as
+  // binding them all; once any answer is bound by its literal name, each select is checked by name.
+  const perNameBinding = emittedBody !== undefined && /payload\.Answers\[["'`]/.test(emittedBody);
+  if (emittedBody !== undefined && (perNameBinding || !emittedBody.includes("payload.Answers["))) {
     const selects = new Set<string>();
     for (const s of actionSteps) {
       for (const name of extractHtmlSelectOptions(s.capture.responseBody).keys()) selects.add(name);
@@ -16843,7 +16846,7 @@ export function detectContractGaps(
     truncatedSequence,
     bodylessUploadSteps,
     frozenScreeningAnswers,
-    frozenUploadHandles,
+    ...(frozenUploadHandles.length > 0 ? { frozenUploadHandles } : {}),
   };
 }
 
