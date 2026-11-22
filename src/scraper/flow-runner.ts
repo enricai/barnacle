@@ -15283,6 +15283,8 @@ export async function executeStepWithHealing(params: {
               attemptTarget,
               vettedAction ? false : preCentred
             );
+        record.actResultSuccess = result.success;
+        record.actResultDescription = result.actionDescription;
         // Deny-list guard (post-hoc): attempt-1 act resolves internally, so we
         // can't block the click, but we refuse to COUNT a wizard-exit control as
         // success — don't set resolvedAction, force failure — so the cascade
