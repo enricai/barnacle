@@ -3088,6 +3088,10 @@ export function isClickViewSwapVerified(params: {
   // growth-based credit below still needs a reported click.
   if (resolvedAction?.method !== "click") return false;
   if (!clickedElementStillPresent && bytesDelta <= 0) return false;
+  // A shrink that did not qualify as a removal above (target still present)
+  // is not a reveal; growth-based credits need the body to have grown, unless
+  // it is a screen-swap-sized change.
+  if (bytesDelta < 0 && -bytesDelta < VIEW_SWAP_MIN_BYTES) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   // A small text-only reveal is what a blocked mid-flow submit's inline
   // validation message produces too; without a settled page advance it is
