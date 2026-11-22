@@ -9,7 +9,7 @@ import {
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
 import type { FrameCandidateScanResult } from "@/scraper/deep-locator-scan";
-import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import { FILLABLE_CANDIDATE_SELECTOR, INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { SubmitCandidate } from "@/scraper/submit-control";
 import type { Logger } from "@/types/logging";
@@ -38,6 +38,7 @@ const SCOPED_HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELEC
 // Also the pre-cascade reachability probe's own hop (`probeStepBeforeAttempts`
 // deliberately keeps requesting "*" — see flow-runner.ts's inline comment
 // there) — registering a candidate here doubles as "the probe sees content".
+const FILLABLE_HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
 const WIDENED_HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
 const MANUAL_APPLICATION_STEP = "Click the 'Manual Application' button.";
 const FILL_FIRST_NAME_STEP = "Fill in the First Name field with 'Reginald'";
@@ -92,9 +93,11 @@ function routeScanExpression(
   deepLocatorFrame: FakeDeepLocatorFrame
 ): FrameCandidateScanResult[] {
   const source = String(expr);
-  const hopSelector = source.includes(JSON.stringify(INTERACTIVE_CANDIDATE_SELECTOR))
-    ? SCOPED_HOP_SELECTOR
-    : WIDENED_HOP_SELECTOR;
+  const hopSelector = source.includes(JSON.stringify(FILLABLE_CANDIDATE_SELECTOR))
+    ? FILLABLE_HOP_SELECTOR
+    : source.includes(JSON.stringify(INTERACTIVE_CANDIDATE_SELECTOR))
+      ? SCOPED_HOP_SELECTOR
+      : WIDENED_HOP_SELECTOR;
   const hop = deepLocatorFrame.get(hopSelector);
   if (!hop) return [];
   return hop.elements.map((element, index) => ({
@@ -295,33 +298,26 @@ describe("flow-runner/executeStepWithHealing — widened '*' enumeration only fi
 });
 
 describe("flow-runner/executeStepWithHealing — field-label fill/select branch honors the widened hop (bugfix-003 regression)", () => {
-  it("fills a labelled field the widened '*' hop resolves against the WIDENED hop, when the interactive-scoped hop matches nothing", async () => {
+  it("a fill step never widens to '*': a control only the widened hop resolves is left unwritten", async () => {
     vi.clearAllMocks();
 
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
-    // Same over-narrowing shape as the click case: "First Name" never
-    // matches INTERACTIVE_CANDIDATE_SELECTOR here (no role/tabindex fixture
-    // needed — simply left unregistered), so only the widened "*" hop
-    // resolves it, and the fill must land on THAT hop, not a hardcoded
-    // INTERACTIVE_CANDIDATE_SELECTOR hop the widened candidate was never
-    // indexed against.
     registerDeepLocatorHopElements(deepLocatorFrame, WIDENED_HOP_SELECTOR, ["First Name"]);
 
     const { resultPromise } = await runManualApplicationStep(
       deepLocatorFrame,
       FILL_FIRST_NAME_STEP
     );
-    const result = await resultPromise;
+    await resultPromise.catch(() => undefined);
 
-    expect(result.lastStepIndex).toBe(0);
-    expect(deepLocatorFrame.get(WIDENED_HOP_SELECTOR)?.elements[0]?.filledWith).toBe("Reginald");
+    expect(deepLocatorFrame.get(WIDENED_HOP_SELECTOR)?.elements[0]?.filledWith).toBeNull();
   });
 
-  it("negative control: a non-empty scoped result fills the scoped candidate and never writes to the widened '*' hop", async () => {
+  it("negative control: a non-empty scoped result fills the fillable candidate and never writes to the widened '*' hop", async () => {
     vi.clearAllMocks();
 
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHopElements(deepLocatorFrame, SCOPED_HOP_SELECTOR, ["First Name"]);
+    registerDeepLocatorHopElements(deepLocatorFrame, FILLABLE_HOP_SELECTOR, ["First Name"]);
     // Registered so the pre-cascade reachability probe (which always asks
     // for "*") reports "present" — an untouched decoy here proves the fill
     // never even enumerated the widened hop, not merely that nothing there
@@ -335,7 +331,7 @@ describe("flow-runner/executeStepWithHealing — field-label fill/select branch 
     const result = await resultPromise;
 
     expect(result.lastStepIndex).toBe(0);
-    expect(deepLocatorFrame.get(SCOPED_HOP_SELECTOR)?.elements[0]?.filledWith).toBe("Reginald");
+    expect(deepLocatorFrame.get(FILLABLE_HOP_SELECTOR)?.elements[0]?.filledWith).toBe("Reginald");
     expect(deepLocatorFrame.get(WIDENED_HOP_SELECTOR)?.elements[0]?.filledWith).toBeNull();
   });
 });
