@@ -52,3 +52,26 @@ describe("text-captured multipart steps", () => {
     expect(body.match(/"Content-Type":/g)?.length).toBe(1);
   });
 });
+
+describe("text-captured multipart replaces a pre-existing per-call content-type", () => {
+  it("drops the differently-cased entry and keeps body boundary/CRLFs", () => {
+    const data = `--${BOUNDARY}\r\nx\r\n--${BOUNDARY}--`;
+    const out = emitMultiStepExecuteHttp(
+      [mk(`multipart/form-data; boundary=${BOUNDARY}`, data, "r0")] as never,
+      {},
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map([["content-type", "x"]])
+    );
+    expect(out.match(/"content-type":/gi)?.length).toBe(1);
+    expect(out).toContain(`"Content-Type": \`multipart/form-data; boundary=${BOUNDARY}\``);
+    expect(out).toContain(BOUNDARY);
+  });
+});
