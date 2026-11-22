@@ -477,3 +477,57 @@ describe("redirect hop capture: ordering", () => {
     }
   );
 });
+
+describe("redirect hop capture: generic-domain regressions", () => {
+  it("keeps a late Set-Cookie on a headerless 302 POST hop with immediate loadingFinished, in order", async () => {
+    const t = harness("https://example.com", true);
+    t.fire("Network.requestWillBeSent", {
+      requestId: "r1",
+      request: { url: "https://example.com/a", method: "POST", headers: {}, hasPostData: true },
+    });
+    t.fire("Network.requestWillBeSent", {
+      requestId: "r1",
+      request: { url: "https://example.com/b", method: "GET", headers: {} },
+      redirectResponse: { status: 302 },
+    });
+    const finished = t.fire("Network.loadingFinished", { requestId: "r1" });
+    t.fire("Network.responseReceivedExtraInfo", {
+      requestId: "r1",
+      headers: { "Set-Cookie": "sid=late" },
+    });
+    await finished;
+    await t.flush();
+    t.teardown();
+    expect(t.captured.map((c) => c.url)).toEqual(["https://example.com/a", "https://example.com/b"]);
+    const post = t.captured[0];
+    expect(post?.requestPostData).toBe("x=1");
+    expect(JSON.stringify(post?.responseHeaders)).toContain("sid=late");
+    expect(JSON.stringify(t.captured[1]?.responseHeaders ?? {})).not.toContain("sid=late");
+  });
+
+  it("credits a redirected non-GET hop to a sibling subdomain but not a third-party host", async () => {
+    const t = harness("https://www.example.com");
+    const hop = (id: string, host: string) => {
+      t.fire("Network.requestWillBeSent", {
+        requestId: id,
+        request: { url: `https://${host}/a`, method: "POST", headers: {}, postData: "x=1" },
+      });
+      t.fire("Network.requestWillBeSent", {
+        requestId: id,
+        request: { url: `https://${host}/b`, method: "GET", headers: {} },
+        redirectResponse: { status: 307, headers: {} },
+        redirectHasExtraInfo: false,
+      });
+    };
+    hop("s", "api.example.com");
+    await t.flush();
+    expect(t.signalCounter.n).toBe(1);
+    await t.fire("Network.loadingFinished", { requestId: "s" });
+    await t.flush();
+    hop("x", "tracker.other.net");
+    await t.fire("Network.loadingFinished", { requestId: "x" });
+    await t.flush();
+    t.teardown();
+    expect(t.signalCounter.n).toBe(1);
+  });
+});
