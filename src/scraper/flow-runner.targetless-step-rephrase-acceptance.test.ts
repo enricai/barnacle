@@ -231,6 +231,43 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
     expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
   });
 
+  it("refuses (and never acts) when observing the rephrase throws", async () => {
+    wireRephraseResolvesTo("Application Questions page heading");
+    const wired = guardedObserve.getMockImplementation() as (...a: unknown[]) => Promise<unknown>;
+    guardedObserve.mockImplementation(async (...args: unknown[]) => {
+      if (args[1] === REPHRASED) throw new Error("observe blew up");
+      return wired(...args);
+    });
+
+    await expect(runOptionalStep()).rejects.toMatchObject({ kind: "cascade-exhausted" });
+    expect(guardedAct.mock.calls.some((c) => c[1] === REPHRASED)).toBe(false);
+    expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
+  it("rejects a vetted rephrase whose act then lands on a control", async () => {
+    wireRephraseResolvesTo("Application Questions page heading");
+    const wired = guardedAct.getMockImplementation() as (...a: unknown[]) => Promise<unknown>;
+    guardedAct.mockImplementation(async (...args: unknown[]) =>
+      (args[1] as { selector?: string })?.selector === "xpath=//*[@id='t']"
+        ? {
+            success: true,
+            message: "ok",
+            actionDescription: "clicked",
+            actions: [
+              {
+                selector: "xpath=//*[@id='m']",
+                description: "language selector menu button",
+                method: "click",
+              },
+            ],
+          }
+        : wired(...args)
+    );
+
+    await expect(runOptionalStep()).rejects.toMatchObject({ kind: "cascade-exhausted" });
+    expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
   describe("a step with no quoted target that declares a blank, non-interactive spot", () => {
     beforeEach(() => {
       STEP = "Click on a blank area of the page to dismiss any open dropdown";
