@@ -10943,12 +10943,6 @@ async function tryPromptSelectorPrimitive(params: {
         optionsFiltered = live;
         continue;
       }
-      if (realPromptOptions(live.options ?? [], option).length > 0) {
-        logger.info(
-          `prompt-selector primitive: filtered list for ${optLabel} lists options but none match; not submitting with Enter`
-        );
-        break;
-      }
       logger.info(
         `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
       );
