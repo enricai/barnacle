@@ -49,6 +49,26 @@ describe("detectContractGaps", () => {
   });
 });
 
+describe("detectContractGaps frozen screening answers", () => {
+  const sel = (body: string) =>
+    ({
+      method: "GET",
+      requestPostData: null,
+      requestHeaders: {},
+      responseBody: body,
+    }) as unknown as Capture;
+  const html = '<select name="q1"><option value="a">A</option></select>';
+  const steps = [step(sel(html)), step(cap("POST", 'x name="q1" y'))];
+  it("counts posted selects when the emitted body has no payload.Answers binding", () => {
+    expect(detectContractGaps(steps, false, all, "const x = 1;").frozenScreeningAnswers).toBe(1);
+  });
+  it("counts nothing when answers are bound", () => {
+    expect(
+      detectContractGaps(steps, false, all, "payload.Answers[0]").frozenScreeningAnswers
+    ).toBe(0);
+  });
+});
+
 describe("buildContractChecklist gap lines", () => {
   const base = { pascal: "X", gql: false, gqlQuery: null };
   it("is unchanged without gaps", () => {
