@@ -218,6 +218,8 @@ function siteKey(host: string): string {
   const labels = h.split(".").filter(Boolean);
   if (labels.length <= 2) return labels.join(".");
   const last2 = labels.slice(-2).join(".");
+  const last3 = labels.slice(-3).join(".");
+  if (SHARED_HOSTING_SUFFIXES.has(last3)) return labels.slice(-4).join(".");
   const tld = labels[labels.length - 1] ?? "";
   const second = labels[labels.length - 2] ?? "";
   if (
@@ -451,10 +453,9 @@ export function wireSignalCapture(
       // browser says so via redirectHasExtraInfo. Skip that hop's slot so the
       // next hop's extra-info is not attributed to it.
       if (params.redirectHasExtraInfo === false) {
-        respExtraSeq.set(
-          params.requestId,
-          Math.max(respExtraSeq.get(params.requestId) ?? 0, hop + 1)
-        );
+        for (const seq of [respExtraSeq, reqExtraSeq]) {
+          seq.set(params.requestId, Math.max(seq.get(params.requestId) ?? 0, hop + 1));
+        }
       }
       const expectExtra =
         params.redirectHasExtraInfo === true && (respExtraSeq.get(params.requestId) ?? 0) <= hop;
