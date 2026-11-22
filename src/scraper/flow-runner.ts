@@ -14925,18 +14925,21 @@ export async function executeStepWithHealing(params: {
     // it would burn the attempt slot without exercising new behaviour.
     // Skip to the next iteration so the cascade reaches its higher-value
     // techniques faster.
+    const wouldBeTechnique: AttemptRecord["technique"] =
+      attempt === 1
+        ? "act-string"
+        : deepSubmitLocatorSlot(attempt)
+          ? "deep-submit-locator"
+          : attempt === 2
+            ? phantomClickAfterAttempt1
+              ? "trusted-click-retry"
+              : "observe-act"
+            : attempt === 3
+              ? "structured-click"
+              : attempt === 4
+                ? "observe-act-exclude"
+                : "llm-rephrase";
     if (attempt > 1) {
-      const wouldBeTechnique: AttemptRecord["technique"] = deepSubmitLocatorSlot(attempt)
-        ? "deep-submit-locator"
-        : attempt === 2
-          ? phantomClickAfterAttempt1
-            ? "trusted-click-retry"
-            : "observe-act"
-          : attempt === 3
-            ? "structured-click"
-            : attempt === 4
-              ? "observe-act-exclude"
-              : "llm-rephrase";
       const decision = shouldSkipTechnique({
         technique: wouldBeTechnique,
         priorAttempts: attempts.map((a) => ({
@@ -14973,13 +14976,27 @@ export async function executeStepWithHealing(params: {
     // judge against the step-start baseline before `pre` absorbs the advance.
     if (attempt > 1 && (await creditStepStartAdvance(`attempt-${attempt}-entry`)))
       return "completed";
-    // Document replaced by an earlier attempt's click but not credited: never
-    // re-act the instruction on the new page.
+    // Document replaced by an earlier attempt's click but not credited: this
+    // attempt must not act on the new page at all — neither re-click the act's
+    // now-stale resolved selector nor re-act the instruction against the new
+    // document. Every later attempt is skipped the same way (each re-checks, so
+    // a late advance can still be credited by the entry check above).
     if (attempt > 1 && (await actDocumentReplaced())) {
-      const msg = `attempt ${attempt} skipped: frame document replaced since step start; not re-acting on the new document`;
+      const retargetsResolvedSelector =
+        wouldBeTechnique === "structured-click" ||
+        (wouldBeTechnique === "trusted-click-retry" &&
+          !isStepSubmitShaped({
+            step,
+            submitStep,
+            isFinalStep,
+            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+          }));
+      const msg = retargetsResolvedSelector
+        ? `attempt ${attempt}: ${wouldBeTechnique} skipped: frame document replaced since step start; resolved selector is stale`
+        : `attempt ${attempt} skipped: frame document replaced since step start; not re-acting on the new document`;
       logger.info(`${formatStepPrefix(stepIndex, totalSteps)} ${msg}`);
       failureReasons.push(msg);
-      break;
+      continue;
     }
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),

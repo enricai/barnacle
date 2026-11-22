@@ -324,25 +324,13 @@ describe("flow-runner attempt loop — replaced frame document", () => {
 
   it("skips trusted-click-retry when the document was replaced since step start", async () => {
     const { lines, clicks } = await run(2);
-    expect(
-      lines.some(
-        (l) =>
-          l.includes("attempt 2: trusted-click-retry skipped") ||
-          l.includes("skipped: frame document replaced since step start")
-      )
-    ).toBe(true);
+    expect(lines.some((l) => l.includes("attempt 2: trusted-click-retry skipped"))).toBe(true);
     expect(clicks).toBe(0);
   });
 
   it("skips structured-click when the document was replaced since step start", async () => {
     const { lines, clicks } = await run(3);
-    expect(
-      lines.some(
-        (l) =>
-          l.includes("attempt 3: structured-click skipped") ||
-          l.includes("skipped: frame document replaced since step start")
-      )
-    ).toBe(true);
+    expect(lines.some((l) => l.includes("attempt 3: structured-click skipped"))).toBe(true);
     expect(clicks).toBe(0);
   });
 });
