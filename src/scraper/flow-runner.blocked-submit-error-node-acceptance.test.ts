@@ -34,7 +34,9 @@ describe("blocked submit revealing only a non-class error node", () => {
       },
       url: () => "https://example.example.com/apply",
       title: async () => "Create Account",
-      locator: () => ({ first: () => ({ isChecked: async () => false, inputValue: async () => "" }) }),
+      locator: () => ({
+        first: () => ({ isChecked: async () => false, inputValue: async () => "" }),
+      }),
       waitForTimeout: async () => {},
       getSessionForFrame: () => session,
       mainFrameId: () => "main",
@@ -56,7 +58,11 @@ describe("blocked submit revealing only a non-class error node", () => {
             message: "clicked",
             actionDescription: SUBMIT,
             actions: [
-              { selector: "css=[data-automation-id=submit]", description: "Create Account", method: "click" },
+              {
+                selector: "css=[data-automation-id=submit]",
+                description: "Create Account",
+                method: "click",
+              },
             ],
           };
         }
