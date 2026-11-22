@@ -131,6 +131,36 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     expect(normPromptOptionText("A&#039;s&nbsp;&bogus;")).toBe("a's &bogus;");
   });
 
+  it("with literal entity text in the DOM, sends no Enter and commits through the click identity check", async () => {
+    const stagehandAct = vi.fn();
+    // "&amp;amp;" via innerHTML leaves the literal text "Arts &amp; Sciences" in the DOM.
+    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: {
+        "country-widget": {
+          options: ["Arts &amp;amp; Sciences", "Law"],
+        },
+      },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Arts & Sciences'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(enterKeyDowns(cdpEvents)).toBe(0);
+    const committed = window.document.querySelector(
+      "[data-automation-id='promptSelectionLabel']"
+    )?.textContent;
+    expect(committed).toContain("Sciences");
+  });
+
   it("sends no Enter when the list shows real non-matching options (mismatch)", async () => {
     const stagehandAct = vi.fn();
     const { page, target, window, cdpEvents } = buildPromptWidgetHarness({

@@ -1232,7 +1232,8 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
  * different option no longer does.
  */
 const PROMPT_NAMES_OPTION_EXPR = `((committed, wanted) => {
-  const words = (s) => " " + (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ";
+  const dec = (s) => { if (!s || s.indexOf("&") < 0) return s || ""; const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+  const words = (s) => " " + dec(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ";
   const want = words(wanted);
   return want.trim() === "" || words(committed).includes(want);
 })`;
@@ -11505,7 +11506,8 @@ async function commitPromptOption(params: {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const triggerReachable = ${PROMPT_TRIGGER_REACHABLE_EL_EXPR};
-      const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+      const dec = (s) => { if (!s || s.indexOf("&") < 0) return s || ""; const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+      const norm = (s) => dec(s).replace(/\\s+/g, " ").trim().toLowerCase();
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
@@ -11525,7 +11527,7 @@ async function commitPromptOption(params: {
         }
         return { ok: false, id: "", stillInvalid: false };
       }
-      const text = currentText(w, valueSel, emptyRx);
+      const text = dec(currentText(w, valueSel, emptyRx));
       const textMatches = wantText ? text.includes(wantText) : text !== "";
       let node = w;
       let stillInvalid = false;
