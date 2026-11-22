@@ -1152,7 +1152,7 @@ export function widgetLabelMatches(widgetLabel: string, questionLabel: string): 
   const lc = (x: string): string => x.toLowerCase().replace(/\s+/g, " ").trim();
   const wl = lc(field);
   const ql = lc(questionLabel);
-  if (wl && ql && (wl.includes(ql) || ql.includes(wl))) return true;
+  if (wl && ql && wl === ql) return true;
   const toks = (x: string): string[] =>
     x
       .toLowerCase()
@@ -1162,6 +1162,10 @@ export function widgetLabelMatches(widgetLabel: string, questionLabel: string): 
   const b = toks(questionLabel);
   if (a.length === 0 || b.length === 0) return false;
   const [small, big] = a.length <= b.length ? [a, b] : [b, a];
+  // A short label inside a long sentence-style question ("State" inside a
+  // 20-word yes/no question) names a different field: once the longer side is
+  // a sentence (> 6 tokens), the shorter must cover at least half of it.
+  if (big.length > 6 && small.length * 2 < big.length) return false;
   return small.every((t) => big.includes(t));
 }
 /**
@@ -10521,7 +10525,8 @@ async function tryPromptSelectorPrimitive(params: {
       : [];
     // Several fuzzy matches ('Country' vs 'Country Code'): an exact
     // (case/whitespace-insensitive) label equality breaks the tie when unique.
-    const exactNorm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+    const exactNorm = (s: string) =>
+      s.replace(/\s+/g, " ").replace(/\s*[*:]+\s*$/, "").trim().toLowerCase();
     const exactMatches = labelMatches.filter(
       (c) => exactNorm(stripTrailingEmptyPlaceholder(c.label)) === exactNorm(questionLabel ?? "")
     );
@@ -10535,7 +10540,7 @@ async function tryPromptSelectorPrimitive(params: {
             : null;
     if (!chosen) {
       logger.info(
-        `prompt-selector primitive: no unambiguous widget match for ${optLabel}; falling through to cascade`
+        `prompt-selector primitive: no unambiguous widget match for ${optLabel} (candidates: ${candidates.map((c) => JSON.stringify(c.label)).join(", ")}); falling through to cascade`
       );
       return null;
     }
