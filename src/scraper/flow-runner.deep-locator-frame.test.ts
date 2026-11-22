@@ -247,4 +247,47 @@ describe("flow-runner/runHealingFlow — OOPIF cascade regression (observe-blind
 
     expect(deepLocatorSpy).not.toHaveBeenCalled();
   });
+
+  it("refuses to click a frame candidate whose text names none of the step's quoted phrases", async () => {
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const frame = new Map();
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHop(frame, hopSelector, "Skip to Main Content");
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Skip to Main Content");
+    const page = fakeFlowPage(() => urls.current, makeFakeDeepLocator(frame));
+    resolveFrameTarget.mockImplementation(async () => makeChildFrameTarget(() => urls.current));
+    guardedObserve.mockResolvedValue([]);
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "no candidates",
+      actionDescription: "",
+      actions: [],
+    });
+    const infoMessages: string[] = [];
+    const logger = {
+      ...testLogger,
+      info: (m: string) => infoMessages.push(m),
+    } as unknown as Logger;
+
+    await runHealingFlow({
+      stagehand: makeStagehand(),
+      page,
+      steps: [
+        {
+          instruction: "Click the 'Manual Application' button",
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      logger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+      frameSelector: FRAME_SELECTOR,
+    }).catch(() => undefined);
+
+    expect(frame.get(hopSelector)?.clicks ?? 0).toBe(0);
+    expect(infoMessages.some((m) => /refusing to click an unrelated control/.test(m))).toBe(true);
+  });
 });
