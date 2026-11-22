@@ -10210,27 +10210,39 @@ async function tryPromptSelectorPrimitive(params: {
       if (alb) {
         const parts = [];
         for (const id of alb.split(/\\s+/)) { const el = document.getElementById(id); if (el) parts.push(el.textContent); }
-        if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim().slice(0, 120);
+        if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim().slice(0, 600);
       }
       // A trigger's aria-label can merely echo its placeholder ("Select One
       // Required"), which names no question — defer to the <label>/group lookup.
       const al = ariaLabelOf(w);
-      if (al) return al.slice(0, 120);
+      if (al) return al.slice(0, 600);
       const labelledIds = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
       for (const id of labelledIds) {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
-        if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120);
+        if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
+      }
+      // A label[for] naming a select/input/textarea in the trigger's own
+      // container (the replaced native control the widget stands in for).
+      let cont = w.parentElement;
+      for (let d = 0; d < 3 && cont; d++) {
+        for (const lab of Array.from(cont.querySelectorAll("label[for]"))) {
+          const tgt = document.getElementById(lab.getAttribute("for"));
+          if (tgt && /^(select|input|textarea)$/i.test(tgt.tagName) && cont.contains(tgt) && !w.contains(lab) && lab.textContent.trim()) {
+            return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
+          }
+        }
+        cont = cont.parentElement;
       }
       const grp = w.closest("[role='group'][aria-labelledby],fieldset");
       if (grp) {
         const gid = grp.getAttribute("aria-labelledby");
         const gref = gid ? document.getElementById(gid.split(/\\s+/)[0]) : grp.querySelector("legend");
-        if (gref && gref.textContent.trim()) return gref.textContent.replace(/\\s+/g, " ").trim().slice(0, 120);
+        if (gref && gref.textContent.trim()) return gref.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
       }
       let node = w.parentElement;
       for (let d = 0; d < 5 && node; d++) {
         const t = (node.textContent || "").trim();
-        if (t) return t.replace(/\\s+/g, " ").trim().slice(0, 120);
+        if (t) return t.replace(/\\s+/g, " ").trim().slice(0, 600);
         node = node.parentElement;
       }
       return "";
@@ -10398,7 +10410,7 @@ async function tryPromptSelectorPrimitive(params: {
       const seen = !widgets.includes(sel) && pointerReaches(sel);
       if (seen && tabbable(sel)) continue;
       const lab = labelElOf(sel);
-      const labText = lab ? lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120) : "";
+      const labText = lab ? lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600) : "";
       if (!labText) continue;
       let field = sel.parentElement;
       for (let d = 0; d < 6 && field && field !== document.body && field.querySelectorAll("label").length === 0; d++) field = field.parentElement;
