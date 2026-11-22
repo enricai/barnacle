@@ -1023,3 +1023,37 @@ describe("deduplicateCaptures header/method awareness", () => {
     ).toHaveLength(1);
   });
 });
+
+describe("selectRateLimitTargets — shape-restoring headers", () => {
+  const lookup = () => ({ "Key-Inflection": "camel", Accept: "application/json" });
+
+  it("carries the proven header values from the capture", () => {
+    const { targets } = selectRateLimitTargets(
+      [
+        replay({
+          url: "https://api.example.com/a",
+          sourceCapture: "a.json",
+          shapeRestoringHeaders: ["Key-Inflection"],
+        }),
+      ],
+      ["example.com"],
+      null,
+      [],
+      undefined,
+      lookup
+    );
+    expect([...targets.values()][0]?.headers).toEqual({ "Key-Inflection": "camel" });
+  });
+
+  it("leaves targets without proven headers unchanged", () => {
+    const { targets } = selectRateLimitTargets(
+      [replay({ url: "https://api.example.com/a", sourceCapture: "a.json" })],
+      ["example.com"],
+      null,
+      [],
+      undefined,
+      lookup
+    );
+    expect([...targets.values()][0]).not.toHaveProperty("headers");
+  });
+});

@@ -762,7 +762,8 @@ export async function probeAuxiliaryEndpoints(
 async function probeRateLimit(
   endpoint: string,
   method: string,
-  body: string | null
+  body: string | null,
+  extraHeaders: Record<string, string> = {}
 ): Promise<RateLimitFinding> {
   logger.info(`rate-limit probe: ${endpoint} (1→3→5 rps, stops at 429/403)`);
   const origin = new URL(endpoint).origin;
@@ -770,6 +771,7 @@ async function probeRateLimit(
     ...RC_HEADERS,
     Origin: origin,
     Referer: `${origin}/`,
+    ...extraHeaders,
   };
 
   const finding: RateLimitFinding = {
@@ -902,12 +904,16 @@ export function selectRateLimitTargets(
   ownBackendHostnames: string[],
   fallbackHost: string | null = null,
   declaredEndpointPatterns: readonly string[] = [],
-  submitEndpointPattern?: string
+  submitEndpointPattern?: string,
+  captureHeadersFor?: (replay: ReplayResult) => Record<string, string> | undefined
 ): {
-  targets: Map<string, { method: string; body: string | null }>;
+  targets: Map<string, { method: string; body: string | null; headers?: Record<string, string> }>;
   skipped: number;
 } {
-  const collected = new Map<string, { method: string; body: string | null; tier: number }>();
+  const collected = new Map<
+    string,
+    { method: string; body: string | null; tier: number; headers?: Record<string, string> }
+  >();
   const seenEndpoints = new Set<string>();
   let skipped = 0;
   const patterns: RegExp[] = [];
@@ -958,10 +964,17 @@ export function selectRateLimitTargets(
             break;
           }
         }
+        // Header values the replay proved load-bearing, as the capture sent them.
+        const captured = captureHeadersFor?.(replay) ?? {};
+        const provenEntries = (replay.shapeRestoringHeaders ?? [])
+          .filter((h) => captured[h] !== undefined)
+          .map((h) => [h, captured[h]!] as const);
+        const proven = provenEntries.length > 0 ? Object.fromEntries(provenEntries) : undefined;
         collected.set(`${endpointKey}${u.search}`, {
           method: replay.method,
           body: replay.requestBody,
           tier,
+          ...(proven ? { headers: proven } : {}),
         });
       }
     } catch {
@@ -969,9 +982,13 @@ export function selectRateLimitTargets(
     }
   }
   // Stable sort: relevance tier, then capture order.
-  const targets = new Map<string, { method: string; body: string | null }>();
+  const targets = new Map<
+    string,
+    { method: string; body: string | null; headers?: Record<string, string> }
+  >();
   const ordered = [...collected.entries()].sort((a, b) => a[1].tier - b[1].tier);
-  for (const [k, { method, body }] of ordered) targets.set(k, { method, body });
+  for (const [k, { method, body, headers }] of ordered)
+    targets.set(k, { method, body, ...(headers ? { headers } : {}) });
   return { targets, skipped };
 }
 
@@ -1163,7 +1180,8 @@ async function main(): Promise<void> {
     ownBackendHostnames,
     fallbackHost,
     flowFile ? readDeclaredEndpointPatterns(flowFile) : [],
-    flowFile ? readSubmitEndpointPattern(flowFile) : undefined
+    flowFile ? readSubmitEndpointPattern(flowFile) : undefined,
+    (r) => probeworthy.find((p) => p.filename === r.sourceCapture)?.capture.requestHeaders
   );
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +
@@ -1171,8 +1189,8 @@ async function main(): Promise<void> {
   );
 
   const rateLimitFindings: RateLimitFinding[] = [];
-  for (const [endpoint, { method, body }] of probeTargets) {
-    const finding = await probeRateLimit(endpoint, method, body);
+  for (const [endpoint, { method, body, headers }] of probeTargets) {
+    const finding = await probeRateLimit(endpoint, method, body, headers);
     rateLimitFindings.push(finding);
   }
 
