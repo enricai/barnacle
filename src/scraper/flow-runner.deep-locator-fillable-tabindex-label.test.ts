@@ -12,17 +12,11 @@ import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
- * Coverage for bugfix-002: a focusable `<label tabindex="-1" for="pw">` sits before its input in the
- * INTERACTIVE/wildcard universes but is absent from the fillable universe a fill step
- * resolves over. (follow-up to bugfix-001's City-field
- * diagnostic): a frame-scoped fill/select step must route to the
- * deterministic accessible-name field-label match EVEN WHEN Stagehand's own
- * act()/observe() resolves to a real, visible, WRONG control — not just when
- * observe() comes back empty. Before this fix, a nonempty (but wrong)
- * Stagehand candidate short-circuited the `candidates.length === 0` gates
- * that guarded the deterministic branch, so the cascade acted on Stagehand's
- * mis-resolution (the City-vs-header-search-box case) instead of ever
- * reaching `findDeepLocatorCandidateByFieldLabel`.
+ * A focusable `<label tabindex="-1" for="pw2">` precedes its input. It is in the
+ * INTERACTIVE/wildcard universes but absent from the fillable universe a
+ * fill step resolves over, so a fill must write to the input (never the label,
+ * which would throw "Illegal invocation") and must not cascade to another field,
+ * even when Stagehand's own act()/observe() resolves to a wrong control.
  */
 
 const TOP_ORIGIN = "https://careers.example.org";
@@ -145,6 +139,46 @@ describe("fill step with a tabindex'd label next to its input (bugfix-002)", () 
 
     expect(result.lastStepIndex).toBe(0);
     expect(hop.elements.map((e) => e.filledWith)).toEqual([null, "hunter2", null]);
+    for (const el of [...interactive.elements, ...wildcard.elements]) {
+      expect(el.filledWith).toBeNull();
+    }
+  });
+
+  it("fills the literal 'Password (Re-enter)' step into the re-enter input only", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const frame: FakeDeepLocatorFrame = new Map();
+    const set = ["Password", "Password (Re-enter)"];
+    const hop = registerDeepLocatorHopElements(frame, HOP_SELECTOR, set);
+    const labelled = ["Password (Re-enter)", ...set];
+    const interactive = registerDeepLocatorHopElements(
+      frame,
+      `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`,
+      labelled
+    );
+    const wildcard = registerDeepLocatorHopElements(frame, PROBE_HOP_SELECTOR, labelled);
+    const page = makeFakeTopPage(topUrl, childUrls, frame);
+
+    const result = await runHealingFlow({
+      stagehand: makeFakeStagehandWrongResolution(),
+      page,
+      steps: [
+        {
+          instruction: "Fill the 'Password (Re-enter)' field with 'hunter2'",
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+      frameSelector: IFRAME_SELECTOR,
+    });
+
+    expect(result.lastStepIndex).toBe(0);
+    expect(hop.elements.map((e) => e.filledWith)).toEqual([null, "hunter2"]);
     for (const el of [...interactive.elements, ...wildcard.elements]) {
       expect(el.filledWith).toBeNull();
     }
