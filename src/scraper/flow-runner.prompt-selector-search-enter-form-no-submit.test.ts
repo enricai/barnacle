@@ -91,18 +91,23 @@ function enterKeyDowns(cdpEvents: { method: string; params: unknown }[]): number
 async function run(html: string) {
   const harness = buildPromptWidgetHarness({
     html,
-    popupByWidgetId: { "degree-widget": { options: OPTIONS, searchOnSubmit: true } },
+    popupByWidgetId: {
+      "degree-widget": { options: OPTIONS, searchOnSubmit: true },
+    },
   });
   const { window, page } = harness;
   const doc = window.document;
-  const input = doc.getElementById("degree-input") as unknown as HTMLElement;
+  const input = doc.getElementById("degree-input") as unknown as {
+    dispatchEvent(e: unknown): boolean;
+    closest(s: string): { dispatchEvent(e: unknown): boolean } | null;
+  };
 
   const keydowns: { defaultPrevented: boolean }[] = [];
   let submits = 0;
-  doc.addEventListener("submit", (e: Event) => {
+  doc.addEventListener("submit", ((e: { preventDefault(): void }) => {
     e.preventDefault();
     submits += 1;
-  });
+  }) as never);
 
   // Emulate the browser: a trusted Enter keydown reaches the focused input and,
   // unless its default is prevented, triggers implicit submission of the form.
@@ -117,13 +122,11 @@ async function run(html: string) {
         bubbles: true,
         cancelable: true,
       });
-      input.dispatchEvent(ev as unknown as Event);
+      input.dispatchEvent(ev);
       keydowns.push({ defaultPrevented: ev.defaultPrevented });
-      const form = input.closest("form") as HTMLFormElement | null;
+      const form = input.closest("form");
       if (!ev.defaultPrevented && form) {
-        form.dispatchEvent(
-          new window.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event
-        );
+        form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
       }
     }
     return sendCDP(method, params);
