@@ -14358,7 +14358,15 @@ export async function executeStepWithHealing(params: {
   let lastRankedSubmitCandidates: SubmitCandidate[] | null = null;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     params.abortSignal?.throwIfAborted();
-    frameDocBaseline = await readFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page));
+    // Step-start baseline: captured once on attempt 1 so later attempts that
+    // re-click a selector resolved earlier can detect a document replaced by
+    // an earlier attempt's click.
+    const attemptDocBaseline = await readFrameDocumentIdentity(
+      frameTarget ?? mainFrameTarget(page)
+    );
+    if (attempt === 1) {
+      frameDocBaseline = attemptDocBaseline;
+    }
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
     // it would burn the attempt slot without exercising new behaviour.
@@ -14780,6 +14788,24 @@ export async function executeStepWithHealing(params: {
         // (an `Input.dispatchMouseEvent`). Both deliver `isTrusted=true`. This is
         // the non-submit sibling of the deep-submit-locator escalation above.
         record.technique = "trusted-click-retry";
+        if (
+          (await checkFrameDocumentIdentity(
+            frameTarget ?? mainFrameTarget(page),
+            frameDocBaseline
+          )) === "replaced"
+        ) {
+          const failureMessage =
+            "trusted-click-retry skipped: frame document replaced since step start; resolved selector is stale";
+          record.actResultSuccess = false;
+          record.errorMessage = failureMessage;
+          record.triedSelectors = [...triedSelectors];
+          attempts.push(record);
+          failureReasons.push(failureMessage);
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+          );
+          continue;
+        }
         // Carry forward any selector prior attempts already resolved (e.g.
         // attempt-1 act-string's xpath) so a trusted-click-retry that can't
         // resolve a deepLocator candidate doesn't erase the xpath signal
@@ -15337,6 +15363,17 @@ export async function executeStepWithHealing(params: {
         const xpath = lastSelector ? xpathBody(lastSelector, frameTarget) : null;
         if (!xpath) {
           record.errorMessage = "structured-click: no xpath from prior attempt";
+        } else if (
+          (await checkFrameDocumentIdentity(
+            frameTarget ?? mainFrameTarget(page),
+            frameDocBaseline
+          )) === "replaced"
+        ) {
+          record.errorMessage =
+            "structured-click skipped: frame document replaced since step start; resolved selector is stale";
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+          );
         } else {
           // Trust boundary: xpath comes from Stagehand's own resolved
           // selector during a prior attempt of THIS step, not from URL
@@ -16247,8 +16284,10 @@ export async function executeStepWithHealing(params: {
       record.actResultSuccess === true &&
       resolvedAction?.method === "click" &&
       resolvedAction.selector &&
-      (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
-        "replaced"
+      (await checkFrameDocumentIdentity(
+        frameTarget ?? mainFrameTarget(page),
+        attemptDocBaseline
+      )) === "replaced"
     ) {
       // The act's own click replaced the frame document: the resolved xpath
       // now names a different control, so neither click may fire.
