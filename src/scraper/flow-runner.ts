@@ -6966,10 +6966,11 @@ function pickSegmentedDateGroup(
   let leaders: number[] = [];
   groups.forEach((group, index) => {
     if (!compatible(group)) return;
-    const own = segmentedDateTokens(group.label ?? group.context);
+    const labelBlank = (group.label ?? "").trim() === "";
+    const own = segmentedDateTokens(labelBlank ? group.context : (group.label as string));
     if (own.length === 0) return;
     const namesOwnField =
-      group.label === undefined &&
+      labelBlank &&
       quoted.length === 0 &&
       own.some((t) => SEGMENTED_DATE_FIELD_WORDS.has(t) && stepSet.has(t));
     const namesOwnLabel = (t: readonly string[]): boolean =>
