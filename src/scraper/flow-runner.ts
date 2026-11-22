@@ -510,6 +510,8 @@ export function wireSignalCapture(
 
   // Per-requestId chain of detached redirect-hop finalizations; the final hop
   // awaits it so captures/counter indices follow network order.
+  const HOP_EXTRA_GRACE_MS = 100;
+  const graceExpired = new Set<string>();
   const hopChains = new Map<string, Promise<void>>();
 
   const onRequest = (params: RequestWillBeSentEvent): void => {
@@ -526,6 +528,19 @@ export function wireSignalCapture(
       // browser says so via redirectHasExtraInfo. Skip that hop's slot so the
       // next hop's extra-info is not attributed to it.
       if (params.redirectHasExtraInfo === false) {
+        // A request extra-info already buffered for this slot, with no response
+        // extra-info for the hop, belongs to the next hop's request.
+        if (
+          reqExtraSeq.get(params.requestId) === hop + 1 &&
+          (respExtraSeq.get(params.requestId) ?? 0) <= hop
+        ) {
+          const from = hopKey(params.requestId, hop);
+          const moved = extraRequestHeaders.get(from);
+          if (moved) {
+            extraRequestHeaders.delete(from);
+            extraRequestHeaders.set(hopKey(params.requestId, hop + 1), moved);
+          }
+        }
         for (const seq of [respExtraSeq, reqExtraSeq]) {
           seq.set(params.requestId, Math.max(seq.get(params.requestId) ?? 0, hop + 1));
         }
@@ -537,7 +552,8 @@ export function wireSignalCapture(
       const hopTask = (hopChains.get(params.requestId) ?? Promise.resolve()).then(async () => {
         try {
           // The hop's response extra-info (Set-Cookie) may land after this event.
-          if (expectExtra) await waitForHopExtra(hopKey(params.requestId, hop));
+          if (expectExtra && !graceExpired.has(params.requestId))
+            await waitForHopExtra(hopKey(params.requestId, hop));
           foldResponseExtras(prior, params.requestId, hop);
           await finalizeCapture(prior, params.requestId, false);
         } finally {
@@ -627,21 +643,29 @@ export function wireSignalCapture(
     const key = hopKey(requestId, hop);
     buf.set(key, mergeResponseHeaders(buf.get(key) ?? {}, headers));
     if (seq === respExtraSeq) {
-      hopWaiters.get(key)?.();
+      hopSignal(key).release();
     }
   };
 
   // Wait for a redirect hop's response extra-info (arrival order vs the
   // redirect's requestWillBeSent is not guaranteed). Released by that hop's
   // extra-info event, or at teardown so nothing waits forever.
-  const hopWaiters = new Map<string, () => void>();
-  const waitForHopExtra = (key: string): Promise<void> =>
-    new Promise<void>((resolve) => {
-      hopWaiters.set(key, () => {
-        hopWaiters.delete(key);
-        resolve();
+  // Created eagerly (synchronously) so an extra-info that lands before the hop
+  // finalizer starts waiting is not missed.
+  const hopWaiters = new Map<string, { promise: Promise<void>; release: () => void }>();
+  const hopSignal = (key: string): { promise: Promise<void>; release: () => void } => {
+    let w = hopWaiters.get(key);
+    if (!w) {
+      let release!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
       });
-    });
+      w = { promise, release };
+      hopWaiters.set(key, w);
+    }
+    return w;
+  };
+  const waitForHopExtra = (key: string): Promise<void> => hopSignal(key).promise;
 
   const onResponseExtraInfo = (params: ResponseReceivedExtraInfoEvent): void => {
     bufferExtra(respExtraSeq, extraResponseHeaders, params.requestId, params.headers);
@@ -669,6 +693,12 @@ export function wireSignalCapture(
     reqExtraSeq.delete(requestId);
     hopOf.delete(requestId);
     const prefix = `${requestId}#`;
+    for (const k of [...hopWaiters.keys()]) {
+      if (k.startsWith(prefix)) {
+        hopWaiters.get(k)?.release();
+        hopWaiters.delete(k);
+      }
+    }
     for (const m of [extraResponseHeaders, extraRequestHeaders]) {
       for (const k of [...m.keys()]) if (k.startsWith(prefix)) m.delete(k);
     }
@@ -702,7 +732,18 @@ export function wireSignalCapture(
     else dropRequestState(params.requestId);
     const chain = hopChains.get(params.requestId);
     if (chain) {
-      await chain;
+      // Once the request has finished, a hop's extra-info is only awaited for a
+      // short grace period; it is otherwise awaited until it arrives.
+      const grace = setTimeout(() => {
+        graceExpired.add(params.requestId);
+        for (const [k, w] of hopWaiters) if (k.startsWith(`${params.requestId}#`)) w.release();
+      }, HOP_EXTRA_GRACE_MS);
+      try {
+        await chain;
+      } finally {
+        clearTimeout(grace);
+        graceExpired.delete(params.requestId);
+      }
       if (hopChains.get(params.requestId) === chain) hopChains.delete(params.requestId);
     }
     await finalizeCapture(req, params.requestId, true);
@@ -848,7 +889,7 @@ export function wireSignalCapture(
   void Promise.resolve(session.send?.("Runtime.enable")).catch(() => {});
 
   return (): void => {
-    for (const release of [...hopWaiters.values()]) release();
+    for (const w of [...hopWaiters.values()]) w.release();
     session.off("Network.requestWillBeSent", onRequest);
     session.off("Network.requestWillBeSentExtraInfo", onRequestExtraInfo);
     session.off("Network.responseReceived", onResponse);
