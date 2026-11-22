@@ -5267,7 +5267,7 @@ export function stepQuotesValueNotControlName(step: string): boolean {
  * dismiss open UI. Such a step is satisfied by no control at all.
  */
 export function stepDeclaresNonInteractiveTarget(step: string): boolean {
-  return /\b(?:non|un)-?(?:interactive|clickable)\b|\bnot\s+(?:interactive|clickable)\b|\bstatic\s+(?:\w+\s+)?(?:spot|area|space|region|part|text|content)\b|\b(?:empty|blank|neutral|inert|dead)\s+(?:\w+\s+)?(?:spot|area|space|region|part)\b|\bwhite-?space\b/i.test(
+  return /\b(?:non|un)-?(?:interactive|clickable)\b|\bnot\s+(?:interactive|clickable)\b|\bstatic\s+(?:\w+\s+)?(?:spot|area|space|region|part|text|content)\b|\b(?:empty|blank|neutral|inert|dead)\s+(?:\w+\s+)?(?:spot|area|space|region|part)\b|\bwhite-?space\b|\bon\s+(?:absolutely\s+)?nothing\b|\b(?:click|tap)\s+anywhere\b|\bnothing\s+in\s+particular\b/i.test(
     step
   );
 }
