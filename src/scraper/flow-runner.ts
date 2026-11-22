@@ -2869,6 +2869,8 @@ export function isClickViewSwapVerified(params: {
   actSucceeded?: boolean;
   /** Real content left the page (see isVisibleTextShrunk): a dismissal, not a reset. */
   contentRemoved?: boolean;
+  /** False when the resolved element contradicts the step's quoted target. */
+  resolvedElementNamesStepTarget?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -2887,7 +2889,11 @@ export function isClickViewSwapVerified(params: {
     pageAdvanced = textChanged,
     actSucceeded = false,
     contentRemoved = false,
+    resolvedElementNamesStepTarget = true,
   } = params;
+  // A click on a control unrelated to the step's quoted target is not the
+  // step's success, whatever the DOM did afterwards.
+  if (!resolvedElementNamesStepTarget) return false;
   // The page advancing is the evidence for a mid-flow submit, so it does not
   // depend on how Stagehand reported the gesture: a successful act that
   // listed no actions, or a non-state-class method, still ran a click-class
@@ -3374,7 +3380,7 @@ export type CaptureFn = (input: LlmCallInput) => Promise<void>;
  * is the per-call data.
  */
 const REPHRASE_SYSTEM_PROMPT =
-  "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED. With outcome=rewrite, set typesIntoField to true only when the rewritten instruction types or enters text into an input field; set it to false for clicks, key presses (such as pressing Enter), selecting an option from a dropdown, radio or checkbox, and navigation. Do not write any wording about clearing or selecting the field's existing text: when typesIntoField is true, that is added for you.";
+  "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. If the original step's own intent is to click nothing in particular (an empty or non-interactive spot, a page heading, or a click whose only purpose is to dismiss an open menu or prompt), do not retarget it onto a different control such as a button, link or option: return outcome=impossible, or rewrite it as a non-control action (such as pressing Escape). Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED. With outcome=rewrite, set typesIntoField to true only when the rewritten instruction types or enters text into an input field; set it to false for clicks, key presses (such as pressing Enter), selecting an option from a dropdown, radio or checkbox, and navigation. Do not write any wording about clearing or selecting the field's existing text: when typesIntoField is true, that is added for you.";
 
 /**
  * Appended to a rephrased instruction that types into a field. Stagehand's
@@ -3557,7 +3563,7 @@ ${submitFailureList || "(none)"}
 PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — the SPA's own telemetry. Watch for: en=view_secondPage / en=view_thirdPage = the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (URL stays the same but the questions changed); en=view_thankYouPage = the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because /integrated_apply POSTs are sometimes debounced); epn.validationErrorsCount=N = the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer targeting an unfilled field over re-clicking Submit/Continue. When view_thankYouPage appears, the form already submitted — emit outcome=impossible because there is nothing left to click):
 ${gaEventEvidence || "(none)"}
 
-Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite picks one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite invokes that action so the underlying form can clear its blocking state. Set outcome to "impossible" with a one-line reason only when the original instruction's element does not exist on the current page and no redirect target is available.`;
+Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite picks one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite invokes that action so the underlying form can clear its blocking state. Set outcome to "impossible" with a one-line reason when the original instruction's element does not exist on the current page and no redirect target is available, or when the original step names no interactive target (an empty or non-interactive spot, or a dismiss-only click) so any rewrite would have to click an unrelated control.`;
 
   // Request values reach the rephrase LLM only as %tokens%; the rewrite is
   // resolved back before the cascade acts on it (which re-tokenizes it for
@@ -5253,6 +5259,73 @@ export function stepQuotesValueNotControlName(step: string): boolean {
       parseSelectStep(step) ||
       parseRadioStep(step)
   );
+}
+
+/**
+ * True when the step itself declares its click target to be nothing in
+ * particular — an empty, blank or non-interactive spot, clicked only to
+ * dismiss open UI. Such a step is satisfied by no control at all.
+ */
+export function stepDeclaresNonInteractiveTarget(step: string): boolean {
+  return /\b(?:non|un)-?(?:interactive|clickable)\b|\bnot\s+(?:interactive|clickable)\b|\bstatic\s+(?:\w+\s+)?(?:spot|area|space|region|part|text|content)\b|\b(?:empty|blank|neutral|inert|dead)\s+(?:\w+\s+)?(?:spot|area|space|region|part)\b|\bwhite-?space\b|\bon\s+(?:absolutely\s+)?nothing\b|\b(?:click|tap)\s+anywhere\b|\bnothing\s+in\s+particular\b/i.test(
+    step
+  );
+}
+
+/** Words an act() description uses to name a control rather than static content. */
+const CONTROL_DESCRIPTION_PATTERN =
+  /\b(?:button|link|menu|menuitem|dropdown|drop-down|selector|select|option|checkbox|radio|tab|toggle|switch|combobox|listbox|input|textbox|icon|anchor)\b/i;
+
+/** Elements (or ancestors) a page treats as a control: clicking one acts, it does not merely dismiss. */
+const INTERACTIVE_CONTROL_CSS =
+  "button,a[href],input,select,textarea,summary,[role=button],[role=link],[role=menuitem],[role=option],[role=tab],[role=combobox],[role=switch],[role=checkbox],[role=radio],[aria-haspopup],[aria-expanded]";
+
+/**
+ * Reads whether the resolved click target is itself (or sits inside) an
+ * interactive control. `true` is the only verdict callers act on; a miss, a
+ * non-xpath selector or an evaluate failure yields `false`.
+ */
+async function resolvedClickTargetIsInteractive(
+  target: FrameTarget,
+  selector: string
+): Promise<boolean> {
+  const xpath = xpathBodyForEvaluate(selector, target);
+  if (!xpath) return false;
+  const expr = `(() => {
+    const el = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+    return Boolean(el && el.closest && el.closest(${JSON.stringify(INTERACTIVE_CONTROL_CSS)}));
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * False when the resolved click target contradicts the step's own intent:
+ * the step declares a non-interactive target but the element is a control, or
+ * the step quotes a control name and the resolved action's description names
+ * none of those phrases (or names a negated one; same semantics as
+ * `vetObserveCandidates`). Value-quoting steps (fill/select/radio) are exempt
+ * from the quoted-name check. `description` is what the act reported it
+ * clicked; `isInteractive` is the DOM read of the clicked element.
+ */
+export function resolvedActionNamesStepTarget(
+  step: string,
+  action: { description?: string },
+  options: { isInteractive?: boolean; fallbackDescription?: string } = {}
+): boolean {
+  const description = action.description || options.fallbackDescription || "";
+  if (stepDeclaresNonInteractiveTarget(step)) {
+    if (options.isInteractive === true || CONTROL_DESCRIPTION_PATTERN.test(description)) {
+      return false;
+    }
+  }
+  if (stepQuotesValueNotControlName(step)) return true;
+  const phrases = extractTaggedPhrases(step);
+  if (phrases.length === 0 || description === "") return true;
+  return !vetObserveCandidates([{ description }], phrases).refuse;
 }
 
 /**
@@ -15896,7 +15969,25 @@ export async function executeStepWithHealing(params: {
             record.actResultDescription = result.actionDescription;
             for (const action of result.actions ?? []) {
               if (action.selector) triedSelectors.push(action.selector);
-              if (!resolvedAction) resolvedAction = action;
+              if (!resolvedAction) {
+                if (
+                  resolvedActionNamesStepTarget(step, action, {
+                    isInteractive:
+                      stepDeclaresNonInteractiveTarget(step) &&
+                      !!action.selector &&
+                      (await resolvedClickTargetIsInteractive(
+                        frameTarget ?? mainFrameTarget(page),
+                        action.selector
+                      )),
+                    fallbackDescription: result.actionDescription,
+                  })
+                ) {
+                  resolvedAction = action;
+                } else {
+                  record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${(action.description || result.actionDescription || "").slice(0, 60)}"`;
+                  failureReasons.push(record.errorMessage);
+                }
+              }
             }
           }
         }
@@ -16159,6 +16250,18 @@ export async function executeStepWithHealing(params: {
       advanceBaseline,
       destinationPlausible,
     });
+    const resolvedTargetNamesStep =
+      resolvedAction === null ||
+      resolvedActionNamesStepTarget(step, resolvedAction, {
+        isInteractive:
+          stepDeclaresNonInteractiveTarget(step) &&
+          !!resolvedAction.selector &&
+          (await resolvedClickTargetIsInteractive(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector
+          )),
+        fallbackDescription: record.actResultDescription ?? undefined,
+      });
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
@@ -16174,6 +16277,7 @@ export async function executeStepWithHealing(params: {
       pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
       contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
+      resolvedElementNamesStepTarget: resolvedTargetNamesStep,
     });
     if (
       clickViewSwapVerified === false &&

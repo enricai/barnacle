@@ -177,6 +177,51 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
     resetBillingErrorFlagForTests();
   });
 
+  it("rejects an attempt-5 rephrase resolution whose action does not name the step's quoted target", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    resolveFrameTarget.mockResolvedValue(makeChildFrameTarget({} as FrameTarget["frame"]));
+    wireCascadeToRephrase();
+    guardedAct.mockImplementation(async (_s: unknown, instruction: string) =>
+      instruction === "click the language menu"
+        ? {
+            success: true,
+            message: "ok",
+            actionDescription: "clicked",
+            actions: [
+              { selector: "button#lang", description: "language menu button", method: "click" },
+            ],
+          }
+        : { success: false, message: "no candidates", actionDescription: "", actions: [] }
+    );
+    generateObject.mockResolvedValue({
+      object: { outcome: "rephrased", instruction: "click the language menu" },
+      usage: {},
+    });
+    const { anthropic } = makeCapturingAnthropic();
+
+    await expect(
+      runHealingFlow({
+        stagehand: makeStagehand(),
+        page: fakeFlowPage(frame),
+        steps: [
+          {
+            instruction: "Click the 'Application Questions' heading",
+            optional: false,
+            upload: false,
+            submitStep: false,
+          },
+        ],
+        logger: testLogger,
+        anthropic,
+        rephraseModel: { modelId: "test-model" } as unknown as RephraseModel,
+        uploadFixture: null,
+        frameSelector: FRAME_SELECTOR,
+      })
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    expect(guardedAct.mock.calls.some((c) => c[1] === "click the language menu")).toBe(true);
+  });
+
   it("populates rephrase evidence from deepLocator candidates, shaped as click Actions, when observe is empty for a child frame", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
     const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;

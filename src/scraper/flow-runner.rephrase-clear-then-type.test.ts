@@ -86,3 +86,21 @@ describe("rephraseWithLLM clears before typing only when the model says the rewr
     expect(await rephrase()).toBeNull();
   });
 });
+
+describe("rephrase contract for targetless steps", () => {
+  it("permits outcome=impossible for a step that names no interactive target", async () => {
+    generateObject.mockReset();
+    generateObject.mockResolvedValue({
+      object: { outcome: "impossible", reason: "no target" },
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    const step =
+      "Click on the 'Account Settings' page heading (an empty, non-interactive spot) to close any dropdown or prompt list that is still open";
+    expect(await rephraseWithLLM(model, step, [], [], ["no effect"], async () => {})).toBeNull();
+    const args = generateObject.mock.calls[0]?.[0] as { system: string; prompt: string };
+    expect(args.system).toMatch(/click nothing in particular/);
+    expect(args.system).toMatch(/outcome=impossible/);
+    expect(args.prompt).toMatch(/names no interactive target/);
+    expect(args.prompt).toContain(step);
+  });
+});
