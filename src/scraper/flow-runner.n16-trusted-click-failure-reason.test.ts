@@ -297,4 +297,30 @@ describe("flow-runner n+16 fallback — attemptN16TrustedClick surfaces its real
     expect(failureLine).toContain("trustedClickReason=not-actionable");
     expect(failureLine).toContain("trustedClickError=click intercepted by an overlay");
   });
+
+  it("logs trustedClickReason=no-candidate and never clicks when no frame candidate names the quoted phrase", async () => {
+    const { logger, infoLines } = makeLogger();
+    const click = vi.fn(async () => {});
+    const page = makeOopifPage([{ index: 0, text: "Skip to Main Content", visible: true }], click);
+
+    await expect(
+      runHealingFlow({
+        stagehand: makeOopifStagehand(),
+        page,
+        steps: OOPIF_STEPS,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+        frameSelector: OOPIF_IFRAME_SELECTOR,
+      })
+    ).rejects.toThrow();
+
+    expect(click).not.toHaveBeenCalled();
+    const failureLine = infoLines.find(
+      (line) => line.includes("n+16 probe") && line.includes("trustedClickReason=")
+    );
+    expect(failureLine).toContain("trustedClickReason=no-candidate");
+    expect(failureLine).toContain("no frame candidate names a phrase quoted in the step");
+  });
 });
