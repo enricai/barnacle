@@ -21,6 +21,14 @@ describe("withPersistedPersonaEnv", () => {
     writeFileSync(join(d, "persona-env.json"), JSON.stringify({ RECON_PASSWORD: "pw-1" }));
     expect(withPersistedPersonaEnv(d, {}).RECON_PASSWORD).toBe("pw-1");
   });
+  it("returns env unchanged on malformed or non-object JSON", () => {
+    const d = mkdtempSync(join(tmpdir(), "persona-bad-"));
+    const env = { A: "1" };
+    writeFileSync(join(d, "persona-env.json"), "{not json");
+    expect(withPersistedPersonaEnv(d, env)).toBe(env);
+    writeFileSync(join(d, "persona-env.json"), "null");
+    expect(withPersistedPersonaEnv(d, env)).toBe(env);
+  });
   it("no file returns env", () => {
     const env = { A: "1" };
     expect(withPersistedPersonaEnv(mkdtempSync(join(tmpdir(), "p-")), env)).toBe(env);
