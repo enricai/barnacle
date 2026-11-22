@@ -314,6 +314,43 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
     expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
   });
 
+  it("observe-act (attempt 2) never clicks an interactive control for the verbatim dismiss-only step", async () => {
+    let stepObserves = 0;
+    guardedObserve
+      .mockResolvedValueOnce([
+        { selector: "xpath=//*[@id='h']", description: "page heading", method: "click" },
+      ])
+      .mockImplementation(async (_s: unknown, instruction: unknown) => {
+        if (instruction !== STEP) return [];
+        stepObserves++;
+        // Attempt 1's vetting observe sees the heading (act fails below); every later
+        // observe of the step resolves to an interactive control.
+        return stepObserves === 1
+          ? [{ selector: "xpath=//*[@id='h']", description: "page heading", method: "click" }]
+          : [
+              {
+                selector: "xpath=//*[@id='b']",
+                description: "prompt list dropdown button",
+                method: "click",
+              },
+            ];
+      });
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "x",
+      actionDescription: "",
+      actions: [],
+    });
+    generateObject.mockResolvedValue({ object: { outcome: "impossible" }, usage: {} });
+    await runOptionalStep().catch(() => undefined);
+    expect(stepObserves).toBeGreaterThan(1);
+    expect(
+      guardedAct.mock.calls.some(
+        (c) => (c[1] as { selector?: string })?.selector === "xpath=//*[@id='b']"
+      )
+    ).toBe(false);
+  });
+
   describe("a step with no quoted target that declares a blank, non-interactive spot", () => {
     beforeEach(() => {
       STEP = "Click on a blank area of the page to dismiss any open dropdown";
