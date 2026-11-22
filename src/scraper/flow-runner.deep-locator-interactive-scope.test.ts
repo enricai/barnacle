@@ -15,8 +15,8 @@ import {
 import {
   buildFillFrameCandidateExpr,
   buildReadBackFrameCandidateExpr,
-  INTERACTIVE_CANDIDATE_SELECTOR,
   FILLABLE_CANDIDATE_SELECTOR,
+  INTERACTIVE_CANDIDATE_SELECTOR,
 } from "@/scraper/deep-locator-scan";
 import {
   type AttemptRecord,
