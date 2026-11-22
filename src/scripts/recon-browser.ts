@@ -2971,6 +2971,11 @@ async function main(): Promise<void> {
   if (allocateEmailEnvVar && allocatedInbox) {
     allocatedPersonaEnv[allocateEmailEnvVar] = allocatedInbox.address;
   }
+  // The registration password is operator-supplied (not allocated), but the
+  // replay must use the same value, so persist it alongside the allocated ones.
+  if (process.env.RECON_PASSWORD) {
+    allocatedPersonaEnv.RECON_PASSWORD = process.env.RECON_PASSWORD;
+  }
   if (allocatePhoneEnvVar) {
     const phone = allocateFictionalPhone();
     process.env[allocatePhoneEnvVar] = phone;

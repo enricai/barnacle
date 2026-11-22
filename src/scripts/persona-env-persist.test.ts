@@ -16,6 +16,11 @@ describe("withPersistedPersonaEnv", () => {
     expect(m.RECON_EMAIL).toBe("x@y.z");
     expect(m.RECON_PHONE).toBe("555");
   });
+  it("binds persisted password with empty env", () => {
+    const d = mkdtempSync(join(tmpdir(), "persona-pw-"));
+    writeFileSync(join(d, "persona-env.json"), JSON.stringify({ RECON_PASSWORD: "pw-1" }));
+    expect(withPersistedPersonaEnv(d, {}).RECON_PASSWORD).toBe("pw-1");
+  });
   it("no file returns env", () => {
     const env = { A: "1" };
     expect(withPersistedPersonaEnv(mkdtempSync(join(tmpdir(), "p-")), env)).toBe(env);
