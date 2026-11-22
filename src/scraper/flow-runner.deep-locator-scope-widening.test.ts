@@ -9,7 +9,10 @@ import {
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
 import type { FrameCandidateScanResult } from "@/scraper/deep-locator-scan";
-import { FILLABLE_CANDIDATE_SELECTOR, INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import {
+  FILLABLE_CANDIDATE_SELECTOR,
+  INTERACTIVE_CANDIDATE_SELECTOR,
+} from "@/scraper/deep-locator-scan";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { SubmitCandidate } from "@/scraper/submit-control";
 import type { Logger } from "@/types/logging";
