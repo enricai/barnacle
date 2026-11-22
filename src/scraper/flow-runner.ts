@@ -5123,7 +5123,13 @@ export async function verifyPromptSelectorCommitted(
     const selectStep = ${JSON.stringify(selectStep)};
     const xpath = ${JSON.stringify(xpath)};
     const result = ${SHADOW_XPATH_FIRST_NODE}(xpath);
-    const el = result;
+    let el = result;
+    if (!el && typeof document.evaluate !== "function") {
+      // A document with no native xpath support: resolve the plain
+      // id-anchored shape ("//tag[@id='x']") directly.
+      const idm = /^\\/\\/(?:[A-Za-z][\\w-]*|\\*)\\[@id=(['"])([^'"]+)\\1\\]$/.exec(xpath);
+      if (idm) el = document.getElementById(idm[2]);
+    }
     if (!el) return { isPromptWidget: false, committed: false };
     const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
     if (!widget) {
@@ -5163,6 +5169,15 @@ export async function verifyPromptSelectorCommitted(
             if (cs.length === 1) field = cs[0];
           }
         }
+      }
+      if (!field && selectStep && el.tagName && want && !/^(BUTTON|A|LABEL|INPUT|SELECT|TEXTAREA)$/.test(el.tagName) && el.getAttribute("role") !== "button") {
+        // A non-button custom dropdown display with no backing control: its
+        // own text is the committed value, so an opener still showing a
+        // placeholder/count (popup merely opened) is not a commit.
+        const own = (el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+        const count = /^(\\d+)\\s+items?\\s+selected\\b/.exec(own);
+        if (count) return { isPromptWidget: true, committed: Number(count[1]) > 0 };
+        return { isPromptWidget: true, committed: own !== "" && namesOption(own, want) };
       }
       if (!field) return { isPromptWidget: false, committed: false };
       let fv = "";
