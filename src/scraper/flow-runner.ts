@@ -175,9 +175,13 @@ import {
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import type { Capture } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
-import { checkFrameDocumentIdentity, readFrameDocumentIdentity, type FrameDocumentIdentity } from "./frame-document-identity";
 import type { Logger } from "@/types/logging";
 import type { SessionProxyTuple } from "@/types/session-proxy";
+import {
+  checkFrameDocumentIdentity,
+  type FrameDocumentIdentity,
+  readFrameDocumentIdentity,
+} from "./frame-document-identity";
 
 export { waitForSpaReady } from "@/scraper/spa-readiness";
 export { toFrameRelativeXpath };
