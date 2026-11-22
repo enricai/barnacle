@@ -587,9 +587,13 @@ export function wireSignalCapture(
     // captures still get unique filenames on disk.
     let sameOrigin = false;
     try {
-      sameOrigin = new URL(req.url).origin === getCurrentPageOrigin();
+      const pageHost = new URL(getCurrentPageOrigin()).hostname;
+      const reqHost = new URL(req.url).hostname;
+      // Same-site (registrable domain), not strict origin: a redirected
+      // POST hop may land on a sibling subdomain of the page.
+      sameOrigin = pageHost !== "" && registrableDomain(reqHost) === registrableDomain(pageHost);
     } catch {
-      // Malformed URL — treat as not same-origin.
+      // Malformed URL or empty page origin — treat as not same-site.
     }
     if (req.method !== "GET" && sameOrigin) {
       signalCounter.n++;
