@@ -398,6 +398,7 @@ export function wireSignalCapture(
       prior.responseStatus = params.redirectResponse.status;
       prior.responseHeaders = params.redirectResponse.headers as Record<string, string>;
       foldResponseExtras(prior, params.requestId);
+      hopOf.set(params.requestId, (hopOf.get(params.requestId) ?? 0) + 1);
       void finalizeCapture(prior, params.requestId, false).catch(() => {});
     }
     const inline = params.request.postData;
@@ -448,51 +449,61 @@ export function wireSignalCapture(
     req.responseHeaders = params.response.headers as Record<string, string>;
   };
 
+  // Extra-info events carry only requestId, so the hop is derived here: the
+  // Nth extra-info event of a kind for a requestId belongs to hop N (each hop
+  // yields one of each), which is independent of how it interleaves with the
+  // next requestWillBeSent. `hopOf` is the hop an in-flight entry is on,
+  // advanced at each redirectResponse.
+  const hopKey = (requestId: string, hop: number): string => `${requestId}#${hop}`;
+  const respExtraSeq = new Map<string, number>();
+  const reqExtraSeq = new Map<string, number>();
+  const hopOf = new Map<string, number>();
+  const bufferExtra = (
+    seq: Map<string, number>,
+    buf: Map<string, Record<string, string>>,
+    requestId: string,
+    headers: Record<string, string>
+  ): void => {
+    const hop = seq.get(requestId) ?? 0;
+    seq.set(requestId, hop + 1);
+    const key = hopKey(requestId, hop);
+    buf.set(key, mergeResponseHeaders(buf.get(key) ?? {}, headers));
+  };
+
   const onResponseExtraInfo = (params: ResponseReceivedExtraInfoEvent): void => {
-    // Accumulate — a redirect fires this more than once per requestId. The fold
-    // into the capture happens once, in onFinished, so order with responseReceived
-    // never matters.
-    const merged = mergeResponseHeaders(
-      extraResponseHeaders.get(params.requestId) ?? {},
-      params.headers
-    );
-    extraResponseHeaders.set(params.requestId, merged);
+    bufferExtra(respExtraSeq, extraResponseHeaders, params.requestId, params.headers);
   };
 
   const onRequestExtraInfo = (params: RequestWillBeSentExtraInfoEvent): void => {
-    // Accumulate — can race requestWillBeSent in either order, and a redirect
-    // fires this more than once per requestId. The fold into the capture
-    // happens once, in onFinished, so order with requestWillBeSent never matters.
-    const merged = mergeResponseHeaders(
-      extraRequestHeaders.get(params.requestId) ?? {},
-      params.headers
-    );
-    extraRequestHeaders.set(params.requestId, merged);
+    bufferExtra(reqExtraSeq, extraRequestHeaders, params.requestId, params.headers);
   };
 
+  // Folds only the current hop's buffered headers into `req` and drains them.
   const foldResponseExtras = (req: InFlightRequest, requestId: string): void => {
-    req.responseHeaders = mergeResponseHeaders(
-      req.responseHeaders,
-      extraResponseHeaders.get(requestId)
-    );
-    extraResponseHeaders.delete(requestId);
+    const key = hopKey(requestId, hopOf.get(requestId) ?? 0);
+    req.responseHeaders = mergeResponseHeaders(req.responseHeaders, extraResponseHeaders.get(key));
+    extraResponseHeaders.delete(key);
+    req.requestHeaders = mergeResponseHeaders(req.requestHeaders, extraRequestHeaders.get(key));
+    extraRequestHeaders.delete(key);
+  };
+
+  const dropRequestState = (requestId: string): void => {
+    respExtraSeq.delete(requestId);
+    reqExtraSeq.delete(requestId);
+    hopOf.delete(requestId);
+    const prefix = `${requestId}#`;
+    for (const m of [extraResponseHeaders, extraRequestHeaders]) {
+      for (const k of [...m.keys()]) if (k.startsWith(prefix)) m.delete(k);
+    }
   };
 
   const onFinished = async (params: LoadingFinishedEvent): Promise<void> => {
     const req = inFlight.get(params.requestId);
     if (!req) return;
     inFlight.delete(params.requestId);
-    // Fold the accumulated extra-info headers in, once, regardless of the order
-    // they raced responseReceived in. Delete the buffer entry unconditionally so
-    // it can't leak per run.
     foldResponseExtras(req, params.requestId);
-    // Same fold, request side: recovers the outgoing Cookie header that
-    // requestWillBeSent omits by design.
-    req.requestHeaders = mergeResponseHeaders(
-      req.requestHeaders,
-      extraRequestHeaders.get(params.requestId)
-    );
-    extraRequestHeaders.delete(params.requestId);
+    // Drain every remaining buffer for this id so nothing leaks per run.
+    dropRequestState(params.requestId);
     await finalizeCapture(req, params.requestId, true);
   };
 
