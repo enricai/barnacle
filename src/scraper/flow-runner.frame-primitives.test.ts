@@ -294,7 +294,7 @@ describe("flow-runner/executeStepWithHealing — pre-submit form-validity probe 
       if (src.includes("selectPresent")) return { selectPresent: false };
       if (src.includes("groupPresent")) return { groupPresent: false };
       if (src.includes("MARKERS")) return [];
-      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
       return null;
     });
     const childTarget: FrameTarget = {
@@ -632,7 +632,7 @@ describe("flow-runner/executeStepWithHealing — submitted-state DOM probe frame
       if (centred) return centred;
       const src = String(expr);
       if (src.includes("document.querySelector(sel)")) return "[data-testid=thank-you]";
-      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
       return null;
     });
     const childTarget: FrameTarget = {
@@ -696,7 +696,7 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
       if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
       if (src.includes('el.click !== "function"')) return { fired: true, kind: "click" };
       if (src.includes("isInvalid(node)")) return false;
-      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
       return null;
     });
     const childTarget: FrameTarget = {
@@ -759,7 +759,7 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
       if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
       if (src.includes('el.click !== "function"')) return n16Result;
       if (src.includes("isInvalid(node)")) return false;
-      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
       if (src.includes("b.outerHTML")) {
         snapshotCalls += 1;
         const isPost = snapshotCalls > 1;
@@ -869,7 +869,7 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
         return { fired: true, kind: "checkbox", checked: false };
       }
       if (src.includes("isInvalid(node)")) return false;
-      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
       if (src.includes("b.outerHTML")) {
         snapshotCalls += 1;
         const isPost = snapshotCalls > 1;
@@ -1096,7 +1096,7 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback real
           return n16ProbeResult;
         }
         if (src.includes("isInvalid(node)")) return false;
-        if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+        if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
         return null;
       }) as FrameTarget["evaluate"],
       locator: vi.fn() as FrameTarget["locator"],

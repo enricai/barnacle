@@ -113,7 +113,7 @@ describe("flow-runner/probeFormValidityBeforeSubmit — native-validity fallback
           probeResult = fn(document);
           return probeResult;
         }
-        if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+        if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
         if (src === "location.href") return "https://apply.example.com/application/abc-123";
         return null;
       }) as FrameTarget["evaluate"],
@@ -201,7 +201,7 @@ describe("flow-runner/probeFormValidityBeforeSubmit — native-validity fallback
           probeResult = fn(document);
           return probeResult;
         }
-        if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+        if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
         if (src === "location.href") return "https://apply.example.com/application/abc-123";
         return null;
       }) as FrameTarget["evaluate"],

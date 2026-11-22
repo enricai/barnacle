@@ -2776,6 +2776,10 @@ export function isClickViewSwapVerified(params: {
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
+  // A mid-flow submit is only an advance when the page settled onto a new view;
+  // a bare byte/text delta is what a blocked submit's inline validation reveal
+  // produces too, so it must not earn credit on its own.
+  if (midFlowSubmit && !pageAdvanced) return false;
   if (!clickedElementStillPresent && bytesDelta <= 0) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;

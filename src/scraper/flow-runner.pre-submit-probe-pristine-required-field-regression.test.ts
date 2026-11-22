@@ -114,7 +114,7 @@ describe("flow-runner/probeFormValidityBeforeSubmit — pristine empty required 
           probeResult = fn(document);
           return probeResult;
         }
-        if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+        if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
         if (src === "location.href") return "https://forms.example.com/shipping-address/abc-123";
         return null;
       }) as FrameTarget["evaluate"],

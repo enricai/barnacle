@@ -83,7 +83,7 @@ function makeChildFrameTarget(
     if (source.includes("html:") && source.includes("text:")) {
       return { html: 0, text: "0:" };
     }
-    if (source.includes('querySelectorAll("[class],[aria-invalid]")')) {
+    if (source.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) {
       return 0;
     }
     return null;
