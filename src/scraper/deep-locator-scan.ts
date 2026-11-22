@@ -56,6 +56,18 @@ export const INTERACTIVE_CANDIDATE_SELECTOR =
   "button, a, input, select, textarea, [role=button], [tabindex]";
 
 /**
+ * Candidate universe for value-writing (fill/select) steps: only elements
+ * that can hold a value. Deliberately has no `label` and no bare
+ * `[tabindex]`, so a focusable `<label tabindex="-1" for="pw">` can never be
+ * `matches[index]`; the labelled `<input>` itself ranks by its own accessible
+ * name (`buildAccessibleNameExpr` resolves `label[for]`). Click steps keep
+ * {@link INTERACTIVE_CANDIDATE_SELECTOR}. Commas are safe as the final hop
+ * segment, as for that constant.
+ */
+export const FILLABLE_CANDIDATE_SELECTOR =
+  "input, select, textarea, [contenteditable], [role=textbox], [role=combobox], [role=spinbutton]";
+
+/**
  * Additional per-CDP-round-trip watchdog budget charged per candidate
  * `index`, on top of a call's own `callTimeoutMs`, for every legacy
  * `deepLocator(hop).nth(index)` delegate fallback — `clickDeepLocatorCandidate`
