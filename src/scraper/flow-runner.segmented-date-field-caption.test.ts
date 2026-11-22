@@ -43,12 +43,7 @@ const segment = (id: string, part: "m" | "y", shape: Shape): string => {
   ];
   return `<div><div>${part === "m" ? "MM" : "YYYY"}</div><input ${attrs.join(" ")} /></div>`;
 };
-const field = (
-  id: string,
-  label: string,
-  parts: ("m" | "y")[],
-  shape: Shape,
-): string =>
+const field = (id: string, label: string, parts: ("m" | "y")[], shape: Shape): string =>
   `<div><label id="${id}-label"${shape.labelFor ? ` for="${id}-${parts[0]}"` : ""}>${label}</label><div>${parts
     .map((part) => segment(id, part, shape))
     .join("")}</div></div>`;
@@ -57,25 +52,22 @@ const section = (title: string, body: string): string =>
 const page = (shape: Shape): string =>
   section(
     "Work Experience 1",
-    field("ws", "From", ["m", "y"], shape) +
-      field("we", "To", ["m", "y"], shape),
+    field("ws", "From", ["m", "y"], shape) + field("we", "To", ["m", "y"], shape)
   ) +
   section(
     "Education 1",
-    field("es", "From", ["y"], shape) +
-      field("ee", "To (actual or expected)", ["y"], shape),
+    field("es", "From", ["y"], shape) + field("ee", "To (actual or expected)", ["y"], shape)
   );
 
 async function run(
   html: string,
-  instruction: string,
+  instruction: string
 ): Promise<{ kind: string; calls: string[]; value: (id: string) => string }> {
   doc().body.innerHTML = html;
   const calls: string[] = [];
   const target = {
     frame: null,
-    evaluate: async (expr: string): Promise<unknown> =>
-      new Function(`return ${expr}`)(),
+    evaluate: async (expr: string): Promise<unknown> => new Function(`return ${expr}`)(),
     locator: () => ({
       first() {
         return this;
@@ -86,10 +78,7 @@ async function run(
     }),
   } as unknown as Primitive["target"];
   const cdp = {
-    sendCDP: async (
-      m: string,
-      a: { type?: string; text?: string },
-    ): Promise<void> => {
+    sendCDP: async (m: string, a: { type?: string; text?: string }): Promise<void> => {
       calls.push(m);
       const el = doc().activeElement;
       if (m !== "Input.dispatchKeyEvent" || a.type !== "keyDown") return;
@@ -114,10 +103,7 @@ async function run(
 const SHAPES: [string, Shape][] = [
   ["plain captions", { labelFor: false, segmentLabelledby: false }],
   ["label for the first segment", { labelFor: true, segmentLabelledby: false }],
-  [
-    "segments labelled by the field caption",
-    { labelFor: false, segmentLabelledby: true },
-  ],
+  ["segments labelled by the field caption", { labelFor: false, segmentLabelledby: true }],
   [
     "label for the first segment and segments labelled by it",
     { labelFor: true, segmentLabelledby: true },
@@ -125,35 +111,26 @@ const SHAPES: [string, Shape][] = [
 ];
 
 describe("segmented date fields whose segments each sit in their own display wrapper", () => {
-  it.each(SHAPES)(
-    "%s: each step lands in the group it names only",
-    async (_n, shape) => {
-      const cases: [string, Record<string, string>][] = [
-        [
-          "'From' date in Work Experience 1, '012020'",
-          { "ws-m": "01", "ws-y": "2020" },
-        ],
-        [
-          "'To' date in Work Experience 1, '112019'",
-          { "we-m": "11", "we-y": "2019" },
-        ],
-        ["'From' date of Education 1, '2016'", { "es-y": "2016" }],
-        ["'To' date of Education 1, '2020'", { "ee-y": "2020" }],
-      ];
-      const ids = ["ws-m", "ws-y", "we-m", "we-y", "es-y", "ee-y"];
-      for (const [step, expected] of cases) {
-        const r = await run(page(shape), step);
-        expect(r.kind).toBe("committed");
-        expect(r.calls).not.toContain("Input.insertText");
-        for (const id of ids) expect(r.value(id)).toBe(expected[id] ?? "");
-      }
-    },
-  );
+  it.each(SHAPES)("%s: each step lands in the group it names only", async (_n, shape) => {
+    const cases: [string, Record<string, string>][] = [
+      ["'From' date in Work Experience 1, '012020'", { "ws-m": "01", "ws-y": "2020" }],
+      ["'To' date in Work Experience 1, '112019'", { "we-m": "11", "we-y": "2019" }],
+      ["'From' date of Education 1, '2016'", { "es-y": "2016" }],
+      ["'To' date of Education 1, '2020'", { "ee-y": "2020" }],
+    ];
+    const ids = ["ws-m", "ws-y", "we-m", "we-y", "es-y", "ee-y"];
+    for (const [step, expected] of cases) {
+      const r = await run(page(shape), step);
+      expect(r.kind).toBe("committed");
+      expect(r.calls).not.toContain("Input.insertText");
+      for (const id of ids) expect(r.value(id)).toBe(expected[id] ?? "");
+    }
+  });
 
   it("does not type a lone year into a month/year group whose caption names the pair", async () => {
     const r = await run(
       page({ labelFor: true, segmentLabelledby: false }),
-      "'From' date in Work Experience 1, '2016'",
+      "'From' date in Work Experience 1, '2016'"
     );
     expect(r.value("ws-y")).toBe("");
     expect(r.value("ws-m")).toBe("");
@@ -181,27 +158,25 @@ describe("a fieldset legend names a date group only when the group is its sole c
   it("labels a lone date by its legend when aria-labelledby names missing ids", () => {
     const missing = 'aria-labelledby="gone-1 gone-2"';
     const groups = enumerate(
-      `<fieldset><legend>${Q}</legend><div>${seg(12, missing)}${seg(31, missing)}${seg(9999, missing)}</div></fieldset>`,
+      `<fieldset><legend>${Q}</legend><div>${seg(12, missing)}${seg(31, missing)}${seg(9999, missing)}</div></fieldset>`
     );
     expect(groups).toHaveLength(1);
     expect(groups[0]?.label).toBe(Q);
-    for (const step of STEPS)
-      expect(resolveSegmentedDateGroup(step, groups)).toBe(0);
+    for (const step of STEPS) expect(resolveSegmentedDateGroup(step, groups)).toBe(0);
   });
 
   it("does not label either date group by a legend shared between them", () => {
     const groups = enumerate(
-      `<fieldset><legend>${Q}</legend><div><div role="group">${seg(12)}${seg(9999)}</div></div><div><div role="group">${seg(12)}${seg(9999)}</div></div></fieldset>`,
+      `<fieldset><legend>${Q}</legend><div><div role="group">${seg(12)}${seg(9999)}</div></div><div><div role="group">${seg(12)}${seg(9999)}</div></div></fieldset>`
     );
     expect(groups).toHaveLength(2);
     for (const g of groups) expect(g.label).not.toContain(Q);
-    for (const step of STEPS)
-      expect(resolveSegmentedDateGroup(step, groups)).toBeNull();
+    for (const step of STEPS) expect(resolveSegmentedDateGroup(step, groups)).toBeNull();
   });
 
   it("treats a whitespace-only name as no name", () => {
     const groups = enumerate(
-      `<fieldset><legend>${Q}</legend><div aria-label="   ">${seg(12)}${seg(9999)}</div></fieldset>`,
+      `<fieldset><legend>${Q}</legend><div aria-label="   ">${seg(12)}${seg(9999)}</div></fieldset>`
     );
     expect(groups).toHaveLength(1);
     expect(groups[0]?.label).toBe(Q);
