@@ -20162,7 +20162,7 @@ export function inferChainStepResponseSchema(
   });
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let siteId = "";
   let force = false;
