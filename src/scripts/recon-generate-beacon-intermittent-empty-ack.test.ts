@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { firstEndpointCapture, type Capture } from "./recon-generate.js";
+import type { Capture } from "@/scripts/recon-shared";
+import { firstEndpointCapture } from "./recon-generate.js";
 
 const BASE = "https://api.example.com";
 const cap = (method: string, path: string, body: unknown, post: string | null): Capture =>
