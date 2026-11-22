@@ -5352,7 +5352,7 @@ export function stepQuotesValueNotControlName(step: string): boolean {
  * dismiss open UI. Such a step is satisfied by no control at all.
  */
 export function stepDeclaresNonInteractiveTarget(step: string): boolean {
-  return /\b(?:non|un)-?(?:interactive|clickable)\b|\bnot\s+(?:interactive|clickable)\b|\bstatic\s+(?:\w+\s+)?(?:spot|area|space|region|part|text|content)\b|\b(?:empty|blank|neutral|inert|dead)\s+(?:\w+\s+)?(?:spot|area|space|region|part)\b|\bwhite-?space\b|\bon\s+(?:absolutely\s+)?nothing\b|\b(?:click|tap)\s+anywhere\b|\bnothing\s+in\s+particular\b/i.test(
+  return /\b(?:non|un)-?(?:interactive|clickable)\b|\bnot\s+(?:interactive|clickable)\b|\bstatic\s+(?:\w+\s+)?(?:spot|area|space|region|part|text|content)\b|\b(?:empty|blank|neutral|inert|dead)\s+(?:\w+\s+)?(?:spot|area|space|region|part)\b|\bwhite-?space\b|\bon\s+(?:absolutely\s+)?nothing\b|\b(?:click|tap)\s+anywhere\b|\bnothing\s+in\s+particular\b|\bnot\s+(?:a|an)\s+(?:control|button|link|interactive\s+\w+)\b|\bplain\s+text\b|\b(?:page|empty|blank)\s+background\b/i.test(
     step
   );
 }
@@ -5360,6 +5360,10 @@ export function stepDeclaresNonInteractiveTarget(step: string): boolean {
 /** Words an act() description uses to name a control rather than static content. */
 const CONTROL_DESCRIPTION_PATTERN =
   /\b(?:button|link|menu|menuitem|dropdown|drop-down|selector|select|option|checkbox|radio|tab|toggle|switch|combobox|listbox|input|textbox|icon|anchor)\b/i;
+
+/** Words an act() description uses to name static, non-actionable content. */
+const STATIC_DESCRIPTION_PATTERN =
+  /\b(?:heading|title|text|paragraph|label|caption|background|body|page|container|wrapper|section|header|banner|area|spot|space|whitespace|blank|empty|static|content|image|div|span)\b/i;
 
 /** Elements (or ancestors) a page treats as a control: clicking one acts, it does not merely dismiss. */
 const INTERACTIVE_CONTROL_CSS =
@@ -5414,6 +5418,10 @@ export function resolvedActionNamesStepTarget(
   const namesControl = CONTROL_DESCRIPTION_PATTERN.test(description);
   const nonInteractiveTarget = stepDeclaresNonInteractiveTarget(step);
   if (nonInteractiveTarget && (options.isInteractive === true || namesControl)) return false;
+  // A non-interactive step is satisfied only by an element affirmatively
+  // described as static content; an opaque name ("Language") proves nothing.
+  if (nonInteractiveTarget && description !== "" && !STATIC_DESCRIPTION_PATTERN.test(description))
+    return false;
   if (stepQuotesValueNotControlName(step)) return true;
   if (options.requireNamedControl === true && !nonInteractiveTarget && !namesControl) return true;
   const phrases = extractTaggedPhrases(step);
