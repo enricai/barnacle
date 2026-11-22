@@ -49,7 +49,7 @@ describe("urlencoded answers", () => {
     expect(out).toBe('q%201=${payload.Answers["q 1"]}&name=42&x=1');
   });
   it("counts frozen urlencoded selects", async () => {
-    const { detectContractGaps } = await import("./recon-generate");
+    const { detectContractGaps } = await import("./recon-generate.js");
     const step = {
       capture: {
         responseBody: prior[0]?.capture.responseBody,
