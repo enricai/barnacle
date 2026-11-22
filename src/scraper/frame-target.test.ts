@@ -103,7 +103,7 @@ const FAKE_MAIN_FRAME_ID = "fake-main-frame";
 function makeFakePage(options: {
   mainUrl: string;
   iframes?: Record<string, string>;
-  frames?: ReturnType<typeof makeFakeFrame>[];
+  frames?: unknown[];
 }) {
   const iframes = options.iframes ?? {};
   const frames = options.frames ?? [];
@@ -132,7 +132,7 @@ function makeFakePage(options: {
 function makeMutableFakePage(options: {
   mainUrl: string;
   iframes?: Record<string, string>;
-  frames?: ReturnType<typeof makeFakeFrame>[];
+  frames?: unknown[];
 }) {
   const iframes = { ...(options.iframes ?? {}) };
   const frames = [...(options.frames ?? [])];
@@ -151,7 +151,7 @@ function makeMutableFakePage(options: {
     mountIframe: (selector: string, src: string): void => {
       iframes[selector] = src;
     },
-    attachFrame: (frame: ReturnType<typeof makeFakeFrame>): void => {
+    attachFrame: (frame: unknown): void => {
       frames.push(frame);
     },
   };
@@ -885,7 +885,7 @@ function makeDelayedFakePage(options: {
   mainUrl: string;
   delayMs: number;
   iframes?: Record<string, string>;
-  frames?: ReturnType<typeof makeFakeFrame>[];
+  frames?: unknown[];
 }) {
   const iframes = options.iframes ?? {};
   const frames = options.frames ?? [];
