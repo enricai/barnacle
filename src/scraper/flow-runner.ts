@@ -13700,7 +13700,6 @@ export async function executeStepWithHealing(params: {
    * already succeeded) returns immediately without probing at all, so
    * main-frame-only flows do zero extra work.
    */
-  let attemptDocBaseline: Awaited<ReturnType<typeof readFrameDocumentIdentity>>;
   const reresolveFrameTargetIfLost = async (): Promise<void> => {
     if (frameReresolveAttempted) return;
     frameReresolveAttempted = true;
@@ -13712,7 +13711,6 @@ export async function executeStepWithHealing(params: {
     );
     frameTarget = reresolved;
     frameDocBaseline = await readFrameDocumentIdentity(frameTarget.frame ?? frameTarget);
-    attemptDocBaseline = frameDocBaseline;
   };
   // Read-once to suppress "unused" — knownErrorClassPrefixes is threaded
   // through executeStepWithHealing's signature so the cascade has it in
@@ -14903,12 +14901,11 @@ export async function executeStepWithHealing(params: {
   let lastRankedSubmitCandidates: SubmitCandidate[] | null = null;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     params.abortSignal?.throwIfAborted();
-    // Step-start baseline: captured once on attempt 1 so later attempts that
-    // re-click a selector resolved earlier can detect a document replaced by
-    // an earlier attempt's click.
-    attemptDocBaseline = await readFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page));
+    // Step-start baseline: captured once on attempt 1 and never refreshed, so
+    // a document replaced by ANY earlier attempt's click (e.g. a navigation
+    // to example.com/next) blocks later re-clicks of a stale resolved selector.
     if (attempt === 1) {
-      frameDocBaseline = attemptDocBaseline;
+      frameDocBaseline = await readFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page));
     }
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
@@ -15334,7 +15331,7 @@ export async function executeStepWithHealing(params: {
         if (
           (await checkFrameDocumentIdentity(
             frameTarget ?? mainFrameTarget(page),
-            attemptDocBaseline
+            frameDocBaseline
           )) === "replaced"
         ) {
           const failureMessage =
@@ -15939,7 +15936,7 @@ export async function executeStepWithHealing(params: {
         } else if (
           (await checkFrameDocumentIdentity(
             frameTarget ?? mainFrameTarget(page),
-            attemptDocBaseline
+            frameDocBaseline
           )) === "replaced"
         ) {
           record.errorMessage =
@@ -16895,10 +16892,8 @@ export async function executeStepWithHealing(params: {
       record.actResultSuccess === true &&
       resolvedAction?.method === "click" &&
       resolvedAction.selector &&
-      (await checkFrameDocumentIdentity(
-        frameTarget ?? mainFrameTarget(page),
-        attemptDocBaseline
-      )) === "replaced"
+      (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
+        "replaced"
     ) {
       // The act's own click replaced the frame document: the resolved xpath
       // now names a different control, so neither click may fire.
