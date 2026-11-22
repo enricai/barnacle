@@ -12551,9 +12551,14 @@ async function probeFormValidityBeforeSubmit(params: {
 }
 
 /**
- * Resolves deepLocator candidates scoped to `INTERACTIVE_CANDIDATE_SELECTOR`,
- * widening once to the unscoped `"*"` hop when the scoped pass finds
- * nothing. `INTERACTIVE_CANDIDATE_SELECTOR` is what makes a dense OOPIF
+ * Resolves deepLocator candidates over the narrowest candidate universe the
+ * step's actuation needs, widening one universe at a time only when the
+ * narrower pass finds nothing: a click step starts at
+ * `INTERACTIVE_CANDIDATE_SELECTOR`; a fill/select step (see
+ * {@link resolveDeepLocatorActuation}) starts at `FILLABLE_CANDIDATE_SELECTOR`,
+ * whose matches are only controls that can hold the value, so a focusable
+ * `<label tabindex>` naming the field can never outrank the input it labels.
+ * Either chain ends at the unscoped `"*"` hop. `INTERACTIVE_CANDIDATE_SELECTOR` is what makes a dense OOPIF
  * form's candidate set tractable (371 nodes down to a handful — see
  * `deep-locator-candidates.ts`'s module docblock), but it over-narrows a
  * `div`/`span` tile that carries only a click handler — no `role`/
@@ -12571,28 +12576,19 @@ async function resolveDeepLocatorCandidatesWithWidening(
   instruction: string | null | undefined,
   timeoutOptions: DeepLocatorTimeoutOptions
 ): Promise<{ candidates: DeepLocatorCandidate[]; innerSelector: string }> {
-  // A fill/select step may only rank and write to a control that can hold the
-  // value, so it resolves over the fillable universe and never widens to
-  // `"*"` (which would re-admit labels and other non-controls).
-  if (instruction && resolveDeepLocatorActuation(instruction).kind !== "click") {
-    const fillable = await resolveDeepLocatorCandidates(
+  const writesValue = !!instruction && resolveDeepLocatorActuation(instruction).kind !== "click";
+  const scopedUniverses = writesValue
+    ? [FILLABLE_CANDIDATE_SELECTOR, INTERACTIVE_CANDIDATE_SELECTOR]
+    : [INTERACTIVE_CANDIDATE_SELECTOR];
+  for (const innerSelector of scopedUniverses) {
+    const scoped = await resolveDeepLocatorCandidates(
       page,
       frameSelector,
-      FILLABLE_CANDIDATE_SELECTOR,
+      innerSelector,
       instruction,
       timeoutOptions
     );
-    return { candidates: fillable, innerSelector: FILLABLE_CANDIDATE_SELECTOR };
-  }
-  const scoped = await resolveDeepLocatorCandidates(
-    page,
-    frameSelector,
-    INTERACTIVE_CANDIDATE_SELECTOR,
-    instruction,
-    timeoutOptions
-  );
-  if (scoped.length > 0) {
-    return { candidates: scoped, innerSelector: INTERACTIVE_CANDIDATE_SELECTOR };
+    if (scoped.length > 0) return { candidates: scoped, innerSelector };
   }
   const widened = await resolveDeepLocatorCandidates(
     page,

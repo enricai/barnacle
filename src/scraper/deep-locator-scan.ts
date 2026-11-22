@@ -64,7 +64,10 @@ export const INTERACTIVE_CANDIDATE_SELECTOR =
  * controls because the batched write expressions use the `HTMLInputElement`/
  * `HTMLTextAreaElement` value setters, which throw `Illegal invocation` on
  * `[contenteditable]`/`[role=...]` wrappers, and an ARIA wrapper sharing its
- * inner input's `aria-labelledby` name would outrank the real control. Click steps keep
+ * inner input's `aria-labelledby` name would outrank the real control. A
+ * fill/select step resolves over this universe first and widens to
+ * {@link INTERACTIVE_CANDIDATE_SELECTOR} (then `"*"`) only when it matches
+ * nothing, e.g. a form built solely from custom widgets; click steps start at
  * {@link INTERACTIVE_CANDIDATE_SELECTOR}. Commas are safe as the final hop
  * segment, as for that constant.
  */
@@ -374,11 +377,27 @@ export interface FrameCandidateWriteResult {
 }
 
 /**
+ * Resolves a matched candidate to the element a value write/read acts on: a
+ * `<label>` stands in only through its `label.control` (the labelable
+ * control it names, by `for` or by nesting — what a real click on the label
+ * activates), and a label with no control resolves to `null`, which the
+ * caller reports as `not-actionable`, so a value setter is never invoked on
+ * a label (`Illegal invocation`) and the delegate fallback never retries the
+ * same label. Every other element resolves to itself.
+ */
+const VALUE_TARGET_EXPR = `((hit) => {
+  if ((hit.tagName || "").toLowerCase() !== "label") return hit;
+  return hit.control || null;
+})`;
+
+/**
  * Builds the write body {@link buildFillFrameCandidateExpr} and
  * {@link buildSelectFrameCandidateExpr} both interpolate: re-runs the SAME
  * `root.querySelectorAll(innerSelector)` resolution
  * {@link buildScanFrameCandidatesExpr}/{@link buildClickFrameCandidateExpr}
- * use, guards out-of-range/not-actionable the same way as
+ * use, resolves the match through {@link VALUE_TARGET_EXPR} (a `<label>`
+ * writes its `label.control`; a label with no control is `not-actionable`),
+ * guards out-of-range/not-actionable the same way as
  * {@link buildClickFrameCandidateExpr}, then writes `value` through
  * `nativePrototypeExpr`'s `value` setter descriptor rather than a bare
  * `el.value = value` assignment — a React/Angular/Vue controlled component
@@ -410,9 +429,10 @@ function buildWriteFrameCandidateExpr(
   return `(() => {
     const isVisible = ${IS_VISIBLE_EXPR};
     const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
-    const el = matches[${JSON.stringify(index)}];
-    if (!el) return { written: false, reason: "out-of-range" };
-    if (!isVisible(el)) return { written: false, reason: "not-actionable" };
+    const hit = matches[${JSON.stringify(index)}];
+    if (!hit) return { written: false, reason: "out-of-range" };
+    const el = ${VALUE_TARGET_EXPR}(hit);
+    if (!el || !isVisible(el)) return { written: false, reason: "not-actionable" };
     const value = ${JSON.stringify(value)};
     const descriptor = Object.getOwnPropertyDescriptor(${nativePrototypeExpr}, "value");
     if (descriptor && descriptor.set) { descriptor.set.call(el, value); } else { el.value = value; }
@@ -487,9 +507,10 @@ export function buildSelectFrameCandidateExpr(
   return `(() => {
     const isVisible = ${IS_VISIBLE_EXPR};
     const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
-    const el = matches[${JSON.stringify(index)}];
-    if (!el) return { written: false, reason: "out-of-range" };
-    if (!isVisible(el)) return { written: false, reason: "not-actionable" };
+    const hit = matches[${JSON.stringify(index)}];
+    if (!hit) return { written: false, reason: "out-of-range" };
+    const el = ${VALUE_TARGET_EXPR}(hit);
+    if (!el || !isVisible(el)) return { written: false, reason: "not-actionable" };
     const wanted = ${JSON.stringify(value)};
     const wantedTrimmed = wanted.trim();
     const options = Array.from(el.options || []);
@@ -534,9 +555,10 @@ export function buildReadBackFrameCandidateExpr(
   return `(() => {
     const isVisible = ${IS_VISIBLE_EXPR};
     const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
-    const el = matches[${JSON.stringify(index)}];
-    if (!el) return {};
-    if (!isVisible(el)) return {};
+    const hit = matches[${JSON.stringify(index)}];
+    if (!hit) return {};
+    const el = ${VALUE_TARGET_EXPR}(hit);
+    if (!el || !isVisible(el)) return {};
     return { value: el.value };
   })()`;
 }
