@@ -67,7 +67,7 @@ describe("registerRoutes — extra route handlers receive query, headers and rep
   it.each([
     ["EmptyResultsError", () => new EmptyResultsError("none"), 2005],
     ["CaptchaError", () => new CaptchaError("captcha"), 2004],
-    ["SelectorFailureError", () => new SelectorFailureError("sel", "x"), 2003],
+    ["SelectorFailureError", () => new SelectorFailureError("sel"), 2003],
     ["plain Error", () => new Error("boom"), 1008],
   ])("extra route throwing %s returns wire code %d", async (_n, make, code) => {
     const app = await appWith(async () => {
