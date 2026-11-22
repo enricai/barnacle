@@ -292,6 +292,27 @@ describe("flow-runner/executeStepWithHealing — last slot without submit semant
     expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
   });
 
+  it("does not credit a view-swap-only mid-flow submit the judge rejected, end to end", async () => {
+    vi.mocked(verifyStepAdvancedWithLLM).mockResolvedValue({
+      advanced: false,
+      reason: "no change",
+    } as never);
+    vi.mocked(testLogger.info).mockClear();
+    const p = {
+      ...(params(buildWorld("Sign In", 1e12), false, [], SUBMIT_STEP, true) as object),
+      flowHasSubmitSemantics: true,
+      // A counter the click never bumps: the view swap is the only signal.
+      signalCounter: { n: 0 },
+    } as never;
+
+    const outcome = await executeStepWithHealing(p).catch(() => "threw");
+
+    const logs = vi.mocked(testLogger.info).mock.calls.map((c) => String(c[0]));
+    expect(logs.some((l) => l.includes("mid-flow submit credited"))).toBe(false);
+    expect(verifyStepAdvancedWithLLM).toHaveBeenCalled();
+    expect(outcome).not.toBe("completed");
+  });
+
   it("keeps a genuine final submit on the strict submit judge", async () => {
     const outcome = await executeStepWithHealing(
       params(buildWorld("Sign In", 0), true, [], SUBMIT_STEP, true)
@@ -313,8 +334,10 @@ describe("flow-runner/isMidFlowAdvanceCredited", () => {
     invalidMarkerCount: 0,
   };
 
-  it("credits a mid-flow step on its own advance signal despite a judge rejection", () => {
-    expect(isMidFlowAdvanceCredited({ ...base, signalAdvanced: true })).toBe(true);
+  it("credits a mid-flow step on its own advance signal despite a judge rejection when the page advanced", () => {
+    expect(isMidFlowAdvanceCredited({ ...base, signalAdvanced: true, pageAdvanced: true })).toBe(
+      true
+    );
   });
 
   it("credits an unavailable judge only on a demonstrable advance", () => {
