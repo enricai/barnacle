@@ -199,7 +199,7 @@ describe("recon-generate CLI — cross-domain multi-action flow falls back to br
     // baseUrl host outright — a submit-manifest.json is the one path
     // (resolveManifestActionSequence, recon-generate.ts:768) that carries a
     // cross-host entry through to compileActionSteps at all, matching how a
-    // real ATS-style CXS recon actually narrates its own submission
+    // real multi-host recon actually narrates its own submission
     // sequence (see bugfix-002's own precedent fixture/test for this same
     // manifest-driven path).
     writeFileSync(
