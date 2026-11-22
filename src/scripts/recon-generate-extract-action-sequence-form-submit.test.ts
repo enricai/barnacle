@@ -6,12 +6,7 @@ import type { Capture } from "@/scripts/recon-shared";
 const DOMAIN = "form-submit-fixture.example";
 const URL_ = `https://www.${DOMAIN}/wizard/step?flow=1`;
 
-const mk = (
-  body: string,
-  status: number,
-  reqType: string,
-  respType: string | null
-): Capture => ({
+const mk = (body: string, status: number, reqType: string, respType: string | null): Capture => ({
   timestamp: "2024-01-01T00:00:00Z",
   phase: "action",
   method: "POST",
