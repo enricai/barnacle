@@ -16625,7 +16625,8 @@ export async function executeStepWithHealing(params: {
     const resolvedTargetNamesStep =
       (resolvedAction === null && !rephraseContradictedTarget) ||
       record.technique === "trusted-click-retry" ||
-      resolvedActionNamesStepTarget(step, resolvedAction, {
+      (resolvedAction !== null &&
+        resolvedActionNamesStepTarget(step, resolvedAction, {
         requireNamedControl: true,
         isInteractive:
           stepDeclaresNonInteractiveTarget(step) &&
@@ -16635,7 +16636,7 @@ export async function executeStepWithHealing(params: {
             resolvedAction.selector
           )),
         fallbackDescription: record.actResultDescription ?? undefined,
-      });
+      }));
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
