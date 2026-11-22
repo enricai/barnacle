@@ -12,7 +12,7 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-const LONG = "Please describe in detail "+"x".repeat(175);
+const LONG = `Please describe in detail ${"x".repeat(175)}`;
 const HTML = `
 <form>
   <div>
@@ -27,7 +27,6 @@ const HTML = `
   </div>
 </form>`;
 
-
 async function run(popupId: string, step: string) {
   const stagehand = {
     act: vi.fn(),
@@ -41,7 +40,8 @@ async function run(popupId: string, step: string) {
   const origEval = target.evaluate.bind(target);
   (target as { evaluate: unknown }).evaluate = async (...a: unknown[]) => {
     const r = await (origEval as (...x: unknown[]) => Promise<unknown>)(...a);
-    for (const c of (r as { candidates?: { label: string }[] })?.candidates ?? []) labels.push(c.label);
+    for (const c of (r as { candidates?: { label: string }[] })?.candidates ?? [])
+      labels.push(c.label);
     return r;
   };
   await executeStepWithHealing({
