@@ -5422,6 +5422,25 @@ export function resolvedActionNamesStepTarget(
 }
 
 /**
+ * Pre-act vet for a step that declares a non-interactive target: returns the
+ * first observed candidate whose DOM read and description do not contradict
+ * the step, or null when none qualifies. Nothing is clicked here, so a
+ * rejected candidate never actuates a control.
+ */
+async function firstVettedCandidateForNonInteractiveStep(
+  step: string,
+  candidates: readonly Action[],
+  target: FrameTarget
+): Promise<Action | null> {
+  for (const candidate of candidates) {
+    const isInteractive =
+      !!candidate.selector && (await resolvedClickTargetIsInteractive(target, candidate.selector));
+    if (resolvedActionNamesStepTarget(step, candidate, { isInteractive })) return candidate;
+  }
+  return null;
+}
+
+/**
  * Resolve any selector a caller might hold into a bare XPath body for
  * `document.evaluate`. `verifyFillReadback` is shared across call sites that
  * carry different selector forms — Stagehand's `xpath=…` (act path), an
@@ -16239,15 +16258,46 @@ export async function executeStepWithHealing(params: {
           } else {
             record.instruction = rephrased;
             params.abortSignal?.throwIfAborted();
-            const preCentred = await preCentreNaturalLanguageClick(rephrased);
-            const result = await guardedAct(
-              stagehand,
-              rephrased,
-              { timeout: STEP_WATCHDOG_MS },
-              captureFn,
-              frameTarget ?? mainFrameTarget(page),
-              preCentred
-            );
+            const rephraseTarget = frameTarget ?? mainFrameTarget(page);
+            let vettedRephraseAction: Action | null = null;
+            let rephraseRefused = false;
+            if (stepDeclaresNonInteractiveTarget(step)) {
+              // Vet what the rephrase resolves to BEFORE acting: act(string)
+              // would click first and be judged only afterwards.
+              const resolvedCandidates = await guardedObserve(
+                stagehand,
+                rephrased,
+                { timeout: STEP_WATCHDOG_MS },
+                captureFn,
+                frameTarget
+              ).catch(() => [] as Action[]);
+              for (const c of resolvedCandidates) if (c.selector) triedSelectors.push(c.selector);
+              vettedRephraseAction = await firstVettedCandidateForNonInteractiveStep(
+                step,
+                resolvedCandidates,
+                rephraseTarget
+              );
+              if (!vettedRephraseAction) {
+                rephraseRefused = true;
+                const named = resolvedCandidates[0]?.description ?? "";
+                record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${named.slice(0, 60)}"`;
+                failureReasons.push(record.errorMessage);
+              }
+            }
+            const preCentred = rephraseRefused
+              ? false
+              : await preCentreNaturalLanguageClick(rephrased);
+            const result = rephraseRefused
+              ? null
+              : await guardedAct(
+                  stagehand,
+                  vettedRephraseAction ?? rephrased,
+                  { timeout: STEP_WATCHDOG_MS },
+                  captureFn,
+                  rephraseTarget,
+                  vettedRephraseAction ? false : preCentred
+                );
+            if (result) {
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;
             for (const action of result.actions ?? []) {
@@ -16271,6 +16321,7 @@ export async function executeStepWithHealing(params: {
                   failureReasons.push(record.errorMessage);
                 }
               }
+            }
             }
           }
         }
