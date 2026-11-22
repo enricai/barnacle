@@ -15870,7 +15870,28 @@ export async function executeStepWithHealing(params: {
             );
             continue;
           }
-          const target = verdict.candidate;
+          let target = verdict.candidate;
+          if (stepDeclaresNonInteractiveTarget(step)) {
+            // Vet before acting: an interactive control must never be clicked
+            // for a step that declares its target to be nothing in particular.
+            const vetted = await firstVettedCandidateForNonInteractiveStep(
+              step,
+              candidates,
+              frameTarget ?? mainFrameTarget(page)
+            );
+            if (!vetted) {
+              record.errorMessage = `observe candidate contradicts the step's non-interactive target: "${target.description.slice(0, 60)}"`;
+              for (const c of candidates) if (c.selector) triedSelectors.push(c.selector);
+              record.triedSelectors = candidates.map((c) => c.selector).filter(Boolean);
+              attempts.push(record);
+              failureReasons.push(record.errorMessage);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+              );
+              continue;
+            }
+            target = vetted;
+          }
           // Deny-list guard: never act on a wizard-exit control (save-and-exit,
           // cancel, restart) for a click/advance step. Record it as tried (so a
           // re-observe with ignoreSelectors surfaces a different candidate) and
