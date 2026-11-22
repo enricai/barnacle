@@ -3635,7 +3635,7 @@ async function main(): Promise<void> {
             failureDumpPath: dumpPath,
             page,
             stagehand,
-            frameSelector,
+            frameSelector: step.frameSelector ?? frameSelector,
             captureFn,
             recentCaptures,
             ownBackendHostnames,
