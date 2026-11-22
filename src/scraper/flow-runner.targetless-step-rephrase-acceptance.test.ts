@@ -165,7 +165,16 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
 
     // Not credited: the cascade exhausts with the kind the optional-step skip policy
     // keys on, rather than the step being reported healed.
-    await expect(runOptionalStep()).rejects.toMatchObject({ kind: "cascade-exhausted" });
+    // The optional-step skip is decided by the caller from this error kind (recon-browser
+    // treats it as a replan/skip point); runHealingFlow must surface it, not swallow it
+    // as a success or a "skipped" step, and must not use the probe-absent kind.
+    const err = await runOptionalStep().then(
+      () => null,
+      (e: unknown) => e
+    );
+    expect(err).toMatchObject({ kind: "cascade-exhausted" });
+    expect(err).not.toMatchObject({ kind: "probe-absent" });
+    expect(logged("info")).not.toMatch(/skipped \(optional, probe found no candidates\)/);
 
     expect(guardedAct.mock.calls.some((c) => c[1] === REPHRASED)).toBe(true);
     expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
