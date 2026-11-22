@@ -16892,10 +16892,8 @@ export async function executeStepWithHealing(params: {
       record.actResultSuccess === true &&
       resolvedAction?.method === "click" &&
       resolvedAction.selector &&
-      (await checkFrameDocumentIdentity(
-        frameTarget ?? mainFrameTarget(page),
-        frameDocBaseline
-      )) === "replaced"
+      (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
+        "replaced"
     ) {
       // The act's own click replaced the frame document: the resolved xpath
       // now names a different control, so neither click may fire.
