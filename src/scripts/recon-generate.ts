@@ -10828,15 +10828,27 @@ export function emitMultiStepExecuteHttp(
     // A text-captured multipart body (requestPostData non-null) is sent through
     // httpClient as a string, so the captured multipart Content-Type (with the
     // boundary the body uses) must override the JSON baseline in BASE_HEADERS.
+    let multipartBodyCrlf = false;
     if (cap.requestPostData !== null && cap.requestPostData !== undefined) {
       const capturedCt = Object.entries(cap.requestHeaders).find(
         ([k]) => k.toLowerCase() === "content-type"
       )?.[1];
-      if (capturedCt?.toLowerCase().includes("multipart/")) {
+      // Header absent or non-multipart: derive type+boundary from the body's own
+      // first delimiter line so the JSON BASE_HEADERS type never wins.
+      const delim = /^(--[^\r\n]+)\r?\n/.exec(cap.requestPostData);
+      const bodyLooksMultipart =
+        delim !== null && /^Content-Disposition:\s*form-data/im.test(cap.requestPostData);
+      const multipartCt = capturedCt?.toLowerCase().includes("multipart/")
+        ? capturedCt
+        : bodyLooksMultipart
+          ? `multipart/form-data; boundary=${delim![1]!.slice(2)}`
+          : undefined;
+      if (multipartCt !== undefined) {
+        multipartBodyCrlf = true;
         for (const k of Object.keys(perCallHeaders)) {
           if (k.toLowerCase() === "content-type") delete perCallHeaders[k];
         }
-        perCallHeaders["Content-Type"] = capturedCt.replace(/[`\\]|\$\{/g, (m) => `\\${m}`);
+        perCallHeaders["Content-Type"] = multipartCt.replace(/[`\\]|\$\{/g, (m) => `\\${m}`);
       }
     }
     const headersExpr = Object.keys(perCallHeaders).length
@@ -10844,7 +10856,11 @@ export function emitMultiStepExecuteHttp(
           .map(([k, v]) => `${JSON.stringify(k)}: \`${v}\``)
           .join(", ")} },`
       : "";
-    const bodyArg = bodyTemplate ? `body: \`${bodyTemplate}\`,` : "";
+    // A raw CR inside a JS template literal is normalized to LF at runtime, so
+    // a multipart body's CRLF delimiters must be emitted as the escape \\r.
+    const bodyArg = bodyTemplate
+      ? `body: \`${multipartBodyCrlf ? bodyTemplate.replace(/\r/g, "\\r") : bodyTemplate}\`,`
+      : "";
     // G2: each call gets its own schema, inferred from this step's captured
     // response — the client-level schema (z.unknown() for multi-step flows,
     // see emitContractTs) stays the plugin's caller-facing contract, not what
