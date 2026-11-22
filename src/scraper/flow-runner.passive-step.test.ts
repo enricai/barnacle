@@ -4,7 +4,7 @@ import { executeStepWithHealing, isPassiveNoopStep } from "@/scraper/flow-runner
 import { isPassiveNoopInstruction } from "@/scraper/phantom-click";
 
 const VERBATIM_PASSIVE =
-  "Do not click anything. The destination, departure-port and sailing-length filters are already applied by the page URL. Simply wait briefly for the cruise results list to reflect those filters.";
+  "Do not click anything. The region, origin and trip-length filters are already applied by the page URL. Simply wait briefly for the results list to reflect those filters.";
 const NEGATED_THEN_ACT = "Do not click Delete; click the Save button";
 
 describe("verbatim passive step agrees across both predicates", () => {
