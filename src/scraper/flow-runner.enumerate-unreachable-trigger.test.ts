@@ -42,8 +42,14 @@ async function run(opts: {
     popupByWidgetId: { combo: { options: ["Peru"], portaled: true } },
   });
   const doc = window.document;
-  const opener = doc.getElementById("opener") as unknown as HTMLElement;
-  const combo = doc.getElementById("combo") as unknown as HTMLElement;
+  const opener = doc.getElementById("opener") as unknown as {
+    setAttribute(n: string, v: string): void;
+    hasAttribute(n: string): boolean;
+  };
+  const combo = doc.getElementById("combo") as unknown as {
+    setAttribute(n: string, v: string): void;
+    hasAttribute(n: string): boolean;
+  };
   if (opts.openerStyle) opener.setAttribute("style", opts.openerStyle);
   const define = (el: object, name: string, value: unknown) =>
     Object.defineProperty(el, name, { value, configurable: true });
