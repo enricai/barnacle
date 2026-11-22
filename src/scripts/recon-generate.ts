@@ -846,6 +846,16 @@ export function withPersistedPersonaEnv(
   }
 }
 
+/** harvestPersonaBindings over env overlaid with the run's persisted persona env. */
+export function harvestRunPersonaBindings(
+  flowSteps: FlowStepInput[],
+  vocabulary: ReconVocabulary,
+  runRoot: string,
+  env: NodeJS.ProcessEnv
+): Map<string, string> {
+  return harvestPersonaBindings(flowSteps, vocabulary, withPersistedPersonaEnv(runRoot, env));
+}
+
 /**
  * Builds the map from a recon persona VALUE (as it appears in the captured
  * request body) to the `payload.<Field>` accessor that should replace it, by
@@ -20587,11 +20597,7 @@ async function main(): Promise<void> {
     // recon persona's. Both are site-agnostic: persona mapping comes from the
     // consumer vocabulary, job coordinates from the entry URL's own query keys.
     warnUnmatchedFillSteps(flowSteps, vocabulary, (msg) => logger.warn(msg));
-    const personaBindings = harvestPersonaBindings(
-      flowSteps,
-      vocabulary,
-      withPersistedPersonaEnv(runRoot, process.env)
-    );
+    const personaBindings = harvestRunPersonaBindings(flowSteps, vocabulary, runRoot, process.env);
     const entryUrlParams = extractEntryUrlParams(activeCaptures[0]?.url ?? "");
     // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
     // action sequence at the position observed during recon, so the existing

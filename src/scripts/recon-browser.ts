@@ -2917,6 +2917,30 @@ export async function replanForFailedStep(
   return raw ? inheritStepFrameSelector(raw, failedStepFrameSelector) : raw;
 }
 
+/** Gathers persona env values to persist for recon:generate. */
+export function collectAllocatedPersonaEnv(opts: {
+  emailEnvVar: string | null;
+  email: string | null;
+  phoneEnvVar: string | null;
+  password: string | undefined;
+  allocatePhone: () => string;
+}): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (opts.emailEnvVar && opts.email) out[opts.emailEnvVar] = opts.email;
+  // The registration password is operator-supplied (not allocated), but the
+  // replay must use the same value, so persist it alongside the allocated ones.
+  if (opts.password) out.RECON_PASSWORD = opts.password;
+  if (opts.phoneEnvVar) out[opts.phoneEnvVar] = opts.allocatePhone();
+  return out;
+}
+
+/** Writes persona-env.json under the run root; no-op when empty. */
+export function persistPersonaEnv(root: string, env: Record<string, string>): void {
+  if (Object.keys(env).length === 0) return;
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "persona-env.json"), `${JSON.stringify(env, null, 2)}\n`);
+}
+
 async function main(): Promise<void> {
   const {
     url,
@@ -2967,21 +2991,18 @@ async function main(): Promise<void> {
     );
   }
 
-  const allocatedPersonaEnv: Record<string, string> = {};
-  if (allocateEmailEnvVar && allocatedInbox) {
-    allocatedPersonaEnv[allocateEmailEnvVar] = allocatedInbox.address;
-  }
-  // The registration password is operator-supplied (not allocated), but the
-  // replay must use the same value, so persist it alongside the allocated ones.
-  if (process.env.RECON_PASSWORD) {
-    allocatedPersonaEnv.RECON_PASSWORD = process.env.RECON_PASSWORD;
-  }
-  if (allocatePhoneEnvVar) {
-    const phone = allocateFictionalPhone();
-    process.env[allocatePhoneEnvVar] = phone;
-    allocatedPersonaEnv[allocatePhoneEnvVar] = phone;
-    logger.info(`bound allocated phone number to env var ${allocatePhoneEnvVar}=${phone}`);
-  }
+  const allocatedPersonaEnv = collectAllocatedPersonaEnv({
+    emailEnvVar: allocateEmailEnvVar,
+    email: allocatedInbox?.address ?? null,
+    phoneEnvVar: allocatePhoneEnvVar,
+    password: process.env.RECON_PASSWORD,
+    allocatePhone: () => {
+      const phone = allocateFictionalPhone();
+      process.env[allocatePhoneEnvVar as string] = phone;
+      logger.info(`bound allocated phone number to env var ${allocatePhoneEnvVar}=${phone}`);
+      return phone;
+    },
+  });
 
   const flow = substituteFlowEnvVars(rawFlow);
 
@@ -3003,15 +3024,7 @@ async function main(): Promise<void> {
   }
 
   const runDir = resolveReconRunDir();
-  if (Object.keys(allocatedPersonaEnv).length > 0) {
-    // Persist allocated persona values so recon:generate can bind them without
-    // the operator re-exporting env vars.
-    mkdirSync(runDir.root, { recursive: true });
-    writeFileSync(
-      join(runDir.root, "persona-env.json"),
-      `${JSON.stringify(allocatedPersonaEnv, null, 2)}\n`
-    );
-  }
+  persistPersonaEnv(runDir.root, allocatedPersonaEnv);
   const uploadFixture = loadUploadFixture(uploadFixturePath);
   // Per-URL partition under the flow file's site directory. Without a flow
   // file (inline --flow mode), telemetry has no durable home and is dropped
