@@ -3567,7 +3567,7 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
   }
-  for (const { value, element } of extractHtmlIssuedTokens(getCapture.responseBody)) {
+  for (const { value } of extractHtmlIssuedTokens(getCapture.responseBody)) {
     if (value.length < PATH_SEGMENT_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
     if (/\s/.test(value)) continue;
     if (getCapture.url.includes(value)) continue;
