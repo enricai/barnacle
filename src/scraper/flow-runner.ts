@@ -16627,16 +16627,16 @@ export async function executeStepWithHealing(params: {
       record.technique === "trusted-click-retry" ||
       (resolvedAction !== null &&
         resolvedActionNamesStepTarget(step, resolvedAction, {
-        requireNamedControl: true,
-        isInteractive:
-          stepDeclaresNonInteractiveTarget(step) &&
-          !!resolvedAction.selector &&
-          (await resolvedClickTargetIsInteractive(
-            frameTarget ?? mainFrameTarget(page),
-            resolvedAction.selector
-          )),
-        fallbackDescription: record.actResultDescription ?? undefined,
-      }));
+          requireNamedControl: true,
+          isInteractive:
+            stepDeclaresNonInteractiveTarget(step) &&
+            !!resolvedAction.selector &&
+            (await resolvedClickTargetIsInteractive(
+              frameTarget ?? mainFrameTarget(page),
+              resolvedAction.selector
+            )),
+          fallbackDescription: record.actResultDescription ?? undefined,
+        }));
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
