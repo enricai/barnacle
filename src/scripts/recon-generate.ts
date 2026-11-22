@@ -2740,8 +2740,14 @@ function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
     if (list) list.push(c);
     else occurrences.set(key, [c]);
   }
-  const answerIgnoresRequest = (list: Capture[]): boolean =>
-    new Set(list.map((c) => JSON.stringify(c.responseBody ?? null))).size === 1;
+  // Judge independence over body-bearing responses only: a beacon whose acks
+  // are intermittently empty (null/""), otherwise one fixed body, still ignores
+  // its request. With no body-bearing response, fall back to all responses.
+  const answerIgnoresRequest = (list: Capture[]): boolean => {
+    const bodied = list.filter((c) => c.responseBody != null && c.responseBody !== "");
+    const pool2 = bodied.length > 0 ? bodied : list;
+    return new Set(pool2.map((c) => JSON.stringify(c.responseBody ?? null))).size === 1;
+  };
   return (c) => {
     if (c.method === "GET") return false;
     if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool)) return true;
