@@ -61,7 +61,7 @@ export function extractHtmlIssuedTokens(body: unknown): HtmlIssuedToken[] {
   const fromUrl = (url: string, element: "form-action" | "link"): void => {
     const q = url.indexOf("?");
     if (q >= 0) {
-      const query = url.slice(q + 1).split("#")[0]!;
+      const query = url.slice(q + 1).split("#")[0] ?? "";
       for (const pair of query.split("&")) {
         const eq = pair.indexOf("=");
         if (eq <= 0) continue;
@@ -73,7 +73,7 @@ export function extractHtmlIssuedTokens(body: unknown): HtmlIssuedToken[] {
       }
     }
     const noOrigin = url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i, "");
-    const path = noOrigin.split(/[?#]/)[0]!;
+    const path = noOrigin.split(/[?#]/)[0] ?? "";
     const segs = path.split("/");
     segs.forEach((raw, i) => {
       const value = safeDecode(raw);

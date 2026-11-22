@@ -20,6 +20,7 @@ describe("bindMultipartSelectAnswers", () => {
   it("maps select option ids to payload.Answers and leaves other parts", () => {
     const body = `${part("q1", "42")}${part("name", "42")}--B--`;
     const out = bindMultipartSelectAnswers(body, cap, prior);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded from env by the code under test
     expect(out).toContain('name="q1"\r\n\r\n${payload.Answers["q1"]}\r\n');
     expect(out).toContain('name="name"\r\n\r\n42\r\n');
   });

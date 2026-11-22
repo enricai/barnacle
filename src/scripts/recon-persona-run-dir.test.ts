@@ -15,8 +15,11 @@ const vocab = {
   ],
 } as never;
 const steps = [
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded from env by the code under test
   "Fill in the Email field with '${RECON_EMAIL}'",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded from env by the code under test
   "Fill in the Phone field with '${RECON_PHONE}'",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded from env by the code under test
   "Fill in the Password field with '${RECON_PASSWORD}'",
 ] as never;
 

@@ -81,6 +81,7 @@ describe("recon-generate CLI — HTML-issued values threaded into emitted URLs",
     expect(contract).not.toContain(CSRF);
     expect(contract).not.toContain(HASH);
     expect(contract).toContain("const csrfToken");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded from env by the code under test
     expect(contract).toContain("csrf=${csrfToken}&hash=${hashToken}");
     // The job path (id, slug) is read from payload.ClickUrl, not replayed.
     expect(contract).not.toContain("48213907");

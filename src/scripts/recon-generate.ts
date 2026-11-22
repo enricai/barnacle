@@ -33,9 +33,12 @@ import {
   extractNavigatedHostnames,
   hasNoBusinessRelevantResponseState,
   isAllowedFixtureHost,
+  isFormDocumentSubmission,
+  isHtmlFormStep,
   isNavigatedSiblingHost,
   isNoiseUrl,
   isSamePathFamily,
+  isSameSiteHost,
   isServerRenderedFormSubmit,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
@@ -3712,12 +3715,16 @@ export function extractActionSequence(
         ) &&
         !(
           capture.method !== "GET" &&
-          isNavigatedSiblingHost(
+          (isNavigatedSiblingHost(
             captureHostname(capture.url),
             navigatedHosts,
             ownBackendHostnames,
             fallbackDomain
-          )
+          ) ||
+            // A form-encoded document POST to a same-site host is itself a
+            // navigation to that host, whether or not a captured page names it.
+            (isFormDocumentSubmission(capture) &&
+              isSameSiteHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)))
         )
       )
         return false;
@@ -3888,6 +3895,7 @@ export function extractActionSequence(
             matchesDeclaredSubmitEndpoint(capture) ||
             matchesDeclaredSubmitBody(capture) ||
             feedsDeclaredTarget ||
+            isHtmlFormStep(capture) ||
             !isStructurallyIsolatedCapture(path, otherPaths)
           );
         })
@@ -7787,7 +7795,12 @@ export function compileActionSteps(
     } catch {
       currentHost = null;
     }
-    const isCrossDomain = lastHost !== null && currentHost !== null && lastHost !== currentHost;
+    const isCrossDomain =
+      lastHost !== null &&
+      currentHost !== null &&
+      lastHost !== currentHost &&
+      registrableDomain(lastHost.replace(/:\d+$/, "")) !==
+        registrableDomain(currentHost.replace(/:\d+$/, ""));
     lastHost = currentHost;
 
     // Multipart steps are emitted through a path that cannot read the HTML

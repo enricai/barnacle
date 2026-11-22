@@ -40,6 +40,7 @@ describe("harvestRunPersonaBindings", () => {
   it("uses persisted env when process env is empty", () => {
     const root = mkdtempSync(join(tmpdir(), "pe-"));
     writeFileSync(join(root, "persona-env.json"), JSON.stringify({ RECON_EMAIL: "z@q.io" }));
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded from env by the code under test
     const steps = ["Fill in the First Name field with '${RECON_EMAIL}'"];
     const vocab = {
       subject: /\b(the\s+)?(test\s+)?(candidate|applicant)'?s\b/i,

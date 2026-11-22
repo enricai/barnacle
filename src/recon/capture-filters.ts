@@ -1276,6 +1276,7 @@ export function isZeroVarianceRepeatCapture(
   candidate: {
     method: string;
     url: string;
+    requestHeaders?: Record<string, string>;
     requestPostData: string | null;
     responseHeaders?: Record<string, string>;
     responseBody?: unknown;
@@ -1337,6 +1338,9 @@ export function isZeroVarianceRepeatCapture(
       }
       return hasNoObservedResponseVariance(sameEndpoint);
     }
+    // Differing form bodies POSTed to one endpoint, each answered with a page,
+    // are the steps of a server-rendered wizard, not a repeated ping.
+    if (isHtmlFormStep(candidate)) return false;
     const hasExplicitContentType = Object.keys(candidate.responseHeaders ?? {}).some(
       (key) => key.toLowerCase() === "content-type"
     );
@@ -1400,6 +1404,7 @@ export function isZeroVarianceRepeatCapture(
     (c) => c.requestPostData === candidate.requestPostData && (!bodyless || c.url === candidate.url)
   );
   if (bodyIdentical) return true;
+  if (isHtmlFormStep(candidate)) return false;
   if (hasNoBusinessRelevantResponseState(candidate)) return true;
   if (bodyless) return false;
   if (hasStableOperationIdentity(candidate, sameEndpoint)) return false;
@@ -1483,6 +1488,74 @@ export function isNavigatedSiblingHost(
   const host = hostname.toLowerCase();
   if (!navigatedHosts.has(host)) return false;
   const reg = registrableDomain(host);
+  if (fallbackDomain !== null && registrableDomain(fallbackDomain) === reg) return true;
+  return ownBackendHostnames.some((h) => registrableDomain(h) === reg);
+}
+
+/**
+ * True when a capture is an HTML form submission: its request carried a
+ * form-encoded (`application/x-www-form-urlencoded` or `multipart/form-data`)
+ * body and the response was not a JSON/XHR reply. A browser sends such a
+ * request only from a `<form>` it rendered, so the host it targets is a host
+ * the walked flow navigated to even when no captured page body spells that
+ * host out (an iframe nested in an iframe, a form rendered by script).
+ * Beacons and XHR calls to the same host are JSON or text bodies and do not
+ * qualify.
+ */
+export function isFormDocumentSubmission(capture: {
+  method: string;
+  requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
+}): boolean {
+  if (capture.method.toUpperCase() === "GET") return false;
+  const requestType = headerValue(capture.requestHeaders, "content-type");
+  if (
+    !requestType.includes("application/x-www-form-urlencoded") &&
+    !requestType.includes("multipart/form-data")
+  )
+    return false;
+  return !headerValue(capture.responseHeaders, "content-type").includes("json");
+}
+
+function headerValue(headers: Record<string, string> | undefined, name: string): string {
+  return (
+    Object.entries(headers ?? {})
+      .find(([k]) => k.toLowerCase() === name)?.[1]
+      ?.toLowerCase() ?? ""
+  );
+}
+
+/**
+ * A form submission whose response is an HTML page: one step of a
+ * server-rendered wizard. A page the user submitted is never incidental
+ * same-host chatter: repeats of one endpoint with differing form bodies are
+ * distinct steps ({@link isZeroVarianceRepeatCapture} must not read the
+ * page-shaped, non-JSON responses as "carries no state" noise), and an
+ * unusual endpoint path does not make one structurally isolated.
+ */
+export function isHtmlFormStep(capture: {
+  method: string;
+  requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
+}): boolean {
+  return (
+    isFormDocumentSubmission(capture) &&
+    headerValue(capture.responseHeaders, "content-type").includes("html")
+  );
+}
+
+/**
+ * True when `hostname` shares a registrable domain with the flow's
+ * own-backend hosts (or `fallbackDomain`). The same-site test
+ * {@link isNavigatedSiblingHost} applies, without the navigated-host
+ * requirement.
+ */
+export function isSameSiteHost(
+  hostname: string,
+  ownBackendHostnames: string[],
+  fallbackDomain: string | null
+): boolean {
+  const reg = registrableDomain(hostname.toLowerCase());
   if (fallbackDomain !== null && registrableDomain(fallbackDomain) === reg) return true;
   return ownBackendHostnames.some((h) => registrableDomain(h) === reg);
 }

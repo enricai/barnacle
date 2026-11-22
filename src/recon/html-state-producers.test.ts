@@ -15,7 +15,7 @@ describe("extractHtmlIssuedTokens", () => {
       "8f3a2b1c-1111-2222-3333-444455556666",
       "senior-engineer",
     ]);
-    expect(t[0]!.name).toBe("/jobs/*/senior-engineer/candidate");
+    expect(t[0]?.name).toBe("/jobs/*/senior-engineer/candidate");
   });
   it("still indexes hidden inputs", () => {
     const t = extractHtmlIssuedTokens(`<input type="hidden" name="tok" value="v-123456789">`);
