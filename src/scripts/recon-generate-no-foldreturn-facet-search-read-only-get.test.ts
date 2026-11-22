@@ -32,7 +32,7 @@ function facetSearchCaptures() {
     "qty=2&region=C&pageNumber=1",
     "qty=3&region=C&pageNumber=1",
     "qty=3&region=A&pageNumber=1",
-    "qty=3&region=A&brand=CB&pageNumber=1",
+    "qty=3&region=A&brand=AA&pageNumber=1",
   ];
   return facets.map(
     (query, i) =>
@@ -44,8 +44,8 @@ function facetSearchCaptures() {
         responseBody: {
           results: {
             items: [
-              { id: "I1", brandCode: "CB", size: 7, imageUrl: "https://img.example.com/1.png" },
-              { id: "I2", brandCode: "VI", size: 5, imageUrl: "https://img.example.com/2.png" },
+              { id: "I1", brandCode: "AA", size: 7, imageUrl: "https://img.example.com/1.png" },
+              { id: "I2", brandCode: "BB", size: 5, imageUrl: "https://img.example.com/2.png" },
             ],
           },
         },

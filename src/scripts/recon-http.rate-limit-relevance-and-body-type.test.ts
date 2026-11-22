@@ -20,21 +20,21 @@ describe("selectRateLimitTargets relevance ordering", () => {
   it("orders submit pattern, foldReturn pattern, JSON, then others", () => {
     const out = selectRateLimitTargets(
       [
-        r("https://api.site.com/other", "text/html"),
-        r("https://api.site.com/data", "application/json"),
-        r("https://api.site.com/fold", "text/html"),
-        r("https://api.site.com/submit", "text/html"),
+        r("https://api.example.com/other", "text/html"),
+        r("https://api.example.com/data", "application/json"),
+        r("https://api.example.com/fold", "text/html"),
+        r("https://api.example.com/submit", "text/html"),
       ],
-      ["api.site.com"],
+      ["api.example.com"],
       null,
       ["/fold", "/submit"],
       "/submit"
     );
     expect([...out.targets.keys()]).toEqual([
-      "https://api.site.com/submit",
-      "https://api.site.com/fold",
-      "https://api.site.com/data",
-      "https://api.site.com/other",
+      "https://api.example.com/submit",
+      "https://api.example.com/fold",
+      "https://api.example.com/data",
+      "https://api.example.com/other",
     ]);
   });
 });

@@ -32,8 +32,8 @@ function buildFacetRequeriedSearchSteps(): MulticallFixtureStep[] {
       responseBody: {
         results: {
           items: [
-            { id: "I1", brandCode: "CB", originCode: "MIA", size: 7 },
-            { id: "I2", brandCode: "VI", originCode: "PCN", size: 5 },
+            { id: "I1", brandCode: "AA", originCode: "MIA", size: 7 },
+            { id: "I2", brandCode: "BB", originCode: "PCN", size: 5 },
           ],
         },
       },
@@ -41,9 +41,9 @@ function buildFacetRequeriedSearchSteps(): MulticallFixtureStep[] {
 
   return [
     search("qty=2&region=C", "2026-11-02T12:00:01.000Z"),
-    // The facet re-query: same endpoint, threads "CB" and "7" from the first
+    // The facet re-query: same endpoint, threads "AA" and "7" from the first
     // response's own items, and varies qty/region at the same time.
-    search("qty=3&region=A&brand=CB&size=7", "2026-11-02T12:00:02.000Z"),
+    search("qty=3&region=A&brand=AA&size=7", "2026-11-02T12:00:02.000Z"),
   ];
 }
 
@@ -120,7 +120,7 @@ function facetSearchCaptures() {
     "qty=2&region=C&pageNumber=1",
     "qty=3&region=C&pageNumber=1",
     "qty=3&region=A&pageNumber=1",
-    "qty=3&region=A&brand=CB&pageNumber=1",
+    "qty=3&region=A&brand=AA&pageNumber=1",
   ];
   return facets.map(
     (query, i) =>
@@ -132,8 +132,8 @@ function facetSearchCaptures() {
         responseBody: {
           results: {
             items: [
-              { id: "I1", brandCode: "CB", size: 7, imageUrl: "https://img.example.com/1.png" },
-              { id: "I2", brandCode: "VI", size: 5, imageUrl: "https://img.example.com/2.png" },
+              { id: "I1", brandCode: "AA", size: 7, imageUrl: "https://img.example.com/1.png" },
+              { id: "I2", brandCode: "BB", size: 5, imageUrl: "https://img.example.com/2.png" },
             ],
           },
         },
