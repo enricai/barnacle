@@ -7499,8 +7499,8 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
       () => namedBy(labelBox),
       () => ownCaption(labelBox),
       () => segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" "),
-      () => Array.from(new Set(segs.map((seg) => ownKey(seg)).filter(Boolean))).join(" "),
       () => soleLegend(labelBox, segs),
+      () => Array.from(new Set(segs.map((seg) => ownKey(seg)).filter(Boolean))).join(" "),
     ].reduce((found, next) => found || named(next()), "");
     const section = sectionOf(labelBox, Boolean(inner));
     groups.push({
@@ -7533,6 +7533,7 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const own = new Set(segs);
     const boxLegend = box.tagName === "FIELDSET" ? box.querySelector(":scope > legend") : null;
     const keys = new Map();
+    const fromSegments = new Set();
     let current = "";
     box.querySelectorAll("label,legend,input,select,textarea,button").forEach((el) => {
       if (el === boxLegend) return;
@@ -7553,9 +7554,11 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
         if (!isHidden(el)) current = "";
         return;
       }
-      keys.set(el, ownKey(el) || current);
+      const segKey = ownKey(el);
+      if (segKey) fromSegments.add(el);
+      keys.set(el, segKey || current);
     });
-    return segs.map((seg) => keys.get(seg) || "");
+    return segs.map((seg) => ({ key: keys.get(seg) || "", named: fromSegments.has(seg) }));
   };
   const captionRuns = [];
   const nestedCandidates = [];
@@ -7575,8 +7578,11 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const runs = [];
     segs.forEach((seg, si) => {
       const last = runs[runs.length - 1];
-      if (last && last.key === keys[si]) last.segs.push(seg);
-      else runs.push({ key: keys[si], segs: [seg] });
+      const { key, named } = keys[si];
+      if (last && last.key === key) {
+        last.segs.push(seg);
+        last.named = last.named && named;
+      } else runs.push({ key, named, segs: [seg] });
     });
     // Segments that each sit in their own display wrapper still form one date
     // when a shared caption names them, so the caption run is a candidate too;
@@ -7589,6 +7595,9 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const outer = groups[outerIndex];
     const same = (a, b) => a.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === b.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     if (whole && same(outer.label || "", run.key)) return;
+    // Segment names ("Date Month") that all repeat one word name the segments,
+    // not a field: they add no second label to a date the group already names.
+    if (whole && run.named && outer.label) return;
     const gi = groups.length;
     run.segs.forEach((seg, si) => mark(seg, gi + ":" + si));
     const section = sectionOf(box, true);
