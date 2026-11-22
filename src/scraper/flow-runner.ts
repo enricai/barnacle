@@ -15262,12 +15262,19 @@ export async function executeStepWithHealing(params: {
             captureFn,
             frameTarget
           ).catch(() => [] as Action[]);
-          for (const c of resolvedCandidates) if (c.selector) triedSelectors.push(c.selector);
           vettedAction = await firstVettedCandidateForNonInteractiveStep(
             step,
             resolvedCandidates,
             attemptTarget
           );
+          // Record only what is acted on (or everything when all are refused):
+          // a refused control in triedSelectors would be re-clicked,
+          // unvetted, by the trusted-click-retry top-window arm.
+          if (vettedAction) {
+            if (vettedAction.selector) triedSelectors.push(vettedAction.selector);
+          } else {
+            for (const c of resolvedCandidates) if (c.selector) triedSelectors.push(c.selector);
+          }
           if (!vettedAction) {
             attemptRefused = true;
             const named = resolvedCandidates[0]?.description ?? "";
@@ -15614,9 +15621,11 @@ export async function executeStepWithHealing(params: {
             await resolveDeepLocatorCandidatesWithWidening(page, frameTarget.frameSelector, step, {
               frameTarget,
             });
-          let deepLocatorCandidates = retryCandidates.filter(
-            (c) => !triedSelectors.includes(c.selector)
-          );
+          // A non-interactive-target step must never fall back to clicking the
+          // first interactive control the widened resolver finds.
+          let deepLocatorCandidates = stepDeclaresNonInteractiveTarget(step)
+            ? []
+            : retryCandidates.filter((c) => !triedSelectors.includes(c.selector));
           if (deepLocatorCandidates.length === 0) {
             const failureMessage =
               "trusted-click-retry: no deepLocator candidate resolved for the phantomed target";
@@ -15716,9 +15725,11 @@ export async function executeStepWithHealing(params: {
           (resolveDeepLocatorActuation(step).kind === "click"
             ? INTERACTIVE_CANDIDATE_SELECTOR
             : FILLABLE_CANDIDATE_SELECTOR);
-        let deepLocatorCandidates = (deepLocatorResolution?.candidates ?? []).filter(
-          (c) => !triedSelectors.includes(c.selector)
-        );
+        let deepLocatorCandidates = stepDeclaresNonInteractiveTarget(step)
+          ? []
+          : (deepLocatorResolution?.candidates ?? []).filter(
+              (c) => !triedSelectors.includes(c.selector)
+            );
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
           // Field-label routing for a fill/select-shaped step already ran
           // (and returned/continued on a MATCH) in the field-label-first
