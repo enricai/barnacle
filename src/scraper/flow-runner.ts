@@ -1165,7 +1165,7 @@ export function widgetLabelMatches(widgetLabel: string, questionLabel: string): 
   // A short label inside a long sentence-style question ("State" inside a
   // 20-word yes/no question) names a different field: once the longer side is
   // a sentence (> 6 tokens), the shorter must cover at least half of it.
-  if (big.length > 6 && small.length * 2 < big.length) return false;
+  if (b.length > 6 && a.length < b.length && a.length * 2 < b.length) return false;
   return small.every((t) => big.includes(t));
 }
 /**
@@ -1335,7 +1335,8 @@ export const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
     // aria-expanded tracks the trigger's over bare adjacency.
     const wExp = w.getAttribute("aria-expanded");
     const cands = [];
-    for (let s = w.nextElementSibling; s && cands.length < 3; s = s.nextElementSibling) {
+    let scanned = 0;
+    for (let s = w.nextElementSibling; s && scanned < 3; s = s.nextElementSibling, scanned++) {
       const lb = s.matches("[role='listbox']") ? s : s.querySelector("[role='listbox']");
       let owned = null;
       const ref = s.getAttribute("aria-owns") || s.getAttribute("aria-controls") || "";
