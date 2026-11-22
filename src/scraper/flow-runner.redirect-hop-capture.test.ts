@@ -534,3 +534,31 @@ describe("redirect hop capture: generic-domain regressions", () => {
     expect(t.signalCounter.n).toBe(1);
   });
 });
+
+describe("redirect hop capture: redirectResponse without headers", () => {
+  it.each([["POST"], ["PUT"]])(
+    "yields an object of response headers for a headerless redirected %s hop, in order",
+    async (method) => {
+      const t = harness("https://example.com", true);
+      t.fire("Network.requestWillBeSent", {
+        requestId: "r1",
+        request: { url: "https://example.com/a", method, headers: {}, hasPostData: true },
+      });
+      t.fire("Network.requestWillBeSent", {
+        requestId: "r1",
+        request: { url: "https://example.com/b", method: "GET", headers: {} },
+        redirectResponse: { status: 302 },
+        redirectHasExtraInfo: false,
+      });
+      await t.fire("Network.loadingFinished", { requestId: "r1" });
+      await t.flush();
+      t.teardown();
+      expect(t.captured.map((c) => c.url)).toEqual([
+        "https://example.com/a",
+        "https://example.com/b",
+      ]);
+      expect(t.captured[0]?.responseHeaders).toEqual({});
+      expect(t.captured[0]?.requestPostData).toBe("x=1");
+    }
+  );
+});
