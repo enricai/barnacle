@@ -10304,7 +10304,7 @@ async function tryPromptSelectorPrimitive(params: {
     const renderedBase = ${PROMPT_RENDERED_EXPR};
     const unreachable = new Set();
     const rendered = (e) => renderedBase(e) && !unreachable.has(e);
-    for (const el of document.querySelectorAll("[" + markAttr + "-mate],[" + markAttr + "-layered]")) { el.removeAttribute(markAttr + "-mate"); el.removeAttribute(markAttr + "-layered"); }
+    for (const el of document.querySelectorAll("[" + markAttr + "-mate],[" + markAttr + "-layered],[" + markAttr + "-ctr]")) { el.removeAttribute(markAttr + "-mate"); el.removeAttribute(markAttr + "-layered"); el.removeAttribute(markAttr + "-ctr"); }
     // A rendered role=combobox anchor with no aria-controls/aria-haspopup is
     // outside the trigger union; adopt it when an unrendered union opener shares
     // its label (the layered shape), so the rendered control becomes the widget.
