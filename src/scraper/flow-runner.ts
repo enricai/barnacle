@@ -5256,6 +5256,22 @@ export function stepQuotesValueNotControlName(step: string): boolean {
 }
 
 /**
+ * False when the step quotes a control name and the resolved action's
+ * description names none of those phrases (or names a negated one). Same
+ * semantics as `vetObserveCandidates`. Value-quoting steps (fill/select/radio)
+ * and steps without quoted phrases are exempt (true).
+ */
+export function resolvedActionNamesStepTarget(
+  step: string,
+  action: { description?: string }
+): boolean {
+  if (stepQuotesValueNotControlName(step)) return true;
+  const phrases = extractTaggedPhrases(step);
+  if (phrases.length === 0) return true;
+  return !vetObserveCandidates([{ description: action.description ?? "" }], phrases).refuse;
+}
+
+/**
  * Resolve any selector a caller might hold into a bare XPath body for
  * `document.evaluate`. `verifyFillReadback` is shared across call sites that
  * carry different selector forms — Stagehand's `xpath=…` (act path), an
@@ -15896,7 +15912,14 @@ export async function executeStepWithHealing(params: {
             record.actResultDescription = result.actionDescription;
             for (const action of result.actions ?? []) {
               if (action.selector) triedSelectors.push(action.selector);
-              if (!resolvedAction) resolvedAction = action;
+              if (!resolvedAction) {
+                if (resolvedActionNamesStepTarget(step, action)) {
+                  resolvedAction = action;
+                } else {
+                  record.errorMessage = `rephrase resolved an element that does not name the step's quoted target: "${(action.description ?? "").slice(0, 60)}"`;
+                  failureReasons.push(record.errorMessage);
+                }
+              }
             }
           }
         }
