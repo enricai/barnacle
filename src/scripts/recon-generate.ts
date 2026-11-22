@@ -48,6 +48,11 @@ import {
 import type { ReconFormSchema } from "@/recon/form-schema";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
 import { loadReconValueConstraints, VALUE_CONSTRAINTS_NONE } from "@/recon/load-value-constraints";
+import {
+  extractHtmlIssuedTokens,
+  type HtmlTokenElement,
+  PATH_SEGMENT_MIN_LENGTH,
+} from "@/recon/html-state-producers";
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
 import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/value-constraints";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
@@ -3433,70 +3438,6 @@ function resends(haystack: string, value: string): boolean {
   return replayForms(value).some((form) => haystack.includes(form));
 }
 
-/** Kind of HTML element an issued token was read from. */
-type HtmlTokenElement = "form-action" | "link" | "hidden-input";
-
-interface HtmlIssuedToken {
-  value: string;
-  element: HtmlTokenElement;
-  /** Query parameter name or input name. */
-  name: string;
-}
-
-/**
- * Extracts per-request tokens from an HTML string body: query-parameter values
- * in `<form action>` / `<a href>` URLs and `<input type="hidden">` values. Each
- * carries a stable locator (element kind + parameter/input name). Returns [] for
- * non-string or non-HTML bodies. Values are entity-decoded (`&amp;`).
- */
-function extractHtmlIssuedTokens(body: unknown): HtmlIssuedToken[] {
-  if (typeof body !== "string" || !body.includes("<")) return [];
-  const out: HtmlIssuedToken[] = [];
-  const decode = (v: string): string =>
-    v
-      .replace(/&amp;/gi, "&")
-      .replace(/&quot;/gi, '"')
-      .replace(/&#0*39;/g, "'")
-      .replace(/&lt;/gi, "<")
-      .replace(/&gt;/gi, ">");
-  const attr = (tag: string, name: string): string | undefined => {
-    const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
-    if (!m) return undefined;
-    return decode(m[1] ?? m[2] ?? m[3] ?? "");
-  };
-  const fromUrl = (url: string, element: HtmlTokenElement): void => {
-    const q = url.indexOf("?");
-    if (q < 0) return;
-    const query = url.slice(q + 1).split("#")[0]!;
-    for (const pair of query.split("&")) {
-      const eq = pair.indexOf("=");
-      if (eq <= 0) continue;
-      let value = pair.slice(eq + 1);
-      try {
-        value = decodeURIComponent(value.replace(/\+/g, " "));
-      } catch {
-        /* keep raw */
-      }
-      out.push({ value, element, name: pair.slice(0, eq) });
-    }
-  };
-  for (const m of body.matchAll(/<form\b[^>]*>/gi)) {
-    const a = attr(m[0], "action");
-    if (a) fromUrl(a, "form-action");
-  }
-  for (const m of body.matchAll(/<a\b[^>]*>/gi)) {
-    const h = attr(m[0], "href");
-    if (h) fromUrl(h, "link");
-  }
-  for (const m of body.matchAll(/<input\b[^>]*>/gi)) {
-    if (attr(m[0], "type")?.toLowerCase() !== "hidden") continue;
-    const name = attr(m[0], "name");
-    const value = attr(m[0], "value");
-    if (name && value) out.push({ value, element: "hidden-input", name });
-  }
-  return out;
-}
-
 /**
  * True when a GET capture's response issues a value (an opaque token: a
  * session id, CSRF nonce, form handle) that a LATER non-GET 2xx request
@@ -3517,8 +3458,8 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
   }
-  for (const { value } of extractHtmlIssuedTokens(getCapture.responseBody)) {
-    if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+  for (const { value, element } of extractHtmlIssuedTokens(getCapture.responseBody)) {
+    if (value.length < (element === "path-segment" ? PATH_SEGMENT_MIN_LENGTH : ISSUED_TOKEN_MIN_LENGTH) || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
     if (/\s/.test(value)) continue;
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
@@ -11713,6 +11654,24 @@ function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string
       `${indent}    if ((n?.[1] ?? n?.[2] ?? n?.[3]) !== ${name}) continue;`,
       `${indent}    const v = /\\svalue\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
       `${indent}    if (v) return (v[1] ?? v[2] ?? v[3] ?? "").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#0*39;/g, "'");`,
+      `${indent}  }`,
+      `${indent}  return undefined;`,
+      `${indent}})();`,
+      fail,
+    ];
+  }
+  if (p.element === "path-segment") {
+    return [
+      `${indent}const ${p.name} = (() => {`,
+      `${indent}  const pattern = ${name}.split("/");`,
+      `${indent}  for (const tag of ${textVar}.match(/<(?:a|form)\\b[^>]*>/gi) ?? []) {`,
+      `${indent}    const a = /\\s(?:href|action)\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
+      `${indent}    const target = (a?.[1] ?? a?.[2] ?? a?.[3] ?? "").replace(/&amp;/gi, "&").replace(/^[a-z][a-z0-9+.-]*:\\/\\/[^/?#]*/i, "").split(/[?#]/)[0];`,
+      `${indent}    const segs = target.split("/");`,
+      `${indent}    if (segs.length !== pattern.length) continue;`,
+      `${indent}    const at = pattern.indexOf("*");`,
+      `${indent}    if (!segs.every((s, k) => k === at || s === pattern[k])) continue;`,
+      `${indent}    try { return decodeURIComponent(segs[at]); } catch { return segs[at]; }`,
       `${indent}  }`,
       `${indent}  return undefined;`,
       `${indent}})();`,
