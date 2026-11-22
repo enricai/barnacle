@@ -63,9 +63,9 @@ describe("detectContractGaps frozen screening answers", () => {
     expect(detectContractGaps(steps, false, all, "const x = 1;").frozenScreeningAnswers).toBe(1);
   });
   it("counts nothing when answers are bound", () => {
-    expect(
-      detectContractGaps(steps, false, all, "payload.Answers[0]").frozenScreeningAnswers
-    ).toBe(0);
+    expect(detectContractGaps(steps, false, all, "payload.Answers[0]").frozenScreeningAnswers).toBe(
+      0
+    );
   });
 });
 
