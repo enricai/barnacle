@@ -142,9 +142,11 @@ export function deduplicateCaptures(
 ): Array<{ filename: string; capture: Capture }> {
   const seen = new Set<string>();
   return captures.filter(({ capture }) => {
-    const headers = Object.entries(capture.requestHeaders ?? {})
-      .map(([k, v]) => [k.toLowerCase(), v] as const)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    // Names only: values like Cookie/traceparent/x-request-id vary per request
+    // and would defeat dedupe; carrying a header at all is what changes shape.
+    const headers = Object.keys(capture.requestHeaders ?? {})
+      .map((k) => k.toLowerCase())
+      .sort();
     const key = `${(capture.method ?? "").toUpperCase()}|${capture.url}|${capture.operationName ?? ""}|${JSON.stringify(capture.variables ?? {})}|${JSON.stringify(headers)}`;
     if (seen.has(key)) return false;
     seen.add(key);
