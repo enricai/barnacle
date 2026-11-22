@@ -10,12 +10,12 @@ import {
 
 describe("generic combobox trigger / search / placeholder constants", () => {
   it("trigger union matches a bare combobox with aria-expanded", () => {
-    document.body.innerHTML = `<a role="combobox" aria-expanded="false" id="t"></a>`;
-    expect(document.querySelector(PROMPT_TRIGGER_SELECTORS)?.id).toBe("t");
+    window.document.body.innerHTML = `<a role="combobox" aria-expanded="false" id="t"></a>`;
+    expect(window.document.querySelector(PROMPT_TRIGGER_SELECTORS)?.id).toBe("t");
   });
   it("search union matches a self-combobox list input", () => {
-    document.body.innerHTML = `<input role="combobox" aria-autocomplete="list" id="s">`;
-    expect(document.querySelector(PROMPT_SEARCH_SELECTORS)?.id).toBe("s");
+    window.document.body.innerHTML = `<input role="combobox" aria-autocomplete="list" id="s">`;
+    expect(window.document.querySelector(PROMPT_SEARCH_SELECTORS)?.id).toBe("s");
   });
   it.each(["-Select-", "— Make a Selection —", "Select One", "Please select..."])(
     "reads %j as empty",
