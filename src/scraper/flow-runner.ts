@@ -870,17 +870,27 @@ const PROMPT_INTERACTIVE_CONTROL_SELECTORS = "button,[role='combobox'],[role='bu
  * aria-required aria-invalid>` beside a `data-automation-id="promptIcon"` icon,
  * with NO `role=combobox` — hence ARIA alone under-selects it).
  */
-export const PROMPT_TRIGGER_SELECTORS = [
+const PROMPT_POPUP_LINKED_TRIGGER_SELECTOR_LIST = [
   "[role='combobox'][aria-haspopup='listbox']",
   "[role='combobox'][aria-controls]",
   "[role='combobox'][aria-owns]",
-  "[role='combobox'][aria-expanded]",
   "[aria-haspopup='listbox']",
   "[data-uxi-widget-type='selectinput']",
   "[data-uxi-widget-type='multiselect']",
   "[data-automation-id='promptIcon']",
   "[data-automation-id='multiSelectContainer']",
   "[data-automation-id='promptSelectionLabel']",
+];
+/**
+ * The triggers that declare their popup (a link, a popup role or a widget-kit
+ * marker). A bare `role=combobox[aria-expanded]` is deliberately not among them:
+ * it declares no popup of its own, so a layered field's native select may still
+ * pair with it.
+ */
+const PROMPT_POPUP_LINKED_TRIGGER_SELECTORS = PROMPT_POPUP_LINKED_TRIGGER_SELECTOR_LIST.join(",");
+export const PROMPT_TRIGGER_SELECTORS = [
+  ...PROMPT_POPUP_LINKED_TRIGGER_SELECTOR_LIST,
+  "[role='combobox'][aria-expanded]",
 ].join(",");
 /**
  * Cross-vendor selector union for an OPTION rendered inside the opened popup —
@@ -912,7 +922,18 @@ const PROMPT_TRIGGER_REACHABLE_EL_EXPR = `(t) => {
       const cy = r.top + r.height / 2;
       if (cx < 0 || cy < 0 || cx >= window.innerWidth || cy >= window.innerHeight) return true;
       const hit = document.elementFromPoint(cx, cy);
-      return !hit || hit === t || t.contains(hit);
+      if (!hit || hit === t || t.contains(hit)) return true;
+      // Only an element whose own box lies over the point, and is not clipped
+      // away from it by an overflow-clipping ancestor, can cover it.
+      for (let n = hit; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+        if (n !== hit) {
+          const ncs = getComputedStyle(n);
+          if (![ncs.overflow, ncs.overflowX, ncs.overflowY].some((v) => v && v !== "visible")) continue;
+        }
+        const a = n.getBoundingClientRect();
+        if (cx < a.left || cx > a.right || cy < a.top || cy > a.bottom) return true;
+      }
+      return false;
     }`;
 /**
  * In-page predicate source for `(el) => boolean`: true when `el` is a
@@ -10199,6 +10220,7 @@ async function tryPromptSelectorPrimitive(params: {
   const enumerateWidgetsExpr = `((markAttr, triggerSel, valueSel, emptyRxSrc, emptyRxFlags) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const buttonValue = ${BUTTON_VALUE_EXPR};
+    const popupLinkedSel = ${JSON.stringify(PROMPT_POPUP_LINKED_TRIGGER_SELECTORS)};
     const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
     // Trailing empty-value placeholder ("Country Code — Make a Selection —"),
     // derived from emptyRx's own source: the leading anchor becomes a required
@@ -10257,17 +10279,17 @@ async function tryPromptSelectorPrimitive(params: {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
         if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
       }
-      // A label[for] naming a select/input/textarea in the trigger's own
-      // container (the replaced native control the widget stands in for).
-      let cont = w.parentElement;
-      for (let d = 0; d < 3 && cont; d++) {
-        for (const lab of Array.from(cont.querySelectorAll("label[for]"))) {
-          const tgt = document.getElementById(lab.getAttribute("for"));
-          if (tgt && /^(select|input|textarea)$/i.test(tgt.tagName) && cont.contains(tgt) && !w.contains(lab) && lab.textContent.trim()) {
-            return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
-          }
+      // A label[for] naming a select/input/textarea the user cannot reach in the
+      // trigger's own container (the replaced native control the widget stands
+      // in for). A control the pointer reaches is the field's own, so its label
+      // names that control and not this trigger.
+      const cont = w.parentElement;
+      if (cont) {
+        for (const ctl of Array.from(cont.querySelectorAll("select,input,textarea"))) {
+          if (!ctl.id || w.contains(ctl) || pointerReaches(ctl)) continue;
+          const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(ctl.id) : ctl.id) + "']");
+          if (lab && !w.contains(lab) && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
         }
-        cont = cont.parentElement;
       }
       const grp = w.closest("[role='group'][aria-labelledby],fieldset");
       if (grp) {
@@ -10275,6 +10297,9 @@ async function tryPromptSelectorPrimitive(params: {
         const gref = gid ? document.getElementById(gid.split(/\\s+/)[0]) : grp.querySelector("legend");
         if (gref && gref.textContent.trim()) return gref.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
       }
+      // A trigger that declares no popup of its own has nothing tying it to the
+      // surrounding text: that text names its neighbours as readily as it.
+      if (!w.matches(popupLinkedSel)) return "";
       let node = w.parentElement;
       for (let d = 0; d < 5 && node; d++) {
         const t = (node.textContent || "").trim();
@@ -10448,7 +10473,7 @@ async function tryPromptSelectorPrimitive(params: {
       if (pick.length !== 1) continue;
       const t = pick[0];
       if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText)) continue;
-      if (seen && widgets.includes(t)) continue;
+      if (seen && widgets.includes(t) && t.matches(popupLinkedSel)) continue;
       labelOverride.set(t, labText);
       if (!allWidgets.includes(t)) allWidgets.push(t);
       for (const m of members) if (m !== t) layerHost.set(m, t);
