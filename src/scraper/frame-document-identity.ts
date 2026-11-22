@@ -17,7 +17,7 @@ export const FRAME_DOCUMENT_IDENTITY_EXPR = "performance.timeOrigin";
 
 /** Reads the identity; any failure or non-finite value yields null. */
 export async function readFrameDocumentIdentity(
-  target: EvaluateTarget,
+  target: EvaluateTarget
 ): Promise<FrameDocumentIdentity> {
   try {
     const v = await target.evaluate<unknown>(FRAME_DOCUMENT_IDENTITY_EXPR);
@@ -32,7 +32,7 @@ export type FrameDocumentStatus = "current" | "replaced" | "unknown";
 /** Compares a captured identity against the target's present one. */
 export async function checkFrameDocumentIdentity(
   target: EvaluateTarget,
-  before: FrameDocumentIdentity,
+  before: FrameDocumentIdentity
 ): Promise<FrameDocumentStatus> {
   if (before === null) return "unknown";
   const now = await readFrameDocumentIdentity(target);
