@@ -16750,9 +16750,7 @@ export async function executeStepWithHealing(params: {
         resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
       if (readbackSelector) {
         const readbackTarget = frameTarget ?? mainFrameTarget(page);
-        if (
-          await promptSelectorReadbackRejects(readbackTarget, readbackSelector, step)
-        ) {
+        if (await promptSelectorReadbackRejects(readbackTarget, readbackSelector, step)) {
           promptSelectorRejected = true;
           record.actResultSuccess = false;
           record.errorMessage = `prompt-selector-fill-rejected: resolved element <${readbackSelector}> is a prompt-selector-shaped widget but no committed value landed`;
