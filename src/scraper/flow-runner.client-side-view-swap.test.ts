@@ -498,3 +498,28 @@ describe("flow-runner/isClickViewSwapVerified — content-removal dismissal cred
     );
   });
 });
+
+describe("flow-runner/describeAttemptEffectSignals — removal vs reflow", () => {
+  const snap = (len: number, text: number, head: string) =>
+    ({
+      networkCount: 0,
+      url: "u",
+      bodyHtmlLength: len,
+      visibleTextSignature: `${text}:${head}`,
+      formValueSignature: "",
+      selectionStateSignature: "",
+    }) as never;
+
+  it("labels a text shrink with negative byte delta as content removal, not reflow", async () => {
+    const { describeAttemptEffectSignals } = await import("@/scraper/flow-runner");
+    const out = describeAttemptEffectSignals(snap(10000, 1000, "a b"), snap(8346, 439, "a b"), [], 0);
+    expect(out).toContain("content-removed");
+    expect(out).not.toContain("reflowed slightly");
+  });
+
+  it("keeps the reflow wording for a tiny text change", async () => {
+    const { describeAttemptEffectSignals } = await import("@/scraper/flow-runner");
+    const out = describeAttemptEffectSignals(snap(10000, 1000, "a b"), snap(10010, 1003, "a c"), [], 0);
+    expect(out).toContain("reflowed slightly");
+  });
+});
