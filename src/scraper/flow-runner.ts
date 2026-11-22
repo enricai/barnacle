@@ -2891,10 +2891,10 @@ export function describeAttemptEffectSignals(
   // changed visible text, or a measured visible-text shrink.
   const contentRemoved =
     networkDelta === 0 &&
-    bytesDelta < 0 &&
-    ((textChanged && -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold) ||
-      -bytesDelta >= config.scraper.viewSwapMinBytesThreshold ||
-      isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature));
+    (isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature) ||
+      (bytesDelta < 0 &&
+        ((textChanged && -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold) ||
+          -bytesDelta >= config.scraper.viewSwapMinBytesThreshold)));
   if (contentRemoved) {
     observations.push(
       `content-removed-without-network: visible text and body HTML shrank (body ${bytesDelta}B) with no network — real content left the page (an overlay/banner/target was dismissed), not a slight reflow`
