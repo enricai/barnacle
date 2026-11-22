@@ -14342,7 +14342,12 @@ export async function executeStepWithHealing(params: {
       stepStartSnapshot,
       midFlowSubmit: true,
     });
-    if (!pageAdvanced) return false;
+    // The act's own click may have swapped the target frame's document for an
+    // identically-laid-out page that no URL/POST/DOM-diff signal reveals.
+    const docReplaced =
+      (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
+      "replaced";
+    if (!pageAdvanced && !docReplaced) return false;
     // A DOM change that came from bouncing to an auth gate is not an advance.
     if (!isPlausibleStepDestination(step, settled.url, stepStartSnapshot.url)) return false;
     logger.info(
@@ -14960,6 +14965,18 @@ export async function executeStepWithHealing(params: {
     // judge against the step-start baseline before `pre` absorbs the advance.
     if (attempt > 1 && (await creditStepStartAdvance(`attempt-${attempt}-entry`)))
       return "completed";
+    // Document replaced by an earlier attempt's click but not credited: never
+    // re-act the instruction on the new page.
+    if (
+      attempt > 1 &&
+      (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
+        "replaced"
+    ) {
+      const msg = `attempt ${attempt} skipped: frame document replaced since step start; not re-acting on the new document`;
+      logger.info(`${formatStepPrefix(stepIndex, totalSteps)} ${msg}`);
+      failureReasons.push(msg);
+      break;
+    }
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
