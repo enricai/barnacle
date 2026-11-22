@@ -15126,6 +15126,10 @@ export async function executeStepWithHealing(params: {
     // whether this attempt's signal should come from the network/URL pair or
     // from DOM re-read. Captured here so both branches of the cascade write to it.
     let resolvedAction: Action | null = null;
+    // Set when an llm-rephrase resolved an element contradicting a
+    // non-interactive step target; resolvedAction then stays null, which must
+    // not read as "names the step target" for the view-swap credit.
+    let rephraseContradictedTarget = false;
 
     // Submit shape of the control observe resolved BEFORE the act clicked it.
     // The act performs the click itself, so a page that swaps at once has
@@ -16308,6 +16312,7 @@ export async function executeStepWithHealing(params: {
               );
               if (!vettedRephraseAction) {
                 rephraseRefused = true;
+                rephraseContradictedTarget = true;
                 const named = resolvedCandidates[0]?.description ?? "";
                 record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${named.slice(0, 60)}"`;
                 failureReasons.push(record.errorMessage);
@@ -16346,6 +16351,7 @@ export async function executeStepWithHealing(params: {
                   ) {
                     resolvedAction = action;
                   } else {
+                    rephraseContradictedTarget = true;
                     record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${(action.description || result.actionDescription || "").slice(0, 60)}"`;
                     failureReasons.push(record.errorMessage);
                   }
@@ -16617,7 +16623,7 @@ export async function executeStepWithHealing(params: {
     // its description is engine-authored (it embeds the selector), so it says
     // nothing about which control the page exposed.
     const resolvedTargetNamesStep =
-      resolvedAction === null ||
+      (resolvedAction === null && !rephraseContradictedTarget) ||
       record.technique === "trusted-click-retry" ||
       resolvedActionNamesStepTarget(step, resolvedAction, {
         requireNamedControl: true,
@@ -17802,6 +17808,24 @@ export async function executeStepWithHealing(params: {
     }
 
     attempts.push(record);
+
+    if (
+      verified &&
+      optional &&
+      record.technique === "llm-rephrase" &&
+      record.verifiedBy === "view-swap" &&
+      !networkFired &&
+      !urlChanged &&
+      !domVerifiedForStep
+    ) {
+      // A view-swap alone is too weak to credit a rephrase heal of an optional
+      // step: skip it, like the other optional-skip paths.
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} skipped (optional, llm-rephrase credited only by view-swap; network=false url=false dom=false)`
+      );
+      record.verifiedBy = null;
+      return "skipped";
+    }
 
     if (verified) {
       if (attempt > 1) {
