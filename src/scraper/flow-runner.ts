@@ -2579,7 +2579,15 @@ export function isMidFlowAdvanceCredited(params: {
   pageAdvanced: boolean;
   invalidMarkerCount: number;
 }): boolean {
-  if (params.midFlowSubmit && params.signalAdvanced) return true;
+  // An explicit judge rejection is not overruled by the view-swap signal
+  // alone; it needs a settled page advance or a real network advance too.
+  if (
+    params.midFlowSubmit &&
+    params.signalAdvanced &&
+    (params.judgeUnavailable || params.pageAdvanced || params.networkAdvanced)
+  ) {
+    return true;
+  }
   return isNullVerdictAdvanceCredited(params);
 }
 

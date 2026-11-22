@@ -313,8 +313,10 @@ describe("flow-runner/isMidFlowAdvanceCredited", () => {
     invalidMarkerCount: 0,
   };
 
-  it("credits a mid-flow step on its own advance signal despite a judge rejection", () => {
-    expect(isMidFlowAdvanceCredited({ ...base, signalAdvanced: true })).toBe(true);
+  it("credits a mid-flow step on its own advance signal despite a judge rejection when the page advanced", () => {
+    expect(isMidFlowAdvanceCredited({ ...base, signalAdvanced: true, pageAdvanced: true })).toBe(
+      true
+    );
   });
 
   it("credits an unavailable judge only on a demonstrable advance", () => {
