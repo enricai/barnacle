@@ -960,6 +960,21 @@ interface NormalizedStep {
   navigateTo?: string;
 }
 
+/**
+ * Replanned steps that name no frame of their own inherit the failed step's
+ * own `frameSelector` (when it had one), so a step-scoped frame survives the
+ * replan. With no step-level selector the steps pass through unchanged.
+ */
+export function inheritStepFrameSelector(
+  steps: NormalizedStep[],
+  failedStepFrameSelector: string | undefined
+): NormalizedStep[] {
+  if (failedStepFrameSelector === undefined) return steps;
+  return steps.map((s) =>
+    s.frameSelector === undefined ? { ...s, frameSelector: failedStepFrameSelector } : s
+  );
+}
+
 function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep[] {
   return steps.map((s) =>
     typeof s === "string"
@@ -3626,7 +3641,7 @@ async function main(): Promise<void> {
             `${formatStepPrefix(i, () => plan.length)} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
           );
 
-          const rawNewSteps = await replanRemainingFlow({
+          const rawNewStepsUnscoped = await replanRemainingFlow({
             client: anthropic,
             originalFlow: flow.map((s) => s.instruction),
             completedSteps,
@@ -3643,6 +3658,9 @@ async function main(): Promise<void> {
             priorReplans: replanEvents,
           });
 
+          const rawNewSteps = rawNewStepsUnscoped
+            ? inheritStepFrameSelector(rawNewStepsUnscoped, step.frameSelector)
+            : rawNewStepsUnscoped;
           if (!rawNewSteps) {
             logger.error(
               `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`
