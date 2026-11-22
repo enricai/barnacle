@@ -206,9 +206,15 @@ describe("redirect hop capture: additional regressions", () => {
       requestId: "r1",
       request: { url: "https://example.com/a", method: "POST", headers: {}, postData: "x=1" },
     });
-    t.fire("Network.responseReceivedExtraInfo", { requestId: "r1", headers: { "Set-Cookie": "s0" } });
+    t.fire("Network.responseReceivedExtraInfo", {
+      requestId: "r1",
+      headers: { "Set-Cookie": "s0" },
+    });
     // hop 1 extra-info arrives BEFORE the redirect's requestWillBeSent
-    t.fire("Network.responseReceivedExtraInfo", { requestId: "r1", headers: { "Set-Cookie": "s1" } });
+    t.fire("Network.responseReceivedExtraInfo", {
+      requestId: "r1",
+      headers: { "Set-Cookie": "s1" },
+    });
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
       request: { url: "https://example.com/b", method: "GET", headers: {} },
