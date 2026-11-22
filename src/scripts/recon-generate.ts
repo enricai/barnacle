@@ -2037,7 +2037,8 @@ export function addClickUrlPathBindings(
   // directly follows it; without that shape (`/checkout/create-order/123456`) the
   // length floor still applies so it cannot collide with arbitrary substrings.
   const isShortIdWithSlug = (seg: string, i: number): boolean =>
-    /^\d{3,}$/.test(seg) && /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$/.test(segments[i + 1] ?? "");
+    /^\d{3,}$/.test(seg) &&
+    /^[A-Za-z0-9]+(?:-(?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(segments[i + 1] ?? "");
   const isIdSegmentAt = (i: number): boolean => {
     const seg = segments[i];
     if (seg === undefined) return false;
@@ -2055,9 +2056,9 @@ export function addClickUrlPathBindings(
     const afterId = i > 0 && isIdSegmentAt(i - 1);
     const slugAfterId =
       afterId &&
-      /-/.test(seg) &&
       isStateLikeSegment(seg) &&
-      (seg.length >= MIN_STATE_VALUE_LENGTH || isShortIdWithSlug(segments[i - 1] ?? "", i - 1));
+      (seg.length >= MIN_STATE_VALUE_LENGTH ||
+        (/-/.test(seg) && isShortIdWithSlug(segments[i - 1] ?? "", i - 1)));
     if ((!isIdSegmentAt(i) && !slugAfterId) || into.has(seg)) return;
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
@@ -2104,7 +2105,7 @@ export function bindMultipartSelectAnswers(
         const rawValue = pair.slice(eq + 1);
         const name = decode(pair.slice(0, eq));
         if (rawValue.includes("${") || !selects.get(name)?.has(decode(rawValue))) return pair;
-        return `${pair.slice(0, eq)}=\${payload.Answers[${JSON.stringify(name)}]}`;
+        return `${pair.slice(0, eq)}=\${encodeURIComponent(String(payload.Answers[${JSON.stringify(name)}]))}`;
       })
       .join("&");
   }
