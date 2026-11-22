@@ -272,11 +272,12 @@ async function tryResolveChildFrame(
   // nested within it. The scoring/tie-break below is shared with the
   // single-hop path; the bound target carries the full chain.
   const hops = frameSelector
-    .split(">>")
+    .split(HOP_SEPARATOR.trim())
     .map((hop) => hop.trim())
     .filter((hop) => hop.length > 0);
-  const lastHop = hops.length > 1 ? (hops[hops.length - 1] ?? frameSelector) : frameSelector;
-  let outerFrame: StagehandFrame | null = null;
+  const lastHop = hops[hops.length - 1];
+  if (lastHop === undefined) return null;
+  let scope: StagehandFrame | null = null;
   if (hops.length > 1) {
     const outer = await tryResolveChildFrame(
       page,
@@ -285,9 +286,8 @@ async function tryResolveChildFrame(
       deadline
     );
     if (!outer?.frame) return null;
-    outerFrame = outer.frame;
+    scope = outer.frame;
   }
-  const scope = outerFrame;
 
   const iframeSrcExpr = `(() => {
     const el = document.querySelector(${JSON.stringify(lastHop)});
@@ -308,19 +308,13 @@ async function tryResolveChildFrame(
   });
   if (!matched) return null;
 
-  let candidates: StagehandFrame[];
-  if (scope) {
-    // `page.frames()` binds each frame to its registry owner session, so a
-    // cross-process (OOPIF) grandchild is reachable; `Frame.childFrames()`
-    // would bind children to the parent's session and omit OOPIFs.
-    const mainFrameId = page.mainFrameId();
-    candidates = page
-      .frames()
-      .filter((frame) => frame.frameId !== mainFrameId && frame.frameId !== scope.frameId);
-  } else {
-    const mainFrameId = page.mainFrameId();
-    candidates = page.frames().filter((frame) => frame.frameId !== mainFrameId);
-  }
+  // `page.frames()` binds each frame to its registry owner session, so a
+  // cross-process (OOPIF) descendant is reachable; `Frame.childFrames()`
+  // would bind children to the parent's session and omit OOPIFs.
+  const mainFrameId = page.mainFrameId();
+  const candidates = page
+    .frames()
+    .filter((frame) => frame.frameId !== mainFrameId && frame.frameId !== scope?.frameId);
 
   // The iframe `src` can't be resolved to an origin — it's empty (a same-tick
   // race before the attribute reflects) or a relative/unparseable value. Fall
