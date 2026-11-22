@@ -498,7 +498,10 @@ describe("redirect hop capture: generic-domain regressions", () => {
     await finished;
     await t.flush();
     t.teardown();
-    expect(t.captured.map((c) => c.url)).toEqual(["https://example.com/a", "https://example.com/b"]);
+    expect(t.captured.map((c) => c.url)).toEqual([
+      "https://example.com/a",
+      "https://example.com/b",
+    ]);
     const post = t.captured[0];
     expect(post?.requestPostData).toBe("x=1");
     expect(JSON.stringify(post?.responseHeaders)).toContain("sid=late");
