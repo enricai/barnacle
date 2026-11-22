@@ -16051,9 +16051,9 @@ export async function executeStepWithHealing(params: {
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
-      domVerifiedForStep ||
+      (!promptSelectorRejected && domVerifiedForStep) ||
       datepickerCommitted ||
-      domEffectiveVerdict ||
+      (!promptSelectorRejected && domEffectiveVerdict) ||
       (!datepickerRejected &&
         !promptSelectorRejected &&
         (clickViewSwapVerified || formValueVerified));
