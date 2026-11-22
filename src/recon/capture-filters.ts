@@ -1451,7 +1451,7 @@ export function extractNavigatedHostnames(bodies: unknown[]): Set<string> {
   for (const body of bodies) {
     if (typeof body !== "string" || !body.includes("<")) continue;
     for (const m of body.matchAll(tagRx)) {
-      const attrName = m[1]!.toLowerCase() === "iframe" ? "src" : "action";
+      const attrName = m[1]?.toLowerCase() === "iframe" ? "src" : "action";
       const a = new RegExp(`\\s${attrName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(
         m[0]
       );

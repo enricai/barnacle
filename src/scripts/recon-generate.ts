@@ -30,9 +30,9 @@ import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import { findCaptchaResponseFields } from "@/recon/captcha-detect";
 import {
+  extractNavigatedHostnames,
   hasNoBusinessRelevantResponseState,
   isAllowedFixtureHost,
-  extractNavigatedHostnames,
   isNavigatedSiblingHost,
   isNoiseUrl,
   isSamePathFamily,
