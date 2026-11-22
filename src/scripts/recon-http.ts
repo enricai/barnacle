@@ -216,6 +216,30 @@ function keysByPath(root: object, pathIds: Map<string, number>): Map<number, Set
   return out;
 }
 
+/**
+ * Object keys of a JSON body grouped by object-nesting depth (arrays do not add
+ * a level), pooled across every position at that depth. Iterative and linear.
+ */
+function keysByDepth(root: object): Map<number, Set<string>> {
+  const out = new Map<number, Set<string>>();
+  const stack: Array<[unknown, number]> = [[root, 0]];
+  while (stack.length > 0) {
+    const [v, depth] = stack.pop()!;
+    if (!v || typeof v !== "object") continue;
+    if (Array.isArray(v)) {
+      for (const element of v) stack.push([element, depth]);
+      continue;
+    }
+    const keys = out.get(depth) ?? new Set<string>();
+    out.set(depth, keys);
+    for (const [k, child] of Object.entries(v)) {
+      keys.add(k);
+      stack.push([child, depth + 1]);
+    }
+  }
+  return out;
+}
+
 /** True when a key of `a` is spelled differently in `b` with the same `inflectionKey`. */
 function inflectedPair(a: Set<string>, b: Set<string>): boolean {
   const others = new Set([...b].filter((k) => !a.has(k)).map(inflectionKey));
@@ -272,6 +296,13 @@ export function responseShapeDiffers(captured: unknown, replayed: unknown): bool
   const right = keysByPath(b, pathIds);
   for (const [path, keys] of keysByPath(a, pathIds)) {
     const other = right.get(path);
+    if (other && inflectedPair(keys, other)) return true;
+  }
+  // Positions with no counterpart (e.g. id-keyed maps whose ids differ) are
+  // still compared by depth, so a re-inflected key beneath them is caught.
+  const rightDepth = keysByDepth(b);
+  for (const [depth, keys] of keysByDepth(a)) {
+    const other = rightDepth.get(depth);
     if (other && inflectedPair(keys, other)) return true;
   }
   return false;

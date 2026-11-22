@@ -660,6 +660,18 @@ describe("replayCapture — response shape", () => {
     expect(inflectionKey(key)).toBe(normal);
   });
 
+  it("flags re-inflected keys under id-keyed maps whose ids differ", () => {
+    const captured = { data: { a1: { friendlyId: "x", gameDuration: 1 } } };
+    const replayed = { data: { b2: { friendly_id: "x", game_duration: 1 } } };
+    expect(responseShapeDiffers(captured, replayed)).toBe(true);
+  });
+
+  it("does not flag differing id-keyed map data without inflection", () => {
+    const captured = { data: { a1: { friendlyId: "x" } } };
+    const replayed = { data: { b2: { friendlyId: "y", extra: 1 } } };
+    expect(responseShapeDiffers(captured, replayed)).toBe(false);
+  });
+
   it("compares a deeply nested body without recursion", () => {
     let captured: Record<string, unknown> = { itemCount: 1 };
     let replayed: Record<string, unknown> = { item_count: 1 };
