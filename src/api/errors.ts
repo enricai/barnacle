@@ -2,6 +2,13 @@ import { formatISO } from "date-fns";
 import { getReasonPhrase, StatusCodes } from "http-status-codes";
 
 import { ERROR_CODE_DESCRIPTIONS, ERROR_CODES, type ErrorCode } from "@/api/schemas/common";
+import {
+  isCaptchaError,
+  isEmptyResultsError,
+  isHttpRateLimitError,
+  isHttpUrlLockedError,
+  isScraperError,
+} from "@/scraper/errors";
 
 /**
  * Representation of the error envelope on the wire. Every non-2xx
@@ -183,4 +190,21 @@ export function buildErrorEnvelope(
       ],
     },
   };
+}
+
+/**
+ * Pure mapping from scraper-internal errors to the public ApiError hierarchy.
+ *
+ * Exists so dispatch()'s catch block stays a short tail of guard clauses —
+ * the if-instanceof chain captures the entire scraper-to-wire error contract
+ * in one place. Returns `undefined` when the caller should re-throw the
+ * original error (plain Error or anything outside the ScraperError tree).
+ */
+export function toApiError(err: unknown): ApiError | undefined {
+  if (isCaptchaError(err)) return new CaptchaEncounteredError(err.message);
+  if (isEmptyResultsError(err)) return new EmptyResultsApiError(err.message);
+  if (isHttpRateLimitError(err)) return new ThrottledRequestError(err.message);
+  if (isHttpUrlLockedError(err)) return new UrlLockedError(err.message);
+  if (isScraperError(err)) return new ScrapeFailureError(err.message);
+  return undefined;
 }

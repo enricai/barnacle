@@ -7,12 +7,8 @@ import { z } from "zod/v4";
 
 import {
   type ApiError,
-  CaptchaEncounteredError,
-  EmptyResultsApiError,
   FieldViolationError,
-  ScrapeFailureError,
-  ThrottledRequestError,
-  UrlLockedError,
+  toApiError,
 } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
@@ -77,23 +73,6 @@ const logger = getLogger({ name: "plugins/loader" });
  * the handler after the owning plugin is resolved.
  */
 const siteIdRouteParamsSchema = z.object({ siteId: z.string().min(1) });
-
-/**
- * Pure mapping from scraper-internal errors to the public ApiError hierarchy.
- *
- * Exists so dispatch()'s catch block stays a short tail of guard clauses —
- * the if-instanceof chain captures the entire scraper-to-wire error contract
- * in one place. Returns `undefined` when the caller should re-throw the
- * original error (plain Error or anything outside the ScraperError tree).
- */
-function toApiError(err: unknown): ApiError | undefined {
-  if (isCaptchaError(err)) return new CaptchaEncounteredError(err.message);
-  if (isEmptyResultsError(err)) return new EmptyResultsApiError(err.message);
-  if (isHttpRateLimitError(err)) return new ThrottledRequestError(err.message);
-  if (isHttpUrlLockedError(err)) return new UrlLockedError(err.message);
-  if (isScraperError(err)) return new ScrapeFailureError(err.message);
-  return undefined;
-}
 
 /** Input to `buildPluginContext` — one per construction site (the `/run` route, an extra route, or a test/integration harness). */
 export interface BuildPluginContextInput {
