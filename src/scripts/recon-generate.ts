@@ -2056,9 +2056,10 @@ export function addClickUrlPathBindings(
     const afterId = i > 0 && isIdSegmentAt(i - 1);
     const slugAfterId =
       afterId &&
-      isStateLikeSegment(seg) &&
-      (seg.length >= MIN_STATE_VALUE_LENGTH ||
-        (/-/.test(seg) && isShortIdWithSlug(segments[i - 1] ?? "", i - 1)));
+      ((isStateLikeSegment(seg) && seg.length >= MIN_STATE_VALUE_LENGTH) ||
+        (/-/.test(seg) &&
+          /^[A-Za-z0-9]+(?:-(?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(seg) &&
+          isIdSegmentAt(i - 1)));
     if ((!isIdSegmentAt(i) && !slugAfterId) || into.has(seg)) return;
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
@@ -3567,12 +3568,7 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
     tokens.add(value);
   }
   for (const { value, element } of extractHtmlIssuedTokens(getCapture.responseBody)) {
-    if (
-      value.length <
-        (element === "path-segment" ? PATH_SEGMENT_MIN_LENGTH : ISSUED_TOKEN_MIN_LENGTH) ||
-      value.length > ISSUED_TOKEN_MAX_LENGTH
-    )
-      continue;
+    if (value.length < PATH_SEGMENT_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
     if (/\s/.test(value)) continue;
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
@@ -6984,7 +6980,7 @@ export function indexStateValues(
     // markup parameters never enter the index.
     for (const t of extractHtmlIssuedTokens(c.responseBody)) {
       const v = t.value;
-      if (v.length < MIN_STATE_VALUE_LENGTH || v.length > MAX_STATE_VALUE_LENGTH) continue;
+      if (v.length < PATH_SEGMENT_MIN_LENGTH || v.length > MAX_STATE_VALUE_LENGTH) continue;
       if (/\s/.test(v) || PLACEHOLDER_STATE_VALUES.has(v) || shieldedUuids.has(v)) continue;
       if (index.has(v)) continue;
       let reused = false;
@@ -10890,8 +10886,11 @@ export function emitMultiStepExecuteHttp(
       const delim = /^(--[^\r\n]+)\r?\n/.exec(cap.requestPostData);
       const bodyLooksMultipart =
         delim !== null && /^Content-Disposition:\s*form-data/im.test(cap.requestPostData);
-      const multipartCt = capturedCt?.toLowerCase().includes("multipart/")
-        ? capturedCt
+      const capturedMultipart = capturedCt?.toLowerCase().includes("multipart/") === true;
+      const multipartCt = capturedMultipart
+        ? /boundary=/i.test(capturedCt!) || !bodyLooksMultipart
+          ? capturedCt
+          : `${capturedCt!.replace(/;\s*$/, "")}; boundary=${delim![1]!.slice(2)}`
         : bodyLooksMultipart
           ? `multipart/form-data; boundary=${delim![1]!.slice(2)}`
           : undefined;
@@ -11881,8 +11880,9 @@ function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string
       fail,
     ];
   }
-  const tagPattern = p.element === "form-action" ? "<form\\b[^>]*>" : "<a\\b[^>]*>";
-  const attrName = p.element === "form-action" ? "action" : "href";
+  const tagPattern =
+    p.element === "form-action" ? "<form\\b[^>]*>" : "<(?:a|iframe|frame)\\b[^>]*>";
+  const attrName = p.element === "form-action" ? "action" : "(?:href|src)";
   return [
     `${indent}const ${p.name} = (() => {`,
     `${indent}  for (const tag of ${textVar}.match(/${tagPattern}/gi) ?? []) {`,
@@ -16768,6 +16768,8 @@ export interface ContractGaps {
   bodylessUploadSteps: number;
   /** Select answers the recording froze because nothing binds them to payload.Answers. */
   frozenScreeningAnswers: number;
+  /** Text multipart fields carrying a recorded server-side upload handle that stays frozen. */
+  frozenUploadHandles?: string[];
 }
 
 /** Derives {@link ContractGaps} from the compiled action sequence. `submitDeclared`
@@ -16794,7 +16796,7 @@ export function detectContractGaps(
     actionSteps.length > 0 &&
     !actionSteps.some((s) => isWrite(s.capture) && matchesSubmit(s.capture));
   let frozenScreeningAnswers = 0;
-  if (emittedBody !== undefined && !emittedBody.includes("payload.Answers[")) {
+  if (emittedBody !== undefined) {
     const selects = new Set<string>();
     for (const s of actionSteps) {
       for (const name of extractHtmlSelectOptions(s.capture.responseBody).keys()) selects.add(name);
@@ -16818,12 +16820,31 @@ export function detectContractGaps(
         }
       }
       for (const name of selects) {
+        if (emittedBody.includes(`payload.Answers[${JSON.stringify(name)}]`)) continue;
         if (urlencoded ? fieldNames.has(name) : raw.includes(`name="${name}"`))
           frozenScreeningAnswers++;
       }
     }
   }
-  return { captchaGatedSteps, truncatedSequence, bodylessUploadSteps, frozenScreeningAnswers };
+  const frozenUploadHandles: string[] = [];
+  const uploadNameRe = /(?:_TEMP|resume|\bcv\b|_cv|cv_|upload|attachment|handle|file)/i;
+  for (const s of actionSteps) {
+    const raw = s.capture.requestPostData;
+    if (typeof raw !== "string" || raw === REQUEST_BODY_UNAVAILABLE) continue;
+    for (const part of parseMultipartTextParts(raw)) {
+      const v = part.value;
+      if (!uploadNameRe.test(part.name) || v.length < 12 || /[\s$]/.test(v)) continue;
+      if (emittedBody !== undefined && !emittedBody.includes(v)) continue;
+      if (!frozenUploadHandles.includes(part.name)) frozenUploadHandles.push(part.name);
+    }
+  }
+  return {
+    captchaGatedSteps,
+    truncatedSequence,
+    bodylessUploadSteps,
+    frozenScreeningAnswers,
+    frozenUploadHandles,
+  };
 }
 
 /** Checklist lines for each {@link ContractGaps} condition that holds. */
@@ -16844,6 +16865,10 @@ export function contractGapChecklistLines(gaps: ContractGaps): string[] {
   if (gaps.frozenScreeningAnswers > 0)
     lines.push(
       `${gaps.frozenScreeningAnswers} screening answer(s) are frozen at the recording's values — nothing binds them to payload.Answers; bind them or confirm they are constant`
+    );
+  if (gaps.frozenUploadHandles && gaps.frozenUploadHandles.length > 0)
+    lines.push(
+      `Upload handle field(s) ${gaps.frozenUploadHandles.join(", ")} are frozen at the recording's server-side handle — a replay reuses a stale file reference; upload payload.Resume and thread the returned handle`
     );
   return lines;
 }
