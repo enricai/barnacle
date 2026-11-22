@@ -129,7 +129,7 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit placeholders (
     }
   );
 
-  it("sends one Enter when the pre-Enter list is non-empty but names nothing requested", async () => {
+  it("sends no Enter when the pre-Enter list holds real options naming nothing requested", async () => {
     const h = buildPromptWidgetHarness({
       html: SEARCH_ON_SUBMIT_HTML,
       popupByWidgetId: {
@@ -169,9 +169,8 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit placeholders (
       o.locator = withChip(o.locator);
     }
     const result = await run(h, "for 'Country of residence' select 'University of Texas'");
-    expect(result).toBe("completed");
-    expect(enterKeyDowns(h.cdpEvents)).toBe(1);
-    expect(h.window.document.querySelector(SELECTOR)?.textContent).toBe("University of Texas");
+    expect(result).toBe("failed");
+    expect(enterKeyDowns(h.cdpEvents)).toBe(0);
   });
 
   it("handles a fill-shaped step instruction with exactly one Enter", async () => {
