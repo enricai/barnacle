@@ -17522,6 +17522,29 @@ export async function executeStepWithHealing(params: {
                 .evaluate(ERROR_SUMMARY_EXPR)
                 .catch(() => false)) as boolean)
             : false;
+          // Same removal judgement as the primary verdict, fed this fallback
+          // click's own pre/post pair. Credits only a click (the fallback's
+          // resolved action is `el.click()`) whose xpath is positively
+          // confirmed absent (`resolvedClickTargetStillPresent` returns true
+          // whenever presence can't be read), under the same no-network,
+          // submit-shape and destination vetoes as the weak-DOM branch.
+          const retryRemovalCredited =
+            xpath !== null &&
+            !retryNetworkFired &&
+            !retrySubmitShaped &&
+            !retryMidFlowSubmit &&
+            retryDestinationPlausible &&
+            !isCheckboxOrRadioIntentStep(step) &&
+            isContentRemovalCredited({
+              method: "click",
+              clickedElementStillPresent: await resolvedClickTargetStillPresent(
+                frameTarget ?? mainFrameTarget(page),
+                xpath
+              ),
+              bytesDelta: retryPost.bodyHtmlLength - pre.bodyHtmlLength,
+              textChanged: hasVisibleTextChanged(pre, retryPost),
+              textShrunk: isVisibleTextShrunk(pre.visibleTextSignature, retryPost.visibleTextSignature),
+            });
           let retryVerified =
             !clickBlockedByDisabled &&
             !retryShowsErrorSummary &&
@@ -17535,6 +17558,7 @@ export async function executeStepWithHealing(params: {
               (n16ClickDelivered &&
                 (!retrySubmitShaped || retryMidFlowSubmit) &&
                 retryVerdict === "effective") ||
+              (n16ClickDelivered && retryRemovalCredited) ||
               (n16ClickDelivered &&
                 retryMidFlowSubmit &&
                 retryPageAdvanced &&
