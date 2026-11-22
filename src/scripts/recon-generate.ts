@@ -2066,7 +2066,9 @@ export function bindMultipartSelectAnswers(
   prior: readonly { capture: Capture }[]
 ): string {
   const ct = Object.entries(cap.requestHeaders).find(([k]) => k.toLowerCase() === "content-type");
-  if (!(ct?.[1] ?? "").toLowerCase().includes("multipart/")) return body;
+  const ctLower = (ct?.[1] ?? "").toLowerCase();
+  const isUrlencoded = ctLower.includes("application/x-www-form-urlencoded");
+  if (!ctLower.includes("multipart/") && !isUrlencoded) return body;
   const selects = new Map<string, Set<string>>();
   for (const p of prior) {
     for (const [name, values] of extractHtmlSelectOptions(p.capture.responseBody)) {
@@ -2076,6 +2078,26 @@ export function bindMultipartSelectAnswers(
     }
   }
   if (selects.size === 0) return body;
+  if (isUrlencoded) {
+    const decode = (t: string): string => {
+      try {
+        return decodeURIComponent(t.replace(/\+/g, " "));
+      } catch {
+        return t;
+      }
+    };
+    return body
+      .split("&")
+      .map((pair) => {
+        const eq = pair.indexOf("=");
+        if (eq < 0) return pair;
+        const rawValue = pair.slice(eq + 1);
+        const name = decode(pair.slice(0, eq));
+        if (rawValue.includes("${") || !selects.get(name)?.has(decode(rawValue))) return pair;
+        return `${pair.slice(0, eq)}=\${payload.Answers[${JSON.stringify(name)}]}`;
+      })
+      .join("&");
+  }
   return body.replace(
     /(Content-Disposition: form-data; name="([^"]+)"\r?\n\r?\n)([^\r\n]*)(?=\r?\n--)/g,
     (whole, head: string, name: string, value: string) =>
@@ -16755,8 +16777,24 @@ export function detectContractGaps(
     for (const s of actionSteps) {
       const raw = s.capture.requestPostData;
       if (typeof raw !== "string") continue;
+      const ctv = Object.entries(s.capture.requestHeaders ?? {}).find(
+        ([k]) => k.toLowerCase() === "content-type"
+      )?.[1];
+      const urlencoded = (ctv ?? "").toLowerCase().includes("application/x-www-form-urlencoded");
+      const fieldNames = new Set<string>();
+      if (urlencoded) {
+        for (const pair of raw.split("&")) {
+          const k = pair.split("=")[0] ?? "";
+          try {
+            fieldNames.add(decodeURIComponent(k.replace(/\+/g, " ")));
+          } catch {
+            fieldNames.add(k);
+          }
+        }
+      }
       for (const name of selects) {
-        if (raw.includes(`name="${name}"`)) frozenScreeningAnswers++;
+        if (urlencoded ? fieldNames.has(name) : raw.includes(`name="${name}"`))
+          frozenScreeningAnswers++;
       }
     }
   }
