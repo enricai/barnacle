@@ -34,7 +34,7 @@ export function decodeHtmlEntities(v: string): string {
  * A path segment is state-like (an id, hash or slug, not a word such as
  * `jobs`) when it is long, or has a digit or a slug separator.
  */
-function isStateLikeSegment(s: string): boolean {
+export function isStateLikeSegment(s: string): boolean {
   if (s.length < PATH_SEGMENT_MIN_LENGTH) return false;
   return s.length >= 16 || /[0-9_-]/.test(s);
 }

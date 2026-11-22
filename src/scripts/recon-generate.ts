@@ -49,6 +49,7 @@ import type { ReconFormSchema } from "@/recon/form-schema";
 import {
   extractHtmlIssuedTokens,
   type HtmlTokenElement,
+  isStateLikeSegment,
   PATH_SEGMENT_MIN_LENGTH,
 } from "@/recon/html-state-producers";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
@@ -2008,6 +2009,30 @@ export function extractEntryUrlParams(entryUrl: string): Map<string, string> {
     if (!params.has(value)) params.set(value, `payload.${key}`);
   }
   return params;
+}
+
+/**
+ * Maps the state-like path segments (a job id, a slug) of the recon ENTRY URL to
+ * accessors that read the same positional segment from the caller's
+ * `payload.ClickUrl` — the live posting URL a job-application contract
+ * already requires — so the emitted URLs carry the caller's job path instead
+ * of the recon run's. Existing entries (query-param bindings) are kept.
+ */
+export function addClickUrlPathBindings(
+  entryUrl: string,
+  into: Map<string, string>
+): Map<string, string> {
+  let u: URL;
+  try {
+    u = new URL(entryUrl);
+  } catch {
+    return into;
+  }
+  u.pathname.split("/").forEach((seg, i) => {
+    if (!isStateLikeSegment(seg) || into.has(seg)) return;
+    into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
+  });
+  return into;
 }
 
 const IGNORE_REQUEST_HEADERS = new Set([
@@ -20769,6 +20794,17 @@ async function main(): Promise<void> {
           }
         })()
       : undefined;
+    if (
+      contractUsesApplicantContactSchema({
+        inputBody,
+        isSubmissionFlow,
+        browserFlowOnly: false,
+        payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env, false)
+          .payloadFieldNames,
+      })
+    ) {
+      addClickUrlPathBindings(activeCaptures[0]?.url ?? "", entryUrlParams);
+    }
     const errorSignals = detectErrorSignals(actionSteps);
     const discoveredFormFields = new Set<string>();
     // emitMultiStepExecuteHttp's outDiscoveredFields parameter is a generic
