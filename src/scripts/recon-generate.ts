@@ -20629,6 +20629,18 @@ async function main(): Promise<void> {
     // Recurring beacons (a bot-manager's sensor POSTs) in the action sequence are
     // page chrome, not steps of the flow: they must not turn a read into a submission.
     const isRecurringReadFlowBeacon = nonGetBeaconPredicate(activeCaptures);
+    // A flow that declares its submit endpoint names the only non-GET that can
+    // be its submission: a non-GET outside that pattern whose response no later
+    // step consumes (a one-off analytics or consent POST) is page chrome, not a
+    // step. One whose response feeds a later request (a token mint) still is.
+    const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
+    const feedsLaterStep = (capture: Capture): boolean =>
+      compiledActionSteps.some((s) => s.capture === capture && s.produces.length > 0);
+    const isIncidentalReadFlowPost = (capture: Capture): boolean =>
+      declaresSubmitPattern &&
+      capture.method !== "GET" &&
+      !matchesDeclaredSubmit(capture) &&
+      !feedsLaterStep(capture);
     const actionSequenceIsReadSamples =
       compiledActionSteps.length === 0 ||
       actionCaptures.every(
@@ -20638,6 +20650,7 @@ async function main(): Promise<void> {
               r === a.capture || (r.url === a.capture.url && r.timestamp === a.capture.timestamp)
           ) ||
           isRecurringReadFlowBeacon(a.capture) ||
+          isIncidentalReadFlowPost(a.capture) ||
           isDeclaredDrillCapture(a.capture)
       );
     const isReadOnlyGetFlow =
