@@ -123,7 +123,7 @@ describe("prompt readback when the widget replaces itself", () => {
 const SELECT_HTML = (optValue: string) => `
 <div>
   <span id="src-label">Source</span>
-  <div class="bb-custom-select-container">
+  <div class="wrap">
     <span id="src-opener" role="combobox" aria-expanded="false" aria-owns="src-panel"
           aria-labelledby="src-label" tabindex="0"><span></span></span>
     <select id="src-select" aria-required="true"><option value="${optValue}"></option></select>
