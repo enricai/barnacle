@@ -8299,7 +8299,11 @@ function interpolateStateValues(
   if (!isJsonBody) {
     for (const [value, accessor] of payloadAccessorByValue) {
       const encoded = encodeURIComponent(value);
-      if (encoded !== value && !bindingByValue.has(encoded) && !payloadAccessorByValue.has(encoded)) {
+      if (
+        encoded !== value &&
+        !bindingByValue.has(encoded) &&
+        !payloadAccessorByValue.has(encoded)
+      ) {
         bindingByValue.set(encoded, `\${encodeURIComponent(String(${accessor}))}`);
       }
     }
