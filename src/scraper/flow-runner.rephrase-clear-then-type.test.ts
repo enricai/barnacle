@@ -97,7 +97,7 @@ describe("rephrase contract for targetless steps", () => {
     const step =
       "Click on the 'Account Settings' page heading (an empty, non-interactive spot) to close any dropdown or prompt list that is still open";
     expect(await rephraseWithLLM(model, step, [], [], ["no effect"], async () => {})).toBeNull();
-    const args = generateObject.mock.calls[0][0] as { system: string; prompt: string };
+    const args = generateObject.mock.calls[0]![0] as { system: string; prompt: string };
     expect(args.system).toMatch(/click nothing in particular/);
     expect(args.system).toMatch(/outcome=impossible/);
     expect(args.prompt).toMatch(/names no interactive target/);
