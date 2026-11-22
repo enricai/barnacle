@@ -2873,7 +2873,15 @@ export function describeAttemptEffectSignals(
       );
     }
   }
-  if (textChanged && networkDelta === 0 && bytesDelta < 500) {
+  const contentRemoved =
+    networkDelta === 0 &&
+    bytesDelta < 0 &&
+    isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature);
+  if (contentRemoved) {
+    observations.push(
+      `content-removed-without-network: visible text and body HTML shrank (body ${bytesDelta}B) with no network — real content left the page (an overlay/banner/target was dismissed), not a slight reflow`
+    );
+  } else if (textChanged && networkDelta === 0 && bytesDelta < 500) {
     observations.push(
       "visible-text-changed-without-network: page reflowed slightly (likely tooltip/focus state)"
     );
