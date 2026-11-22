@@ -660,6 +660,18 @@ describe("replayCapture — response shape", () => {
     expect(inflectionKey(key)).toBe(normal);
   });
 
+  it("flags re-inflected keys under id-keyed maps whose ids differ", () => {
+    const captured = { data: { a1: { friendlyId: "x", gameDuration: 1 } } };
+    const replayed = { data: { b2: { friendly_id: "x", game_duration: 1 } } };
+    expect(responseShapeDiffers(captured, replayed)).toBe(true);
+  });
+
+  it("does not flag differing id-keyed map data without inflection", () => {
+    const captured = { data: { a1: { friendlyId: "x" } } };
+    const replayed = { data: { b2: { friendlyId: "y", extra: 1 } } };
+    expect(responseShapeDiffers(captured, replayed)).toBe(false);
+  });
+
   it("compares a deeply nested body without recursion", () => {
     let captured: Record<string, unknown> = { itemCount: 1 };
     let replayed: Record<string, unknown> = { item_count: 1 };
@@ -983,5 +995,65 @@ describe("selectRateLimitTargets — relevance tiering", () => {
       ["/api/search"]
     );
     expect(targets.size).toBe(2);
+  });
+});
+
+describe("deduplicateCaptures header/method awareness", () => {
+  const mk = (method: string, requestHeaders: Record<string, string>) => ({
+    filename: "f",
+    capture: {
+      method,
+      url: "https://x.test/a",
+      operationName: null,
+      variables: null,
+      requestHeaders,
+    } as never,
+  });
+  it("keeps captures differing in headers or method; collapses identical", async () => {
+    const { deduplicateCaptures } = await import("./recon-http.js");
+    expect(
+      deduplicateCaptures([mk("GET", {}), mk("GET", { "Key-Inflection": "camel" })])
+    ).toHaveLength(2);
+    expect(deduplicateCaptures([mk("GET", {}), mk("POST", {})])).toHaveLength(2);
+    expect(
+      deduplicateCaptures([
+        mk("GET", { A: "1", "Key-Inflection": "camel" }),
+        mk("get", { "key-inflection": "camel", a: "1" }),
+      ])
+    ).toHaveLength(1);
+  });
+});
+
+describe("selectRateLimitTargets — shape-restoring headers", () => {
+  const lookup = () => ({ "Key-Inflection": "camel", Accept: "application/json" });
+
+  it("carries the proven header values from the capture", () => {
+    const { targets } = selectRateLimitTargets(
+      [
+        replay({
+          url: "https://api.example.com/a",
+          sourceCapture: "a.json",
+          shapeRestoringHeaders: ["Key-Inflection"],
+        }),
+      ],
+      ["example.com"],
+      null,
+      [],
+      undefined,
+      lookup
+    );
+    expect([...targets.values()][0]?.headers).toEqual({ "Key-Inflection": "camel" });
+  });
+
+  it("leaves targets without proven headers unchanged", () => {
+    const { targets } = selectRateLimitTargets(
+      [replay({ url: "https://api.example.com/a", sourceCapture: "a.json" })],
+      ["example.com"],
+      null,
+      [],
+      undefined,
+      lookup
+    );
+    expect([...targets.values()][0]).not.toHaveProperty("headers");
   });
 });

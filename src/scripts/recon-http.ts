@@ -137,12 +137,17 @@ function loadCaptures(dir: string): Array<{ filename: string; capture: Capture }
   });
 }
 
-function deduplicateCaptures(
+export function deduplicateCaptures(
   captures: Array<{ filename: string; capture: Capture }>
 ): Array<{ filename: string; capture: Capture }> {
   const seen = new Set<string>();
   return captures.filter(({ capture }) => {
-    const key = `${capture.url}|${capture.operationName ?? ""}|${JSON.stringify(capture.variables ?? {})}`;
+    // Names only: values like Cookie/traceparent/x-request-id vary per request
+    // and would defeat dedupe; carrying a header at all is what changes shape.
+    const headers = Object.keys(capture.requestHeaders ?? {})
+      .map((k) => k.toLowerCase())
+      .sort();
+    const key = `${(capture.method ?? "").toUpperCase()}|${capture.url}|${capture.operationName ?? ""}|${JSON.stringify(capture.variables ?? {})}|${JSON.stringify(headers)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -216,6 +221,30 @@ function keysByPath(root: object, pathIds: Map<string, number>): Map<number, Set
   return out;
 }
 
+/**
+ * Object keys of a JSON body grouped by object-nesting depth (arrays do not add
+ * a level), pooled across every position at that depth. Iterative and linear.
+ */
+function keysByDepth(root: object): Map<number, Set<string>> {
+  const out = new Map<number, Set<string>>();
+  const stack: Array<[unknown, number]> = [[root, 0]];
+  while (stack.length > 0) {
+    const [v, depth] = stack.pop()!;
+    if (!v || typeof v !== "object") continue;
+    if (Array.isArray(v)) {
+      for (const element of v) stack.push([element, depth]);
+      continue;
+    }
+    const keys = out.get(depth) ?? new Set<string>();
+    out.set(depth, keys);
+    for (const [k, child] of Object.entries(v)) {
+      keys.add(k);
+      stack.push([child, depth + 1]);
+    }
+  }
+  return out;
+}
+
 /** True when a key of `a` is spelled differently in `b` with the same `inflectionKey`. */
 function inflectedPair(a: Set<string>, b: Set<string>): boolean {
   const others = new Set([...b].filter((k) => !a.has(k)).map(inflectionKey));
@@ -272,6 +301,13 @@ export function responseShapeDiffers(captured: unknown, replayed: unknown): bool
   const right = keysByPath(b, pathIds);
   for (const [path, keys] of keysByPath(a, pathIds)) {
     const other = right.get(path);
+    if (other && inflectedPair(keys, other)) return true;
+  }
+  // Positions with no counterpart (e.g. id-keyed maps whose ids differ) are
+  // still compared by depth, so a re-inflected key beneath them is caught.
+  const rightDepth = keysByDepth(b);
+  for (const [depth, keys] of keysByDepth(a)) {
+    const other = rightDepth.get(depth);
     if (other && inflectedPair(keys, other)) return true;
   }
   return false;
@@ -728,7 +764,8 @@ export async function probeAuxiliaryEndpoints(
 async function probeRateLimit(
   endpoint: string,
   method: string,
-  body: string | null
+  body: string | null,
+  extraHeaders: Record<string, string> = {}
 ): Promise<RateLimitFinding> {
   logger.info(`rate-limit probe: ${endpoint} (1→3→5 rps, stops at 429/403)`);
   const origin = new URL(endpoint).origin;
@@ -736,6 +773,7 @@ async function probeRateLimit(
     ...RC_HEADERS,
     Origin: origin,
     Referer: `${origin}/`,
+    ...extraHeaders,
   };
 
   const finding: RateLimitFinding = {
@@ -868,12 +906,16 @@ export function selectRateLimitTargets(
   ownBackendHostnames: string[],
   fallbackHost: string | null = null,
   declaredEndpointPatterns: readonly string[] = [],
-  submitEndpointPattern?: string
+  submitEndpointPattern?: string,
+  captureHeadersFor?: (replay: ReplayResult) => Record<string, string> | undefined
 ): {
-  targets: Map<string, { method: string; body: string | null }>;
+  targets: Map<string, { method: string; body: string | null; headers?: Record<string, string> }>;
   skipped: number;
 } {
-  const collected = new Map<string, { method: string; body: string | null; tier: number }>();
+  const collected = new Map<
+    string,
+    { method: string; body: string | null; tier: number; headers?: Record<string, string> }
+  >();
   const seenEndpoints = new Set<string>();
   let skipped = 0;
   const patterns: RegExp[] = [];
@@ -924,10 +966,17 @@ export function selectRateLimitTargets(
             break;
           }
         }
+        // Header values the replay proved load-bearing, as the capture sent them.
+        const captured = captureHeadersFor?.(replay) ?? {};
+        const provenEntries = (replay.shapeRestoringHeaders ?? [])
+          .filter((h) => captured[h] !== undefined)
+          .map((h) => [h, captured[h]!] as const);
+        const proven = provenEntries.length > 0 ? Object.fromEntries(provenEntries) : undefined;
         collected.set(`${endpointKey}${u.search}`, {
           method: replay.method,
           body: replay.requestBody,
           tier,
+          ...(proven ? { headers: proven } : {}),
         });
       }
     } catch {
@@ -935,9 +984,13 @@ export function selectRateLimitTargets(
     }
   }
   // Stable sort: relevance tier, then capture order.
-  const targets = new Map<string, { method: string; body: string | null }>();
+  const targets = new Map<
+    string,
+    { method: string; body: string | null; headers?: Record<string, string> }
+  >();
   const ordered = [...collected.entries()].sort((a, b) => a[1].tier - b[1].tier);
-  for (const [k, { method, body }] of ordered) targets.set(k, { method, body });
+  for (const [k, { method, body, headers }] of ordered)
+    targets.set(k, { method, body, ...(headers ? { headers } : {}) });
   return { targets, skipped };
 }
 
@@ -1129,7 +1182,8 @@ async function main(): Promise<void> {
     ownBackendHostnames,
     fallbackHost,
     flowFile ? readDeclaredEndpointPatterns(flowFile) : [],
-    flowFile ? readSubmitEndpointPattern(flowFile) : undefined
+    flowFile ? readSubmitEndpointPattern(flowFile) : undefined,
+    (r) => probeworthy.find((p) => p.filename === r.sourceCapture)?.capture.requestHeaders
   );
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +
@@ -1137,8 +1191,8 @@ async function main(): Promise<void> {
   );
 
   const rateLimitFindings: RateLimitFinding[] = [];
-  for (const [endpoint, { method, body }] of probeTargets) {
-    const finding = await probeRateLimit(endpoint, method, body);
+  for (const [endpoint, { method, body, headers }] of probeTargets) {
+    const finding = await probeRateLimit(endpoint, method, body, headers);
     rateLimitFindings.push(finding);
   }
 
