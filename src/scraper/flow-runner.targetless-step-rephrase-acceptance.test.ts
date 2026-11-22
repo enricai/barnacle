@@ -113,7 +113,9 @@ function wireRephraseResolvesTo(description: string): void {
     .mockImplementation(async (_s: unknown, instruction: unknown) =>
       instruction === REPHRASED
         ? [{ selector: "xpath=//*[@id='t']", description, method: "click" }]
-        : []
+        : instruction === STEP
+          ? [{ selector: "xpath=//*[@id='h']", description: "page heading", method: "click" }]
+          : []
     );
   guardedAct.mockImplementation(async (_s: unknown, instruction: unknown) =>
     instruction === STEP
@@ -169,6 +171,38 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
     resolveFrameTarget.mockResolvedValue(makeChildFrameTarget());
     STEP = QUOTED_STEP;
     OPTIONAL = true;
+  });
+
+  it("attempt 1 never acts on the raw step when it resolves to an interactive control", async () => {
+    guardedObserve
+      .mockResolvedValueOnce([
+        { selector: "xpath=//*[@id='h']", description: "page heading", method: "click" },
+      ])
+      .mockImplementation(async (_s: unknown, instruction: unknown) =>
+        instruction === STEP
+          ? [
+              {
+                selector: "xpath=//*[@id='b']",
+                description: "language menu button",
+                method: "click",
+              },
+            ]
+          : []
+      );
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "x",
+      actionDescription: "",
+      actions: [],
+    });
+    generateObject.mockResolvedValue({ object: { outcome: "impossible" }, usage: {} });
+    await runOptionalStep().catch(() => undefined);
+    expect(guardedAct.mock.calls.some((c) => c[1] === STEP)).toBe(false);
+    expect(
+      guardedAct.mock.calls.some(
+        (c) => (c[1] as { selector?: string })?.selector === "xpath=//*[@id='b']"
+      )
+    ).toBe(false);
   });
 
   it("rejects a rephrase that resolves to an unrelated menu button instead of crediting it", async () => {
