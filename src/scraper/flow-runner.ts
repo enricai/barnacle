@@ -16298,30 +16298,30 @@ export async function executeStepWithHealing(params: {
                   vettedRephraseAction ? false : preCentred
                 );
             if (result) {
-            record.actResultSuccess = result.success;
-            record.actResultDescription = result.actionDescription;
-            for (const action of result.actions ?? []) {
-              if (action.selector) triedSelectors.push(action.selector);
-              if (!resolvedAction) {
-                if (
-                  resolvedActionNamesStepTarget(step, action, {
-                    isInteractive:
-                      stepDeclaresNonInteractiveTarget(step) &&
-                      !!action.selector &&
-                      (await resolvedClickTargetIsInteractive(
-                        frameTarget ?? mainFrameTarget(page),
-                        action.selector
-                      )),
-                    fallbackDescription: result.actionDescription,
-                  })
-                ) {
-                  resolvedAction = action;
-                } else {
-                  record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${(action.description || result.actionDescription || "").slice(0, 60)}"`;
-                  failureReasons.push(record.errorMessage);
+              record.actResultSuccess = result.success;
+              record.actResultDescription = result.actionDescription;
+              for (const action of result.actions ?? []) {
+                if (action.selector) triedSelectors.push(action.selector);
+                if (!resolvedAction) {
+                  if (
+                    resolvedActionNamesStepTarget(step, action, {
+                      isInteractive:
+                        stepDeclaresNonInteractiveTarget(step) &&
+                        !!action.selector &&
+                        (await resolvedClickTargetIsInteractive(
+                          frameTarget ?? mainFrameTarget(page),
+                          action.selector
+                        )),
+                      fallbackDescription: result.actionDescription,
+                    })
+                  ) {
+                    resolvedAction = action;
+                  } else {
+                    record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${(action.description || result.actionDescription || "").slice(0, 60)}"`;
+                    failureReasons.push(record.errorMessage);
+                  }
                 }
               }
-            }
             }
           }
         }

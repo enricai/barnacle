@@ -104,11 +104,17 @@ function makeFakePage(): Page {
 function wireRephraseResolvesTo(description: string): void {
   // The pre-cascade probe sees one candidate (so the optional step is not skipped as
   // "absent"); every later observe is empty.
+  // The rephrased instruction is observed (resolved without acting) so it can be vetted
+  // before any click; it resolves to the same element a string act would have clicked.
   guardedObserve
     .mockResolvedValueOnce([
       { selector: "xpath=//*[@id='h']", description: "page heading", method: "click" },
     ])
-    .mockResolvedValue([]);
+    .mockImplementation(async (_s: unknown, instruction: unknown) =>
+      instruction === REPHRASED
+        ? [{ selector: "xpath=//*[@id='t']", description, method: "click" }]
+        : []
+    );
   guardedAct.mockImplementation(async (_s: unknown, instruction: unknown) =>
     instruction === STEP
       ? {
@@ -120,7 +126,8 @@ function wireRephraseResolvesTo(description: string): void {
             { selector: "xpath=//*[@id='h']", description: "page heading", method: "click" },
           ],
         }
-      : instruction === REPHRASED
+      : instruction === REPHRASED ||
+          (instruction as { selector?: string })?.selector === "xpath=//*[@id='t']"
         ? {
             success: true,
             message: "ok",
@@ -180,7 +187,13 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
     expect(err).not.toMatchObject({ kind: "probe-absent" });
     expect(logged("info")).not.toMatch(/skipped \(optional, probe found no candidates\)/);
 
-    expect(guardedAct.mock.calls.some((c) => c[1] === REPHRASED)).toBe(true);
+    // Vetted before acting: neither the rephrased string nor the control Action is ever clicked.
+    expect(guardedAct.mock.calls.some((c) => c[1] === REPHRASED)).toBe(false);
+    expect(
+      guardedAct.mock.calls.some(
+        (c) => (c[1] as { selector?: string })?.selector === "xpath=//*[@id='t']"
+      )
+    ).toBe(false);
     expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
   });
 
