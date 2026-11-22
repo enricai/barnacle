@@ -1,6 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { executeStepWithHealing, isPassiveNoopStep } from "@/scraper/flow-runner";
+import { isPassiveNoopInstruction } from "@/scraper/phantom-click";
+
+const VERBATIM_PASSIVE =
+  "Do not click anything. The destination, departure-port and sailing-length filters are already applied by the page URL. Simply wait briefly for the cruise results list to reflect those filters.";
+const NEGATED_THEN_ACT = "Do not click Delete; click the Save button";
+
+describe("verbatim passive step agrees across both predicates", () => {
+  it("is a no-op in isPassiveNoopStep and isPassiveNoopInstruction", () => {
+    expect(isPassiveNoopStep(VERBATIM_PASSIVE)).toBe(true);
+    expect(isPassiveNoopInstruction(VERBATIM_PASSIVE)).toBe(true);
+  });
+  it("negated target plus a real click is not a no-op in either", () => {
+    expect(isPassiveNoopStep(NEGATED_THEN_ACT)).toBe(false);
+    expect(isPassiveNoopInstruction(NEGATED_THEN_ACT)).toBe(false);
+  });
+});
 
 describe("isPassiveNoopStep", () => {
   it("wait/do-not-click step is passive", () => {
