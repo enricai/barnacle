@@ -2849,12 +2849,28 @@ export function isMidFlowAdvanceCredited(params: {
 export function isContentRemovalCredited(params: {
   method?: string | null;
   clickedElementStillPresent: boolean;
+  /** Presence could not be read back (no resolved/xpath selector, evaluate failure). */
+  presenceUnknown?: boolean;
   bytesDelta: number;
   textChanged: boolean;
   textShrunk: boolean;
 }): boolean {
-  const { method, clickedElementStillPresent, bytesDelta, textChanged, textShrunk } = params;
-  if (method !== "click" || clickedElementStillPresent || bytesDelta >= 0) return false;
+  const {
+    method,
+    clickedElementStillPresent,
+    presenceUnknown,
+    bytesDelta,
+    textChanged,
+    textShrunk,
+  } = params;
+  if (bytesDelta >= 0) return false;
+  // A measured visible-text shrink is itself the evidence of removal: when the
+  // action went unreported (null method) or presence is unreadable, credit it
+  // rather than scoring a client-side dismissal as no effect. A target
+  // positively read back as present still vetoes.
+  const unverifiable = presenceUnknown === true;
+  if (unverifiable && textShrunk && (method == null || method === "click")) return true;
+  if (method !== "click" || clickedElementStillPresent) return false;
   return (
     textShrunk ||
     (textChanged &&
@@ -2973,6 +2989,7 @@ export function isClickViewSwapVerified(params: {
   textChanged: boolean;
   invalidMarkerDelta?: number;
   clickedElementStillPresent?: boolean;
+  clickedElementPresenceUnknown?: boolean;
   resolvedElementIsSubmitShaped?: boolean;
   destinationPlausible?: boolean;
   midFlowSubmit?: boolean;
@@ -2994,6 +3011,7 @@ export function isClickViewSwapVerified(params: {
     textChanged,
     invalidMarkerDelta = 0,
     clickedElementStillPresent = true,
+    clickedElementPresenceUnknown = false,
     resolvedElementIsSubmitShaped = false,
     destinationPlausible,
     midFlowSubmit = false,
@@ -3021,7 +3039,12 @@ export function isClickViewSwapVerified(params: {
   ) {
     return true;
   }
-  if (resolvedAction?.method !== "click") return false;
+  if (
+    resolvedAction?.method !== "click" &&
+    !(resolvedAction == null && clickedElementPresenceUnknown)
+  ) {
+    return false;
+  }
   if (destinationPlausible === false) return false;
   if (midFlowSubmit && (submitStep || resolvedElementIsSubmitShaped)) return false;
   // Only the step's own explicit submitStep flag identifies the step that
@@ -3053,6 +3076,7 @@ export function isClickViewSwapVerified(params: {
     isContentRemovalCredited({
       method: resolvedAction?.method,
       clickedElementStillPresent,
+      presenceUnknown: clickedElementPresenceUnknown,
       bytesDelta,
       textChanged,
       textShrunk: contentRemoved,
@@ -3161,7 +3185,11 @@ export function describeAttemptEffectSignals(
   post: StepSnapshot,
   recentCaptureMeta: readonly CaptureMeta[],
   preMetaLength: number,
-  removal?: { method?: string | null; clickedElementStillPresent: boolean }
+  removal?: {
+    method?: string | null;
+    clickedElementStillPresent: boolean;
+    presenceUnknown?: boolean;
+  }
 ): string {
   const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
   const networkDelta = post.networkCount - pre.networkCount;
@@ -3189,8 +3217,9 @@ export function describeAttemptEffectSignals(
   const contentRemoved =
     networkDelta === 0 &&
     isContentRemovalCredited({
-      method: removal?.method ?? "click",
+      method: removal ? removal.method : "click",
       clickedElementStillPresent: removal?.clickedElementStillPresent ?? false,
+      presenceUnknown: removal?.presenceUnknown,
       bytesDelta,
       textChanged,
       textShrunk: shrinkMeasured,
@@ -5805,14 +5834,22 @@ async function resolvedClickTargetStillPresent(
   target: FrameTarget,
   selector: string
 ): Promise<boolean> {
+  return (await resolvedClickTargetPresence(target, selector)) !== false;
+}
+
+/** Tri-state presence: `null` when it cannot be determined. */
+async function resolvedClickTargetPresence(
+  target: FrameTarget,
+  selector: string
+): Promise<boolean | null> {
   const xpath = xpathBodyForEvaluate(selector, target);
-  if (!xpath) return true;
+  if (!xpath) return null;
   const expr = `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); return r !== null; })()`;
   try {
     const result = await target.evaluate(expr);
-    return result !== false;
+    return result === false ? false : result === true ? true : null;
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -16528,13 +16565,15 @@ export async function executeStepWithHealing(params: {
     // the DOM, while a genuine same-page toggle leaves it in place and a
     // view swap removes it but grows the DOM (absence vetoes only when
     // bytesDelta <= 0). See isClickViewSwapVerified's doc comment.
-    const clickedElementStillPresent =
+    const clickedElementPresence: boolean | null =
       isClick && resolvedAction?.selector
-        ? await resolvedClickTargetStillPresent(
+        ? await resolvedClickTargetPresence(
             frameTarget ?? mainFrameTarget(page),
             resolvedAction.selector
           )
-        : true;
+        : null;
+    const clickedElementStillPresent = clickedElementPresence !== false;
+    const clickedElementPresenceUnknown = clickedElementPresence === null;
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
@@ -16601,6 +16640,7 @@ export async function executeStepWithHealing(params: {
       textChanged: hasVisibleTextChanged(advanceBaseline, post),
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
+      clickedElementPresenceUnknown,
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausibleForPost,
       midFlowSubmit,
@@ -17528,8 +17568,11 @@ export async function executeStepWithHealing(params: {
           // confirmed absent (`resolvedClickTargetStillPresent` returns true
           // whenever presence can't be read), under the same no-network,
           // submit-shape and destination vetoes as the weak-DOM branch.
+          const retryPresence: boolean | null =
+            xpath !== null
+              ? await resolvedClickTargetPresence(frameTarget ?? mainFrameTarget(page), xpath)
+              : null;
           const retryRemovalCredited =
-            xpath !== null &&
             !retryNetworkFired &&
             !retrySubmitShaped &&
             !retryMidFlowSubmit &&
@@ -17537,10 +17580,8 @@ export async function executeStepWithHealing(params: {
             !isCheckboxOrRadioIntentStep(step) &&
             isContentRemovalCredited({
               method: "click",
-              clickedElementStillPresent: await resolvedClickTargetStillPresent(
-                frameTarget ?? mainFrameTarget(page),
-                xpath
-              ),
+              clickedElementStillPresent: retryPresence !== false,
+              presenceUnknown: retryPresence === null,
               bytesDelta: retryPost.bodyHtmlLength - pre.bodyHtmlLength,
               textChanged: hasVisibleTextChanged(pre, retryPost),
               textShrunk: isVisibleTextShrunk(
@@ -17827,6 +17868,7 @@ export async function executeStepWithHealing(params: {
       {
         method: resolvedAction?.method,
         clickedElementStillPresent,
+        presenceUnknown: clickedElementPresenceUnknown,
       }
     );
     // record.phantomClickVerdict was already computed above, before the
