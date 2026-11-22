@@ -1265,7 +1265,11 @@ export function isServerRenderedFormSubmit(capture: {
   const status = capture.status;
   if (typeof status !== "number") return false;
   if (status >= 300 && status < 400) return true;
-  return status >= 200 && status < 300 && header(capture.responseHeaders, "content-type").includes("text/html");
+  return (
+    status >= 200 &&
+    status < 300 &&
+    header(capture.responseHeaders, "content-type").includes("text/html")
+  );
 }
 
 export function isZeroVarianceRepeatCapture(
