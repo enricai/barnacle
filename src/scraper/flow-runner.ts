@@ -11149,8 +11149,9 @@ async function sendTrustedKey(
 /**
  * Dispatches a trusted Enter to the focused element (the filter input) via the
  * target frame's CDP session. The browser's implicit submission of an enclosing
- * form is cancelled for this one keypress (bubble-phase preventDefault on window, after the target and
- * widget handlers have run, so they still see an uncancelled Enter); listeners are removed in a finally.
+ * form is cancelled for this one keypress (capture-phase preventDefault on window, which runs before any
+ * target or widget handler, so stopPropagation / stopImmediatePropagation there cannot defeat it; the
+ * handlers are still invoked, since only the default action is cancelled); listeners are removed in a finally.
  */
 async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> {
   const guardKey = "__leerieNoImplicitSubmit";
@@ -11159,8 +11160,8 @@ async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> 
     `(() => {
       const h = (e) => { if (e.key === "Enter") e.preventDefault(); };
       window.${guardKey} = h;
-      window.addEventListener("keydown", h, false);
-      window.addEventListener("keypress", h, false);
+      window.addEventListener("keydown", h, true);
+      window.addEventListener("keypress", h, true);
     })()`
   );
   try {
@@ -11176,8 +11177,8 @@ async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> 
         `(() => {
           const h = window.${guardKey};
           if (!h) return;
-          window.removeEventListener("keydown", h, false);
-          window.removeEventListener("keypress", h, false);
+          window.removeEventListener("keydown", h, true);
+          window.removeEventListener("keypress", h, true);
           delete window.${guardKey};
         })()`
       )
