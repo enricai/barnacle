@@ -5138,7 +5138,7 @@ export async function verifyPromptSelectorCommitted(
         if (isField(el)) field = el;
         else {
           const doc = el.ownerDocument || document;
-          if (el.tagName === "LABEL" && isField(el.control)) field = el.control;
+          if (el.tagName === "LABEL" && isField(el.control) && !/^(radio|checkbox|hidden)$/.test(el.control.type || "")) field = el.control;
           if (!field && el.tagName === "LABEL" && el.htmlFor) {
             const t = doc.getElementById(el.htmlFor);
             if (isField(t)) field = t;
@@ -5156,8 +5156,11 @@ export async function verifyPromptSelectorCommitted(
           }
           if (!field) {
             const box = el.closest("[class*='field'], [class*='form-group'], [role='group'], fieldset, li, .form-row, div");
-            const c = box && box.querySelector ? box.querySelector("select, input:not([type=button]):not([type=submit]):not([type=search]), textarea") : null;
-            if (c) field = c;
+            // Only trust an unambiguous container: exactly one text-like
+            // field. Hidden id-stores, radios/checkboxes and multi-field
+            // wrappers do not hold the option label, so stay untouched.
+            const cs = box && box.querySelectorAll ? box.querySelectorAll("select, input:not([type=button]):not([type=submit]):not([type=search]):not([type=hidden]):not([type=radio]):not([type=checkbox]), textarea") : [];
+            if (cs.length === 1) field = cs[0];
           }
         }
       }
