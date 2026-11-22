@@ -24,7 +24,7 @@ describe("PROMPT_SCOPE_ROOT_EXPR sibling popup", () => {
     const { r } = scope(
       `<div id="t" role="combobox" aria-expanded="true"></div>
        <div id="p" aria-owns="lb" aria-expanded="true"><input/><div id="lb" role="listbox"><div role="option">A</div></div></div>`,
-      "t",
+      "t"
     );
     expect(r.id).toBe("p");
   });
@@ -33,14 +33,14 @@ describe("PROMPT_SCOPE_ROOT_EXPR sibling popup", () => {
       `<div id="t" role="combobox" aria-expanded="true"></div>
        <div id="x" aria-expanded="false"><div role="listbox"></div></div>
        <div id="y" aria-expanded="true"><div role="listbox"></div></div>`,
-      "t",
+      "t"
     );
     expect(r.id).toBe("y");
   });
   it("keeps aria-controls ref and inline listbox behaviour", () => {
     const a = scope(
       `<div id="t" aria-controls="lb"></div><div id="s"><div role="listbox"></div></div><div id="lb" role="listbox"></div>`,
-      "t",
+      "t"
     );
     expect(a.r.id).toBe("lb");
     const b = scope(`<div id="t"><div role="listbox"></div></div>`, "t");
