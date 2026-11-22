@@ -466,7 +466,7 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     ).toBe("Sweden");
     expect(enterKeyDowns(cdpEvents)).toBe(1);
   });
-  it("still sends Enter and commits when the implicit-submit guard scripts reject", async () => {
+  it("never sends Enter when the implicit-submit guard cannot be installed", async () => {
     const stagehandAct = vi.fn();
     const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
       html: SEARCH_ON_SUBMIT_HTML,
@@ -488,15 +488,11 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
       step: "for 'Country of residence' select 'Sweden'",
     };
 
-    const result = await executeStepWithHealing(
+    await executeStepWithHealing(
       merged as unknown as Parameters<typeof executeStepWithHealing>[0]
-    );
+    ).catch(() => undefined);
 
-    expect(result).toBe("completed");
-    expect(rejected).toBe(2);
-    expect(enterKeyDowns(cdpEvents)).toBe(1);
-    expect(
-      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
-    ).toBe("Sweden");
+    expect(rejected).toBeGreaterThanOrEqual(1);
+    expect(enterKeyDowns(cdpEvents)).toBe(0);
   });
 });
