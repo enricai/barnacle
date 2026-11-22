@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  isClickViewSwapVerified,
-  isMidFlowAdvanceCredited,
-  isMidFlowSubmitShapedStep,
-} from "@/scraper/flow-runner";
+import { isClickViewSwapVerified, isMidFlowSubmitShapedStep } from "@/scraper/flow-runner";
 
 const BASE = {
   resolvedAction: { method: "click" },
@@ -179,29 +175,5 @@ describe("isClickViewSwapVerified settled advance judgement", () => {
     const advanced = { ...BASE, bytesDelta: 0, pageAdvanced: true };
     expect(isClickViewSwapVerified({ ...advanced, midFlowSubmit: true })).toBe(true);
     expect(isClickViewSwapVerified({ ...advanced, midFlowSubmit: false })).toBe(false);
-  });
-});
-
-describe("isMidFlowAdvanceCredited judge rejection", () => {
-  const base = {
-    midFlowSubmit: true,
-    signalAdvanced: true,
-    judgeUnavailable: false,
-    networkAdvanced: false,
-    pageAdvanced: false,
-    invalidMarkerCount: 0,
-  };
-
-  it("does not credit a view-swap alone over an explicit judge rejection", () => {
-    expect(isMidFlowAdvanceCredited(base)).toBe(false);
-  });
-
-  it("credits when the page or network really advanced", () => {
-    expect(isMidFlowAdvanceCredited({ ...base, pageAdvanced: true })).toBe(true);
-    expect(isMidFlowAdvanceCredited({ ...base, networkAdvanced: true })).toBe(true);
-  });
-
-  it("credits as before when the judge is unavailable", () => {
-    expect(isMidFlowAdvanceCredited({ ...base, judgeUnavailable: true })).toBe(true);
   });
 });

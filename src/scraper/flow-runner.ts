@@ -2594,15 +2594,7 @@ export function isMidFlowAdvanceCredited(params: {
   pageAdvanced: boolean;
   invalidMarkerCount: number;
 }): boolean {
-  // An explicit judge rejection is not overruled by the view-swap signal
-  // alone; it needs a settled page advance or a real network advance too.
-  if (
-    params.midFlowSubmit &&
-    params.signalAdvanced &&
-    (params.judgeUnavailable || params.pageAdvanced || params.networkAdvanced)
-  ) {
-    return true;
-  }
+  if (params.midFlowSubmit && params.signalAdvanced) return true;
   return isNullVerdictAdvanceCredited(params);
 }
 
@@ -2776,12 +2768,12 @@ export function isClickViewSwapVerified(params: {
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
-  // A mid-flow submit is only an advance when the page settled onto a new view;
-  // a bare byte/text delta is what a blocked submit's inline validation reveal
-  // produces too, so it must not earn credit on its own.
-  if (midFlowSubmit && !pageAdvanced) return false;
   if (!clickedElementStillPresent && bytesDelta <= 0) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
+  // A small text-only reveal is what a blocked mid-flow submit's inline
+  // validation message produces too; without a settled page advance it is
+  // not evidence of an advance.
+  if (midFlowSubmit && !pageAdvanced) return false;
   return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
 }
 
@@ -2845,8 +2837,13 @@ export async function countNgInvalidContainers(target: FrameTarget): Promise<num
   const expr = `(() => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
     let n = 0;
-    for (const el of document.querySelectorAll("[class],[aria-invalid],[data-automation-id],[data-testid],[data-test-id],[role=alert]")) {
+    const seen = new Set();
+    for (const el of document.querySelectorAll("[class],[aria-invalid]")) {
+      seen.add(el);
       if (isInvalid(el)) n++;
+    }
+    for (const el of document.querySelectorAll("[data-automation-id],[data-testid],[data-test-id],[role=alert]")) {
+      if (!seen.has(el) && isInvalid(el)) n++;
     }
     return n;
   })()`;

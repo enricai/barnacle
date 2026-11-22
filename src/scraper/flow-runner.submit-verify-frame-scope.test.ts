@@ -118,7 +118,7 @@ function makeChildTarget(
       // pre-existing invalid controls to surface for these scenarios.
       return [];
     }
-    if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) {
+    if (src.includes('querySelectorAll("[class],[aria-invalid]")')) {
       // countNgInvalidContainers's marker-count expr.
       return opts.invalidCount();
     }
@@ -435,7 +435,7 @@ describe("flow-runner/executeStepWithHealing — submit-verify frame scoping", (
     );
     expect(outerHtmlCalls.length).toBeGreaterThan(0);
     const invalidCountCalls = evaluateCalls.filter(([expr]) =>
-      expr.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')
+      expr.includes('querySelectorAll("[class],[aria-invalid]")')
     );
     expect(invalidCountCalls.length).toBeGreaterThan(0);
   });
@@ -465,7 +465,7 @@ describe("flow-runner/executeStepWithHealing — submit-verify frame scoping", (
       const centred = answerCentreHitTest(expr);
       if (centred) return centred;
       const src = String(expr);
-      if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
+      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
       return null;
     });
 

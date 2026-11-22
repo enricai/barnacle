@@ -169,7 +169,7 @@ function makeChildFrameTarget(
     if (source.includes("isRequired")) {
       return hasUnfilledRequiredControl;
     }
-    if (source.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) {
+    if (source.includes('querySelectorAll("[class],[aria-invalid]")')) {
       return ngInvalidCount;
     }
     if (source.includes("document.querySelector(sel)")) {
@@ -443,7 +443,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
     // Pre-submit baseline: requireSubmitEndpoint gates this on submitStep +
     // submitEndpointPattern, computed once before the attempt loop.
     const ngInvalidCalls = evaluateCalls.filter(([expr]) =>
-      String(expr).includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')
+      String(expr).includes('querySelectorAll("[class],[aria-invalid]")')
     );
     expect(ngInvalidCalls.length).toBeGreaterThan(0);
     // Pre AND post snapshotPage captures for attempt 1 — both read
