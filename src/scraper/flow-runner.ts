@@ -1068,19 +1068,21 @@ const BUTTON_VALUE_EXPR =
  * committed via the same resolved label regardless of which node carries it.
  */
 const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
-  const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const dec = (s) => { if (!s || s.indexOf("&") < 0) return s || ""; const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+  const norm = (s) => dec(s).replace(/\\s+/g, " ").trim();
+  const nrm = (s) => (s || "").replace(/\\s+/g, " ").trim();
   const auto = el.getAttribute && el.getAttribute("data-automation-label");
   if (auto && auto.trim()) return norm(auto);
   const alb = el.getAttribute && el.getAttribute("aria-labelledby");
   if (alb) {
     const parts = [];
     for (const id of alb.split(/\\s+/)) { const ref = document.getElementById(id); if (ref && ref.textContent) parts.push(ref.textContent); }
-    if (parts.length) return norm(parts.join(" "));
+    if (parts.length) return nrm(parts.join(" "));
   }
   const al = el.getAttribute && el.getAttribute("aria-label");
   if (al && al.trim()) return norm(al);
   const own = el.textContent || "";
-  if (own.trim()) return norm(own);
+  if (own.trim()) return nrm(own);
   const title = el.getAttribute && el.getAttribute("title");
   if (title && title.trim()) return norm(title);
   const desc = el.querySelector && el.querySelector("[aria-label],[title]");
