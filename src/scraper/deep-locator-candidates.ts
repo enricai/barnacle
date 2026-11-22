@@ -300,7 +300,7 @@ function withAliases(positives: string[]): string[] {
 }
 
 /** Outcome of {@link vetObserveCandidates}: the best-scoring candidate, its score, and whether the caller should refuse to act on it. */
-export interface ObserveCandidateVerdict<T extends { description: string }> {
+export interface ObserveCandidateVerdict<T> {
   candidate: T | undefined;
   score: number;
   refuse: boolean;
@@ -317,28 +317,56 @@ export function vetObserveCandidates<T extends { description: string }>(
   candidates: T[],
   phrases: TaggedPhrase[]
 ): ObserveCandidateVerdict<T> {
+  return vetCandidatesCore(candidates, phrases, (c) => c.description);
+}
+
+/**
+ * Frame-scoped counterpart of {@link vetObserveCandidates}: vets
+ * {@link DeepLocatorCandidate}s by `accessibleText`/`isNav` with the identical
+ * rule, so a click step that quotes a control never actuates a frame candidate
+ * that names none of the quoted phrases.
+ */
+export function vetFrameCandidates<T extends { accessibleText: string; isNav?: boolean }>(
+  candidates: T[],
+  phrases: TaggedPhrase[]
+): ObserveCandidateVerdict<T> {
+  return vetCandidatesCore(
+    candidates,
+    phrases,
+    (c) => c.accessibleText,
+    (c) => c.isNav === true
+  );
+}
+
+/** Shared veto rule behind {@link vetObserveCandidates} and {@link vetFrameCandidates}. */
+function vetCandidatesCore<T>(
+  candidates: T[],
+  phrases: TaggedPhrase[],
+  textOf: (c: T) => string,
+  isNavOf: (c: T) => boolean = () => false
+): ObserveCandidateVerdict<T> {
   const first = candidates[0];
   if (!first || phrases.length === 0) return { candidate: first, score: 0, refuse: false };
   const aliasPositives = withAliases(
     phrases.filter((p) => !p.negated).map((p) => normalize(p.text))
   );
-  const aliasHit = candidates.find((c) => aliasPositives.includes(normalize(c.description)));
+  const aliasHit = candidates.find((c) => aliasPositives.includes(normalize(textOf(c))));
   if (
     aliasHit &&
-    scoreCandidate(aliasHit.description, phrases) === 0 &&
-    !phrases.some((p) => p.negated && normalize(aliasHit.description).includes(normalize(p.text)))
+    scoreCandidate(textOf(aliasHit), phrases, isNavOf(aliasHit)) === 0 &&
+    !phrases.some((p) => p.negated && normalize(textOf(aliasHit)).includes(normalize(p.text)))
   ) {
     return { candidate: aliasHit, score: 2, refuse: false };
   }
   const scored = candidates.map((candidate) => ({
     candidate,
-    score: scoreCandidate(candidate.description, phrases),
+    score: scoreCandidate(textOf(candidate), phrases, isNavOf(candidate)),
   }));
   const best = scored.reduce((a, b) => (b.score > a.score ? b : a));
   if (best.score < 0) return { candidate: best.candidate, score: best.score, refuse: true };
   if (best.score > 0) return { candidate: best.candidate, score: best.score, refuse: false };
   const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));
-  const text = normalize(best.candidate.description);
+  const text = normalize(textOf(best.candidate));
   const betterExists = scored.some((s) => s.score > 0);
   // A context phrase ("under the text 'X'") adds a second positive, so require the
   // candidate to overlap none of them rather than exactly one.

@@ -21,6 +21,7 @@ import {
   extractTaggedPhrases,
   resolveDeepLocatorCandidates,
   scoreCandidate,
+  vetFrameCandidates,
   vetObserveCandidates,
 } from "@/scraper/deep-locator-candidates";
 import {
@@ -937,5 +938,37 @@ describe("vetObserveCandidates", () => {
     const verdict = vetObserveCandidates([first, c("other")], []);
     expect(verdict.candidate).toBe(first);
     expect(verdict.refuse).toBe(false);
+  });
+});
+
+describe("vetFrameCandidates", () => {
+  const f = (accessibleText: string, isNav = false) => ({
+    index: 0,
+    selector: "",
+    accessibleText,
+    isNav,
+  });
+  const accept = extractTaggedPhrases("Click 'Accept'");
+  it("refuses when no candidate names the quoted phrase", () => {
+    const v = vetFrameCandidates([f("Skip to Main Content"), f("Enter Your Information")], accept);
+    expect(v.refuse).toBe(true);
+  });
+  it("returns the exact-match candidate", () => {
+    const next = extractTaggedPhrases("Click 'Next'");
+    const hit = f("Next");
+    const v = vetFrameCandidates([f("Skip"), hit], next);
+    expect(v.refuse).toBe(false);
+    expect(v.candidate).toBe(hit);
+  });
+  it("honors aliases", () => {
+    const next = extractTaggedPhrases("Click 'Next'");
+    const hit = f("Continue");
+    const v = vetFrameCandidates([f("Skip"), hit], next);
+    expect(v.refuse).toBe(false);
+    expect(v.candidate).toBe(hit);
+  });
+  it("refuses negated phrase matches", () => {
+    const v = vetFrameCandidates([f("Decline")], [{ text: "Decline", negated: true }]);
+    expect(v.refuse).toBe(true);
   });
 });
