@@ -102,4 +102,41 @@ describe("redirect hop capture", () => {
     expect(JSON.stringify(get?.responseHeaders)).toContain("s1");
     expect(JSON.stringify(get?.responseHeaders)).not.toContain("s0");
   });
+
+  it("credits same-site POSTs to the signal counter but not cross-site or GET", async () => {
+    const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
+    const session = {
+      on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
+      off: () => {},
+    };
+    const page = {
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn(async () => ({ body: "{}", base64Encoded: false })),
+    } as unknown as Page;
+    const signalCounter = { n: 0 };
+    const teardown = wireSignalCapture(page, {
+      counter: { n: 0 },
+      signalCounter,
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      getCurrentPhase: () => "action",
+      getCurrentPageOrigin: () => "https://www.example.com",
+      onCapture: () => {},
+    });
+    const send = async (id: string, url: string, method: string) => {
+      handlers.get("Network.requestWillBeSent")?.({
+        requestId: id,
+        request: { url, method, headers: {}, postData: method === "GET" ? undefined : "x=1" },
+      });
+      await handlers.get("Network.loadingFinished")?.({ requestId: id });
+      await new Promise((r) => setTimeout(r, 0));
+    };
+    await send("a", "https://api.example.com/s", "POST"); // sibling subdomain: counts
+    expect(signalCounter.n).toBe(1);
+    await send("b", "https://tracker.other.net/p", "POST"); // cross-site: no
+    await send("c", "https://www.example.com/g", "GET"); // GET: no
+    expect(signalCounter.n).toBe(1);
+    teardown();
+  });
 });
