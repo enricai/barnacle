@@ -982,7 +982,7 @@ async function fetchRobotsByOrigin(urls: string[]): Promise<Map<string, RobotsRu
     if (out.has(origin)) continue;
     let rules: RobotsRule[] = [];
     try {
-      const res = await fetch(`${origin}/robots.txt`, {
+      const res = await fetchFollowingRedirectsPreservingMethod(`${origin}/robots.txt`, {
         signal: AbortSignal.timeout(10_000),
       });
       if (res.ok) rules = parseRobots(await res.text());
