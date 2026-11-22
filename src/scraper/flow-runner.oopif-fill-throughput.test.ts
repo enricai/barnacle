@@ -30,7 +30,7 @@ import {
   buildReadBackFrameCandidateExpr,
   buildScanFrameCandidatesExpr,
   buildSelectFrameCandidateExpr,
-  INTERACTIVE_CANDIDATE_SELECTOR,
+  FILLABLE_CANDIDATE_SELECTOR,
 } from "@/scraper/deep-locator-scan";
 import { runHealingFlow, STEP_WATCHDOG_MS } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -57,10 +57,10 @@ const TOP_ORIGIN = "https://careers.example.org";
 const CHILD_ORIGIN = "https://apply.example.com";
 const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
-/** Must match the field-label fill branch's actual hop — `flow-runner.ts` scopes it to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`. */
-const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+/** Must match the field-label fill branch's actual hop — `flow-runner.ts` scopes it to `FILLABLE_CANDIDATE_SELECTOR`, not `"*"`. */
+const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
 /** The exact evaluate expression `resolveDeepLocatorCandidates` issues for the cascade's interactive-scoped enumeration hop. */
-const SCAN_EXPR = buildScanFrameCandidatesExpr(INTERACTIVE_CANDIDATE_SELECTOR);
+const SCAN_EXPR = buildScanFrameCandidatesExpr(FILLABLE_CANDIDATE_SELECTOR);
 
 /** Value the step instruction asks to be typed into the First Name field. */
 const FILL_VALUE = "Jane";
@@ -87,21 +87,21 @@ const RENDERED_TARGET_INDEX = 40;
 
 /** The batched fill expression `fillDeepLocatorCandidate`'s fast path issues once the field-label branch resolves `matched.index` — matched by containment because the date-segment guard wraps it before dispatch. */
 const FILL_EXPR = buildFillFrameCandidateExpr(
-  INTERACTIVE_CANDIDATE_SELECTOR,
+  FILLABLE_CANDIDATE_SELECTOR,
   RENDERED_TARGET_INDEX,
   FILL_VALUE
 );
 
 /** The select counterpart of {@link FILL_EXPR}: the exact evaluate expression `selectDeepLocatorCandidateOption`'s batched fast path issues once the field-label branch resolves `matched.index`. */
 const SELECT_EXPR = buildSelectFrameCandidateExpr(
-  INTERACTIVE_CANDIDATE_SELECTOR,
+  FILLABLE_CANDIDATE_SELECTOR,
   RENDERED_TARGET_INDEX,
   SELECT_VALUE
 );
 
 /** The stuck-confirm re-check expression `confirmBatchedWriteStuck` issues (`deep-locator-actuate.ts`) after a batched write's inline `readBack` already matched — both fill and select route through the same read-only `buildReadBackFrameCandidateExpr` re-check against the resolved index. */
 const READ_BACK_EXPR = buildReadBackFrameCandidateExpr(
-  INTERACTIVE_CANDIDATE_SELECTOR,
+  FILLABLE_CANDIDATE_SELECTOR,
   RENDERED_TARGET_INDEX
 );
 

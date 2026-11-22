@@ -4,7 +4,10 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
-import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import {
+  FILLABLE_CANDIDATE_SELECTOR,
+  INTERACTIVE_CANDIDATE_SELECTOR,
+} from "@/scraper/deep-locator-scan";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -31,7 +34,7 @@ const CHILD_ORIGIN = "https://apply.example.com";
 const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** Interactive-scoped hop the attempt-2/4 cascade actually resolves candidates against (see bugfix-005). */
-const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
 /** `probeStepBeforeAttempts` deliberately keeps requesting `"*"` (a reachability gate) — registered separately so the probe reports "present" before the cascade ever runs. */
 const PROBE_HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
 
@@ -139,6 +142,8 @@ async function runSingleStep(instruction: string) {
   const childUrls = { current: CHILD_SRC };
   const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
   const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, CANDIDATE_SET);
+  // Click-intent steps resolve over the interactive hop; fill/select over the fillable hop.
+  deepLocatorFrame.set(`${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`, hop);
   registerDeepLocatorHopElements(deepLocatorFrame, PROBE_HOP_SELECTOR, ["reachability probe"]);
   const stagehand = makeFakeStagehandObserveBlind();
   const page = makeFakeTopPage(topUrl, childUrls, deepLocatorFrame);
