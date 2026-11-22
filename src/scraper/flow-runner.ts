@@ -1123,7 +1123,7 @@ const BUTTON_VALUE_EXPR =
  * committed via the same resolved label regardless of which node carries it.
  */
 const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
-  const dec = (s) => { if (!s || s.indexOf("&") < 0) return s || ""; const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+  const dec = (s) => { let v = s || ""; for (let i = 0; i < 3 && v.indexOf("&") >= 0; i++) { const t = document.createElement("textarea"); t.innerHTML = v; if (t.value === v) break; v = t.value; } return v; };
   const norm = (s) => dec(s).replace(/\\s+/g, " ").trim();
   const nrm = (s) => (s || "").replace(/\\s+/g, " ").trim();
   const auto = el.getAttribute && el.getAttribute("data-automation-label");
@@ -11174,6 +11174,27 @@ async function tryPromptSelectorPrimitive(params: {
         (r) => isOwnScopePopup(r) && promptOptionsNameOption(r, option)
       );
     }
+    // A filter that matches by exact substring can hide an option the committer
+    // would accept on letters/digits alone ("Other (Specify)" for "other specify").
+    // When the filtered list holds no real option, clear the filter and let the
+    // committer match against the full list.
+    if (realPromptOptions(optionsFiltered?.options ?? [], option).length === 0) {
+      try {
+        await target.locator(`[${PROMPT_OPTION_MARK_ATTR}-search="1"]`).first().fill("");
+        await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+        const full = await pollEnumerate<EnumerateOptionsResult>(
+          page,
+          target,
+          enumerateOptionsExpr,
+          (r) => isOwnScopePopup(r) && realPromptOptions(r?.options ?? [], option).length > 0
+        );
+        if (full?.optionsPresent) optionsFiltered = full;
+      } catch (err) {
+        logger.info(
+          `prompt-selector primitive: clearing filter failed for ${optLabel}: ${toErrorMessage(err)}`
+        );
+      }
+    }
     if (!optionsFiltered?.optionsPresent) {
       logger.info(
         `prompt-selector primitive: filtered popup for ${optLabel} rendered no stable options; falling through`
@@ -11716,7 +11737,7 @@ async function commitPromptOption(params: {
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
     const isRequestedOption = norm(chosenOption.text) === wantOpt;
-    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
+    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf, requestedText) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const triggerReachable = ${PROMPT_TRIGGER_REACHABLE_EL_EXPR};
@@ -11741,7 +11762,8 @@ async function commitPromptOption(params: {
         }
         return { ok: false, id: "", stillInvalid: false };
       }
-      const text = dec(currentText(w, valueSel, emptyRx));
+      const decode = (v) => { let r = v || ""; for (let i = 0; i < 3 && r.indexOf("&") >= 0; i++) { const t = document.createElement("textarea"); t.innerHTML = r; if (t.value === r) break; r = t.value; } return r; };
+      const text = decode(currentText(w, valueSel, emptyRx));
       const textMatches = wantText ? text.includes(wantText) : text !== "";
       let node = w;
       let stillInvalid = false;
@@ -11794,13 +11816,13 @@ async function commitPromptOption(params: {
             // carries no corroborating signal — treating it as a match would credit
             // ANY selection change, including a different option than requested.
             if (wantText && optText && optText.includes(wantText)) { hiddenSelectMatches = true; break; }
-            if (wantText && !optText && selOpt && [selOpt.getAttribute("value"), selOpt.getAttribute("text")].some((a) => norm(a) === wantText)) { hiddenSelectMatches = true; break; }
+            if (wantText && !optText && selOpt && [selOpt.getAttribute("value"), selOpt.getAttribute("text")].some((a) => norm(a) === wantText || (requestedText && norm(a) === requestedText))) { hiddenSelectMatches = true; break; }
           }
           cnode = cnode.parentElement;
         }
       }
       // The widget's own announcement of what it committed is ground truth when readable.
-      const committed = announcedValue(w);
+      const committed = decode(announcedValue(w));
       if (committed) {
         return { ok: !!wantText && namesOption(committed, wantText), id: w.id || "", stillInvalid, committed };
       }
@@ -11814,7 +11836,7 @@ async function commitPromptOption(params: {
         return { ok: false, id: w.id || "", stillInvalid, committed: text };
       }
       return { ok: textMatches || hiddenSelectMatches, id: w.id || "", stillInvalid };
-    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedOption)})`;
+    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedOption)}, ${JSON.stringify(wantOpt)})`;
     type PromptReadback = { ok: boolean; id: string; stillInvalid: boolean; committed?: string };
     const runReadback = async (): Promise<PromptReadback> =>
       (await target
