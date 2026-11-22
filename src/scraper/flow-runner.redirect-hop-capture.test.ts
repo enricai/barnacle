@@ -8,11 +8,13 @@ describe("redirect hop capture", () => {
   it("captures a redirected POST hop and the final GET separately", async () => {
     const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
     const session = {
-      on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
+      on: (e: string, h: (p: unknown) => void | Promise<void>) =>
+        handlers.set(e, h),
       off: () => {},
     };
     const sendCDP = vi.fn(async (name: string) => {
-      if (name === "Network.getResponseBody") return { body: "{}", base64Encoded: false };
+      if (name === "Network.getResponseBody")
+        return { body: "{}", base64Encoded: false };
       throw new Error("n/a");
     });
     const page = {
@@ -32,12 +34,20 @@ describe("redirect hop capture", () => {
     });
     handlers.get("Network.requestWillBeSent")?.({
       requestId: "r1",
-      request: { url: "https://example.com/a", method: "POST", headers: {}, postData: "x=1" },
+      request: {
+        url: "https://example.com/a",
+        method: "POST",
+        headers: {},
+        postData: "x=1",
+      },
     });
     handlers.get("Network.requestWillBeSent")?.({
       requestId: "r1",
       request: { url: "https://example.com/b", method: "GET", headers: {} },
-      redirectResponse: { status: 302, headers: { Location: "https://example.com/b" } },
+      redirectResponse: {
+        status: 302,
+        headers: { Location: "https://example.com/b" },
+      },
       redirectHasExtraInfo: false,
     });
     await handlers.get("Network.loadingFinished")?.({ requestId: "r1" });
@@ -55,14 +65,16 @@ describe("redirect hop capture", () => {
   it("attributes extra-info headers to the hop they arrived for", async () => {
     const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
     const session = {
-      on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
+      on: (e: string, h: (p: unknown) => void | Promise<void>) =>
+        handlers.set(e, h),
       off: () => {},
     };
     const page = {
       getSessionForFrame: () => session,
       mainFrameId: () => "main",
       sendCDP: vi.fn(async (name: string) => {
-        if (name === "Network.getResponseBody") return { body: "{}", base64Encoded: false };
+        if (name === "Network.getResponseBody")
+          return { body: "{}", base64Encoded: false };
         throw new Error("n/a");
       }),
     } as unknown as Page;
@@ -79,17 +91,34 @@ describe("redirect hop capture", () => {
     const h = (e: string) => handlers.get(e);
     h("Network.requestWillBeSent")?.({
       requestId: "r1",
-      request: { url: "https://example.com/a", method: "POST", headers: {}, postData: "x=1" },
+      request: {
+        url: "https://example.com/a",
+        method: "POST",
+        headers: {},
+        postData: "x=1",
+      },
     });
-    h("Network.requestWillBeSentExtraInfo")?.({ requestId: "r1", headers: { Cookie: "hop0" } });
-    h("Network.responseReceivedExtraInfo")?.({ requestId: "r1", headers: { "Set-Cookie": "s0" } });
+    h("Network.requestWillBeSentExtraInfo")?.({
+      requestId: "r1",
+      headers: { Cookie: "hop0" },
+    });
+    h("Network.responseReceivedExtraInfo")?.({
+      requestId: "r1",
+      headers: { "Set-Cookie": "s0" },
+    });
     h("Network.requestWillBeSent")?.({
       requestId: "r1",
       request: { url: "https://example.com/b", method: "GET", headers: {} },
       redirectResponse: { status: 302, headers: { Location: "/b" } },
     });
-    h("Network.requestWillBeSentExtraInfo")?.({ requestId: "r1", headers: { Cookie: "hop1" } });
-    h("Network.responseReceivedExtraInfo")?.({ requestId: "r1", headers: { "Set-Cookie": "s1" } });
+    h("Network.requestWillBeSentExtraInfo")?.({
+      requestId: "r1",
+      headers: { Cookie: "hop1" },
+    });
+    h("Network.responseReceivedExtraInfo")?.({
+      requestId: "r1",
+      headers: { "Set-Cookie": "s1" },
+    });
     await h("Network.loadingFinished")?.({ requestId: "r1" });
     await new Promise((r) => setTimeout(r, 0));
     teardown();
@@ -107,7 +136,8 @@ describe("redirect hop capture", () => {
   it("credits same-site POSTs to the signal counter but not cross-site or GET", async () => {
     const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
     const session = {
-      on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
+      on: (e: string, h: (p: unknown) => void | Promise<void>) =>
+        handlers.set(e, h),
       off: () => {},
     };
     const page = {
@@ -128,7 +158,12 @@ describe("redirect hop capture", () => {
     const send = async (id: string, url: string, method: string) => {
       handlers.get("Network.requestWillBeSent")?.({
         requestId: id,
-        request: { url, method, headers: {}, postData: method === "GET" ? undefined : "x=1" },
+        request: {
+          url,
+          method,
+          headers: {},
+          postData: method === "GET" ? undefined : "x=1",
+        },
       });
       await handlers.get("Network.loadingFinished")?.({ requestId: id });
       await new Promise((r) => setTimeout(r, 0));
@@ -142,14 +177,20 @@ describe("redirect hop capture", () => {
   });
 });
 
-function harness(pageOrigin = "https://example.com") {
+function harness(pageOrigin = "https://example.com", lazyPostData = false) {
   const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
   const session = {
-    on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
+    on: (e: string, h: (p: unknown) => void | Promise<void>) =>
+      handlers.set(e, h),
     off: () => {},
   };
   const sendCDP = vi.fn(async (name: string) => {
-    if (name === "Network.getResponseBody") return { body: "{}", base64Encoded: false };
+    if (name === "Network.getResponseBody")
+      return { body: "{}", base64Encoded: false };
+    if (lazyPostData && name === "Network.getRequestPostData") {
+      await new Promise((r) => setTimeout(r, 20));
+      return { postData: "x=1" };
+    }
     throw new Error("n/a");
   });
   const page = {
@@ -178,7 +219,12 @@ describe("redirect hop capture: additional regressions", () => {
     const t = harness();
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
-      request: { url: "https://example.com/a", method: "POST", headers: {}, postData: "x=1" },
+      request: {
+        url: "https://example.com/a",
+        method: "POST",
+        headers: {},
+        postData: "x=1",
+      },
     });
     t.fire("Network.responseReceivedExtraInfo", {
       requestId: "r1",
@@ -198,14 +244,21 @@ describe("redirect hop capture: additional regressions", () => {
     expect(post?.responseHeaders.Location).toBe("/b");
     expect(JSON.stringify(post?.responseHeaders)).toContain("sid=abc");
     // one getResponseBody only: for the final GET, none for the redirect hop
-    expect(t.sendCDP.mock.calls.filter((c) => c[0] === "Network.getResponseBody")).toHaveLength(1);
+    expect(
+      t.sendCDP.mock.calls.filter((c) => c[0] === "Network.getResponseBody"),
+    ).toHaveLength(1);
   });
 
   it("keeps hop attribution when the next hop's extra-info precedes its requestWillBeSent", async () => {
     const t = harness();
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
-      request: { url: "https://example.com/a", method: "POST", headers: {}, postData: "x=1" },
+      request: {
+        url: "https://example.com/a",
+        method: "POST",
+        headers: {},
+        postData: "x=1",
+      },
     });
     t.fire("Network.responseReceivedExtraInfo", {
       requestId: "r1",
@@ -236,7 +289,12 @@ describe("redirect hop capture: additional regressions", () => {
     const t = harness();
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
-      request: { url: "https://example.com/a", method: "POST", headers: {}, postData: "x=1" },
+      request: {
+        url: "https://example.com/a",
+        method: "POST",
+        headers: {},
+        postData: "x=1",
+      },
     });
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
@@ -266,7 +324,12 @@ describe("redirect hop capture: additional regressions", () => {
     const t = harness();
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
-      request: { url: "https://example.com/a", method: "POST", headers: {}, postData: "x=1" },
+      request: {
+        url: "https://example.com/a",
+        method: "POST",
+        headers: {},
+        postData: "x=1",
+      },
     });
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
@@ -287,11 +350,20 @@ describe("redirect hop capture: additional regressions", () => {
     const t = harness();
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
-      request: { url: "https://tracker.other.net/p", method: "POST", headers: {}, postData: "x=1" },
+      request: {
+        url: "https://tracker.other.net/p",
+        method: "POST",
+        headers: {},
+        postData: "x=1",
+      },
     });
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
-      request: { url: "https://tracker.other.net/q", method: "GET", headers: {} },
+      request: {
+        url: "https://tracker.other.net/q",
+        method: "GET",
+        headers: {},
+      },
       redirectResponse: { status: 302, headers: {} },
     });
     await t.fire("Network.loadingFinished", { requestId: "r1" });
@@ -310,7 +382,12 @@ describe("redirect hop capture: additional regressions", () => {
       const t = harness();
       t.fire("Network.requestWillBeSent", {
         requestId: "r1",
-        request: { url: "https://example.com/a", method, headers: {}, postData: "x=1" },
+        request: {
+          url: "https://example.com/a",
+          method,
+          headers: {},
+          postData: "x=1",
+        },
       });
       // no headers on the redirectResponse; extra-info not yet declared absent
       t.fire("Network.requestWillBeSent", {
@@ -328,7 +405,7 @@ describe("redirect hop capture: additional regressions", () => {
       const cap = t.captured.find((c) => c.method === method);
       expect(typeof cap?.responseHeaders).toBe("object");
       expect(JSON.stringify(cap?.responseHeaders)).toContain("late=1");
-    }
+    },
   );
 });
 
@@ -337,7 +414,12 @@ describe("redirect hop capture: deferred state drop", () => {
     const t = harness();
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
-      request: { url: "https://example.com/a", method: "POST", headers: {}, postData: "x=1" },
+      request: {
+        url: "https://example.com/a",
+        method: "POST",
+        headers: {},
+        postData: "x=1",
+      },
     });
     t.fire("Network.requestWillBeSent", {
       requestId: "r1",
@@ -345,13 +427,15 @@ describe("redirect hop capture: deferred state drop", () => {
       redirectResponse: { status: 302, headers: { Location: "/b" } },
     });
     // final hop finishes while the redirect hop still waits for its extra-info
-    await t.fire("Network.loadingFinished", { requestId: "r1" });
-    expect(t.captured.some((c) => c.method === "POST")).toBe(false);
+    const finished = t.fire("Network.loadingFinished", { requestId: "r1" });
+    await t.flush();
+    expect(t.captured).toHaveLength(0);
     // hop 0's extra-info arrives only now; its buffer must not have been dropped
     t.fire("Network.responseReceivedExtraInfo", {
       requestId: "r1",
       headers: { "Set-Cookie": "late0" },
     });
+    await finished;
     await t.flush();
     const post = t.captured.find((c) => c.method === "POST");
     const get = t.captured.find((c) => c.method === "GET");
@@ -374,4 +458,31 @@ describe("redirect hop capture: deferred state drop", () => {
     expect(JSON.stringify(fresh?.responseHeaders)).toContain("fresh");
     expect(JSON.stringify(fresh?.responseHeaders)).not.toContain("late0");
   });
+});
+
+describe("redirect hop capture: ordering", () => {
+  it.each([
+    ["POST", 307, "https://other.test"],
+    ["PUT", 301, "https://example.com"],
+  ])(
+    "emits a redirected %s hop (%i, %s) before the request it redirects to",
+    async (method, status, host) => {
+      const t = harness("https://example.com", true);
+      t.fire("Network.requestWillBeSent", {
+        requestId: "r1",
+        request: { url: `${host}/a`, method, headers: {}, hasPostData: true },
+      });
+      t.fire("Network.requestWillBeSent", {
+        requestId: "r1",
+        request: { url: `${host}/b`, method: "GET", headers: {} },
+        redirectResponse: { status, headers: { Location: "/b" } },
+        redirectHasExtraInfo: false,
+      });
+      await t.fire("Network.loadingFinished", { requestId: "r1" });
+      await t.flush();
+      t.teardown();
+      expect(t.captured.map((c) => c.url)).toEqual([`${host}/a`, `${host}/b`]);
+      expect(t.captured[0].status).toBe(status);
+    },
+  );
 });
