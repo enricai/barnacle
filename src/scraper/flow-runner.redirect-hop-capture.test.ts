@@ -8,13 +8,11 @@ describe("redirect hop capture", () => {
   it("captures a redirected POST hop and the final GET separately", async () => {
     const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
     const session = {
-      on: (e: string, h: (p: unknown) => void | Promise<void>) =>
-        handlers.set(e, h),
+      on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
       off: () => {},
     };
     const sendCDP = vi.fn(async (name: string) => {
-      if (name === "Network.getResponseBody")
-        return { body: "{}", base64Encoded: false };
+      if (name === "Network.getResponseBody") return { body: "{}", base64Encoded: false };
       throw new Error("n/a");
     });
     const page = {
@@ -65,16 +63,14 @@ describe("redirect hop capture", () => {
   it("attributes extra-info headers to the hop they arrived for", async () => {
     const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
     const session = {
-      on: (e: string, h: (p: unknown) => void | Promise<void>) =>
-        handlers.set(e, h),
+      on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
       off: () => {},
     };
     const page = {
       getSessionForFrame: () => session,
       mainFrameId: () => "main",
       sendCDP: vi.fn(async (name: string) => {
-        if (name === "Network.getResponseBody")
-          return { body: "{}", base64Encoded: false };
+        if (name === "Network.getResponseBody") return { body: "{}", base64Encoded: false };
         throw new Error("n/a");
       }),
     } as unknown as Page;
@@ -136,8 +132,7 @@ describe("redirect hop capture", () => {
   it("credits same-site POSTs to the signal counter but not cross-site or GET", async () => {
     const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
     const session = {
-      on: (e: string, h: (p: unknown) => void | Promise<void>) =>
-        handlers.set(e, h),
+      on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
       off: () => {},
     };
     const page = {
@@ -180,13 +175,11 @@ describe("redirect hop capture", () => {
 function harness(pageOrigin = "https://example.com", lazyPostData = false) {
   const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
   const session = {
-    on: (e: string, h: (p: unknown) => void | Promise<void>) =>
-      handlers.set(e, h),
+    on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
     off: () => {},
   };
   const sendCDP = vi.fn(async (name: string) => {
-    if (name === "Network.getResponseBody")
-      return { body: "{}", base64Encoded: false };
+    if (name === "Network.getResponseBody") return { body: "{}", base64Encoded: false };
     if (lazyPostData && name === "Network.getRequestPostData") {
       await new Promise((r) => setTimeout(r, 20));
       return { postData: "x=1" };
@@ -244,9 +237,7 @@ describe("redirect hop capture: additional regressions", () => {
     expect(post?.responseHeaders.Location).toBe("/b");
     expect(JSON.stringify(post?.responseHeaders)).toContain("sid=abc");
     // one getResponseBody only: for the final GET, none for the redirect hop
-    expect(
-      t.sendCDP.mock.calls.filter((c) => c[0] === "Network.getResponseBody"),
-    ).toHaveLength(1);
+    expect(t.sendCDP.mock.calls.filter((c) => c[0] === "Network.getResponseBody")).toHaveLength(1);
   });
 
   it("keeps hop attribution when the next hop's extra-info precedes its requestWillBeSent", async () => {
@@ -405,7 +396,7 @@ describe("redirect hop capture: additional regressions", () => {
       const cap = t.captured.find((c) => c.method === method);
       expect(typeof cap?.responseHeaders).toBe("object");
       expect(JSON.stringify(cap?.responseHeaders)).toContain("late=1");
-    },
+    }
   );
 });
 
@@ -482,7 +473,7 @@ describe("redirect hop capture: ordering", () => {
       await t.flush();
       t.teardown();
       expect(t.captured.map((c) => c.url)).toEqual([`${host}/a`, `${host}/b`]);
-      expect(t.captured[0].status).toBe(status);
-    },
+      expect(t.captured[0]?.status).toBe(status);
+    }
   );
 });
