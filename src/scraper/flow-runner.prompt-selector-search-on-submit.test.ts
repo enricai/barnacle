@@ -466,4 +466,37 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     ).toBe("Sweden");
     expect(enterKeyDowns(cdpEvents)).toBe(1);
   });
+  it("still sends Enter and commits when the implicit-submit guard scripts reject", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS, searchOnSubmit: true } },
+    });
+    const t = target as unknown as { evaluate: (s: unknown, ...a: unknown[]) => Promise<unknown> };
+    const originalEvaluate = t.evaluate.bind(target);
+    let rejected = 0;
+    t.evaluate = async (script, ...args) => {
+      if (typeof script === "string" && script.includes("__leerieNoImplicitSubmit")) {
+        rejected++;
+        throw new Error("frame detached");
+      }
+      return originalEvaluate(script, ...args);
+    };
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(rejected).toBe(2);
+    expect(enterKeyDowns(cdpEvents)).toBe(1);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("Sweden");
+  });
 });
