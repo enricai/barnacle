@@ -2033,22 +2033,32 @@ export function addClickUrlPathBindings(
     return into;
   }
   const segments = u.pathname.split("/");
-  const isIdSegment = (seg: string | undefined): boolean =>
-    seg !== undefined &&
-    isStateLikeSegment(seg) &&
-    seg.length >= MIN_STATE_VALUE_LENGTH &&
-    /\d/.test(seg);
+  // A short all-digit segment (`/jobs/123/some-slug`) is a job id when a hyphenated slug
+  // directly follows it; without that shape (`/checkout/create-order/123456`) the
+  // length floor still applies so it cannot collide with arbitrary substrings.
+  const isShortIdWithSlug = (seg: string, i: number): boolean =>
+    /^\d{3,}$/.test(seg) && /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$/.test(segments[i + 1] ?? "");
+  const isIdSegmentAt = (i: number): boolean => {
+    const seg = segments[i];
+    if (seg === undefined) return false;
+    return (
+      (isStateLikeSegment(seg) && seg.length >= MIN_STATE_VALUE_LENGTH && /\d/.test(seg)) ||
+      isShortIdWithSlug(seg, i)
+    );
+  };
   segments.forEach((seg, i) => {
     // Same collision floor as extractEntryUrlParams (a short value matches arbitrary
     // substrings of later bodies/URLs), and require a digit: a purely alphabetic
     // hyphenated segment (`create-order`) is an endpoint name, not a job identifier
     // — unless it directly follows an id, where it is that posting's slug
     // (`/jobs/<id>/<slug>`).
+    const afterId = i > 0 && isIdSegmentAt(i - 1);
     const slugAfterId =
+      afterId &&
+      /-/.test(seg) &&
       isStateLikeSegment(seg) &&
-      seg.length >= MIN_STATE_VALUE_LENGTH &&
-      isIdSegment(segments[i - 1]);
-    if ((!isIdSegment(seg) && !slugAfterId) || into.has(seg)) return;
+      (seg.length >= MIN_STATE_VALUE_LENGTH || isShortIdWithSlug(segments[i - 1], i - 1));
+    if ((!isIdSegmentAt(i) && !slugAfterId) || into.has(seg)) return;
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
   return into;
