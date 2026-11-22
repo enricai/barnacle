@@ -287,6 +287,14 @@ describe("segmented date captions inside a titled container", () => {
       ).toBe(outer);
     });
 
+    it("labels a nested group by the legend when help text separates them and segments are wrapped", () => {
+      const wrapped = parts.replace(/<input[^>]*\/>/g, (m) => `<div>${m}</div>`);
+      const groups = enumerate(
+        `<fieldset><legend>${Q}</legend><div><div>help</div><div><div role="group" aria-labelledby="missing-a">${wrapped}</div></div></div></fieldset>`
+      );
+      expect(groups.some((g) => g.label === Q)).toBe(true);
+    });
+
     it("does not use a legend shared by two date groups as either label", () => {
       const grp = (label: string): string =>
         `<div role="group" aria-label="${label}">${parts}</div>`;
