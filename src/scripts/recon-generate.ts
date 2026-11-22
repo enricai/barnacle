@@ -18363,7 +18363,7 @@ function isOptionalFieldEntry(schemaText: string, matchStart: number): boolean {
   return /\.optional\(\)\s*$/.test(schemaText.slice(matchStart, end));
 }
 
-const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
+const URL_FIELD_LINE_PATTERN = /^[ \t]*(\w*Url\w*):\s*z\s*\.\s*\w+\(.*$/gm;
 
 /**
  * Character span of the payload schema expression inside `contractCode`.
