@@ -12,7 +12,7 @@ import {
   UrlLockedError,
 } from "@/api/errors";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
-import { CaptchaError, SelectorFailureError, SessionTimeoutError } from "@/scraper/errors";
+import { CaptchaError, EmptyResultsError, SelectorFailureError, SessionTimeoutError } from "@/scraper/errors";
 
 /**
  * Narrow tests for the error handler plugin — spin up a minimal Fastify
@@ -84,6 +84,9 @@ async function makeApp() {
     const err = new Error("") as Error & { statusCode: number };
     err.statusCode = 422;
     throw err;
+  });
+  app.get("/throw/scraper-empty", async () => {
+    throw new EmptyResultsError("no rows for example.com");
   });
   app.get("/throw/scraper-captcha", async () => {
     // A CaptchaError raised from the scraper layer (not an ApiError) —
@@ -208,6 +211,11 @@ describe("error-handler plugin", () => {
     expect(body.status.details[0].code).toBe(2004);
     expect(body.status.details[0].codeDescription).toBe("CAPTCHA_ENCOUNTERED");
     expect(body.status.details[0].message).toBe("hCaptcha challenge encountered");
+  });
+
+  it("maps a raw EmptyResultsError to code 2005", async () => {
+    const response = await app().inject({ method: "GET", url: "/throw/scraper-empty" });
+    expect(response.json().status.details[0].code).toBe(2005);
   });
 
   it("maps scraper SelectorFailureError to code 2003 envelope", async () => {

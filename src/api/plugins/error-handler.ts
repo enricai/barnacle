@@ -6,11 +6,11 @@ import {
 } from "fastify-type-provider-zod";
 import { ZodError } from "zod/v4";
 
-import { ApiError } from "@/api/errors";
+import { ApiError, toApiError } from "@/api/errors";
 import { replyWithError } from "@/api/helpers/reply";
 import { ERROR_CODES } from "@/api/schemas/common";
 import { invalidateResponse } from "@/cache/response-cache";
-import { isCaptchaError, isScraperError } from "@/scraper/errors";
+import { isScraperError } from "@/scraper/errors";
 import type { DispatchMetrics } from "@/types/dispatch-metrics";
 
 /**
@@ -79,10 +79,8 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
     // whole reason those codes exist is for clients to distinguish scrape
     // failures from target-site failures.
     if (isScraperError(error)) {
-      const code = isCaptchaError(error)
-        ? ERROR_CODES.CAPTCHA_ENCOUNTERED
-        : ERROR_CODES.SCRAPE_FAILURE;
-      replyWithError(reply, code, error.message, undefined, undefined, metrics);
+      const mapped = toApiError(error) as ApiError;
+      replyWithError(reply, mapped.code, mapped.message, mapped.detailType, undefined, metrics);
       return;
     }
 

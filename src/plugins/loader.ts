@@ -772,7 +772,7 @@ function registerExtraRoutes(
               errorMessage: toErrorMessage(err),
             });
           }
-          throw err;
+          throw toApiError(err) ?? err;
         } finally {
           releaseSensitiveValues(request.id);
         }
