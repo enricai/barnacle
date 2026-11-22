@@ -3579,7 +3579,7 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
   if (tokens.size === 0) return false;
   for (let j = index + 1; j < captures.length; j++) {
     const later = captures[j]!;
-    if (later.method === "GET" || later.status < 200 || later.status >= 300) continue;
+    if (later.method === "GET" || later.status < 200 || later.status >= 400) continue;
     const haystacks = [
       later.url,
       later.requestPostData ?? "",
@@ -6989,7 +6989,7 @@ export function indexStateValues(
       let reused = false;
       for (let j = i + 1; j < captures.length && !reused; j++) {
         const later = captures[j]!;
-        if (later.status < 200 || later.status >= 300) continue;
+        if (later.status < 200 || later.status >= 400) continue;
         // A later GET re-sends a token only through its URL (no body).
         reused =
           later.method === "GET"

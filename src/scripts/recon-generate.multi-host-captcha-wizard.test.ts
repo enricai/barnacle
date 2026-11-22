@@ -148,7 +148,8 @@ describe("captcha-gated multi-host server-rendered wizard", () => {
     const frozen = findFrozenRequestTokens(steps, caps, body);
     for (const t of TOKENS) expect(frozen).toContain(t);
     const gaps = detectContractGaps(steps, true, () => true, body);
-    expect(gaps.captchaGatedSteps).toBe(3 - (seq.length > 0 ? 0 : 0));
+    expect(seq.length).toBeGreaterThan(0);
+    expect(gaps.captchaGatedSteps).toBe(2);
     expect(buildContractChecklist({ pascal: "X", gql: false, gqlQuery: null, gaps })).toEqual(
       expect.arrayContaining([expect.stringMatching(/captcha-gated/)])
     );
