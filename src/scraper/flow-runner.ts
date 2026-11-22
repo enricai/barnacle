@@ -12966,8 +12966,7 @@ async function probeFormValidityBeforeSubmit(params: {
 /**
  * Resolves deepLocator candidates scoped to `INTERACTIVE_CANDIDATE_SELECTOR`,
  * widening once to the unscoped `"*"` hop when the scoped pass finds
- * nothing. A fill/select step (see {@link resolveDeepLocatorActuation}) over
- * a fill/select step (see {@link resolveDeepLocatorActuation}) instead
+ * nothing. A fill/select step (see {@link resolveDeepLocatorActuation})
  * resolves unconditionally over `FILLABLE_CANDIDATE_SELECTOR` and never
  * widens to `"*"` — only controls that can hold the value are ranked, so a
  * focusable `<label tabindex>` naming the field can never outrank (or stand
