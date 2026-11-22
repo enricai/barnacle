@@ -238,6 +238,24 @@ describe("flow-runner multi-attempt — stale document re-click", () => {
     expect(lines.some((l) => l.includes("verifiedBy=view-swap"))).toBe(true);
   });
 
+  // The identity is re-read immediately before each click, so a swap landing
+  // between the first guard and the click (the act's own click navigating the
+  // frame) is still caught.
+  it.each([1, 2, 3])(
+    "issues no click when the document is replaced after read %i",
+    async (replaceAfterReads) => {
+      const { page, stagehand, getClicks } = buildHarness("Submit", {
+        replaceDocument: true,
+        replaceAfterReads,
+      });
+      const lines: string[] = [];
+      await executeStepWithHealing(
+        baseArgs(stagehand, page, makeLogger(lines), STEP, () => null)
+      ).catch(() => undefined);
+      expect(getClicks()).toBe(0);
+    }
+  );
+
   it("control: unchanged document still retries", async () => {
     const { page, stagehand, getClicks } = buildHarness("Submit");
     const lines: string[] = [];
