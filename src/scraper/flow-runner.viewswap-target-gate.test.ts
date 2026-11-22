@@ -17,7 +17,7 @@ describe("isClickViewSwapVerified target gate", () => {
       isClickViewSwapVerified({
         ...base,
         resolvedElementNamesStepTarget: true,
-      }),
+      })
     ).toBe(true);
   });
   it("does not credit when resolved element contradicts target", () => {
@@ -25,7 +25,7 @@ describe("isClickViewSwapVerified target gate", () => {
       isClickViewSwapVerified({
         ...base,
         resolvedElementNamesStepTarget: false,
-      }),
+      })
     ).toBe(false);
   });
 });
