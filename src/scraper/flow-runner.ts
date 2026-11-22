@@ -5471,6 +5471,25 @@ function xpathBodyForEvaluate(selector: string, target?: FrameTarget): string | 
 }
 
 /**
+ * Shared committed-value reject decision for the primary verifier and the n+16
+ * fallback: true when the resolved element is a prompt-selector widget (or a
+ * select step's target field/opener) and no committed value landed.
+ */
+async function promptSelectorReadbackRejects(
+  target: FrameTarget,
+  selector: string,
+  step: string
+): Promise<boolean> {
+  const readback = await verifyPromptSelectorCommitted(
+    target,
+    selector,
+    parsePromptSelectorStep(step)?.option,
+    parseSelectStep(step) !== null
+  );
+  return readback?.isPromptWidget === true && readback.committed === false;
+}
+
+/**
  * Selection-relevant state of ONE element, as the browser-side expression body
  * ({@link elementSelectionFingerprintExpr}) serializes it. A design-system
  * option/toggle marks its selected state through one (or more) of these without
@@ -16731,13 +16750,9 @@ export async function executeStepWithHealing(params: {
         resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
       if (readbackSelector) {
         const readbackTarget = frameTarget ?? mainFrameTarget(page);
-        const promptReadback = await verifyPromptSelectorCommitted(
-          readbackTarget,
-          readbackSelector,
-          parsePromptSelectorStep(step)?.option,
-          parseSelectStep(step) !== null
-        );
-        if (promptReadback?.isPromptWidget === true && promptReadback.committed === false) {
+        if (
+          await promptSelectorReadbackRejects(readbackTarget, readbackSelector, step)
+        ) {
           promptSelectorRejected = true;
           record.actResultSuccess = false;
           record.errorMessage = `prompt-selector-fill-rejected: resolved element <${readbackSelector}> is a prompt-selector-shaped widget but no committed value landed`;
@@ -17531,6 +17546,30 @@ export async function executeStepWithHealing(params: {
                 weakDomSignalsAllowed &&
                 retryDestinationPlausible &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
+          // Same committed-value guard as the primary path: weak signals must
+          // not credit a select step whose target value never committed.
+          if (
+            retryVerified &&
+            !retryNetworkIsRealAdvance &&
+            !retryUrlChanged &&
+            parseSelectStep(step) !== null
+          ) {
+            const fbSelector =
+              resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
+            if (
+              fbSelector &&
+              (await promptSelectorReadbackRejects(
+                frameTarget ?? mainFrameTarget(page),
+                fbSelector,
+                step
+              ).catch(() => false))
+            ) {
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} n+16 fallback: select step target value unchanged; not treating as verified`
+              );
+              retryVerified = false;
+            }
+          }
           if (retryVerified) {
             record.phantomClickVerdict = retryVerdict;
           }
