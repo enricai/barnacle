@@ -7911,7 +7911,12 @@ export function findFrozenRequestTokens(
         if (typeof value === "string") check(value, capture, false);
       }
     } catch {
-      for (const [, v] of new URLSearchParams(raw)) check(v, capture, false);
+      const parts = parseMultipartTextParts(raw);
+      if (parts.length > 0) {
+        for (const part of parts) check(part.value, capture, false);
+      } else {
+        for (const [, v] of new URLSearchParams(raw)) check(v, capture, false);
+      }
     }
   }
   return [...frozen];
