@@ -314,7 +314,7 @@ async function tryResolveChildFrame(
   const mainFrameId = page.mainFrameId();
   const candidates = page
     .frames()
-    .filter((frame) => frame.frameId !== mainFrameId && frame.frameId !== scope?.frameId);
+    .filter((frame) => frame.frameId !== mainFrameId && (!scope || frame.frameId !== scope.frameId));
 
   // The iframe `src` can't be resolved to an origin — it's empty (a same-tick
   // race before the attribute reflects) or a relative/unparseable value. Fall
