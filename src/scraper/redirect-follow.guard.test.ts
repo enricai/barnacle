@@ -15,10 +15,6 @@ import { describe, expect, it } from "vitest";
  * Example of a flagged call: `fetch("https://example.com/x")`.
  */
 const ALLOWLIST: Record<string, string> = {
-  "src/scripts/recon-http.ts":
-    "body-less, header-less GET probe with no credential in a header; default redirects leak no header",
-  "src/testmail/client.ts":
-    "body-less, header-less GET whose apikey is in the URL query string, not a header; default redirects leak no header",
   "src/lib/http.ts":
     "installs the global undici dispatcher (connect timeout only); not a request site and no redirect policy",
   "src/lib/telemetry/s3-sink.ts":
@@ -137,10 +133,6 @@ describe("redirect-policy guard", () => {
       expect(reason.trim().length, path).toBeGreaterThan(10);
       expect(() => statSync(path), path).not.toThrow();
     }
-  });
-
-  it("testmail allowlist reason states the apikey is in the query string", () => {
-    expect(ALLOWLIST["src/testmail/client.ts"]).toMatch(/apikey is in the URL query string/);
   });
 
   it("every allowlist entry still contains a flagged pattern (no stale entries)", () => {
