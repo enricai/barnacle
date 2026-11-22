@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
-import { runSegmentedDateSpinbuttonPrimitive } from "@/scraper/flow-runner";
+import {
+  resolveSegmentedDateGroup,
+  runSegmentedDateSpinbuttonPrimitive,
+  SEGMENTED_DATE_ENUMERATE_EXPR,
+  type SegmentedDateGroup,
+} from "@/scraper/flow-runner";
 
 type El = {
   value: string;
@@ -15,7 +20,11 @@ type Doc = {
 type Primitive = Parameters<typeof runSegmentedDateSpinbuttonPrimitive>[0];
 
 const doc = (): Doc => (globalThis as unknown as { document: Doc }).document;
-const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() } as unknown as Primitive["logger"];
+const logger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  debug: vi.fn(),
+} as unknown as Primitive["logger"];
 
 interface Shape {
   /** Field label points at its first segment, as a native label does. */
@@ -84,7 +93,11 @@ async function run(
     instruction,
     logger,
   });
-  return { kind: out.kind, calls, value: (id) => doc().querySelector(`#${id}`)?.value ?? "" };
+  return {
+    kind: out.kind,
+    calls,
+    value: (id) => doc().querySelector(`#${id}`)?.value ?? "",
+  };
 }
 
 const SHAPES: [string, Shape][] = [
@@ -121,5 +134,51 @@ describe("segmented date fields whose segments each sit in their own display wra
     );
     expect(r.value("ws-y")).toBe("");
     expect(r.value("ws-m")).toBe("");
+  });
+});
+
+const enumerate = (html: string): SegmentedDateGroup[] => {
+  doc().body.innerHTML = html;
+  return (
+    new Function(`return ${SEGMENTED_DATE_ENUMERATE_EXPR}`)() as {
+      groups: SegmentedDateGroup[];
+    }
+  ).groups;
+};
+
+describe("a fieldset legend names a date group only when the group is its sole content", () => {
+  const Q = "When will you be available to start work?";
+  const seg = (max: number, attrs = ""): string =>
+    `<input role="spinbutton" aria-valuemax="${max}" ${attrs} />`;
+  const STEPS = [
+    `Type '12/02/2026' into '${Q}'`,
+    `In the '${Q}' date field, type the date '12/02/2026' (month 12, day 02, year 2026)`,
+  ];
+
+  it("labels a lone date by its legend when aria-labelledby names missing ids", () => {
+    const missing = 'aria-labelledby="gone-1 gone-2"';
+    const groups = enumerate(
+      `<fieldset><legend>${Q}</legend><div>${seg(12, missing)}${seg(31, missing)}${seg(9999, missing)}</div></fieldset>`
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.label).toBe(Q);
+    for (const step of STEPS) expect(resolveSegmentedDateGroup(step, groups)).toBe(0);
+  });
+
+  it("does not label either date group by a legend shared between them", () => {
+    const groups = enumerate(
+      `<fieldset><legend>${Q}</legend><div><div role="group">${seg(12)}${seg(9999)}</div></div><div><div role="group">${seg(12)}${seg(9999)}</div></div></fieldset>`
+    );
+    expect(groups).toHaveLength(2);
+    for (const g of groups) expect(g.label).not.toContain(Q);
+    for (const step of STEPS) expect(resolveSegmentedDateGroup(step, groups)).toBeNull();
+  });
+
+  it("treats a whitespace-only name as no name", () => {
+    const groups = enumerate(
+      `<fieldset><legend>${Q}</legend><div aria-label="   ">${seg(12)}${seg(9999)}</div></fieldset>`
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.label).toBe(Q);
   });
 });

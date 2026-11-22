@@ -21,7 +21,7 @@ export const SEGMENT_OWNER_JS = `
   const idText = (ids) => (ids || "").split(/\\s+/).map((id) => {
     const ref = id ? document.getElementById(id) : null;
     return ref ? norm(ref.textContent) : "";
-  }).join(" ");
+  }).filter(Boolean).join(" ");
   const legendOf = (node) => {
     const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
     return legend ? norm(legend.textContent) : "";

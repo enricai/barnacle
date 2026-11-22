@@ -265,4 +265,51 @@ describe("segmented date captions inside a titled container", () => {
     );
     expect(resolveSegmentedDateGroup("'Start' date, '012020'", groups)).toBe(0);
   });
+
+  describe("fieldset legend as date group label", () => {
+    const Q = "When will you be available to start work?";
+    const parts =
+      '<input role="spinbutton" aria-label="Month" /><input role="spinbutton" aria-label="Day" /><input role="spinbutton" aria-label="Year" />';
+
+    it("labels a blank-name group by the legend and resolves both step phrasings", () => {
+      const groups = enumerate(
+        `<fieldset><legend>${Q}</legend><div role="group" aria-labelledby="missing-a missing-b">${parts}</div></fieldset>`
+      );
+      const outer = groups.findIndex((g) => g.label === Q);
+      expect(outer).toBeGreaterThanOrEqual(0);
+      for (const g of groups) expect((g.label ?? "").trim()).not.toBe("");
+      expect(resolveSegmentedDateGroup(`Type '12/02/2026' into '${Q}'`, groups)).toBe(outer);
+      expect(
+        resolveSegmentedDateGroup(
+          `In the '${Q}' date field, type the date '12/02/2026' (month 12, day 02, year 2026)`,
+          groups
+        )
+      ).toBe(outer);
+    });
+
+    it("labels a nested group by the legend when help text separates them and segments are wrapped", () => {
+      const wrapped = parts.replace(/<input[^>]*\/>/g, (m) => `<div>${m}</div>`);
+      const groups = enumerate(
+        `<fieldset><legend>${Q}</legend><div><div>help</div><div><div role="group" aria-labelledby="missing-a">${wrapped}</div></div></div></fieldset>`
+      );
+      expect(groups.some((g) => g.label === Q)).toBe(true);
+    });
+
+    it("does not use a legend shared by two date groups as either label", () => {
+      const grp = (label: string): string =>
+        `<div role="group" aria-label="${label}">${parts}</div>`;
+      const groups = enumerate(
+        `<fieldset><legend>Employment period</legend>${grp("From")}${grp("To")}</fieldset>`
+      );
+      expect(groups.map((g) => g.label)).toEqual(["From", "To"]);
+    });
+
+    it("keeps an own aria-label when aria-labelledby resolves to nothing", () => {
+      const groups = enumerate(
+        `<fieldset><legend>${Q}</legend><div role="group" aria-label="Start date" aria-labelledby="nope">${parts}</div></fieldset>`
+      );
+      expect(groups.map((g) => g.label)).toContain("Start date");
+      expect(groups.map((g) => g.label)).not.toContain(Q);
+    });
+  });
 });
