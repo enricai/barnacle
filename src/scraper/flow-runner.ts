@@ -2869,6 +2869,8 @@ export function isClickViewSwapVerified(params: {
   actSucceeded?: boolean;
   /** Real content left the page (see isVisibleTextShrunk): a dismissal, not a reset. */
   contentRemoved?: boolean;
+  /** False when the resolved element contradicts the step's quoted target. */
+  resolvedElementNamesStepTarget?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -2887,7 +2889,11 @@ export function isClickViewSwapVerified(params: {
     pageAdvanced = textChanged,
     actSucceeded = false,
     contentRemoved = false,
+    resolvedElementNamesStepTarget = true,
   } = params;
+  // A click on a control unrelated to the step's quoted target is not the
+  // step's success, whatever the DOM did afterwards.
+  if (!resolvedElementNamesStepTarget) return false;
   // The page advancing is the evidence for a mid-flow submit, so it does not
   // depend on how Stagehand reported the gesture: a successful act that
   // listed no actions, or a non-state-class method, still ran a click-class
@@ -16197,6 +16203,8 @@ export async function executeStepWithHealing(params: {
       pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
       contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
+      resolvedElementNamesStepTarget:
+        !resolvedAction?.description || resolvedActionNamesStepTarget(step, resolvedAction),
     });
     if (
       clickViewSwapVerified === false &&
