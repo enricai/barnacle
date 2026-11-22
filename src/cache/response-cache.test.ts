@@ -200,11 +200,11 @@ describe("response-cache invalidateResponse", () => {
     // the value afterwards — a response that fails its 200 schema becomes a
     // 500 *after* the write. Without invalidation the failure is served from
     // cache for the full TTL.
-    const { key } = getCachedResponse("/v1/carnival", { maxPages: 1 });
+    const { key } = getCachedResponse("/v1/orders", { maxPages: 1 });
     const produced = await getOrCreateInFlight(key, async () => ({ label: null }));
-    expect(getCachedResponse("/v1/carnival", { maxPages: 1 }).value).toEqual(produced);
+    expect(getCachedResponse("/v1/orders", { maxPages: 1 }).value).toEqual(produced);
 
     invalidateResponse(key);
-    expect(getCachedResponse("/v1/carnival", { maxPages: 1 }).value).toBeUndefined();
+    expect(getCachedResponse("/v1/orders", { maxPages: 1 }).value).toBeUndefined();
   });
 });
