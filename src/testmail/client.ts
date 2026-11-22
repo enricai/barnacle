@@ -6,6 +6,7 @@ import { z } from "zod/v4";
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { createGraphqlClient } from "@/scraper/graphql-client";
+import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 import {
   TestmailApiError,
   type TestmailServiceStatus,
@@ -324,7 +325,7 @@ async function probeRestInbox(
     url.searchParams.set("tag", inbox.tag);
     url.searchParams.set("timestamp_from", String(inbox.timestampFrom));
     url.searchParams.set("limit", "0");
-    const res = await fetch(url, {
+    const res = await fetchFollowingRedirectsPreservingMethod(url, {
       signal: AbortSignal.timeout(REST_PROBE_TIMEOUT_MS),
     });
     if (!res.ok) return "service_unavailable";
