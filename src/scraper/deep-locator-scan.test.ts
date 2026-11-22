@@ -1198,12 +1198,12 @@ describe("deep-locator-scan label-vs-control resolution (happy-dom)", () => {
   /** Builds a happy-dom frame with the markup and evaluates `expr` against it, exposing the window's prototypes/Event the expressions reference as globals. */
   async function run(build: (win: import("happy-dom").Window) => string): Promise<{
     result: unknown;
-    input: HTMLInputElement;
+    input: { value: string };
   }> {
     const { Window } = await import("happy-dom");
     const win = new Window();
     win.document.body.innerHTML = MARKUP;
-    const input = win.document.getElementById("pw2") as unknown as HTMLInputElement;
+    const input = win.document.getElementById("pw2") as unknown as { value: string };
     for (const el of win.document.querySelectorAll("label, input")) {
       (el as unknown as { getBoundingClientRect: () => unknown }).getBoundingClientRect = () => ({
         width: 100,
@@ -1244,7 +1244,7 @@ describe("deep-locator-scan label-vs-control resolution (happy-dom)", () => {
     const { Window } = await import("happy-dom");
     const win = new Window();
     win.document.body.innerHTML = MARKUP;
-    const el = win.document.getElementById("pw2") as unknown as HTMLInputElement;
+    const el = win.document.getElementById("pw2") as unknown as { value: string };
     el.value = "s3cret-value";
     (el as unknown as { getBoundingClientRect: () => unknown }).getBoundingClientRect = () => ({
       width: 100,
