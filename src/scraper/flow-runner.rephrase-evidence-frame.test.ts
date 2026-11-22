@@ -187,7 +187,9 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
             success: true,
             message: "ok",
             actionDescription: "clicked",
-            actions: [{ selector: "button#lang", description: "language menu button", method: "click" }],
+            actions: [
+              { selector: "button#lang", description: "language menu button", method: "click" },
+            ],
           }
         : { success: false, message: "no candidates", actionDescription: "", actions: [] }
     );
@@ -217,9 +219,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
 
-    expect(
-      guardedAct.mock.calls.some((c) => c[1] === "click the language menu")
-    ).toBe(true);
+    expect(guardedAct.mock.calls.some((c) => c[1] === "click the language menu")).toBe(true);
   });
 
   it("populates rephrase evidence from deepLocator candidates, shaped as click Actions, when observe is empty for a child frame", async () => {
