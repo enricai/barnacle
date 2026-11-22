@@ -47,10 +47,7 @@ describe("addClickUrlPathBindings", () => {
   });
 
   it("binds a short numeric job id and its slug, leaving no literal id", () => {
-    const out = addClickUrlPathBindings(
-      "https://example.com/jobs/123/some-slug/login",
-      new Map()
-    );
+    const out = addClickUrlPathBindings("https://example.com/jobs/123/some-slug/login", new Map());
     expect(out.get("123")).toBe('new URL(payload.ClickUrl).pathname.split("/")[2]');
     expect(out.get("some-slug")).toBe('new URL(payload.ClickUrl).pathname.split("/")[3]');
     expect(out.has("login")).toBe(false);

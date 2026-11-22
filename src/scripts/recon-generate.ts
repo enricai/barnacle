@@ -2057,7 +2057,7 @@ export function addClickUrlPathBindings(
       afterId &&
       /-/.test(seg) &&
       isStateLikeSegment(seg) &&
-      (seg.length >= MIN_STATE_VALUE_LENGTH || isShortIdWithSlug(segments[i - 1], i - 1));
+      (seg.length >= MIN_STATE_VALUE_LENGTH || isShortIdWithSlug(segments[i - 1] ?? "", i - 1));
     if ((!isIdSegmentAt(i) && !slugAfterId) || into.has(seg)) return;
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
