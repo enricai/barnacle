@@ -331,3 +331,47 @@ describe("redirect hop capture: additional regressions", () => {
     }
   );
 });
+
+describe("redirect hop capture: deferred state drop", () => {
+  it("keeps hop state after loadingFinished until the pending hop's extra-info lands", async () => {
+    const t = harness();
+    t.fire("Network.requestWillBeSent", {
+      requestId: "r1",
+      request: { url: "https://example.com/a", method: "POST", headers: {}, postData: "x=1" },
+    });
+    t.fire("Network.requestWillBeSent", {
+      requestId: "r1",
+      request: { url: "https://example.com/b", method: "GET", headers: {} },
+      redirectResponse: { status: 302, headers: { Location: "/b" } },
+    });
+    // final hop finishes while the redirect hop still waits for its extra-info
+    await t.fire("Network.loadingFinished", { requestId: "r1" });
+    expect(t.captured.some((c) => c.method === "POST")).toBe(false);
+    // hop 0's extra-info arrives only now; its buffer must not have been dropped
+    t.fire("Network.responseReceivedExtraInfo", {
+      requestId: "r1",
+      headers: { "Set-Cookie": "late0" },
+    });
+    await t.flush();
+    const post = t.captured.find((c) => c.method === "POST");
+    const get = t.captured.find((c) => c.method === "GET");
+    expect(JSON.stringify(post?.responseHeaders)).toContain("late0");
+    expect(JSON.stringify(get?.responseHeaders ?? {})).not.toContain("late0");
+    // after the last pending hop completes, the id's state is dropped: a fresh
+    // request reusing the id starts at hop 0 and receives its own extra-info.
+    t.fire("Network.requestWillBeSent", {
+      requestId: "r1",
+      request: { url: "https://example.com/c", method: "GET", headers: {} },
+    });
+    t.fire("Network.responseReceivedExtraInfo", {
+      requestId: "r1",
+      headers: { "Set-Cookie": "fresh" },
+    });
+    await t.fire("Network.loadingFinished", { requestId: "r1" });
+    await t.flush();
+    t.teardown();
+    const fresh = t.captured.find((c) => c.url.endsWith("/c"));
+    expect(JSON.stringify(fresh?.responseHeaders)).toContain("fresh");
+    expect(JSON.stringify(fresh?.responseHeaders)).not.toContain("late0");
+  });
+});
