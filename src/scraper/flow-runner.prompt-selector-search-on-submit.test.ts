@@ -466,4 +466,33 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     ).toBe("Sweden");
     expect(enterKeyDowns(cdpEvents)).toBe(1);
   });
+  it("never sends Enter when the implicit-submit guard cannot be installed", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS, searchOnSubmit: true } },
+    });
+    const t = target as unknown as { evaluate: (s: unknown, ...a: unknown[]) => Promise<unknown> };
+    const originalEvaluate = t.evaluate.bind(target);
+    let rejected = 0;
+    t.evaluate = async (script, ...args) => {
+      if (typeof script === "string" && script.includes("__leerieNoImplicitSubmit")) {
+        rejected++;
+        throw new Error("frame detached");
+      }
+      return originalEvaluate(script, ...args);
+    };
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).catch(() => undefined);
+
+    expect(rejected).toBeGreaterThanOrEqual(1);
+    expect(enterKeyDowns(cdpEvents)).toBe(0);
+  });
 });
