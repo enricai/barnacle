@@ -20,6 +20,7 @@
  *   src/sites/<siteId>/recon-flow.json — plain-English flow steps
  */
 
+import { findCaptchaResponseFields } from "@/recon/captcha-detect";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveCanonicalAtsFieldName } from "@/lib/ats-field-vocabulary";
@@ -7829,6 +7830,8 @@ export function findFrozenRequestTokens(
     }
     const raw = capture.requestPostData;
     if (typeof raw !== "string" || raw === "") continue;
+    // A solved captcha token is single-use and unproducible: untraceable.
+    for (const f of findCaptchaResponseFields(raw)) frozen.add(f.value || f.name);
     try {
       for (const { value } of walkAllPrimitiveLeaves(JSON.parse(raw) as unknown)) {
         if (typeof value === "string") check(value, capture, false);
@@ -20888,7 +20891,7 @@ async function main(): Promise<void> {
     if (untracedTokens.length > 0) {
       for (const restore of collectorRestores) restore();
       logger.warn(
-        `WARN ${untracedTokens.length} per-request token(s) re-sent by the recorded flow could not be traced to a producer step — emitting a browser-only plugin rather than freezing them into executeHttp`
+        `WARN ${untracedTokens.length} per-request token(s) re-sent by the recorded flow could not be traced to a producer step (includes captcha response fields, which are single-use and cannot be replayed) — emitting a browser-only plugin rather than freezing them into executeHttp`
       );
     }
     const browserFlowOnly = mustBeBrowserFlowOnly || untracedTokens.length > 0;
