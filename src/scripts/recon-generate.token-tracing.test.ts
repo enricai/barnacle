@@ -342,3 +342,25 @@ describe("findFrozenRequestTokens", () => {
     ).toEqual([]);
   });
 });
+
+describe("HTML path-segment producers", () => {
+  const JOB = "8f3a2b1c-1111-2222-3333-444455556666";
+  it("keeps a GET whose HTML path segment is re-sent in a later POST URL", () => {
+    const caps = [
+      buildCapture({
+        url: "https://shop.example.com/jobs",
+        method: "GET",
+        requestPostData: null,
+        responseBody: `<html><a href="/jobs/${JOB}/senior-engineer/candidate">x</a></html>`,
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildCapture({
+        url: `https://shop.example.com/jobs/${JOB}/senior-engineer/candidate`,
+        requestPostData: JSON.stringify({ go: 1 }),
+        responseBody: { ok: true },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ];
+    expect(extractActionSequence(caps).map((s) => s.index)).toContain(0);
+  });
+});

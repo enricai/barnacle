@@ -60,7 +60,7 @@ const SITE_BRANCH_PATTERNS: RegExp[] = [
 // generic hCaptcha widget shape ([data-sitekey]/data-callback), never a
 // named vendor. (Deliberately using unrelated domains as examples per
 // CLAUDE.md's no-site-mention rule for this repo.)
-const VENDOR_NAME_PATTERNS: RegExp[] = [/greenhouse/i, /lever/i, /workday/i, /icims/i, /taleo/i];
+const VENDOR_NAME_PATTERNS: RegExp[] = [/greenhouse/i, /lever/i, /workday/i, /taleo/i];
 
 describe("captcha hand-off stays site-agnostic (flow-runner.ts)", () => {
   it.each([

@@ -28,11 +28,17 @@ import { getScriptLogger } from "@/lib/logging";
 import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
+import { findCaptchaResponseFields, parseMultipartTextParts } from "@/recon/captcha-detect";
 import {
+  extractNavigatedHostnames,
   hasNoBusinessRelevantResponseState,
   isAllowedFixtureHost,
+  isFormDocumentSubmission,
+  isHtmlFormStep,
+  isNavigatedSiblingHost,
   isNoiseUrl,
   isSamePathFamily,
+  isSameSiteHost,
   isServerRenderedFormSubmit,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
@@ -43,6 +49,13 @@ import {
   registrableDomain,
 } from "@/recon/capture-filters";
 import type { ReconFormSchema } from "@/recon/form-schema";
+import {
+  extractHtmlIssuedTokens,
+  extractHtmlSelectOptions,
+  type HtmlTokenElement,
+  isStateLikeSegment,
+  PATH_SEGMENT_MIN_LENGTH,
+} from "@/recon/html-state-producers";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
 import { loadReconValueConstraints, VALUE_CONSTRAINTS_NONE } from "@/recon/load-value-constraints";
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
@@ -823,6 +836,36 @@ export function deriveFillLabelField(instruction: string): string | null {
   )?.[1];
   if (label === undefined) return null;
   return resolveCanonicalAtsFieldName(label) ?? fieldNameToPascalCase(label, null);
+}
+
+/** Overlay persona values persisted by recon-browser (`persona-env.json`) under
+ * `env`; real env values keep precedence. */
+export function withPersistedPersonaEnv(
+  runRoot: string,
+  env: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv {
+  const file = join(runRoot, "persona-env.json");
+  if (!existsSync(file)) return env;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (parsed === null || typeof parsed !== "object") return env;
+    const merged: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") merged[k] = v;
+    for (const [k, v] of Object.entries(env)) if (v !== undefined && v !== "") merged[k] = v;
+    return merged;
+  } catch {
+    return env;
+  }
+}
+
+/** harvestPersonaBindings over env overlaid with the run's persisted persona env. */
+export function harvestRunPersonaBindings(
+  flowSteps: FlowStepInput[],
+  vocabulary: ReconVocabulary,
+  runRoot: string,
+  env: NodeJS.ProcessEnv
+): Map<string, string> {
+  return harvestPersonaBindings(flowSteps, vocabulary, withPersistedPersonaEnv(runRoot, env));
 }
 
 /**
@@ -1970,6 +2013,70 @@ export function extractEntryUrlParams(entryUrl: string): Map<string, string> {
     if (!params.has(value)) params.set(value, `payload.${key}`);
   }
   return params;
+}
+
+/**
+ * Maps the state-like path segments (a job id, a slug) of the recon ENTRY URL to
+ * accessors that read the same positional segment from the caller's
+ * `payload.ClickUrl` — the live posting URL a job-application contract
+ * already requires — so the emitted URLs carry the caller's job path instead
+ * of the recon run's. Existing entries (query-param bindings) are kept.
+ */
+export function addClickUrlPathBindings(
+  entryUrl: string,
+  into: Map<string, string>
+): Map<string, string> {
+  let u: URL;
+  try {
+    u = new URL(entryUrl);
+  } catch {
+    return into;
+  }
+  u.pathname.split("/").forEach((seg, i) => {
+    // Same collision floor as extractEntryUrlParams (a short value matches arbitrary
+    // substrings of later bodies/URLs), and require a digit: a purely alphabetic
+    // hyphenated segment (`create-order`) is an endpoint name, not a job identifier.
+    if (
+      !isStateLikeSegment(seg) ||
+      seg.length < MIN_STATE_VALUE_LENGTH ||
+      !/\d/.test(seg) ||
+      into.has(seg)
+    )
+      return;
+    into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
+  });
+  return into;
+}
+
+/**
+ * In a text-captured multipart body, rebinds each part whose name is a
+ * `<select>` rendered by a prior HTML response and whose value is one of that
+ * select's option ids to `payload.Answers[<name>]`, so the caller's answer —
+ * not the recon persona's frozen option id — is submitted.
+ */
+export function bindMultipartSelectAnswers(
+  body: string,
+  cap: Capture,
+  prior: readonly { capture: Capture }[]
+): string {
+  const ct = Object.entries(cap.requestHeaders).find(([k]) => k.toLowerCase() === "content-type");
+  if (!(ct?.[1] ?? "").toLowerCase().includes("multipart/")) return body;
+  const selects = new Map<string, Set<string>>();
+  for (const p of prior) {
+    for (const [name, values] of extractHtmlSelectOptions(p.capture.responseBody)) {
+      const merged = selects.get(name) ?? new Set<string>();
+      for (const v of values) merged.add(v);
+      selects.set(name, merged);
+    }
+  }
+  if (selects.size === 0) return body;
+  return body.replace(
+    /(Content-Disposition: form-data; name="([^"]+)"\r?\n\r?\n)([^\r\n]*)(?=\r?\n--)/g,
+    (whole, head: string, name: string, value: string) =>
+      selects.get(name)?.has(value) && !value.includes("${")
+        ? `${head}\${payload.Answers[${JSON.stringify(name)}]}`
+        : whole
+  );
 }
 
 const IGNORE_REQUEST_HEADERS = new Set([
@@ -3400,70 +3507,6 @@ function resends(haystack: string, value: string): boolean {
   return replayForms(value).some((form) => haystack.includes(form));
 }
 
-/** Kind of HTML element an issued token was read from. */
-type HtmlTokenElement = "form-action" | "link" | "hidden-input";
-
-interface HtmlIssuedToken {
-  value: string;
-  element: HtmlTokenElement;
-  /** Query parameter name or input name. */
-  name: string;
-}
-
-/**
- * Extracts per-request tokens from an HTML string body: query-parameter values
- * in `<form action>` / `<a href>` URLs and `<input type="hidden">` values. Each
- * carries a stable locator (element kind + parameter/input name). Returns [] for
- * non-string or non-HTML bodies. Values are entity-decoded (`&amp;`).
- */
-function extractHtmlIssuedTokens(body: unknown): HtmlIssuedToken[] {
-  if (typeof body !== "string" || !body.includes("<")) return [];
-  const out: HtmlIssuedToken[] = [];
-  const decode = (v: string): string =>
-    v
-      .replace(/&amp;/gi, "&")
-      .replace(/&quot;/gi, '"')
-      .replace(/&#0*39;/g, "'")
-      .replace(/&lt;/gi, "<")
-      .replace(/&gt;/gi, ">");
-  const attr = (tag: string, name: string): string | undefined => {
-    const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
-    if (!m) return undefined;
-    return decode(m[1] ?? m[2] ?? m[3] ?? "");
-  };
-  const fromUrl = (url: string, element: HtmlTokenElement): void => {
-    const q = url.indexOf("?");
-    if (q < 0) return;
-    const query = url.slice(q + 1).split("#")[0]!;
-    for (const pair of query.split("&")) {
-      const eq = pair.indexOf("=");
-      if (eq <= 0) continue;
-      let value = pair.slice(eq + 1);
-      try {
-        value = decodeURIComponent(value.replace(/\+/g, " "));
-      } catch {
-        /* keep raw */
-      }
-      out.push({ value, element, name: pair.slice(0, eq) });
-    }
-  };
-  for (const m of body.matchAll(/<form\b[^>]*>/gi)) {
-    const a = attr(m[0], "action");
-    if (a) fromUrl(a, "form-action");
-  }
-  for (const m of body.matchAll(/<a\b[^>]*>/gi)) {
-    const h = attr(m[0], "href");
-    if (h) fromUrl(h, "link");
-  }
-  for (const m of body.matchAll(/<input\b[^>]*>/gi)) {
-    if (attr(m[0], "type")?.toLowerCase() !== "hidden") continue;
-    const name = attr(m[0], "name");
-    const value = attr(m[0], "value");
-    if (name && value) out.push({ value, element: "hidden-input", name });
-  }
-  return out;
-}
-
 /**
  * True when a GET capture's response issues a value (an opaque token: a
  * session id, CSRF nonce, form handle) that a LATER non-GET 2xx request
@@ -3484,8 +3527,13 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
   }
-  for (const { value } of extractHtmlIssuedTokens(getCapture.responseBody)) {
-    if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+  for (const { value, element } of extractHtmlIssuedTokens(getCapture.responseBody)) {
+    if (
+      value.length <
+        (element === "path-segment" ? PATH_SEGMENT_MIN_LENGTH : ISSUED_TOKEN_MIN_LENGTH) ||
+      value.length > ISSUED_TOKEN_MAX_LENGTH
+    )
+      continue;
     if (/\s/.test(value)) continue;
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
@@ -3638,6 +3686,7 @@ export function extractActionSequence(
       !matchesFoldReturn(c) &&
       resolvesResultsArray(c)
   );
+  const navigatedHosts = extractNavigatedHostnames(captures.map((c) => c.responseBody));
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture, index }) => {
@@ -3663,6 +3712,19 @@ export function extractActionSequence(
           ownBackendHostnames,
           fallbackDomain,
           primaryHost
+        ) &&
+        !(
+          capture.method !== "GET" &&
+          (isNavigatedSiblingHost(
+            captureHostname(capture.url),
+            navigatedHosts,
+            ownBackendHostnames,
+            fallbackDomain
+          ) ||
+            // A form-encoded document POST to a same-site host is itself a
+            // navigation to that host, whether or not a captured page names it.
+            (isFormDocumentSubmission(capture) &&
+              isSameSiteHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)))
         )
       )
         return false;
@@ -3833,6 +3895,7 @@ export function extractActionSequence(
             matchesDeclaredSubmitEndpoint(capture) ||
             matchesDeclaredSubmitBody(capture) ||
             feedsDeclaredTarget ||
+            isHtmlFormStep(capture) ||
             !isStructurallyIsolatedCapture(path, otherPaths)
           );
         })
@@ -7723,7 +7786,8 @@ export function compileActionSteps(
       ([k]) => k.toLowerCase() === "content-type"
     );
     const isMultipart =
-      (ct?.[1] ?? "").toLowerCase().includes("multipart/") && capture.requestPostData === null;
+      (ct?.[1] ?? "").toLowerCase().includes("multipart/") &&
+      (capture.requestPostData === null || capture.requestPostData === REQUEST_BODY_UNAVAILABLE);
 
     let currentHost: string | null = null;
     try {
@@ -7731,7 +7795,12 @@ export function compileActionSteps(
     } catch {
       currentHost = null;
     }
-    const isCrossDomain = lastHost !== null && currentHost !== null && lastHost !== currentHost;
+    const isCrossDomain =
+      lastHost !== null &&
+      currentHost !== null &&
+      lastHost !== currentHost &&
+      registrableDomain(lastHost.replace(/:\d+$/, "")) !==
+        registrableDomain(currentHost.replace(/:\d+$/, ""));
     lastHost = currentHost;
 
     // Multipart steps are emitted through a path that cannot read the HTML
@@ -7829,6 +7898,8 @@ export function findFrozenRequestTokens(
     }
     const raw = capture.requestPostData;
     if (typeof raw !== "string" || raw === "") continue;
+    // A solved captcha token is single-use and unproducible: untraceable.
+    for (const f of findCaptchaResponseFields(raw)) frozen.add(f.value || f.name);
     try {
       for (const { value } of walkAllPrimitiveLeaves(JSON.parse(raw) as unknown)) {
         if (typeof value === "string") check(value, capture, false);
@@ -7907,10 +7978,17 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
  * opaque token (e.g. splicing a "12" into a hyphen-joined "SKU-12-9F3Z"
  * segment) while a standalone occurrence (e.g. "/items/42/") still matches. */
 function buildValueAlternationPattern(sortedValues: string[]): RegExp {
-  return new RegExp(
-    `(?<![A-Za-z0-9][-.])\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?![-.][A-Za-z0-9])`,
-    "g"
-  );
+  // `\b` only anchors an edge that is itself a word character. A value whose
+  // edge is not (a signed number such as `-625857879`, a base64 `=` pad) could
+  // never sit on a `\b` beside the `=`/`&`/quote that normally delimits it, so
+  // such an edge is anchored on "no word character beside it" instead.
+  const alternatives = sortedValues.map((v) => {
+    const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const lead = /^\w/.test(v) ? "\\b" : "(?<!\\w)";
+    const trail = /\w$/.test(v) ? "\\b" : "(?!\\w)";
+    return `${lead}${escaped}${trail}`;
+  });
+  return new RegExp(`(?<![A-Za-z0-9][-.])(?:${alternatives.join("|")})(?![-.][A-Za-z0-9])`, "g");
 }
 
 /** Normalizes a JSON key or a produced var name to a bare comparable token —
@@ -10660,6 +10738,20 @@ export function emitMultiStepExecuteHttp(
       }
     }
 
+    if (
+      bodyTemplate &&
+      cap.requestPostData !== REQUEST_BODY_UNAVAILABLE &&
+      // `Answers` is only declared on applicant-contact contracts.
+      contractUsesApplicantContactSchema({
+        inputBody,
+        isSubmissionFlow: true,
+        payloadFieldNames: outDiscoveredFields,
+        formBodyFieldNames: collectFormBodyFieldNames(actions),
+      })
+    ) {
+      bodyTemplate = bindMultipartSelectAnswers(bodyTemplate, cap, prior);
+    }
+
     const joinCarryingHeaderNames = joinCarryingHeaderNamesByStep.get(i);
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
@@ -10726,6 +10818,20 @@ export function emitMultiStepExecuteHttp(
     for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
       const fieldName = headerNameToPayloadFieldName(headerName);
       perCallHeaders[headerName] = `\${payload.${fieldName}}`;
+    }
+    // A text-captured multipart body (requestPostData non-null) is sent through
+    // httpClient as a string, so the captured multipart Content-Type (with the
+    // boundary the body uses) must override the JSON baseline in BASE_HEADERS.
+    if (cap.requestPostData !== null && cap.requestPostData !== undefined) {
+      const capturedCt = Object.entries(cap.requestHeaders).find(
+        ([k]) => k.toLowerCase() === "content-type"
+      )?.[1];
+      if (capturedCt?.toLowerCase().includes("multipart/")) {
+        for (const k of Object.keys(perCallHeaders)) {
+          if (k.toLowerCase() === "content-type") delete perCallHeaders[k];
+        }
+        perCallHeaders["Content-Type"] = capturedCt.replace(/[`\\]|\$\{/g, (m) => `\\${m}`);
+      }
     }
     const headersExpr = Object.keys(perCallHeaders).length
       ? `headers: { ${Object.entries(perCallHeaders)
@@ -11647,6 +11753,24 @@ function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string
       `${indent}    if ((n?.[1] ?? n?.[2] ?? n?.[3]) !== ${name}) continue;`,
       `${indent}    const v = /\\svalue\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
       `${indent}    if (v) return (v[1] ?? v[2] ?? v[3] ?? "").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#0*39;/g, "'");`,
+      `${indent}  }`,
+      `${indent}  return undefined;`,
+      `${indent}})();`,
+      fail,
+    ];
+  }
+  if (p.element === "path-segment") {
+    return [
+      `${indent}const ${p.name} = (() => {`,
+      `${indent}  const pattern = ${name}.split("/");`,
+      `${indent}  for (const tag of ${textVar}.match(/<(?:a|form)\\b[^>]*>/gi) ?? []) {`,
+      `${indent}    const a = /\\s(?:href|action)\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
+      `${indent}    const target = (a?.[1] ?? a?.[2] ?? a?.[3] ?? "").replace(/&amp;/gi, "&").replace(/^[a-z][a-z0-9+.-]*:\\/\\/[^/?#]*/i, "").split(/[?#]/)[0];`,
+      `${indent}    const segs = target.split("/");`,
+      `${indent}    if (segs.length !== pattern.length) continue;`,
+      `${indent}    const at = pattern.indexOf("*");`,
+      `${indent}    if (!segs.every((s, k) => k === at || s === pattern[k])) continue;`,
+      `${indent}    try { return decodeURIComponent(segs[at]); } catch { return segs[at]; }`,
       `${indent}  }`,
       `${indent}  return undefined;`,
       `${indent}})();`,
@@ -16529,6 +16653,81 @@ ${foldMergeLines.length > 0 ? `${foldMergeLines.join("\n")}\n` : ""}    const tr
     return { data };`;
 }
 
+/** Honest-outcome conditions the recorded flow hits that an emitted
+ * executeHttp cannot replay faithfully. */
+export interface ContractGaps {
+  /** Steps whose request carries a captcha response field (single-use). */
+  captchaGatedSteps: number;
+  /** The action sequence stops short of the flow's submit step. */
+  truncatedSequence: boolean;
+  /** Upload steps whose request body was unavailable at capture time. */
+  bodylessUploadSteps: number;
+  /** Select answers the recording froze because nothing binds them to payload.Answers. */
+  frozenScreeningAnswers: number;
+}
+
+/** Derives {@link ContractGaps} from the compiled action sequence. `submitDeclared`
+ * is whether the flow declares a submit step; `matchesSubmit` is the declared
+ * submit-pattern matcher (accept-all when none is declared). */
+export function detectContractGaps(
+  actionSteps: ReadonlyArray<{ capture: Capture; isMultipart: boolean }>,
+  submitDeclared: boolean,
+  matchesSubmit: (c: Capture) => boolean,
+  emittedBody?: string
+): ContractGaps {
+  const captchaGatedSteps = actionSteps.filter((s) => {
+    const raw = s.capture.requestPostData;
+    return typeof raw === "string" && raw !== REQUEST_BODY_UNAVAILABLE
+      ? findCaptchaResponseFields(raw).length > 0
+      : false;
+  }).length;
+  const bodylessUploadSteps = actionSteps.filter(
+    (s) => s.isMultipart && s.capture.requestPostData === REQUEST_BODY_UNAVAILABLE
+  ).length;
+  const isWrite = (c: Capture): boolean => c.method.toUpperCase() !== "GET";
+  const truncatedSequence =
+    submitDeclared &&
+    actionSteps.length > 0 &&
+    !actionSteps.some((s) => isWrite(s.capture) && matchesSubmit(s.capture));
+  let frozenScreeningAnswers = 0;
+  if (emittedBody !== undefined && !emittedBody.includes("payload.Answers[")) {
+    const selects = new Set<string>();
+    for (const s of actionSteps) {
+      for (const name of extractHtmlSelectOptions(s.capture.responseBody).keys()) selects.add(name);
+    }
+    for (const s of actionSteps) {
+      const raw = s.capture.requestPostData;
+      if (typeof raw !== "string") continue;
+      for (const name of selects) {
+        if (raw.includes(`name="${name}"`)) frozenScreeningAnswers++;
+      }
+    }
+  }
+  return { captchaGatedSteps, truncatedSequence, bodylessUploadSteps, frozenScreeningAnswers };
+}
+
+/** Checklist lines for each {@link ContractGaps} condition that holds. */
+export function contractGapChecklistLines(gaps: ContractGaps): string[] {
+  const lines: string[] = [];
+  if (gaps.captchaGatedSteps > 0)
+    lines.push(
+      `${gaps.captchaGatedSteps} step(s) are captcha-gated — a solved captcha token is single-use and cannot be replayed over HTTP; the browser flow must solve it`
+    );
+  if (gaps.truncatedSequence)
+    lines.push(
+      "The recorded action sequence stops short of the flow's submit step — no submit request was captured, so executeHttp cannot replay the submission; re-record the flow through the submit"
+    );
+  if (gaps.bodylessUploadSteps > 0)
+    lines.push(
+      `${gaps.bodylessUploadSteps} upload step(s) had no capturable request body — the form fields sent alongside the file are not bound to payload; verify them by hand`
+    );
+  if (gaps.frozenScreeningAnswers > 0)
+    lines.push(
+      `${gaps.frozenScreeningAnswers} screening answer(s) are frozen at the recording's values — nothing binds them to payload.Answers; bind them or confirm they are constant`
+    );
+  return lines;
+}
+
 /**
  * Same review-checklist items the pre-move contract.ts header used to embed,
  * now surfaced on recon-generate's own stdout instead of the shipped file —
@@ -16541,6 +16740,7 @@ export function buildContractChecklist(opts: {
   gqlQuery: string | null;
   omitExecuteHttp?: boolean;
   multiStepBody?: string;
+  gaps?: ContractGaps;
 }): string[] {
   const { pascal, gql, gqlQuery, omitExecuteHttp, multiStepBody } = opts;
   // Same isGqlEmission decision emitContractTs treats as the single source of
@@ -16580,6 +16780,7 @@ export function buildContractChecklist(opts: {
     `Adjust ${pascal}PayloadSchema to your actual request parameters`,
     baseHeadersChecklistLine,
     outOfTreeChecklistLine,
+    ...(opts.gaps ? contractGapChecklistLines(opts.gaps) : []),
   ].filter((line) => line !== "");
 }
 
@@ -16689,8 +16890,14 @@ export function contractUsesApplicantContactSchema(opts: {
   isSubmissionFlow?: boolean;
   browserFlowOnly?: boolean;
   payloadFieldNames?: Set<string>;
+  /** Field names of the action sequence's text-captured form bodies (see
+   * {@link collectFormBodyFieldNames}): a server-rendered wizard sends
+   * multipart/urlencoded bodies that carry no JSON `inputBody`, so the names of
+   * the fields it submits are the only evidence of what the caller supplies. */
+  formBodyFieldNames?: ReadonlySet<string>;
 }): boolean {
-  const { inputBody, isSubmissionFlow, browserFlowOnly, payloadFieldNames } = opts;
+  const { inputBody, isSubmissionFlow, browserFlowOnly, payloadFieldNames, formBodyFieldNames } =
+    opts;
   // A browser-flow-only submission flow has no HTTP body of its own: whatever
   // inputBody HTTP analysis captured describes a path the plugin won't emit,
   // so it is not evidence about the real caller's shape.
@@ -16705,10 +16912,34 @@ export function contractUsesApplicantContactSchema(opts: {
   }
   return (
     isSubmissionFlow === true &&
-    [...(payloadFieldNames ?? [])].some((name) =>
+    [...(payloadFieldNames ?? []), ...(formBodyFieldNames ?? [])].some((name) =>
       applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
     )
   );
+}
+
+/**
+ * Names of the fields submitted by the text-captured multipart/urlencoded
+ * request bodies of an action sequence. A body whose bytes were never captured
+ * ({@link REQUEST_BODY_UNAVAILABLE}) contributes nothing.
+ */
+export function collectFormBodyFieldNames(
+  steps: readonly { capture: Capture }[]
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const { capture } of steps) {
+    const raw = capture.requestPostData;
+    if (typeof raw !== "string" || raw === REQUEST_BODY_UNAVAILABLE) continue;
+    const contentType = Object.entries(capture.requestHeaders)
+      .find(([k]) => k.toLowerCase() === "content-type")?.[1]
+      ?.toLowerCase();
+    if (contentType?.includes("multipart/form-data")) {
+      for (const part of parseMultipartTextParts(raw)) names.add(part.name);
+    } else if (contentType?.includes("application/x-www-form-urlencoded")) {
+      for (const key of new URLSearchParams(raw).keys()) names.add(key);
+    }
+  }
+  return names;
 }
 
 /** Decides whether a flow is a multi-step submission. A read-only GET flow
@@ -17053,6 +17284,7 @@ export function emitContractTsParts(opts: {
     isSubmissionFlow,
     browserFlowOnly: omitExecuteHttp,
     payloadFieldNames,
+    formBodyFieldNames: collectFormBodyFieldNames(actionSteps),
   });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
@@ -18693,6 +18925,21 @@ function unreadDeclaredPayloadFields(
  * Review-checklist lines for declared payload fields no emitted request reads,
  * so a reviewer sees the silently-optionalized field outside the log stream.
  */
+/**
+ * Checklist lines for the base applicant-contract payload fields (`Resume`,
+ * `Answers`, `ClickUrl`) the emitted contract declares but no request reads.
+ */
+export function unreadContractSchemaFieldChecklistLines(contractCode: string): string[] {
+  if (!/\bApplicantContactSchema\b/.test(contractCode)) return [];
+  const emitted = stripNonCodeText(contractCode);
+  return ["Resume", "Answers", "ClickUrl"]
+    .filter((field) => !new RegExp(`payload\\.${field}(?![\\w$])`).test(emitted))
+    .map(
+      (field) =>
+        `Payload field ${field} is declared by the contract schema but read by no emitted request — the recon's recorded value is sent instead; bind it or confirm it is unused`
+    );
+}
+
 export function unreadPayloadFieldChecklistLines(fields: ReadonlySet<string>): string[] {
   return [...fields].map(
     (field) =>
@@ -18889,6 +19136,8 @@ export function emitConfigManifest(opts: {
   hasMultipartStep?: boolean;
   /** Browser-flow-only emit (no executeHttp); feeds {@link contractUsesApplicantContactSchema}. */
   browserFlowOnly?: boolean;
+  /** Feeds {@link contractUsesApplicantContactSchema}; see {@link collectFormBodyFieldNames}. */
+  formBodyFieldNames?: ReadonlySet<string>;
   /** Read-only GET flow: no submission, so the request schema omits TrackingUrl (mirrors the .ts contract). */
   readOnlyGet?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
@@ -18907,6 +19156,7 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow = false,
     hasMultipartStep = false,
     browserFlowOnly = false,
+    formBodyFieldNames,
     readOnlyGet = false,
     env = process.env,
   } = opts;
@@ -18916,6 +19166,7 @@ export function emitConfigManifest(opts: {
     inputBody,
     isSubmissionFlow,
     browserFlowOnly,
+    formBodyFieldNames,
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
@@ -19015,6 +19266,7 @@ export function emitConfigManifest(opts: {
     inputBody,
     isSubmissionFlow,
     browserFlowOnly,
+    formBodyFieldNames,
     payloadFieldNames,
   });
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
@@ -19171,6 +19423,7 @@ export function emitBrowserFlowTs(opts: {
   /** Inputs to {@link contractUsesApplicantContactSchema}; the decision is made
    * here, after payload fields are accumulated, to match the contract emitter. */
   inputBody?: unknown;
+  formBodyFieldNames?: ReadonlySet<string>;
   vocabulary?: ReconVocabulary;
   /** CSS selector of a cross-origin `<iframe>` the flow's target elements live
    * inside, from the recon flow file's object-form `frameSelector`. Matches
@@ -19207,6 +19460,7 @@ export function emitBrowserFlowTs(opts: {
     hasMultipartStep = false,
     browserFlowOnly = false,
     inputBody,
+    formBodyFieldNames,
     vocabulary,
     frameSelector,
     capturedFallbackFields = new Set<string>(),
@@ -19219,6 +19473,7 @@ export function emitBrowserFlowTs(opts: {
     inputBody,
     isSubmissionFlow,
     browserFlowOnly,
+    formBodyFieldNames,
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
@@ -19625,6 +19880,8 @@ interface TsGenerationResult {
   /** The exact expression emitted as `const <X>PayloadSchema = ...`. */
   payloadSchemaExpr: string;
   contractOpts: Parameters<typeof emitContractTs>[0];
+  /** Honest-outcome conditions surfaced as review-checklist lines. */
+  gaps: ContractGaps;
   browserFlow: ReturnType<typeof emitBrowserFlowTs>;
   auxFiles: Array<{ filename: string; url: string }>;
   /** The resolved action-sequence pool that drove schema/response/fold
@@ -19976,7 +20233,7 @@ export function inferChainStepResponseSchema(
   });
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let siteId = "";
   let force = false;
@@ -20564,7 +20821,7 @@ async function main(): Promise<void> {
     // recon persona's. Both are site-agnostic: persona mapping comes from the
     // consumer vocabulary, job coordinates from the entry URL's own query keys.
     warnUnmatchedFillSteps(flowSteps, vocabulary, (msg) => logger.warn(msg));
-    const personaBindings = harvestPersonaBindings(flowSteps, vocabulary, process.env);
+    const personaBindings = harvestRunPersonaBindings(flowSteps, vocabulary, runRoot, process.env);
     const entryUrlParams = extractEntryUrlParams(activeCaptures[0]?.url ?? "");
     // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
     // action sequence at the position observed during recon, so the existing
@@ -20729,6 +20986,7 @@ async function main(): Promise<void> {
       );
     }
 
+    const formBodyFieldNames = collectFormBodyFieldNames(actionSteps);
     const inputBody = isSubmissionFlow
       ? (() => {
           try {
@@ -20739,6 +20997,18 @@ async function main(): Promise<void> {
           }
         })()
       : undefined;
+    if (
+      contractUsesApplicantContactSchema({
+        inputBody,
+        isSubmissionFlow,
+        browserFlowOnly: false,
+        formBodyFieldNames,
+        payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env, false)
+          .payloadFieldNames,
+      })
+    ) {
+      addClickUrlPathBindings(activeCaptures[0]?.url ?? "", entryUrlParams);
+    }
     const errorSignals = detectErrorSignals(actionSteps);
     const discoveredFormFields = new Set<string>();
     // emitMultiStepExecuteHttp's outDiscoveredFields parameter is a generic
@@ -20819,9 +21089,38 @@ async function main(): Promise<void> {
     // downgrade to the single-endpoint `{query}` branch either, since that's a
     // fabrication of its own kind for a flow that isn't a single-action
     // query/search to begin with.
+    const submitDeclared =
+      (submitPatterns !== null &&
+        (submitPatterns.endpoint !== null || submitPatterns.body !== null)) ||
+      flowSteps.some((st) => typeof st === "object" && st.submitStep === true);
+    const preGaps = detectContractGaps(actionSteps, submitDeclared, matchesDeclaredSubmit);
+    const failClosedReasons: string[] = [];
+    // A read-only (all-GET) sequence whose declared submit pattern targets a GET
+    // is a read flow, not a write submission cut short — leave it on executeHttp.
+    if (
+      isSubmissionFlow &&
+      preGaps.truncatedSequence &&
+      actionSteps.some((s) => s.capture.method.toUpperCase() !== "GET") &&
+      // A declared pattern that many (3+) recorded captures match is a repeated
+      // read endpoint (samples of one read), not a single submit the sequence
+      // cut short — the selection path owns that case.
+      !(
+        submitPatterns !== null &&
+        (submitPatterns.endpoint !== null || submitPatterns.body !== null) &&
+        activeCaptures.filter(matchesDeclaredSubmit).length >= 3
+      )
+    )
+      failClosedReasons.push("the action sequence stops short of the flow's submit step");
+    if (isSubmissionFlow && preGaps.bodylessUploadSteps > 0)
+      failClosedReasons.push("an upload step's request body was unavailable and cannot be bound");
+    if (failClosedReasons.length > 0)
+      logger.warn(`WARN falling back to a browser-only plugin: ${failClosedReasons.join("; ")}`);
     const mustBeBrowserFlowOnly =
       isSubmissionFlow &&
-      (browserFlowOnlyOptIn || noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
+      (browserFlowOnlyOptIn ||
+        noReplayableActionFlow ||
+        actionSteps.some((s) => s.isCrossDomain) ||
+        failClosedReasons.length > 0);
     // emitMultiStepExecuteHttp registers what it binds into these collectors;
     // a body discarded below must leave them as it found them.
     const collectorRestores: Array<() => void> = [
@@ -20888,7 +21187,7 @@ async function main(): Promise<void> {
     if (untracedTokens.length > 0) {
       for (const restore of collectorRestores) restore();
       logger.warn(
-        `WARN ${untracedTokens.length} per-request token(s) re-sent by the recorded flow could not be traced to a producer step — emitting a browser-only plugin rather than freezing them into executeHttp`
+        `WARN ${untracedTokens.length} per-request token(s) re-sent by the recorded flow could not be traced to a producer step (includes captcha response fields, which are single-use and cannot be replayed) — emitting a browser-only plugin rather than freezing them into executeHttp`
       );
     }
     const browserFlowOnly = mustBeBrowserFlowOnly || untracedTokens.length > 0;
@@ -21003,6 +21302,7 @@ async function main(): Promise<void> {
           isSubmissionFlow,
           hasMultipartStep,
           browserFlowOnly,
+          formBodyFieldNames,
           readOnlyGet: isReadOnlyGetFlow,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
@@ -21033,6 +21333,7 @@ async function main(): Promise<void> {
       hasMultipartStep,
       browserFlowOnly,
       inputBody,
+      formBodyFieldNames,
       vocabulary,
       frameSelector,
       readOnlyGetFlow: isReadOnlyGetFlow,
@@ -21173,6 +21474,7 @@ async function main(): Promise<void> {
       contractCode: settled.contractCode,
       payloadSchemaExpr: settled.payloadSchemaExpr,
       contractOpts: settled.contractOpts,
+      gaps: detectContractGaps(actionSteps, submitDeclared, matchesDeclaredSubmit, multiStepBody),
       browserFlow: settled.browserFlow,
       auxFiles,
       resolvedPool: actionCaptures,
@@ -21204,10 +21506,11 @@ async function main(): Promise<void> {
   // Same opts fed to emitContractTs above, so this can never drift from what
   // the header used to embed.
   const checklist = [
-    ...buildContractChecklist(final.contractOpts),
+    ...buildContractChecklist({ ...final.contractOpts, gaps: final.gaps }),
     ...unreadPayloadFieldChecklistLines(
       unreadDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
     ),
+    ...unreadContractSchemaFieldChecklistLines(final.contractCode),
   ];
   logger.info(
     `review checklist for ${outDir}/contract.ts:\n${checklist.map((item) => `  [ ] ${item}`).join("\n")}`

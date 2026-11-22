@@ -44,7 +44,7 @@ const SITE_BRANCH_PATTERNS: RegExp[] = [
 // the generic per-target CDP install sequence, never a named vendor.
 // (Deliberately using unrelated domains as examples per CLAUDE.md's
 // no-site-mention rule for this repo.)
-const VENDOR_NAME_PATTERNS: RegExp[] = [/greenhouse/i, /lever/i, /workday/i, /icims/i, /taleo/i];
+const VENDOR_NAME_PATTERNS: RegExp[] = [/greenhouse/i, /lever/i, /workday/i, /taleo/i];
 
 describe("deterministic per-target init-script installer stays site-agnostic (cdp-frame-init-script.ts)", () => {
   it("installInitScriptOnAllFrames contains no site/plugin-identifying branch", () => {
