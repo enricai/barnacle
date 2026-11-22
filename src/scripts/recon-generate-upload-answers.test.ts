@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Capture } from "@/scraper/types";
+import type { Capture } from "@/scripts/recon-shared";
 import { bindMultipartSelectAnswers } from "./recon-generate";
 
 const part = (n: string, v: string) =>
