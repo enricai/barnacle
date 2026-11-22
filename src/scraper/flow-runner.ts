@@ -14786,8 +14786,10 @@ export async function executeStepWithHealing(params: {
         // the non-submit sibling of the deep-submit-locator escalation above.
         record.technique = "trusted-click-retry";
         if (
-          (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
-          "replaced"
+          (await checkFrameDocumentIdentity(
+            frameTarget ?? mainFrameTarget(page),
+            frameDocBaseline
+          )) === "replaced"
         ) {
           const failureMessage =
             "trusted-click-retry skipped: frame document replaced since step start; resolved selector is stale";
@@ -14796,7 +14798,9 @@ export async function executeStepWithHealing(params: {
           record.triedSelectors = [...triedSelectors];
           attempts.push(record);
           failureReasons.push(failureMessage);
-          logger.info(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`);
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+          );
           continue;
         }
         // Carry forward any selector prior attempts already resolved (e.g.
@@ -15357,8 +15361,10 @@ export async function executeStepWithHealing(params: {
         if (!xpath) {
           record.errorMessage = "structured-click: no xpath from prior attempt";
         } else if (
-          (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
-          "replaced"
+          (await checkFrameDocumentIdentity(
+            frameTarget ?? mainFrameTarget(page),
+            frameDocBaseline
+          )) === "replaced"
         ) {
           record.errorMessage =
             "structured-click skipped: frame document replaced since step start; resolved selector is stale";
