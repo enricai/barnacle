@@ -10,8 +10,6 @@ import { join } from "node:path";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { StepVerificationError, type StepVerificationErrorKind } from "@/scraper/errors";
-
 vi.mock("@/config", () => ({
   config: {
     scraper: {
@@ -31,16 +29,6 @@ vi.mock("@/config", () => ({
 }));
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 vi.mock("@/scraper/session", () => ({ createBrowserSession: vi.fn() }));
-vi.mock("@/scraper/errors", () => ({
-  StepVerificationError: class StepVerificationError extends Error {
-    readonly kind: StepVerificationErrorKind;
-    constructor(message = "step failed", kind: StepVerificationErrorKind = "cascade-exhausted") {
-      super(message);
-      this.kind = kind;
-    }
-  },
-}));
-
 const { loggerStub } = vi.hoisted(() => ({
   loggerStub: {
     info: vi.fn(),
@@ -122,7 +110,6 @@ describe("recon-browser step loop — per-step frameSelector", () => {
     executeStepWithHealingStub.mockReset();
     executeStepWithHealingStub.mockResolvedValue("ok");
     resolveFrameTargetSpy.mockReset();
-    resolveFrameTargetSpy.mockResolvedValue({ frameSelector: null, frame: null });
   });
 
   afterEach(() => {
@@ -139,9 +126,11 @@ describe("recon-browser step loop — per-step frameSelector", () => {
       goto: vi.fn().mockResolvedValue(undefined),
       url: (): string => "https://example.com/apply",
       title: vi.fn().mockResolvedValue("Apply"),
-      evaluate: vi.fn().mockImplementation(async (expr: unknown) =>
-        typeof expr === "string" && expr.includes("document.body") ? 10_000 : null
-      ),
+      evaluate: vi
+        .fn()
+        .mockImplementation(async (expr: unknown) =>
+          typeof expr === "string" && expr.includes("document.body") ? 10_000 : null
+        ),
       frames: vi.fn().mockReturnValue([]),
       getSessionForFrame: () => session,
       mainFrameId: () => "main",
@@ -150,6 +139,7 @@ describe("recon-browser step loop — per-step frameSelector", () => {
     const stagehand = {
       context: { awaitActivePage: async (): Promise<Page> => page },
     } as unknown as Stagehand;
+    resolveFrameTargetSpy.mockResolvedValue({ frameSelector: null, url: async () => page.url() });
     vi.mocked(createBrowserSession).mockResolvedValue({
       stagehand,
       limiter: {} as never,
