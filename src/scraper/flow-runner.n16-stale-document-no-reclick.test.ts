@@ -2,7 +2,6 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
-import { extractTaggedPhrases } from "@/scraper/deep-locator-candidates";
 import { type AttemptRecord, executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
