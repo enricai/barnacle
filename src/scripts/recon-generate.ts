@@ -16621,6 +16621,81 @@ ${foldMergeLines.length > 0 ? `${foldMergeLines.join("\n")}\n` : ""}    const tr
     return { data };`;
 }
 
+/** Honest-outcome conditions the recorded flow hits that an emitted
+ * executeHttp cannot replay faithfully. */
+export interface ContractGaps {
+  /** Steps whose request carries a captcha response field (single-use). */
+  captchaGatedSteps: number;
+  /** The action sequence stops short of the flow's submit step. */
+  truncatedSequence: boolean;
+  /** Upload steps whose request body was unavailable at capture time. */
+  bodylessUploadSteps: number;
+  /** Select answers the recording froze because nothing binds them to payload.Answers. */
+  frozenScreeningAnswers: number;
+}
+
+/** Derives {@link ContractGaps} from the compiled action sequence. `submitDeclared`
+ * is whether the flow declares a submit step; `matchesSubmit` is the declared
+ * submit-pattern matcher (accept-all when none is declared). */
+export function detectContractGaps(
+  actionSteps: ReadonlyArray<{ capture: Capture; isMultipart: boolean }>,
+  submitDeclared: boolean,
+  matchesSubmit: (c: Capture) => boolean,
+  emittedBody?: string
+): ContractGaps {
+  const captchaGatedSteps = actionSteps.filter((s) => {
+    const raw = s.capture.requestPostData;
+    return typeof raw === "string" && raw !== REQUEST_BODY_UNAVAILABLE
+      ? findCaptchaResponseFields(raw).length > 0
+      : false;
+  }).length;
+  const bodylessUploadSteps = actionSteps.filter(
+    (s) => s.isMultipart && s.capture.requestPostData === REQUEST_BODY_UNAVAILABLE
+  ).length;
+  const isWrite = (c: Capture): boolean => c.method.toUpperCase() !== "GET";
+  const truncatedSequence =
+    submitDeclared &&
+    actionSteps.length > 0 &&
+    !actionSteps.some((s) => isWrite(s.capture) && matchesSubmit(s.capture));
+  let frozenScreeningAnswers = 0;
+  if (emittedBody !== undefined && !emittedBody.includes("payload.Answers[")) {
+    const selects = new Set<string>();
+    for (const s of actionSteps) {
+      for (const name of extractHtmlSelectOptions(s.capture.responseBody).keys()) selects.add(name);
+    }
+    for (const s of actionSteps) {
+      const raw = s.capture.requestPostData;
+      if (typeof raw !== "string") continue;
+      for (const name of selects) {
+        if (raw.includes(`name="${name}"`)) frozenScreeningAnswers++;
+      }
+    }
+  }
+  return { captchaGatedSteps, truncatedSequence, bodylessUploadSteps, frozenScreeningAnswers };
+}
+
+/** Checklist lines for each {@link ContractGaps} condition that holds. */
+export function contractGapChecklistLines(gaps: ContractGaps): string[] {
+  const lines: string[] = [];
+  if (gaps.captchaGatedSteps > 0)
+    lines.push(
+      `${gaps.captchaGatedSteps} step(s) are captcha-gated — a solved captcha token is single-use and cannot be replayed over HTTP; the browser flow must solve it`
+    );
+  if (gaps.truncatedSequence)
+    lines.push(
+      "The recorded action sequence stops short of the flow's submit step — no submit request was captured, so executeHttp cannot replay the submission; re-record the flow through the submit"
+    );
+  if (gaps.bodylessUploadSteps > 0)
+    lines.push(
+      `${gaps.bodylessUploadSteps} upload step(s) had no capturable request body — the form fields sent alongside the file are not bound to payload; verify them by hand`
+    );
+  if (gaps.frozenScreeningAnswers > 0)
+    lines.push(
+      `${gaps.frozenScreeningAnswers} screening answer(s) are frozen at the recording's values — nothing binds them to payload.Answers; bind them or confirm they are constant`
+    );
+  return lines;
+}
+
 /**
  * Same review-checklist items the pre-move contract.ts header used to embed,
  * now surfaced on recon-generate's own stdout instead of the shipped file —
@@ -16633,6 +16708,7 @@ export function buildContractChecklist(opts: {
   gqlQuery: string | null;
   omitExecuteHttp?: boolean;
   multiStepBody?: string;
+  gaps?: ContractGaps;
 }): string[] {
   const { pascal, gql, gqlQuery, omitExecuteHttp, multiStepBody } = opts;
   // Same isGqlEmission decision emitContractTs treats as the single source of
@@ -16672,6 +16748,7 @@ export function buildContractChecklist(opts: {
     `Adjust ${pascal}PayloadSchema to your actual request parameters`,
     baseHeadersChecklistLine,
     outOfTreeChecklistLine,
+    ...(opts.gaps ? contractGapChecklistLines(opts.gaps) : []),
   ].filter((line) => line !== "");
 }
 
@@ -19732,6 +19809,8 @@ interface TsGenerationResult {
   /** The exact expression emitted as `const <X>PayloadSchema = ...`. */
   payloadSchemaExpr: string;
   contractOpts: Parameters<typeof emitContractTs>[0];
+  /** Honest-outcome conditions surfaced as review-checklist lines. */
+  gaps: ContractGaps;
   browserFlow: ReturnType<typeof emitBrowserFlowTs>;
   auxFiles: Array<{ filename: string; url: string }>;
   /** The resolved action-sequence pool that drove schema/response/fold
@@ -20937,9 +21016,24 @@ async function main(): Promise<void> {
     // downgrade to the single-endpoint `{query}` branch either, since that's a
     // fabrication of its own kind for a flow that isn't a single-action
     // query/search to begin with.
+    const submitDeclared =
+      (submitPatterns !== null &&
+        (submitPatterns.endpoint !== null || submitPatterns.body !== null)) ||
+      flowSteps.some((st) => typeof st === "object" && st.submitStep === true);
+    const preGaps = detectContractGaps(actionSteps, submitDeclared, matchesDeclaredSubmit);
+    const failClosedReasons: string[] = [];
+    if (isSubmissionFlow && preGaps.truncatedSequence)
+      failClosedReasons.push("the action sequence stops short of the flow's submit step");
+    if (isSubmissionFlow && preGaps.bodylessUploadSteps > 0)
+      failClosedReasons.push("an upload step's request body was unavailable and cannot be bound");
+    if (failClosedReasons.length > 0)
+      logger.warn(`WARN falling back to a browser-only plugin: ${failClosedReasons.join("; ")}`);
     const mustBeBrowserFlowOnly =
       isSubmissionFlow &&
-      (browserFlowOnlyOptIn || noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
+      (browserFlowOnlyOptIn ||
+        noReplayableActionFlow ||
+        actionSteps.some((s) => s.isCrossDomain) ||
+        failClosedReasons.length > 0);
     // emitMultiStepExecuteHttp registers what it binds into these collectors;
     // a body discarded below must leave them as it found them.
     const collectorRestores: Array<() => void> = [
@@ -21291,6 +21385,7 @@ async function main(): Promise<void> {
       contractCode: settled.contractCode,
       payloadSchemaExpr: settled.payloadSchemaExpr,
       contractOpts: settled.contractOpts,
+      gaps: detectContractGaps(actionSteps, submitDeclared, matchesDeclaredSubmit, multiStepBody),
       browserFlow: settled.browserFlow,
       auxFiles,
       resolvedPool: actionCaptures,
@@ -21322,7 +21417,7 @@ async function main(): Promise<void> {
   // Same opts fed to emitContractTs above, so this can never drift from what
   // the header used to embed.
   const checklist = [
-    ...buildContractChecklist(final.contractOpts),
+    ...buildContractChecklist({ ...final.contractOpts, gaps: final.gaps }),
     ...unreadPayloadFieldChecklistLines(
       unreadDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
     ),
