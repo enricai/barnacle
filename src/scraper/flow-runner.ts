@@ -10943,6 +10943,12 @@ async function tryPromptSelectorPrimitive(params: {
         optionsFiltered = live;
         continue;
       }
+      if (realPromptOptions(live.options ?? [], option).length > 0) {
+        logger.info(
+          `prompt-selector primitive: filtered list for ${optLabel} lists options but none match; not submitting with Enter`
+        );
+        break;
+      }
       logger.info(
         `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
       );
@@ -11181,6 +11187,14 @@ async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> 
       const deepActive = () => { let a = document.activeElement; while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement; return a; };
       const h = (e) => { if (e.key !== "Enter") return; const a = deepActive(); if (a && a.form) e.preventDefault(); };
       window.${guardKey} = h;
+      // Earlier page handlers must not be able to stop the event before the guard runs:
+      // neutralise propagation stopping for Enter key events while the guard is installed.
+      const P = window.Event.prototype;
+      const origStop = P.stopPropagation, origImm = P.stopImmediatePropagation;
+      const isEnterKey = (e) => e && e.key === "Enter" && (e.type === "keydown" || e.type === "keypress");
+      P.stopPropagation = function () { if (!isEnterKey(this)) return origStop.call(this); };
+      P.stopImmediatePropagation = function () { if (!isEnterKey(this)) return origImm.call(this); };
+      window.${guardKey}Restore = () => { P.stopPropagation = origStop; P.stopImmediatePropagation = origImm; };
       window.addEventListener("keydown", h, true);
       window.addEventListener("keypress", h, true);
     })()`
@@ -11201,6 +11215,8 @@ async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> 
           window.removeEventListener("keydown", h, true);
           window.removeEventListener("keypress", h, true);
           delete window.${guardKey};
+          const r = window.${guardKey}Restore;
+          if (r) { r(); delete window.${guardKey}Restore; }
         })()`
       )
       .catch(() => undefined);
