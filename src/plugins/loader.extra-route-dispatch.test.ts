@@ -54,7 +54,9 @@ describe("registerRoutes — opt-in dispatch on extra routes", () => {
       execute: vi.fn(),
       executeHttp,
     } as unknown as SitePlugin<unknown, unknown>;
-    const app = Fastify({ loggerInstance: getLogger({ name: "loader-extra-route-dispatch-test" }) });
+    const app = Fastify({
+      loggerInstance: getLogger({ name: "loader-extra-route-dispatch-test" }),
+    });
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     await app.register(errorHandlerPlugin);
