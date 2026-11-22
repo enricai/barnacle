@@ -10942,6 +10942,12 @@ async function tryPromptSelectorPrimitive(params: {
         optionsFiltered = live;
         continue;
       }
+      // Real options listed but none match: a mismatch, not an unsubmitted
+      // search. Only a placeholder or empty list warrants a trusted Enter.
+      if (realPromptOptions(live.options ?? [], option).length > 0) {
+        optionsFiltered = live;
+        break;
+      }
       logger.info(
         `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
       );

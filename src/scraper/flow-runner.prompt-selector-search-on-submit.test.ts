@@ -116,7 +116,7 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     expect(committed).toBe("Sweden");
   });
 
-  it("still sends Enter when the list shows non-matching chips, then commits the requested option", async () => {
+  it("sends no Enter when the list shows real non-matching options (mismatch)", async () => {
     const stagehandAct = vi.fn();
     const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
       html: SEARCH_ON_SUBMIT_HTML,
@@ -163,17 +163,14 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
       step: "for 'Country of residence' select 'Sweden'",
     };
 
-    const result = await executeStepWithHealing(
-      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
-    );
-
-    expect(result).toBe("completed");
+    await expect(
+      executeStepWithHealing(merged as unknown as Parameters<typeof executeStepWithHealing>[0])
+    ).rejects.toThrow();
     expect(chipsInjected).toBeGreaterThan(0);
-    expect(enterKeyDowns(cdpEvents)).toBe(1);
-    const committed = window.document.querySelector(
-      "[data-automation-id='promptSelectionLabel']"
-    )?.textContent;
-    expect(committed).toBe("Sweden");
+    expect(enterKeyDowns(cdpEvents)).toBe(0);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).not.toBe("Sweden");
   });
 
   it.each([
@@ -243,7 +240,7 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     }
   );
 
-  it("sends Enter when the list holds only a shorter chip the request merely contains", async () => {
+  it("sends no Enter when the list holds only a shorter chip the request merely contains", async () => {
     const stagehandAct = vi.fn();
     const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
       html: SEARCH_ON_SUBMIT_HTML,
@@ -290,15 +287,13 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
       step: "for 'Country of residence' select 'University of Oslo'",
     };
 
-    const result = await executeStepWithHealing(
-      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
-    );
-
-    expect(result).toBe("completed");
-    expect(enterKeyDowns(cdpEvents)).toBe(1);
+    await expect(
+      executeStepWithHealing(merged as unknown as Parameters<typeof executeStepWithHealing>[0])
+    ).rejects.toThrow();
+    expect(enterKeyDowns(cdpEvents)).toBe(0);
     expect(
       window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
-    ).toBe("University of Oslo");
+    ).not.toBe("University of Oslo");
   });
 
   it("sends no Enter when a search-as-you-type list shows stale rows first and settles on the requested option", async () => {
