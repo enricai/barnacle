@@ -345,6 +345,7 @@ export function wireSignalCapture(
       postData?: string;
       hasPostData?: boolean;
     };
+    redirectResponse?: { status: number; headers: Record<string, string> };
   };
   type ResponseReceivedEvent = {
     requestId: string;
@@ -391,6 +392,14 @@ export function wireSignalCapture(
 
   const onRequest = (params: RequestWillBeSentEvent): void => {
     const prior = inFlight.get(params.requestId);
+    // A redirect reuses the requestId: finalize the prior hop as its own capture
+    // (e.g. a POST answered 302 with a Location header) before it is replaced.
+    if (prior && params.redirectResponse) {
+      prior.responseStatus = params.redirectResponse.status;
+      prior.responseHeaders = params.redirectResponse.headers as Record<string, string>;
+      foldResponseExtras(prior, params.requestId);
+      void finalizeCapture(prior, params.requestId, false).catch(() => {});
+    }
     const inline = params.request.postData;
     const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
     const mayHaveBody = isBodyCapable(params.request.method, params.request.hasPostData);
@@ -461,6 +470,14 @@ export function wireSignalCapture(
     extraRequestHeaders.set(params.requestId, merged);
   };
 
+  const foldResponseExtras = (req: InFlightRequest, requestId: string): void => {
+    req.responseHeaders = mergeResponseHeaders(
+      req.responseHeaders,
+      extraResponseHeaders.get(requestId)
+    );
+    extraResponseHeaders.delete(requestId);
+  };
+
   const onFinished = async (params: LoadingFinishedEvent): Promise<void> => {
     const req = inFlight.get(params.requestId);
     if (!req) return;
@@ -468,11 +485,7 @@ export function wireSignalCapture(
     // Fold the accumulated extra-info headers in, once, regardless of the order
     // they raced responseReceived in. Delete the buffer entry unconditionally so
     // it can't leak per run.
-    req.responseHeaders = mergeResponseHeaders(
-      req.responseHeaders,
-      extraResponseHeaders.get(params.requestId)
-    );
-    extraResponseHeaders.delete(params.requestId);
+    foldResponseExtras(req, params.requestId);
     // Same fold, request side: recovers the outgoing Cookie header that
     // requestWillBeSent omits by design.
     req.requestHeaders = mergeResponseHeaders(
@@ -480,7 +493,16 @@ export function wireSignalCapture(
       extraRequestHeaders.get(params.requestId)
     );
     extraRequestHeaders.delete(params.requestId);
+    await finalizeCapture(req, params.requestId, true);
+  };
 
+  // Builds and emits one capture for one hop. `fetchResponseBody` is false for a
+  // redirected hop: its response has no retrievable body.
+  const finalizeCapture = async (
+    req: InFlightRequest,
+    requestId: string,
+    fetchResponseBody: boolean
+  ): Promise<void> => {
     // Non-http(s) URLs (data:, blob:, ...) are never replayable site-flow
     // captures: skip before any counter/recent/onCapture side effect.
     if (!isHttpUrl(req.url)) return;
@@ -488,8 +510,9 @@ export function wireSignalCapture(
     const phase = getCurrentPhase();
     let responseBody: unknown = null;
     try {
+      if (!fetchResponseBody) throw new Error("no response body for a redirected hop");
       const result = await page.sendCDP<GetResponseBodyResponse>("Network.getResponseBody", {
-        requestId: params.requestId,
+        requestId,
       });
       const text = result.base64Encoded
         ? Buffer.from(result.body, "base64").toString("utf8")
@@ -508,7 +531,7 @@ export function wireSignalCapture(
     // A body the browser only exposes once the request has been sent is not
     // readable at requestWillBeSent time; retry once now that loading finished
     // before settling for the unavailable marker.
-    await resolveBody(req, params.requestId, req.hasPostData);
+    await resolveBody(req, requestId, req.hasPostData);
 
     let operationName: string | null = null;
     let query: string | null = null;
