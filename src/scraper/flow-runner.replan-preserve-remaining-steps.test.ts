@@ -199,7 +199,7 @@ function makeAcceptanceChildFrame(
           text: revealed.current ? POST_REVEAL_TEXT : PRE_REVEAL_TEXT,
         };
       }
-      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) {
+      if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) {
         return state.requiresAttention ? 1 : 0;
       }
       if (src.includes("document.querySelector(sel)")) {

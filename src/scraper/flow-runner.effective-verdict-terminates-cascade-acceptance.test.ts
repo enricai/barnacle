@@ -112,7 +112,7 @@ function makeTabPage(state: AcceptanceSequenceState): Page {
       // <button>, not a native radio/checkbox.
       if (src.includes("el.type || null")) return null;
       // ng-invalid marker count (pre/post veto input) — none on this page.
-      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
       // The n+16 fallback's own `el.click()` expression: resolves the SAME
       // xpath act-string clicked, but this is a REAL DOM click.dispatchEvent
       // sequence (not Stagehand's synthetic activation), which genuinely

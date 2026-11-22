@@ -1375,6 +1375,21 @@ const INVALID_MARKER_EL_EXPR = `((el) => {
   const cls = (el.getAttribute && el.getAttribute("class")) || "";
   if (rx.test(cls)) return true;
   if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
+  // Non-class error-node markers: a visible, non-empty error-message / error-banner
+  // node (error hook in data-automation-id / data-testid / data-test-id, or a
+  // role=alert container carrying an error hook). Empty templates don't count.
+  if (el.getAttribute) {
+    const hook = ["data-automation-id", "data-testid", "data-test-id"]
+      .map((a) => el.getAttribute(a) || "").join(" ");
+    const isErrHook = /(^|[-_\\s])(error|errors|errormessage|error-message|errorbanner|error-banner)([-_\\s]|$)|error(message|banner|summary)/i.test(hook);
+    const isAlertErr = el.getAttribute("role") === "alert" &&
+      /error|danger/i.test(cls + " " + hook);
+    if (isErrHook || isAlertErr) {
+      const txt = (el.textContent || "").trim();
+      const hidden = el.hidden === true || el.getAttribute("aria-hidden") === "true";
+      if (txt.length > 0 && !hidden) return true;
+    }
+  }
   return false;
 })`;
 /**
@@ -2586,7 +2601,15 @@ export function isMidFlowAdvanceCredited(params: {
   pageAdvanced: boolean;
   invalidMarkerCount: number;
 }): boolean {
-  if (params.midFlowSubmit && params.signalAdvanced) return true;
+  // An explicit judge rejection is not overruled by the view-swap signal
+  // alone; it needs a settled page advance or a real network advance too.
+  if (
+    params.midFlowSubmit &&
+    params.signalAdvanced &&
+    (params.judgeUnavailable || params.pageAdvanced || params.networkAdvanced)
+  ) {
+    return true;
+  }
   return isNullVerdictAdvanceCredited(params);
 }
 
@@ -2782,6 +2805,10 @@ export function isClickViewSwapVerified(params: {
   }
   if (!clickedElementStillPresent && bytesDelta <= 0) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
+  // A small text-only reveal is what a blocked mid-flow submit's inline
+  // validation message produces too; without a settled page advance it is
+  // not evidence of an advance.
+  if (midFlowSubmit && !pageAdvanced) return false;
   return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
 }
 
@@ -2845,8 +2872,13 @@ export async function countNgInvalidContainers(target: FrameTarget): Promise<num
   const expr = `(() => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
     let n = 0;
+    const seen = new Set();
     for (const el of document.querySelectorAll("[class],[aria-invalid]")) {
+      seen.add(el);
       if (isInvalid(el)) n++;
+    }
+    for (const el of document.querySelectorAll("[data-automation-id],[data-testid],[data-test-id],[role=alert]")) {
+      if (!seen.has(el) && isInvalid(el)) n++;
     }
     return n;
   })()`;
@@ -4845,7 +4877,8 @@ export interface VerifyPromptSelectorCommittedResult {
 export async function verifyPromptSelectorCommitted(
   target: FrameTarget,
   selector: string,
-  requestedOption?: string | null
+  requestedOption?: string | null,
+  selectStep = false
 ): Promise<VerifyPromptSelectorCommittedResult | null> {
   const xpath = xpathBodyForEvaluate(selector, target);
   if (xpath === null) return null;
@@ -4857,12 +4890,28 @@ export async function verifyPromptSelectorCommitted(
     const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
     const namesOption = ${PROMPT_NAMES_OPTION_EXPR};
     const want = ${JSON.stringify(requestedOption ?? "")};
+    const selectStep = ${JSON.stringify(selectStep)};
     const xpath = ${JSON.stringify(xpath)};
     const result = ${SHADOW_XPATH_FIRST_NODE}(xpath);
     const el = result;
     if (!el) return { isPromptWidget: false, committed: false };
     const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
-    if (!widget) return { isPromptWidget: false, committed: false };
+    if (!widget) {
+      // A select step resolved to a field outside any trigger widget: read the
+      // field's own committed value. Non-field elements stay untouched.
+      if (!selectStep || !el.tagName || !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) {
+        return { isPromptWidget: false, committed: false };
+      }
+      let fv = "";
+      if (el.tagName === "SELECT") {
+        const so = el.selectedOptions && el.selectedOptions[0];
+        fv = so && (so.value || "") !== "" ? (so.textContent || "") : "";
+      } else {
+        fv = el.value || "";
+      }
+      fv = fv.replace(/\\s+/g, " ").trim().toLowerCase();
+      return { isPromptWidget: true, committed: fv !== "" && (!want || namesOption(fv, want)) };
+    }
     const value = announcedValue(widget) || currentText(widget, valueSel, emptyRx);
     return { isPromptWidget: true, committed: value !== "" && (!want || namesOption(value, want)) };
   })()`;
@@ -16124,7 +16173,8 @@ export async function executeStepWithHealing(params: {
         const promptReadback = await verifyPromptSelectorCommitted(
           readbackTarget,
           readbackSelector,
-          parsePromptSelectorStep(step)?.option
+          parsePromptSelectorStep(step)?.option,
+          parseSelectStep(step) !== null
         );
         if (promptReadback?.isPromptWidget === true && promptReadback.committed === false) {
           promptSelectorRejected = true;
@@ -16189,9 +16239,9 @@ export async function executeStepWithHealing(params: {
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
-      domVerifiedForStep ||
+      (!promptSelectorRejected && domVerifiedForStep) ||
       datepickerCommitted ||
-      domEffectiveVerdict ||
+      (!promptSelectorRejected && domEffectiveVerdict) ||
       (!datepickerRejected &&
         !promptSelectorRejected &&
         (clickViewSwapVerified || formValueVerified));

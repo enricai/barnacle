@@ -756,7 +756,7 @@ function makeAcceptanceChildFrame(childUrls: { current: string }, state: Accepta
       if (src.includes("outerHTML") && src.includes("innerText")) {
         return { html: 500, text: "1:apply" };
       }
-      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes('querySelectorAll("[class],[aria-invalid],[data-automation-id]')) return 0;
       if (src.includes("querySelectorAll('input[type=file]').length")) {
         return state.fileInputCount;
       }
