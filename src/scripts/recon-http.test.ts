@@ -821,10 +821,12 @@ describe("recon-http main() --methods opt-in wiring", () => {
     const savedOut = process.env.RECON_OUT_DIR;
     process.env.RECON_OUT_DIR = root;
     process.argv = ["node", "recon-http.ts", "--captures-dir", caps, "--methods", "PUT"];
+    const isComplete = (c: unknown[]) => String(c[0]).includes("recon-http complete");
+    const completedBefore = loggerStub.info.mock.calls.filter(isComplete).length;
     try {
       await import("@/scripts/recon-http.js");
       await vi.waitFor(() =>
-        expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining("recon-http complete"))
+        expect(loggerStub.info.mock.calls.filter(isComplete).length).toBeGreaterThan(completedBefore)
       );
       const urls = fetchSpy.mock.calls.map(([u]) => String(u));
       expect(urls).toContain("https://api.example.com/put");
