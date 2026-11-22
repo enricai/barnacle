@@ -3084,6 +3084,9 @@ export function isClickViewSwapVerified(params: {
   ) {
     return true;
   }
+  // The null-action allowance above exists only for the removal credit; every
+  // growth-based credit below still needs a reported click.
+  if (resolvedAction?.method !== "click") return false;
   if (!clickedElementStillPresent && bytesDelta <= 0) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   // A small text-only reveal is what a blocked mid-flow submit's inline
@@ -17559,8 +17562,10 @@ export async function executeStepWithHealing(params: {
           // confirmed absent (`resolvedClickTargetStillPresent` returns true
           // whenever presence can't be read), under the same no-network,
           // submit-shape and destination vetoes as the weak-DOM branch.
+          // Presence is only read when the body shrank: the credit needs a shrink,
+          // and a growing page must not spend an extra evaluate on the target.
           const retryPresence: boolean | null =
-            xpath !== null
+            xpath !== null && retryPost.bodyHtmlLength < pre.bodyHtmlLength
               ? await resolvedClickTargetPresence(frameTarget ?? mainFrameTarget(page), xpath)
               : null;
           const retryRemovalCredited =
