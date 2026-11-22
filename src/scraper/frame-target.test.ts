@@ -60,7 +60,9 @@ let fakeFrameCounter = 0;
  * `nonEmpty` defaults to `true` — a genuine attached wizard frame has content;
  * a test models the "empty same-origin shell" case by passing `false`.
  */
-function makeFakeFrame(url: string, opts: {
+function makeFakeFrame(
+  url: string,
+  opts: {
     frameId?: string;
     nonEmpty?: boolean;
     children?: unknown[];

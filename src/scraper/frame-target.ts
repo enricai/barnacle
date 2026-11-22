@@ -297,9 +297,7 @@ async function tryResolveChildFrame(
   type SrcProbe = { matched: boolean; src: string | null };
   const { matched, src: iframeSrc } = await withWatchdog(
     () =>
-      scope
-        ? scope.evaluate<SrcProbe>(iframeSrcExpr)
-        : page.evaluate<SrcProbe>(iframeSrcExpr),
+      scope ? scope.evaluate<SrcProbe>(iframeSrcExpr) : page.evaluate<SrcProbe>(iframeSrcExpr),
     {
       timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
       label: "frame-target: iframe src probe",
@@ -510,7 +508,6 @@ export async function readCurrentFrameUrl(page: Page, target: FrameTarget): Prom
     return reresolved ? reresolved.url() : page.url();
   });
 }
-
 
 /**
  * Composes a Stagehand hop-notation scope string from a frame selector and an
