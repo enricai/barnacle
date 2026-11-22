@@ -2753,6 +2753,14 @@ function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
     if (c.method === "GET") return false;
     if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool)) return true;
     const same = occurrences.get(`${c.method} ${endpointKey(c.url)}`) ?? [];
+    // A server-rendered form submit whose body differs from another same-endpoint
+    // capture is a distinct step, not a beacon.
+    if (
+      isServerRenderedFormSubmit(c) &&
+      same.some((o) => o.requestPostData !== c.requestPostData)
+    ) {
+      return false;
+    }
     return (
       same.length >= 2 && (hasNoBusinessRelevantResponseState(c) || answerIgnoresRequest(same))
     );
