@@ -443,6 +443,10 @@ export function wireSignalCapture(
     if (!entry.requestPostData) entry.requestPostData = REQUEST_BODY_UNAVAILABLE;
   };
 
+  // Per-requestId chain of detached redirect-hop finalizations; the final hop
+  // awaits it so captures/counter indices follow network order.
+  const hopChains = new Map<string, Promise<void>>();
+
   const onRequest = (params: RequestWillBeSentEvent): void => {
     const prior = inFlight.get(params.requestId);
     // A redirect reuses the requestId: finalize the prior hop as its own capture
@@ -464,7 +468,7 @@ export function wireSignalCapture(
       const expectExtra =
         params.redirectHasExtraInfo !== false && (respExtraSeq.get(params.requestId) ?? 0) <= hop;
       pendingHops.set(params.requestId, (pendingHops.get(params.requestId) ?? 0) + 1);
-      void (async () => {
+      const hopTask = (hopChains.get(params.requestId) ?? Promise.resolve()).then(async () => {
         try {
           // The hop's response extra-info (Set-Cookie) may land after this event.
           if (expectExtra) await waitForHopExtra(hopKey(params.requestId, hop));
@@ -478,7 +482,11 @@ export function wireSignalCapture(
             if (finishedIds.delete(params.requestId)) dropRequestState(params.requestId);
           }
         }
-      })().catch(() => {});
+      });
+      hopChains.set(
+        params.requestId,
+        hopTask.catch(() => {})
+      );
     }
     const inline = params.request.postData;
     const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
@@ -628,6 +636,11 @@ export function wireSignalCapture(
     // until it completes.
     if (pendingHops.has(params.requestId)) finishedIds.add(params.requestId);
     else dropRequestState(params.requestId);
+    const chain = hopChains.get(params.requestId);
+    if (chain) {
+      await chain;
+      if (hopChains.get(params.requestId) === chain) hopChains.delete(params.requestId);
+    }
     await finalizeCapture(req, params.requestId, true);
   };
 
