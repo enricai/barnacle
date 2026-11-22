@@ -10256,7 +10256,9 @@ async function tryPromptSelectorPrimitive(params: {
     // one is rendered) so the field is ONE candidate, clicked at its rendered
     // trigger; the collapsed openers are stamped as mates so option scoping can
     // still follow their aria-controls link.
-    const rendered = ${PROMPT_RENDERED_EXPR};
+    const renderedBase = ${PROMPT_RENDERED_EXPR};
+    const unreachable = new Set();
+    const rendered = (e) => renderedBase(e) && !unreachable.has(e);
     for (const el of document.querySelectorAll("[" + markAttr + "-mate],[" + markAttr + "-layered]")) { el.removeAttribute(markAttr + "-mate"); el.removeAttribute(markAttr + "-layered"); }
     // A rendered role=combobox anchor with no aria-controls/aria-haspopup is
     // outside the trigger union; adopt it when an unrendered union opener shares
@@ -10361,6 +10363,28 @@ async function tryPromptSelectorPrimitive(params: {
       return !!cs.clip && cs.clip !== "auto" && (cs.position === "absolute" || cs.position === "fixed");
     };
     const pointerReaches = (sel) => (pageLaidOut ? reachable(sel) : !styleHidden(sel));
+    // A trigger a real click cannot reach is not a candidate: no client rects,
+    // visibility:hidden, display:none, opacity:0, a box of 1px or less, or an
+    // in-viewport centre whose hit is neither the trigger nor a descendant.
+    // Off-screen triggers cannot be hit-tested and are kept.
+    const triggerReachable = (t) => {
+      for (let n = t; n && n.nodeType === 1; n = n.parentElement) {
+        if (getComputedStyle(n).display === "none") return false;
+      }
+      const cs = getComputedStyle(t);
+      if (cs.visibility === "hidden" || cs.visibility === "collapse") return false;
+      if (parseFloat(cs.opacity) === 0) return false;
+      if (!pageLaidOut) return true;
+      if (t.getClientRects().length === 0) return false;
+      const r = t.getBoundingClientRect();
+      if (r.width <= 1 || r.height <= 1) return false;
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      if (cx < 0 || cy < 0 || cx >= window.innerWidth || cy >= window.innerHeight) return true;
+      const hit = document.elementFromPoint(cx, cy);
+      return !hit || hit === t || t.contains(hit);
+    };
+    for (const w of widgets) if (w.tagName !== "SELECT" && !triggerReachable(w)) unreachable.add(w);
     const tabbable = (sel) => {
       const ti = sel.getAttribute("tabindex");
       return ti === null || !(parseInt(ti, 10) < 0);
@@ -10430,7 +10454,7 @@ async function tryPromptSelectorPrimitive(params: {
     const candidates = [];
     let idx = 0;
     for (const w of widgets) {
-      if (collapsed.has(w) || !isUnfilled(w)) continue;
+      if (collapsed.has(w) || unreachable.has(w) || !isUnfilled(w)) continue;
       w.setAttribute(markAttr, String(idx));
       for (const [m, host] of collapsed) if (host === w && !layerHost.has(m)) m.setAttribute(markAttr + "-mate", String(idx));
       if (layerHost.size > 0 && Array.from(layerHost.values()).includes(w)) w.setAttribute(markAttr + "-layered", "1");
