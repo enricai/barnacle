@@ -2,15 +2,9 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FakeDeepLocatorDelegate } from "@/scraper/deep-locator-fake";
-import {
-  makeFakeDeepLocator,
-  registerDeepLocatorHop,
-} from "@/scraper/deep-locator-fake";
+import { makeFakeDeepLocator, registerDeepLocatorHop } from "@/scraper/deep-locator-fake";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
-import {
-  resetBillingErrorFlagForTests,
-  runHealingFlow,
-} from "@/scraper/flow-runner";
+import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
 
@@ -20,8 +14,7 @@ const resolveFrameTarget = vi.fn();
 const waitForChildFrameReady = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/scraper/stagehand-guard", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/scraper/stagehand-guard")>();
+  const actual = await importOriginal<typeof import("@/scraper/stagehand-guard")>();
   return {
     ...actual,
     guardedObserve: (...args: unknown[]) => guardedObserve(...args),
@@ -30,13 +23,11 @@ vi.mock("@/scraper/stagehand-guard", async (importOriginal) => {
 });
 
 vi.mock("@/scraper/frame-target", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/scraper/frame-target")>();
+  const actual = await importOriginal<typeof import("@/scraper/frame-target")>();
   return {
     ...actual,
     resolveFrameTarget: (...args: unknown[]) => resolveFrameTarget(...args),
-    waitForChildFrameReady: (...args: unknown[]) =>
-      waitForChildFrameReady(...args),
+    waitForChildFrameReady: (...args: unknown[]) => waitForChildFrameReady(...args),
   };
 });
 
@@ -77,19 +68,6 @@ function makeChildFrameTarget(getUrl: () => string): FrameTarget {
   };
 }
 
-/** Main-frame `FrameTarget` matching `mainFrameTarget`'s real contract: `frame: null`, delegates straight to `page`. Used for the control case proving the deepLocator fallback is frame-gated. */
-function makeMainFrameTarget(page: Page): FrameTarget {
-  return {
-    frame: null,
-    frameSelector: null,
-    evaluate: (pageFunctionOrExpression, arg) =>
-      page.evaluate(pageFunctionOrExpression, arg),
-    locator: (selector) => page.locator(selector),
-    url: () => Promise.resolve(page.url()),
-    title: () => page.title(),
-  };
-}
-
 /**
  * Fake page satisfying `wireSignalCapture`'s CDP plumbing plus the plain
  * evaluate/locator surface. `deepLocatorImpl` lets each test swap in a
@@ -98,7 +76,7 @@ function makeMainFrameTarget(page: Page): FrameTarget {
  */
 function fakeFlowPage(
   getUrl: () => string,
-  deepLocatorImpl: (selector: string) => FakeDeepLocatorDelegate,
+  deepLocatorImpl: (selector: string) => FakeDeepLocatorDelegate
 ): Page {
   const session = { on: () => {}, off: () => {} };
   return {
@@ -119,8 +97,7 @@ function fakeFlowPage(
   } as unknown as Page;
 }
 
-const ACCEPT_STEP =
-  "If a cookie consent banner is shown, click 'Accept' to dismiss it";
+const ACCEPT_STEP = "If a cookie consent banner is shown, click 'Accept' to dismiss it";
 const NEXT_STEP =
   "Click the 'Next' button to submit the email and advance to the Candidate Profile step";
 
@@ -141,11 +118,9 @@ async function run(instruction: string, texts: string[]) {
   });
   const page = fakeFlowPage(
     () => urls.current,
-    (sel) => wrap(base(sel)),
+    (sel) => wrap(base(sel))
   );
-  resolveFrameTarget.mockImplementation(async () =>
-    makeChildFrameTarget(() => urls.current),
-  );
+  resolveFrameTarget.mockImplementation(async () => makeChildFrameTarget(() => urls.current));
   guardedObserve.mockResolvedValue([]);
   guardedAct.mockResolvedValue({
     success: false,
@@ -179,8 +154,7 @@ async function run(instruction: string, texts: string[]) {
   return { clicks, info };
 }
 
-const REFUSAL =
-  /refusing to click an unrelated control|no frame candidate names a phrase/;
+const REFUSAL = /refusing to click an unrelated control|no frame candidate names a phrase/;
 
 describe("flow-runner frame click quoted-target veto", () => {
   beforeEach(() => {
@@ -189,32 +163,22 @@ describe("flow-runner frame click quoted-target veto", () => {
   });
 
   it("refuses the 'Accept' step when no candidate names it (zero clicks)", async () => {
-    const { clicks, info } = await run(ACCEPT_STEP, [
-      "Skip to Main Content",
-      "Privacy Policy",
-    ]);
+    const { clicks, info } = await run(ACCEPT_STEP, ["Skip to Main Content", "Privacy Policy"]);
     expect(clicks()).toBe(0);
     expect(info.some((m) => REFUSAL.test(m))).toBe(true);
   });
 
   it("still clicks a 'Next' candidate for the 'Next' step", async () => {
-    const { clicks, info } = await run(NEXT_STEP, [
-      "Skip to Main Content",
-      "Next",
-    ]);
+    const { clicks, info } = await run(NEXT_STEP, ["Skip to Main Content", "Next"]);
     expect(clicks()).toBeGreaterThan(0);
-    expect(
-      info.some((m) => /refusing to click an unrelated control/.test(m)),
-    ).toBe(false);
+    expect(info.some((m) => /refusing to click an unrelated control/.test(m))).toBe(false);
   });
 
   it("does not veto a value-quoting step", async () => {
     const { info } = await run(
       "Click the 'Yes' answer for the question 'Are you at least 18 years old?'",
-      ["Skip to Main Content"],
+      ["Skip to Main Content"]
     );
-    expect(info.some((m) => /no frame candidate names a phrase/.test(m))).toBe(
-      false,
-    );
+    expect(info.some((m) => /no frame candidate names a phrase/.test(m))).toBe(false);
   });
 });
