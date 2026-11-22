@@ -8,6 +8,7 @@ import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { registerRoutes } from "@/plugins/loader";
+import { CaptchaError, EmptyResultsError, SelectorFailureError } from "@/scraper/errors";
 import type { SitePlugin, SitePluginExtraRoute } from "@/site-plugin";
 
 describe("registerRoutes — extra route handlers receive query, headers and reply", () => {
@@ -60,6 +61,20 @@ describe("registerRoutes — extra route handlers receive query, headers and rep
     expect(res.statusCode).toBe(201);
     expect(res.headers.location).toBe("/books/1");
     expect(res.json()).toEqual({ tags: ["a", "b"], key: "k1" });
+    await app.close();
+  });
+
+  it.each([
+    ["EmptyResultsError", () => new EmptyResultsError("none"), 2005],
+    ["CaptchaError", () => new CaptchaError("captcha"), 2004],
+    ["SelectorFailureError", () => new SelectorFailureError("sel"), 2003],
+    ["plain Error", () => new Error("boom"), 1008],
+  ])("extra route throwing %s returns wire code %d", async (_n, make, code) => {
+    const app = await appWith(async () => {
+      throw make();
+    });
+    const res = await app.inject({ method: "POST", url: "/v1/reply-site/books", payload: {} });
+    expect(res.json().status.details[0].code).toBe(code);
     await app.close();
   });
 });

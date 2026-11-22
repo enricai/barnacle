@@ -85,6 +85,30 @@ describe("scraper/retry", () => {
       expect(onSessionRestart).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ["CaptchaError", () => new CaptchaError(), CaptchaError],
+      ["EmptyResultsError", () => new EmptyResultsError(), EmptyResultsError],
+      ["StepVerificationError", () => new StepVerificationError(), StepVerificationError],
+      [
+        "SessionLifetimeExceededError",
+        () => new SessionLifetimeExceededError("lifetime reached"),
+        SessionLifetimeExceededError,
+      ],
+    ])("rejects with the original %s class and no further retries", async (_n, make, cls) => {
+      const counter = { n: 0 };
+      const thrown = make();
+      const result = await withScraperRetry(
+        async () => {
+          counter.n += 1;
+          throw thrown;
+        },
+        { maxAttempts: 3 }
+      ).catch((e: unknown) => e);
+      expect(result).toBeInstanceOf(cls);
+      expect(result).toBe(thrown);
+      expect(counter.n).toBe(1);
+    });
+
     it("aborts on a name-matched SessionLifetimeExceededError from another realm", async () => {
       const counter = { n: 0 };
       await expect(

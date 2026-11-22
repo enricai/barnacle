@@ -60,22 +60,22 @@ export async function withScraperRetry<T>(
           // for AbortError, so the warn log below is the only signal a
           // captcha was encountered before it propagates to callers.
           logger.error(`captcha encountered on the target site — aborting retry: ${err.message}`);
-          throw new AbortError(err.message);
+          throw new AbortError(err);
         }
         if (err instanceof EmptyResultsError) {
           logger.warn(`scraper returned empty results — aborting retry: ${err.message}`);
-          throw new AbortError(err.message);
+          throw new AbortError(err);
         }
         if (err instanceof StepVerificationError) {
           logger.warn(
             `step verification failed deterministically — aborting retry: ${err.message}`
           );
-          throw new AbortError(err.message);
+          throw new AbortError(err);
         }
 
         if (isSessionLifetimeExceededError(raw)) {
           logger.error(`session reached its configured lifetime — aborting retry: ${err.message}`);
-          throw new AbortError(err.message);
+          throw new AbortError(raw);
         }
 
         if (
