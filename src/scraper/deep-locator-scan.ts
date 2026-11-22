@@ -62,7 +62,7 @@ export const INTERACTIVE_CANDIDATE_SELECTOR =
  * `matches[index]`; the labelled `<input>` itself ranks by its own accessible
  * name (`buildAccessibleNameExpr` resolves `label[for]`). Limited to native
  * controls because the batched write expressions use the `HTMLInputElement`/
- * `HTMLTextAreaElement` value setters, which throw `Illegal invocation` on
+ * `HTMLTextAreaElement` value setters (used only for native controls; contenteditable/role hosts are written via `textContent`), which throw `Illegal invocation` on
  * `[contenteditable]`/`[role=...]` wrappers, and an ARIA wrapper sharing its
  * inner input's `aria-labelledby` name would outrank the real control. A
  * fill/select step resolves over this universe first and widens to
@@ -71,7 +71,8 @@ export const INTERACTIVE_CANDIDATE_SELECTOR =
  * {@link INTERACTIVE_CANDIDATE_SELECTOR}. Commas are safe as the final hop
  * segment, as for that constant.
  */
-export const FILLABLE_CANDIDATE_SELECTOR = "input, select, textarea";
+export const FILLABLE_CANDIDATE_SELECTOR =
+  'input, select, textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="spinbutton"]';
 
 /**
  * Additional per-CDP-round-trip watchdog budget charged per candidate
@@ -385,6 +386,12 @@ export interface FrameCandidateWriteResult {
  * a label (`Illegal invocation`) and the delegate fallback never retries the
  * same label. Every other element resolves to itself.
  */
+const VALUE_READ_EXPR = `((el) => {
+  const t = (el.tagName || "").toLowerCase();
+  if (t === "input" || t === "select" || t === "textarea") return el.value;
+  return el.textContent || "";
+})`;
+
 const VALUE_TARGET_EXPR = `((hit) => {
   if ((hit.tagName || "").toLowerCase() !== "label") return hit;
   return hit.control || null;
@@ -434,12 +441,18 @@ function buildWriteFrameCandidateExpr(
     const el = ${VALUE_TARGET_EXPR}(hit);
     if (!el || !isVisible(el)) return { written: false, reason: "not-actionable" };
     const value = ${JSON.stringify(value)};
-    const descriptor = Object.getOwnPropertyDescriptor(${nativePrototypeExpr}, "value");
-    if (descriptor && descriptor.set) { descriptor.set.call(el, value); } else { el.value = value; }
+    const tag = (el.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") {
+      const descriptor = Object.getOwnPropertyDescriptor(${nativePrototypeExpr}, "value");
+      if (descriptor && descriptor.set) { descriptor.set.call(el, value); } else { el.value = value; }
+    } else {
+      if (typeof el.focus === "function") el.focus();
+      el.textContent = value;
+    }
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     el.dispatchEvent(new Event("blur", { bubbles: true }));
-    return { written: true, readBack: el.value };
+    return { written: true, readBack: ${VALUE_READ_EXPR}(el) };
   })()`;
 }
 
@@ -559,7 +572,7 @@ export function buildReadBackFrameCandidateExpr(
     if (!hit) return {};
     const el = ${VALUE_TARGET_EXPR}(hit);
     if (!el || !isVisible(el)) return {};
-    return { value: el.value };
+    return { value: ${VALUE_READ_EXPR}(el) };
   })()`;
 }
 
