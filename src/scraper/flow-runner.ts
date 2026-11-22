@@ -14363,9 +14363,7 @@ export async function executeStepWithHealing(params: {
     // Step-start baseline: captured once on attempt 1 so later attempts that
     // re-click a selector resolved earlier can detect a document replaced by
     // an earlier attempt's click.
-    attemptDocBaseline = await readFrameDocumentIdentity(
-      frameTarget ?? mainFrameTarget(page)
-    );
+    attemptDocBaseline = await readFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page));
     if (attempt === 1) {
       frameDocBaseline = attemptDocBaseline;
     }
@@ -14793,7 +14791,7 @@ export async function executeStepWithHealing(params: {
         if (
           (await checkFrameDocumentIdentity(
             frameTarget ?? mainFrameTarget(page),
-            frameDocBaseline
+            attemptDocBaseline
           )) === "replaced"
         ) {
           const failureMessage =
@@ -15368,7 +15366,7 @@ export async function executeStepWithHealing(params: {
         } else if (
           (await checkFrameDocumentIdentity(
             frameTarget ?? mainFrameTarget(page),
-            frameDocBaseline
+            attemptDocBaseline
           )) === "replaced"
         ) {
           record.errorMessage =
@@ -16294,10 +16292,8 @@ export async function executeStepWithHealing(params: {
       // The act's own click replaced the frame document: the resolved xpath
       // now names a different control, so neither click may fire.
       n16DocumentReplaced = true;
-      verified = true;
-      record.verifiedBy = "url";
       logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} n+16 fallback skipped: frame document replaced by the act's click; crediting navigation`
+        `${formatStepPrefix(stepIndex, totalSteps)} n+16 fallback skipped: frame document replaced by the act's click; leaving verification to the later gates`
       );
     }
     if (
