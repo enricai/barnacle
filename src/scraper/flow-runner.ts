@@ -14348,6 +14348,9 @@ export async function executeStepWithHealing(params: {
       (await checkFrameDocumentIdentity(frameTarget ?? mainFrameTarget(page), frameDocBaseline)) ===
       "replaced";
     if (!pageAdvanced && !docReplaced) return false;
+    // A document swap alone (same URL: a rejected server-rendered submit that
+    // re-rendered with errors) is not an advance; it needs a changed URL.
+    if (!pageAdvanced && settled.url === stepStartSnapshot.url) return false;
     // A DOM change that came from bouncing to an auth gate is not an advance.
     if (!isPlausibleStepDestination(step, settled.url, stepStartSnapshot.url)) return false;
     logger.info(
