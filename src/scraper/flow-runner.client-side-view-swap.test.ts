@@ -552,6 +552,22 @@ describe("flow-runner/describeAttemptEffectSignals — removal vs reflow", () =>
     }
   );
 
+  it("emits removal only for a click with the target confirmed absent", () => {
+    const pre = snap(10000, 1000, "a b");
+    const post = snap(8400, 440, "a b");
+    const go = (m: string, present: boolean) =>
+      describeAttemptEffectSignals(pre, post, [], 0, {
+        method: m,
+        clickedElementStillPresent: present,
+      });
+    expect(go("click", false)).toContain("content-removed-without-network");
+    for (const out of [go("fill", false), go("click", true)]) {
+      expect(out).not.toContain("content-removed");
+      expect(out).toContain("without confirmed removal");
+      expect(out).not.toContain("reflowed slightly");
+    }
+  });
+
   it("keeps the reflow wording for a tiny text change", () => {
     const out = describeAttemptEffectSignals(
       snap(10000, 1000, "a b"),

@@ -2838,6 +2838,32 @@ export function isMidFlowAdvanceCredited(params: {
 }
 
 /**
+ * The single "content left the page" judgement shared by
+ * {@link isClickViewSwapVerified} (verdict credit) and
+ * {@link describeAttemptEffectSignals} (failure-reason diagnostic). Removal is
+ * credited only for a `click` whose target is positively confirmed absent
+ * (`clickedElementStillPresent === false`), with the body shrinking and either
+ * a measured visible-text shrink (`textShrunk`) or a changed text with an
+ * element-sized shrink (at least the reveal floor, below a whole screen swap).
+ */
+export function isContentRemovalCredited(params: {
+  method?: string | null;
+  clickedElementStillPresent: boolean;
+  bytesDelta: number;
+  textChanged: boolean;
+  textShrunk: boolean;
+}): boolean {
+  const { method, clickedElementStillPresent, bytesDelta, textChanged, textShrunk } = params;
+  if (method !== "click" || clickedElementStillPresent || bytesDelta >= 0) return false;
+  return (
+    textShrunk ||
+    (textChanged &&
+      -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold &&
+      -bytesDelta < config.scraper.viewSwapMinBytesThreshold)
+  );
+}
+
+/**
  * Client-side view-swap verification gate. Credits a click that produces
  * substantial DOM growth with zero network as a verified step outcome when
  * the step is a plain client-side reveal (not a submit/final step, not an
@@ -3024,12 +3050,13 @@ export function isClickViewSwapVerified(params: {
   // removal. A shrink at screen-swap scale that also takes its own trigger
   // stays the reset the veto below targets.
   if (
-    !clickedElementStillPresent &&
-    bytesDelta < 0 &&
-    (contentRemoved ||
-      (textChanged &&
-        -bytesDelta >= VIEW_SWAP_REVEAL_MIN_BYTES &&
-        -bytesDelta < VIEW_SWAP_MIN_BYTES))
+    isContentRemovalCredited({
+      method: resolvedAction?.method,
+      clickedElementStillPresent,
+      bytesDelta,
+      textChanged,
+      textShrunk: contentRemoved,
+    })
   ) {
     return true;
   }
@@ -3133,7 +3160,8 @@ export function describeAttemptEffectSignals(
   pre: StepSnapshot,
   post: StepSnapshot,
   recentCaptureMeta: readonly CaptureMeta[],
-  preMetaLength: number
+  preMetaLength: number,
+  removal?: { method?: string | null; clickedElementStillPresent: boolean }
 ): string {
   const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
   const networkDelta = post.networkCount - pre.networkCount;
@@ -3155,17 +3183,31 @@ export function describeAttemptEffectSignals(
       );
     }
   }
-  // Mirrors the verdict's removal credit: an element-sized body shrink with
-  // changed visible text, or a measured visible-text shrink.
+  // Same predicate as the verdict's removal credit. Evidence defaults to a
+  // confirmed click removal for callers that do not supply it.
+  const shrinkMeasured = isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature);
   const contentRemoved =
     networkDelta === 0 &&
-    (isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature) ||
-      (bytesDelta < 0 &&
-        ((textChanged && -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold) ||
-          -bytesDelta >= config.scraper.viewSwapMinBytesThreshold)));
+    isContentRemovalCredited({
+      method: removal?.method ?? "click",
+      clickedElementStillPresent: removal?.clickedElementStillPresent ?? false,
+      bytesDelta,
+      textChanged,
+      textShrunk: shrinkMeasured,
+    });
   if (contentRemoved) {
     observations.push(
       `content-removed-without-network: visible text and body HTML shrank (body ${bytesDelta}B) with no network — real content left the page (an overlay/banner/target was dismissed), not a slight reflow`
+    );
+  } else if (
+    networkDelta === 0 &&
+    (shrinkMeasured ||
+      (textChanged &&
+        bytesDelta < 0 &&
+        -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold))
+  ) {
+    observations.push(
+      `visible-text-shrank-without-confirmed-removal: visible text shrank (body ${bytesDelta}B) with no network, but the clicked target was not confirmed removed by a click — not a confirmed dismissal`
     );
   } else if (textChanged && networkDelta === 0 && bytesDelta < 500) {
     observations.push(
@@ -17750,7 +17792,16 @@ export async function executeStepWithHealing(params: {
       return "completed";
     }
 
-    const effectSignals = describeAttemptEffectSignals(pre, post, recentCaptureMeta, preMetaLength);
+    const effectSignals = describeAttemptEffectSignals(
+      pre,
+      post,
+      recentCaptureMeta,
+      preMetaLength,
+      {
+        method: resolvedAction?.method,
+        clickedElementStillPresent,
+      }
+    );
     // record.phantomClickVerdict was already computed above, before the
     // `verified` gate — reaching this point means it is NOT `"effective"`
     // (an effective verdict would have short-circuited to "completed"
