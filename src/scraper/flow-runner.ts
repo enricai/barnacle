@@ -12876,6 +12876,12 @@ export async function probeStepBeforeAttempts(params: {
    * of running the cascade and replans. Required steps keep today's behavior.
    */
   optional?: boolean;
+  /**
+   * Receives the focused observe's candidates for `step`, so the cascade's
+   * first attempt can vet the very elements that made the probe report
+   * "present" instead of re-resolving the same instruction.
+   */
+  onFocusedCandidates?: (candidates: readonly Action[]) => void;
 }): Promise<"present" | "absent"> {
   const {
     stagehand,
@@ -12888,6 +12894,7 @@ export async function probeStepBeforeAttempts(params: {
     frameTarget,
     reresolveFrameTarget,
     optional,
+    onFocusedCandidates,
   } = params;
   try {
     const candidates = await guardedObserve(
@@ -12897,6 +12904,7 @@ export async function probeStepBeforeAttempts(params: {
       captureFn,
       frameTarget
     );
+    onFocusedCandidates?.(candidates);
     if (candidates.length === 0 && optional && parsePromptSelectorStep(step) === null) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)}: optional click-shaped step, focused probe found 0 candidates — treating as absent (skip, no cascade)`
@@ -14445,6 +14453,9 @@ export async function executeStepWithHealing(params: {
   // (optional) or escalate straight to replan (required) — far cheaper than
   // burning 4 attempts on a page that clearly isn't the right one.
   params.abortSignal?.throwIfAborted();
+  // What the probe's focused observe resolved the step to; attempt 1 vets
+  // these for a non-interactive-target step rather than observing again.
+  let probeFocusedCandidates: readonly Action[] = [];
   const probeResult = await raceAbortSignal(
     probeStepBeforeAttempts({
       stagehand,
@@ -14456,6 +14467,9 @@ export async function executeStepWithHealing(params: {
       captureFn,
       frameTarget,
       optional,
+      onFocusedCandidates: (candidates) => {
+        probeFocusedCandidates = candidates;
+      },
       reresolveFrameTarget: async () => {
         await reresolveFrameTargetIfLost();
         return frameTarget;
@@ -15254,14 +15268,19 @@ export async function executeStepWithHealing(params: {
         let attemptRefused = false;
         if (stepDeclaresNonInteractiveTarget(step)) {
           // Vet what the step resolves to BEFORE acting: act(string) would
-          // click first and be judged only afterwards.
-          const resolvedCandidates = await guardedObserve(
-            stagehand,
-            step,
-            { timeout: STEP_WATCHDOG_MS },
-            captureFn,
-            frameTarget
-          ).catch(() => [] as Action[]);
+          // click first and be judged only afterwards. The probe has just
+          // resolved this same instruction; only when it resolved nothing is
+          // the step observed again.
+          const resolvedCandidates =
+            probeFocusedCandidates.length > 0
+              ? probeFocusedCandidates
+              : await guardedObserve(
+                  stagehand,
+                  step,
+                  { timeout: STEP_WATCHDOG_MS },
+                  captureFn,
+                  frameTarget
+                ).catch(() => [] as Action[]);
           vettedAction = await firstVettedCandidateForNonInteractiveStep(
             step,
             resolvedCandidates,
