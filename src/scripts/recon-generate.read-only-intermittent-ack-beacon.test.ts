@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
-import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import {
   extractActionSequence,
-  firstEndpointCapture,
   type FoldReturnSpec,
+  firstEndpointCapture,
 } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
+import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -55,9 +55,9 @@ function writeRunDir(runRoot: string, captures: Capture[]): void {
   mkdirSync(join(runRoot, "replays"), { recursive: true });
   mkdirSync(join(runRoot, "aux"), { recursive: true });
   writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
-  captures.forEach((c, i) =>
-    writeFileSync(join(dir, `${String(i).padStart(3, "0")}-capture.json`), JSON.stringify(c))
-  );
+  captures.forEach((c, i) => {
+    writeFileSync(join(dir, `${String(i).padStart(3, "0")}-capture.json`), JSON.stringify(c));
+  });
 }
 
 describe("recon-generate: read-only GET search with an intermittent-ack analytics beacon", () => {
