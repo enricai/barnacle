@@ -34,6 +34,7 @@ import {
 } from "@/scraper/deep-locator-fake";
 import {
   buildSelectFrameCandidateExpr,
+  FILLABLE_CANDIDATE_SELECTOR,
   type FrameCandidateWriteResult,
   INTERACTIVE_CANDIDATE_SELECTOR,
 } from "@/scraper/deep-locator-scan";
@@ -87,6 +88,8 @@ const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+/** Fill/select steps resolve over the fillable hop first; alias it to the same elements. */
+const FILLABLE_HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
 const THANK_YOU_URL = `${CHILD_ORIGIN}/application/abc-123/thank-you`;
 const SUBMITTED_STATE_SELECTOR = "[data-testid=thank-you]";
 /** The report's real post-submit intermediate: the submit click lands the OOPIF on a GraphQL-style transition URL before it detaches, not directly on a child-origin thank-you page. */
@@ -321,7 +324,7 @@ function makeDenseChildFrame(
   const scan = makeFakeFrameScan(deepLocatorFrame, HOP_SELECTOR);
   const screeningSelectExpr = screeningSelect
     ? buildSelectFrameCandidateExpr(
-        INTERACTIVE_CANDIDATE_SELECTOR,
+        FILLABLE_CANDIDATE_SELECTOR,
         screeningSelect.index,
         SCREENING_QUESTION_VALUE
       )
@@ -608,6 +611,7 @@ describe("flow-runner dense OOPIF acceptance regression (oopif-7, offline fixtur
     const order = buildDenseHopOrder(true);
     expect(order).toHaveLength(371);
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+    deepLocatorFrame.set(FILLABLE_HOP_SELECTOR, hop);
     const targetIndex = order.length - 1;
     const firstNameIndex = findElementIndex(order, "First Name");
     const lastNameIndex = findElementIndex(order, "Last Name");
@@ -692,6 +696,7 @@ describe("flow-runner dense OOPIF acceptance regression (oopif-7, offline fixtur
     const order = buildDenseHopOrder(true, true);
     expect(order).toHaveLength(373);
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+    deepLocatorFrame.set(FILLABLE_HOP_SELECTOR, hop);
     const targetIndex = order.length - 1;
     const firstNameIndex = findElementIndex(order, "First Name");
     const lastNameIndex = findElementIndex(order, "Last Name");
@@ -806,7 +811,10 @@ describe("flow-runner dense OOPIF acceptance regression (oopif-7, offline fixtur
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
     const order = buildDenseHopOrder(false);
     expect(order).toHaveLength(370);
-    registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+    deepLocatorFrame.set(
+      FILLABLE_HOP_SELECTOR,
+      registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order)
+    );
     const submitIndex = findElementIndex(order, "Submit");
 
     const stagehand = makeDenseStagehand();
@@ -1107,6 +1115,7 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
     const order = buildDenseHopOrder(true);
     expect(order).toHaveLength(371);
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+    deepLocatorFrame.set(FILLABLE_HOP_SELECTOR, hop);
     // Both the batched fast path AND its legacy fallback are charged the
     // SAME measured round-trip cost — see this describe block's docblock for
     // why that makes the budget assertion below a real regression pin rather

@@ -438,8 +438,15 @@ function buildWriteFrameCandidateExpr(
     const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
     const hit = matches[${JSON.stringify(index)}];
     if (!hit) return { written: false, reason: "out-of-range" };
-    const el = ${VALUE_TARGET_EXPR}(hit);
+    let el = ${VALUE_TARGET_EXPR}(hit);
     if (!el || !isVisible(el)) return { written: false, reason: "not-actionable" };
+    // An ARIA wrapper (role=combobox/textbox) hosting a native control: write the
+    // control, never the wrapper's textContent (which would delete the control).
+    const hostTag = (el.tagName || "").toLowerCase();
+    if (hostTag !== "input" && hostTag !== "textarea" && hostTag !== "select" && typeof el.querySelector === "function") {
+      const inner = el.querySelector("input, textarea, select");
+      if (inner && isVisible(inner)) el = inner;
+    }
     const value = ${JSON.stringify(value)};
     const tag = (el.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea" || tag === "select") {

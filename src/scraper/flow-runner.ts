@@ -13000,7 +13000,19 @@ async function resolveDeepLocatorCandidatesWithWidening(
       instruction,
       timeoutOptions
     );
-    return { candidates: fillable, innerSelector: FILLABLE_CANDIDATE_SELECTOR };
+    if (fillable.length > 0) {
+      return { candidates: fillable, innerSelector: FILLABLE_CANDIDATE_SELECTOR };
+    }
+    // Nothing fillable: fall back to the interactive universe only (never
+    // "*"), so a fill still lands when the control is matched only there.
+    const interactive = await resolveDeepLocatorCandidates(
+      page,
+      frameSelector,
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      instruction,
+      timeoutOptions
+    );
+    return { candidates: interactive, innerSelector: INTERACTIVE_CANDIDATE_SELECTOR };
   }
   const scoped = await resolveDeepLocatorCandidates(
     page,
