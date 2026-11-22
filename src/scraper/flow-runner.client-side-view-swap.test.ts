@@ -563,7 +563,7 @@ describe("flow-runner/describeAttemptEffectSignals — removal vs reflow", () =>
     expect(go("click", false)).toContain("content-removed-without-network");
     for (const out of [go("fill", false), go("click", true)]) {
       expect(out).not.toContain("content-removed");
-      expect(out).toContain("without confirmed removal");
+      expect(out).toContain("without-confirmed-removal");
       expect(out).not.toContain("reflowed slightly");
     }
   });
