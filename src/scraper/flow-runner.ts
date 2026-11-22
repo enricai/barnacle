@@ -95,8 +95,8 @@ import {
   extractTaggedPhrases,
   resolveDeepLocatorCandidates,
   scoreCandidate,
-  vetObserveCandidates,
   vetFrameCandidates,
+  vetObserveCandidates,
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
