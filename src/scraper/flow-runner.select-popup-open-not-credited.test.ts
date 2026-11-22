@@ -7,7 +7,7 @@ import { executeStepWithHealing, isMidFlowAdvanceCredited } from "@/scraper/flow
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
 
-const QUESTION_LABEL = "How Did You Hear About Us?";
+const QUESTION_LABEL = "Preferred Contact Method?";
 const OPTION = "Alpha";
 const STEP = `in the '${QUESTION_LABEL}' prompt selector, select '${OPTION}'`;
 const OPTIONS = ["Alpha", "Beta"];
@@ -22,7 +22,7 @@ const testLogger = {
 type Announce = "describedby" | "chip" | "none";
 
 const widgetHtml = (announce: Announce): string => `
-<div data-automation-id="applyFlowMyInfoPage">
+<div data-automation-id="wizardPageOne">
   <div role="group" aria-labelledby="loc-section">
     <span id="loc-section">${QUESTION_LABEL}</span>
     <div id="loc-widget" role="combobox" aria-haspopup="listbox" aria-invalid="false" tabindex="0">
@@ -326,7 +326,7 @@ describe("n+16 fallback: a select step whose popup opens is not verified", () =>
   });
 });
 
-describe("mid-flow submit judge rejection (Save and Continue ... advance to the next step)", () => {
+describe("mid-flow submit judge rejection (primary action advances to the next step)", () => {
   const base = {
     midFlowSubmit: true,
     signalAdvanced: true,
