@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { detectDrillDownFoldPlan } from "@/scripts/recon-generate";
+import {
+  detectDrillDownFoldPlan,
+  type FoldReturnSpec,
+  findFrozenVaryingDrillParams,
+  resolveFoldPlan,
+} from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildStep, type MulticallFixtureStep } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -74,6 +79,34 @@ describe("structural fold detection vs a facet-requeried read-only GET search", 
     const plans = detectAll(buildFacetRequeriedSearchSteps(), false);
 
     expect(plans).toEqual([]);
+  });
+});
+
+describe("declared self-folds and the frozen-varying guard are unchanged", () => {
+  it("a declared foldReturn on the search's own endpoint still resolves a self-fold", () => {
+    const spec: FoldReturnSpec = {
+      endpointPattern: "catalog/search",
+      resultsPath: "results.items",
+      joinFields: ["id"],
+    };
+    const plans = resolveFoldPlan(
+      buildFacetRequeriedSearchSteps() as unknown as Parameters<typeof resolveFoldPlan>[0],
+      spec
+    );
+
+    expect(plans.length).toBeGreaterThan(0);
+    expect(plans[0]!.primaryArrayPath).toEqual(["results", "items"]);
+  });
+
+  it("still flags a frozen literal that varies across same-endpoint captures", () => {
+    const [first, second] = buildFacetRequeriedSearchSteps().map((s) => s.capture);
+    const frozen = findFrozenVaryingDrillParams(
+      second as never,
+      "https://api.example.com/catalog/search?qty=3&region=A",
+      [first, second] as never[]
+    );
+
+    expect(frozen.map((f) => f.key).sort()).toEqual(["qty", "region"]);
   });
 });
 
