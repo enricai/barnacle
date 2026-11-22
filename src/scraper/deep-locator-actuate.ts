@@ -26,12 +26,16 @@ import type { Page } from "@browserbasehq/stagehand";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import {
+  buildClearValueTargetExpr,
   buildFillFrameCandidateExpr,
   buildReadBackFrameCandidateExpr,
+  buildResolveValueTargetExpr,
   buildSelectFrameCandidateExpr,
   DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS,
   type FrameCandidateReadBackResult,
   type FrameCandidateWriteResult,
+  type FrameValueTargetResult,
+  VALUE_TARGET_MARK_ATTR,
 } from "@/scraper/deep-locator-scan";
 import {
   buildHopSelector,
@@ -238,6 +242,52 @@ async function actuateCandidateBatched(
   return result;
 }
 
+interface DelegateTarget {
+  hop: string;
+  index: number;
+  cleanup: () => Promise<void>;
+}
+
+/**
+ * Picks the node the delegate fallback writes: the indexed node itself, or —
+ * when it is a `<label>` — its `label.control` (stamped via the frame seam and
+ * addressed through {@link VALUE_TARGET_MARK_ATTR}). Returns `null` for a
+ * control-less label (refuse; never write a label). When the frame seam is
+ * absent or its probe fails, the legacy raw-index target is kept (nothing to
+ * inspect the node with).
+ */
+async function resolveDelegateTarget(
+  frameTarget: FrameTarget | null,
+  frameSelector: string | null | undefined,
+  hopSelector: string,
+  innerSelector: string,
+  index: number
+): Promise<DelegateTarget | null> {
+  const raw: DelegateTarget = { hop: hopSelector, index, cleanup: async () => {} };
+  if (!frameTarget) return raw;
+  let result: FrameValueTargetResult | undefined;
+  try {
+    result = await frameTarget.evaluate<FrameValueTargetResult>(
+      buildResolveValueTargetExpr(innerSelector, index)
+    );
+  } catch {
+    return raw;
+  }
+  if (result?.kind === "none") return null;
+  if (result?.kind !== "control") return raw;
+  return {
+    hop: buildHopSelector(frameSelector, `[${VALUE_TARGET_MARK_ATTR}="1"]`),
+    index: 0,
+    cleanup: async () => {
+      try {
+        await frameTarget.evaluate(buildClearValueTargetExpr());
+      } catch {
+        // best-effort stamp cleanup
+      }
+    },
+  };
+}
+
 /**
  * Fills the candidate at `index` inside the frame scoped by `frameSelector`
  * with `value`, re-deriving the same hop selector
@@ -315,19 +365,31 @@ export async function fillDeepLocatorCandidate(
   if (batchedResult?.reason === "not-actionable") return false;
 
   const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;
-  return writeAndVerify(
-    () =>
-      withWatchdog(() => page.deepLocator(hopSelector).nth(index).fill(value), {
-        timeoutMs: scaledCallTimeoutMs,
-        label: `deepLocator fill() for ${hopSelector} nth=${index}`,
-      }),
-    () =>
-      withWatchdog(() => page.deepLocator(hopSelector).nth(index).inputValue(), {
-        timeoutMs: scaledCallTimeoutMs,
-        label: `deepLocator inputValue() for ${hopSelector} nth=${index}`,
-      }),
-    value
+  const target = await resolveDelegateTarget(
+    frameTarget,
+    frameSelector,
+    hopSelector,
+    innerSelector,
+    index
   );
+  if (!target) return false;
+  try {
+    return await writeAndVerify(
+      () =>
+        withWatchdog(() => page.deepLocator(target.hop).nth(target.index).fill(value), {
+          timeoutMs: scaledCallTimeoutMs,
+          label: `deepLocator fill() for ${hopSelector} nth=${index}`,
+        }),
+      () =>
+        withWatchdog(() => page.deepLocator(target.hop).nth(target.index).inputValue(), {
+          timeoutMs: scaledCallTimeoutMs,
+          label: `deepLocator inputValue() for ${hopSelector} nth=${index}`,
+        }),
+      value
+    );
+  } finally {
+    await target.cleanup();
+  }
 }
 
 /**
@@ -380,17 +442,29 @@ export async function selectDeepLocatorCandidateOption(
   if (batchedResult?.reason === "not-actionable") return false;
 
   const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;
-  return writeAndVerify(
-    () =>
-      withWatchdog(() => page.deepLocator(hopSelector).nth(index).selectOption(value), {
-        timeoutMs: scaledCallTimeoutMs,
-        label: `deepLocator selectOption() for ${hopSelector} nth=${index}`,
-      }),
-    () =>
-      withWatchdog(() => page.deepLocator(hopSelector).nth(index).inputValue(), {
-        timeoutMs: scaledCallTimeoutMs,
-        label: `deepLocator inputValue() for ${hopSelector} nth=${index}`,
-      }),
-    value
+  const target = await resolveDelegateTarget(
+    frameTarget,
+    frameSelector,
+    hopSelector,
+    innerSelector,
+    index
   );
+  if (!target) return false;
+  try {
+    return await writeAndVerify(
+      () =>
+        withWatchdog(() => page.deepLocator(target.hop).nth(target.index).selectOption(value), {
+          timeoutMs: scaledCallTimeoutMs,
+          label: `deepLocator selectOption() for ${hopSelector} nth=${index}`,
+        }),
+      () =>
+        withWatchdog(() => page.deepLocator(target.hop).nth(target.index).inputValue(), {
+          timeoutMs: scaledCallTimeoutMs,
+          label: `deepLocator inputValue() for ${hopSelector} nth=${index}`,
+        }),
+      value
+    );
+  } finally {
+    await target.cleanup();
+  }
 }

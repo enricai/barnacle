@@ -576,6 +576,46 @@ export function buildReadBackFrameCandidateExpr(
   })()`;
 }
 
+/** Attribute {@link buildResolveValueTargetExpr} stamps on a label's control so a delegate `deepLocator` can address it. */
+export const VALUE_TARGET_MARK_ATTR = "data-leerie-value-target";
+
+/** Outcome of {@link buildResolveValueTargetExpr}. */
+export interface FrameValueTargetResult {
+  /** `self`: the match is not a label; `control`: a label whose control is now stamped; `none`: a control-less label; `out-of-range`: no such match. */
+  kind: "self" | "control" | "none" | "out-of-range";
+}
+
+/**
+ * Builds an evaluate expression that resolves the candidate at
+ * `root.querySelectorAll(innerSelector)[index]` through {@link VALUE_TARGET_EXPR}
+ * (same semantics as the batched write) WITHOUT writing: for a `<label>` with
+ * a control it stamps {@link VALUE_TARGET_MARK_ATTR} on the control (clearing any
+ * stale stamp first) so the delegate fallback can fill the control, never
+ * the label.
+ */
+export function buildResolveValueTargetExpr(
+  innerSelector: string,
+  index: number,
+  root = "document"
+): string {
+  return `(() => {
+    const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
+    const hit = matches[${JSON.stringify(index)}];
+    if (!hit) return { kind: "out-of-range" };
+    if ((hit.tagName || "").toLowerCase() !== "label") return { kind: "self" };
+    const el = ${VALUE_TARGET_EXPR}(hit);
+    if (!el) return { kind: "none" };
+    Array.from(${root}.querySelectorAll("[${VALUE_TARGET_MARK_ATTR}]")).forEach((n) => n.removeAttribute("${VALUE_TARGET_MARK_ATTR}"));
+    el.setAttribute("${VALUE_TARGET_MARK_ATTR}", "1");
+    return { kind: "control" };
+  })()`;
+}
+
+/** Expression clearing the {@link VALUE_TARGET_MARK_ATTR} stamp. */
+export function buildClearValueTargetExpr(root = "document"): string {
+  return `(() => { Array.from(${root}.querySelectorAll("[${VALUE_TARGET_MARK_ATTR}]")).forEach((n) => n.removeAttribute("${VALUE_TARGET_MARK_ATTR}")); return true; })()`;
+}
+
 /**
  * Detects the CDP "node is not actionable" failure shape so a caller
  * cascading through candidates can treat it as "skip this candidate, try the
