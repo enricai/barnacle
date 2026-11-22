@@ -99,7 +99,10 @@ import {
   vetObserveCandidates,
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
-import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import {
+  FILLABLE_CANDIDATE_SELECTOR,
+  INTERACTIVE_CANDIDATE_SELECTOR,
+} from "@/scraper/deep-locator-scan";
 import {
   CaptchaError,
   EmailStepExtractError,
@@ -12568,6 +12571,19 @@ async function resolveDeepLocatorCandidatesWithWidening(
   instruction: string | null | undefined,
   timeoutOptions: DeepLocatorTimeoutOptions
 ): Promise<{ candidates: DeepLocatorCandidate[]; innerSelector: string }> {
+  // A fill/select step may only rank and write to a control that can hold the
+  // value, so it resolves over the fillable universe and never widens to
+  // `"*"` (which would re-admit labels and other non-controls).
+  if (instruction && resolveDeepLocatorActuation(instruction).kind !== "click") {
+    const fillable = await resolveDeepLocatorCandidates(
+      page,
+      frameSelector,
+      FILLABLE_CANDIDATE_SELECTOR,
+      instruction,
+      timeoutOptions
+    );
+    return { candidates: fillable, innerSelector: FILLABLE_CANDIDATE_SELECTOR };
+  }
   const scoped = await resolveDeepLocatorCandidates(
     page,
     frameSelector,
@@ -15524,7 +15540,10 @@ export async function executeStepWithHealing(params: {
               )
             : null;
         const deepLocatorInnerSelector =
-          deepLocatorResolution?.innerSelector ?? INTERACTIVE_CANDIDATE_SELECTOR;
+          deepLocatorResolution?.innerSelector ??
+          (resolveDeepLocatorActuation(step).kind === "click"
+            ? INTERACTIVE_CANDIDATE_SELECTOR
+            : FILLABLE_CANDIDATE_SELECTOR);
         let deepLocatorCandidates = (deepLocatorResolution?.candidates ?? []).filter(
           (c) => !triedSelectors.includes(c.selector)
         );
