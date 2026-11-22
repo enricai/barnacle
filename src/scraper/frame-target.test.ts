@@ -1208,6 +1208,58 @@ describe("resolveFrameTarget: nested hop chains", () => {
     );
   });
 
+  it("resolves a 3-hop chain '#a >> #b >> #c' through two nested frames to the great-grandchild", async () => {
+    const empty = makeFakeFrame("https://example.com/c", { nonEmpty: false });
+    const real = makeFakeFrame("https://example.com/c", { nonEmpty: true });
+    const b = makeFakeFrame("https://example.net/b", {
+      iframes: { "#c": "https://example.com/c" },
+      children: [empty, real],
+    });
+    const a = makeFakeFrame("https://example.net/a", {
+      iframes: { "#b": "https://example.net/b" },
+      children: [b],
+    });
+    const page = makeFakePage({
+      mainUrl: "https://example.com/",
+      iframes: { "#a": "https://example.net/a" },
+      frames: [a, b, empty, real],
+    });
+    const target = await resolveFrameTarget(page as never, "#a >> #b >> #c", { timeoutMs: 50 });
+    expect(target.frame).toBe(real);
+    expect(target.declaredFrameSelector).toBe("#a >> #b >> #c");
+    expect(buildHopSelector(target.declaredFrameSelector, "button")).toBe(
+      "#a >> #b >> #c >> button"
+    );
+  });
+
+  it("returns a main-frame target when a middle hop of a 3-hop chain is missing", async () => {
+    const a = makeFakeFrame("https://example.net/a", { children: [] });
+    const page = makeFakePage({
+      mainUrl: "https://example.com/",
+      iframes: { "#a": "https://example.net/a" },
+      frames: [a],
+    });
+    const target = await resolveFrameTarget(page as never, "#a >> #b >> #c", { timeoutMs: 30 });
+    expect(target.frame).toBeNull();
+  });
+
+  it("nested tie-break prefers the non-empty candidate even when the empty shell is listed first and last", async () => {
+    const emptyFirst = makeFakeFrame("https://example.com/inner", { nonEmpty: false });
+    const real = makeFakeFrame("https://example.com/inner", { nonEmpty: true });
+    const emptyLast = makeFakeFrame("https://example.com/inner", { nonEmpty: false });
+    const outer = makeFakeFrame("https://example.net/outer", {
+      iframes: { "#inner": "https://example.com/inner" },
+      children: [emptyFirst, real, emptyLast],
+    });
+    const page = makeFakePage({
+      mainUrl: "https://example.com/",
+      iframes: { "#outer": "https://example.net/outer" },
+      frames: [outer, emptyFirst, real, emptyLast],
+    });
+    const target = await resolveFrameTarget(page as never, "#outer >> #inner", { timeoutMs: 50 });
+    expect(target.frame).toBe(real);
+  });
+
   it("does not match when the inner iframe is absent from the outer frame", async () => {
     const outer = makeFakeFrame("https://example.net/outer", { children: [] });
     const page = makeFakePage({
