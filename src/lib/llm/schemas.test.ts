@@ -228,3 +228,21 @@ describe("LLM prose fields are uncapped", () => {
     ).toBe(false);
   });
 });
+
+describe("RECON_FLOW_STEP_SCHEMA frameSelector", () => {
+  it("retains frameSelector when present", () => {
+    const parsed = RECON_FLOW_STEP_SCHEMA.parse({
+      step: "click pay",
+      frameSelector: "iframe#pay",
+    });
+    expect(parsed).toMatchObject({ frameSelector: "iframe#pay" });
+  });
+
+  it("parses steps without frameSelector and rejects empty", () => {
+    const parsed = RECON_FLOW_STEP_SCHEMA.parse({ step: "click" });
+    expect(parsed).not.toHaveProperty("frameSelector");
+    expect(
+      RECON_FLOW_STEP_SCHEMA.safeParse({ step: "x", frameSelector: "" }).success,
+    ).toBe(false);
+  });
+});
