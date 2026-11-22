@@ -5,11 +5,7 @@ import type { FastifyInstance, RawServerDefault } from "fastify";
 import type pino from "pino";
 import { z } from "zod/v4";
 
-import {
-  type ApiError,
-  FieldViolationError,
-  toApiError,
-} from "@/api/errors";
+import { FieldViolationError, toApiError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
