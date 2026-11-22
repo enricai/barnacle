@@ -5826,18 +5826,9 @@ async function readElementSelectionFingerprint(
  * (e.g. a login-to-registration form swap) also removes its trigger, so
  * absence only vetoes when the DOM did not grow; the caller applies that
  * direction check. Returns
- * `true` — never veto — whenever presence genuinely can't be determined (a
- * non-xpath selector, an evaluate failure): only a positive `false` read
- * back from the DOM counts as proof of absence.
+ * `null` whenever presence can't be determined (a non-xpath selector, an
+ * evaluate failure); only a positive `false` counts as proof of absence.
  */
-async function resolvedClickTargetStillPresent(
-  target: FrameTarget,
-  selector: string
-): Promise<boolean> {
-  return (await resolvedClickTargetPresence(target, selector)) !== false;
-}
-
-/** Tri-state presence: `null` when it cannot be determined. */
 async function resolvedClickTargetPresence(
   target: FrameTarget,
   selector: string
