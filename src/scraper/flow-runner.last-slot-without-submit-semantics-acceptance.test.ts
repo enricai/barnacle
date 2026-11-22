@@ -309,7 +309,7 @@ describe("flow-runner/executeStepWithHealing — last slot without submit semant
 
     const logs = vi.mocked(testLogger.info).mock.calls.map((c) => String(c[0]));
     expect(logs.some((l) => l.includes("mid-flow submit credited"))).toBe(false);
-    expect(verifySubmitWithLLM).toHaveBeenCalled();
+    expect(verifyStepAdvancedWithLLM).toHaveBeenCalled();
     expect(outcome).not.toBe("completed");
   });
 
