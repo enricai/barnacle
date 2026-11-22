@@ -37,3 +37,19 @@ describe("emitBrowserFlowTs — frameSelector emission into runHealingFlow", () 
     expect(explicitUndefined.code).toEqual(omitted.code);
   });
 });
+
+describe("emitBrowserFlowTs — per-step frameSelector emission", () => {
+  it("emits frameSelector on the step object that declares it, and only there", () => {
+    const { code } = emitBrowserFlowTs({
+      ...BASE_OPTS,
+      flowSteps: [
+        { step: "Click the Manual Application button", frameSelector: "#step_frame" },
+        "Click Next",
+      ],
+    });
+    expect(code).toMatch(
+      /instruction: "Click the Manual Application button",[^\n]*frameSelector: "#step_frame" \},/
+    );
+    expect(code.match(/#step_frame/g)).toHaveLength(1);
+  });
+});

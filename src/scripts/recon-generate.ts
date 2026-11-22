@@ -18713,6 +18713,8 @@ type FlowStepInput =
       emailStep?: boolean;
       emailStepConfig?: EmailStepConfig;
       navigateTo?: string;
+      /** Per-step cross-origin `<iframe>` selector; overrides the flow-level one. */
+      frameSelector?: string;
     };
 
 /**
@@ -19328,6 +19330,18 @@ export function emitBrowserFlowTs(opts: {
       /submitStep: (true|false)(?= \},)/,
       "submitStep: true"
     );
+  }
+
+  // Per-step frameSelector: emit it on the step object so the runtime's
+  // `s.frameSelector ?? deps.frameSelector` drives the frame this step names.
+  for (let i = 0; i < stepLiterals.length; i++) {
+    const st = flowSteps[i];
+    if (st !== undefined && typeof st !== "string" && st.frameSelector !== undefined) {
+      stepLiterals[i] = stepLiterals[i]!.replace(
+        / \},$/,
+        ` frameSelector: ${JSON.stringify(st.frameSelector)} },`
+      );
+    }
   }
 
   const flowStepsBlock =

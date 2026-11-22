@@ -58,6 +58,8 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      * the step's prose targets). Absent/false is a no-op for every existing flow.
      */
     emailStep: z.boolean().default(false),
+    /** Per-step cross-origin iframe selector; overrides the flow-level `frameSelector`. */
+    frameSelector: z.string().min(1).optional(),
     /** Config for an `emailStep`. Ignored unless `emailStep` is true. */
     emailStepConfig: z
       .object({
