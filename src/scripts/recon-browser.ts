@@ -2898,6 +2898,25 @@ function loadUploadFixture(
   }
 }
 
+/**
+ * Replan call used by main(): probes the failed step's own frame (falling
+ * back to the flow-level one) and makes replanned steps inherit the failed
+ * step's `frameSelector`.
+ */
+export async function replanForFailedStep(
+  args: Omit<Parameters<typeof replanRemainingFlow>[0], "frameSelector"> & {
+    failedStepFrameSelector: string | undefined;
+    flowFrameSelector: string | null | undefined;
+  }
+): ReturnType<typeof replanRemainingFlow> {
+  const { failedStepFrameSelector, flowFrameSelector, ...rest } = args;
+  const raw = await replanRemainingFlow({
+    ...rest,
+    frameSelector: failedStepFrameSelector ?? flowFrameSelector,
+  });
+  return raw ? inheritStepFrameSelector(raw, failedStepFrameSelector) : raw;
+}
+
 async function main(): Promise<void> {
   const {
     url,
@@ -3641,7 +3660,7 @@ async function main(): Promise<void> {
             `${formatStepPrefix(i, () => plan.length)} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
           );
 
-          const rawNewStepsUnscoped = await replanRemainingFlow({
+          const rawNewSteps = await replanForFailedStep({
             client: anthropic,
             originalFlow: flow.map((s) => s.instruction),
             completedSteps,
@@ -3650,17 +3669,14 @@ async function main(): Promise<void> {
             failureDumpPath: dumpPath,
             page,
             stagehand,
-            frameSelector: step.frameSelector ?? frameSelector,
+            failedStepFrameSelector: step.frameSelector,
+            flowFrameSelector: frameSelector,
             captureFn,
             recentCaptures,
             ownBackendHostnames,
             trajectory,
             priorReplans: replanEvents,
           });
-
-          const rawNewSteps = rawNewStepsUnscoped
-            ? inheritStepFrameSelector(rawNewStepsUnscoped, step.frameSelector)
-            : rawNewStepsUnscoped;
           if (!rawNewSteps) {
             logger.error(
               `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`

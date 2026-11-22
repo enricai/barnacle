@@ -11,7 +11,11 @@ vi.mock("@/scraper/frame-target", async (importOriginal) => {
   return { ...actual, resolveFrameTarget: resolveFrameTargetSpy };
 });
 
-import { inheritStepFrameSelector, replanRemainingFlow } from "@/scripts/recon-browser";
+import {
+  inheritStepFrameSelector,
+  replanForFailedStep,
+  replanRemainingFlow,
+} from "@/scripts/recon-browser";
 
 describe("replan — step frameSelector", () => {
   let dir: string | undefined;
@@ -64,5 +68,49 @@ describe("replan — step frameSelector", () => {
     const out = inheritStepFrameSelector(steps, "#step");
     expect(out.map((s) => s.frameSelector)).toEqual(["#step", "#own"]);
     expect(inheritStepFrameSelector(steps, undefined)).toBe(steps);
+  });
+
+  it("replanForFailedStep (main's call path) probes and inherits the failed step's frame", async () => {
+    dir = mkdtempSync(join(tmpdir(), "replan-frame-"));
+    const dump = join(dir, "dump.json");
+    writeFileSync(dump, JSON.stringify({ bodyOuterHtml: "<body></body>" }));
+    resolveFrameTargetSpy.mockResolvedValue({ evaluate: vi.fn().mockResolvedValue([]) });
+    const client = {
+      messages: {
+        parse: vi.fn().mockResolvedValue({
+          parsed_output: {
+            outcome: "replan",
+            steps: ["Click A", { step: "Click B", frameSelector: "#own" }],
+          },
+          content: [{ type: "text", text: "{}" }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+      },
+    } as unknown as Anthropic;
+    const base = {
+      client,
+      originalFlow: ["x"],
+      completedSteps: [],
+      failedStep: "x",
+      remainingSteps: [],
+      failureDumpPath: dump,
+      page: { url: () => "u", title: async () => "t" } as never,
+      stagehand: { observe: vi.fn().mockResolvedValue([]) } as never,
+      captureFn: async () => {},
+    };
+    const steps = await replanForFailedStep({
+      ...base,
+      failedStepFrameSelector: "#step_frame",
+      flowFrameSelector: "#flow_frame",
+    });
+    expect(resolveFrameTargetSpy.mock.calls.map((c) => c[1])).toContain("#step_frame");
+    expect(steps?.map((s) => s.frameSelector)).toEqual(["#step_frame", "#own"]);
+    const flowOnly = await replanForFailedStep({
+      ...base,
+      failedStepFrameSelector: undefined,
+      flowFrameSelector: "#flow_frame",
+    });
+    expect(resolveFrameTargetSpy.mock.calls.map((c) => c[1])).toContain("#flow_frame");
+    expect(flowOnly?.map((s) => s.frameSelector)).toEqual([undefined, "#own"]);
   });
 });
