@@ -87,7 +87,8 @@ describe("read-only flows are not job applications", () => {
       baseUrl: "https://api.example.com",
       flowSteps: ["Fill 'Phone Number' with '555'"],
       isSubmissionFlow: false,
-      inputBody: { email: "a@b.c" },
+      // Production passes no inputBody for non-submission flows (recon-generate main).
+      inputBody: undefined,
       vocabulary,
     });
     expect([...payloadFieldNames]).toEqual(["MobilePhone"]);
