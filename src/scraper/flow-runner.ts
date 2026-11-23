@@ -2677,11 +2677,33 @@ export function flowHasSubmitSemantics(params: {
   steps: Array<{ submitStep: boolean; instruction?: string | null }>;
   submitEndpointPattern: string | null;
   requireSubmitEndpointMatch: boolean;
+  /** Flow declares itself read-only: the pattern alone never implies a submit. */
+  readOnly?: boolean;
+  /** Captures seen so far; when every one matching `submitEndpointPattern` is a GET/HEAD, the pattern points at a query, not a submission. */
+  recentCaptureMeta?: readonly { method: string; url: string }[];
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
   const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
   if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
   if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
+  if (!requireSubmitEndpointMatch) {
+    if (params.readOnly === true) return false;
+    if (submitEndpointPattern !== null && params.recentCaptureMeta) {
+      let re: RegExp | null = null;
+      try {
+        re = new RegExp(submitEndpointPattern);
+      } catch {
+        re = null;
+      }
+      const matched = re ? params.recentCaptureMeta.filter((c) => re.test(c.url)) : [];
+      if (
+        matched.length > 0 &&
+        matched.every((c) => ["GET", "HEAD"].includes(c.method.toUpperCase()))
+      ) {
+        return false;
+      }
+    }
+  }
   // An earlier step whose own wording declares submit already owns the role;
   // the fallback is only for a self-heal-appended final step.
   const earlierStepOwnsSubmit = steps
@@ -18836,11 +18858,16 @@ async function runHealingFlowScoped(
   // Listeners on earlier pages stay wired (a prior tab can still emit) and all stop on exit.
   const stopFns: (() => void)[] = [wireCapture(page)];
 
-  const flowHasSubmitSemanticsFlag = flowHasSubmitSemantics({
-    steps,
-    submitEndpointPattern: deps.submitEndpointPattern ?? null,
-    requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
-  });
+  // Re-derived before each step: captures accumulate as the flow runs, so a
+  // GET-only endpoint match is only visible after earlier steps have fired.
+  const computeSubmitSemantics = (): boolean =>
+    flowHasSubmitSemantics({
+      steps,
+      submitEndpointPattern: deps.submitEndpointPattern ?? null,
+      requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
+      recentCaptureMeta,
+    });
+  let flowHasSubmitSemanticsFlag = computeSubmitSemantics();
 
   if (
     shouldWarnMissingAdvancePattern(
@@ -18881,6 +18908,7 @@ async function runHealingFlowScoped(
         );
       }
       lastStepIndex = i;
+      flowHasSubmitSemanticsFlag = computeSubmitSemantics();
       // A cross-origin hop (redirect, new tab, navigateTo) lands on a SPA the initial
       // readiness gate never covered; wait for hydration before the step probes a shell.
       const currentOrigin = liveOriginOf(activePage);
