@@ -7689,6 +7689,24 @@ function pathToVarName(path: string[]): string {
   return "value";
 }
 
+/** True only when a value the capture produces is re-sent, transitively through
+ * other steps, by a capture matching the declared submit pattern. */
+export function stepFeedsDeclaredSubmit(
+  capture: Capture,
+  steps: ActionStep[],
+  matchesDeclaredSubmit: (c: Capture) => boolean,
+  seen = new Set<Capture>()
+): boolean {
+  if (seen.has(capture)) return false;
+  seen.add(capture);
+  const step = steps.find((s) => s.capture === capture);
+  return (
+    step?.consumers?.some(
+      (c) => matchesDeclaredSubmit(c) || stepFeedsDeclaredSubmit(c, steps, matchesDeclaredSubmit, seen)
+    ) ?? false
+  );
+}
+
 /**
  * Walks the action sequence and decorates each step with: a unique response
  * var name, the state values its response produces (used by downstream steps),
@@ -21176,17 +21194,8 @@ export async function main(): Promise<void> {
     // step consumes (a one-off analytics or consent POST) is page chrome, not a
     // step. One whose response feeds a later request (a token mint) still is.
     const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
-    // True only when a value the capture produces is re-sent, transitively
-    // through other steps, by a capture matching the declared submit pattern.
-    const feedsDeclaredStep = (capture: Capture, seen = new Set<Capture>()): boolean => {
-      if (seen.has(capture)) return false;
-      seen.add(capture);
-      const step = compiledActionSteps.find((s) => s.capture === capture);
-      return (
-        step?.consumers?.some((c) => matchesDeclaredSubmit(c) || feedsDeclaredStep(c, seen)) ??
-        false
-      );
-    };
+    const feedsDeclaredStep = (capture: Capture): boolean =>
+      stepFeedsDeclaredSubmit(capture, compiledActionSteps, matchesDeclaredSubmit);
     const isIncidentalReadFlowPost = (capture: Capture): boolean =>
       declaresSubmitPattern && !matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
     const actionSequenceIsReadSamples =
