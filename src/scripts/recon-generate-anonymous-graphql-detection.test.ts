@@ -1,20 +1,23 @@
 import { describe, expect, it } from "vitest";
-import type { Capture } from "../recon/capture-filters";
+import type { Capture } from "@/scripts/recon-shared";
 import { deriveBaseUrl, isGraphQL } from "./recon-generate";
 
 const H = { "content-type": "application/json" };
-const gql = (url: string, query: string): Capture =>
-  ({
-    method: "POST",
-    url,
-    requestHeaders: H,
-    responseHeaders: H,
-    requestPostData: JSON.stringify({ query }),
-    responseBody: { data: {} },
-    operationName: null,
-    query,
-    status: 200,
-  }) as Capture;
+const gql = (url: string, query: string): Capture => ({
+  timestamp: "2024-01-01T00:00:00Z",
+  phase: "load",
+  variables: null,
+  decodedParams: null,
+  method: "POST",
+  url,
+  requestHeaders: H,
+  responseHeaders: H,
+  requestPostData: JSON.stringify({ query }),
+  responseBody: { data: {} },
+  operationName: null,
+  query,
+  status: 200,
+});
 
 describe("anonymous GraphQL documents as detection signal", () => {
   const anon = "query ($input: ItemsInput!) { allItems(input: $input) { name } }";
