@@ -154,7 +154,7 @@ import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { createCaptureRebinder } from "@/scripts/recon-capture-rebind";
-import { resolveReconRunDir } from "@/scripts/recon-shared";
+import { EXTRA_PAYLOAD_FIELD_SCHEMA, resolveReconRunDir } from "@/scripts/recon-shared";
 import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
 import { allocateTestmailInbox, type TestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
@@ -844,6 +844,8 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * "<tenant>.<ats>.com"].
      */
     ownBackendHostnames: z.array(z.string().min(1)).optional(),
+    /** Extra payload fields the generator emits; see `EXTRA_PAYLOAD_FIELD_SCHEMA`. */
+    extraPayloadFields: z.array(EXTRA_PAYLOAD_FIELD_SCHEMA).optional(),
     /**
      * Declares the ATS cannot be replayed as raw HTTP, so the generator emits
      * a browser-flow-only plugin regardless of HTTP analysis.

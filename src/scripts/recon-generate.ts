@@ -65,12 +65,15 @@ import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-ru
 import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
+  buildExtraFieldRedaction,
   type Capture,
   CREDENTIAL_REQUEST_HEADERS,
+  type ExtraPayloadField,
   type RateLimitFinding,
   type ReplayResult,
   readBrowserFlowOnly,
   readCaptureDir,
+  readExtraPayloadFields,
   readJsonDir,
   readOwnBackendHostnames,
   replayReachable,
@@ -17323,6 +17326,9 @@ export function emitContractTsParts(opts: {
    * declared field with no matching discovered field is a no-op — it has no
    * schema line to attach to. */
   valueConstraints?: ReconValueConstraints;
+  /** Flow-declared `extraPayloadFields`: emitted into the payload schema
+   * unless a capture already discovered the same name. */
+  extraPayloadFields?: readonly ExtraPayloadField[];
   /** PascalCase candidate-PII field names the browser flow splices as
    * `payload.<field>` (from resolveStepPayloadField). Each is added to the
    * payload schema so those references typecheck. Shares the accumulator with
@@ -17412,6 +17418,7 @@ export function emitContractTsParts(opts: {
     discoveredAdditionalBodyKeys,
     discoveredStructuredKeys,
     valueConstraints = EMPTY_VALUE_CONSTRAINTS,
+    extraPayloadFields = [],
     payloadFieldNames,
     optionalPayloadFieldNames = new Set<string>(),
     flowSteps: contractFlowSteps = [],
@@ -17987,6 +17994,11 @@ export function emitContractTsParts(opts: {
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: z.string().optional(),`);
     }
+  }
+  // Flow-declared extra payload fields: declared type/optionality are
+  // authoritative and override a name discovered from captures (one entry per name).
+  for (const f of extraPayloadFields) {
+    extendFields.set(f.name, `  ${f.name}: z.${f.type}()${f.optional ? ".optional()" : ""},`);
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
@@ -18710,6 +18722,10 @@ ${executeHttpBody}
     createsAccount || contractFlowSteps.some(stepUsesReconPassword)
       ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
       : "";
+  const extraRedaction = buildExtraFieldRedaction(extraPayloadFields);
+  const redactionLiteral = extraRedaction
+    ? `\n    redaction: ${JSON.stringify(extraRedaction)},`
+    : "";
   const pluginDocComment = omitExecuteHttp
     ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
@@ -18770,7 +18786,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // JSON-stringified encoding parseable.
     `
         : ""
-    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}${redactionLiteral}
   },
 ${executeHttpMethodBlock}
 ${executeDocComment}  async execute(
@@ -19376,6 +19392,8 @@ export function emitConfigManifest(opts: {
   formBodyFieldNames?: ReadonlySet<string>;
   /** Read-only GET flow: no submission, so the request schema omits TrackingUrl (mirrors the .ts contract). */
   readOnlyGet?: boolean;
+  /** Flow-declared extra payload fields; sensitive ones emit `spec.redaction`. */
+  extraPayloadFields?: readonly ExtraPayloadField[];
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -19498,6 +19516,7 @@ export function emitConfigManifest(opts: {
       requestProperties[name] = { type: jsonSchemaTypeOf(value) };
     }
   }
+  for (const f of opts.extraPayloadFields ?? []) requestProperties[f.name] = { type: f.type };
   const usesApplicantContactSchema = contractUsesApplicantContactSchema({
     inputBody,
     isSubmissionFlow,
@@ -19529,6 +19548,9 @@ export function emitConfigManifest(opts: {
       ...(httpModulePath ? { httpModule: httpModulePath } : {}),
       ...(multipart ? { multipart: true } : {}),
       ...(flowSteps.some(stepUsesReconPassword) ? { maxAttempts: 1 } : {}),
+      ...(buildExtraFieldRedaction(opts.extraPayloadFields ?? []) !== null
+        ? { redaction: buildExtraFieldRedaction(opts.extraPayloadFields ?? []) }
+        : {}),
       request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
@@ -21540,6 +21562,7 @@ export async function main(): Promise<void> {
           browserFlowOnly,
           formBodyFieldNames,
           readOnlyGet: isReadOnlyGetFlow,
+          extraPayloadFields: readExtraPayloadFields(flowFile),
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
@@ -21665,6 +21688,7 @@ export async function main(): Promise<void> {
       discoveredAdditionalBodyKeys,
       discoveredStructuredKeys,
       valueConstraints,
+      extraPayloadFields: readExtraPayloadFields(flowFile),
       payloadFieldNames: browserFlow.payloadFieldNames,
       optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
       headerBindings,
