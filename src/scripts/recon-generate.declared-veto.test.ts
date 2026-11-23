@@ -12,8 +12,8 @@ function read(ts: string, operationName: string, body: unknown): Capture {
     requestHeaders: { "Content-Type": "application/json" },
     requestPostData: JSON.stringify({ operationName }),
     responseHeaders: {},
-    operationName,
-    query: `query ${operationName} { ${operationName} { id } }`,
+    operationName: null,
+    query: `query { ${operationName} }`,
     variables: null,
     responseBody: body,
     decodedParams: null,
@@ -22,16 +22,17 @@ function read(ts: string, operationName: string, body: unknown): Capture {
 
 describe("declared selection is honored before the zero-variance veto", () => {
   it("keeps declared repeated same-URL reads instead of selecting 0", () => {
+    const same = {};
     const caps = [
-      read("2026-01-01T00:00:00.000Z", "allSailings", { data: { items: [{ id: 1 }] } }),
-      read("2026-01-01T00:00:01.000Z", "cabinCategoriesAvailability", { data: { id: 1 } }),
-      read("2026-01-01T00:00:02.000Z", "cabinCategoriesAvailability", { data: { id: 1 } }),
+      read("2026-01-01T00:00:00.000Z", "cabinCategoriesAvailability", same),
+      read("2026-01-01T00:00:01.000Z", "cabinCategoriesAvailability", same),
+      read("2026-01-01T00:00:02.000Z", "cabinCategoriesAvailability", same),
     ];
     const kept = extractGraphQLActionSequence(
       caps,
       { endpoint: null, body: "allSailings|cabinCategoriesAvailability" },
       { endpointPattern: "/graphql", resultsPath: "data.items" }
     );
-    expect(kept.length).toBeGreaterThanOrEqual(2);
+    expect(kept.length).toBe(3);
   });
 });
