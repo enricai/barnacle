@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { firstEndpointCapture, truncateActionSequenceAtSubmitPattern } from "@/scripts/recon-generate";
+import {
+  firstEndpointCapture,
+  truncateActionSequenceAtSubmitPattern,
+} from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
 function cap(o: Partial<Capture>): Capture {
