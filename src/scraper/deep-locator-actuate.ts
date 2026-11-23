@@ -248,6 +248,14 @@ interface DelegateTarget {
   cleanup: () => Promise<void>;
 }
 
+const LABEL_SAFE_SELECTOR_PART =
+  /^(input|select|textarea)\b|^\[contenteditable|^\[role=["']?(textbox|combobox|spinbutton)\b/;
+
+function selectorExcludesLabels(selector: string): boolean {
+  const parts = selector.split(",").map((p) => p.trim());
+  return parts.length > 0 && parts.every((p) => LABEL_SAFE_SELECTOR_PART.test(p));
+}
+
 /**
  * Picks the node the delegate fallback writes: the indexed node itself, or —
  * when it is a `<label>` — its `label.control` (stamped via the frame seam and
@@ -264,7 +272,11 @@ async function resolveDelegateTarget(
   index: number
 ): Promise<DelegateTarget | null> {
   const raw: DelegateTarget = { hop: hopSelector, index, cleanup: async () => {} };
-  if (!frameTarget) return raw;
+  if (!frameTarget) {
+    // No seam to inspect the node with: only a selector confined to value-holding
+    // elements is guaranteed never to land on a `<label>`; otherwise refuse.
+    return selectorExcludesLabels(innerSelector) ? raw : null;
+  }
   let result: FrameValueTargetResult | undefined;
   try {
     result = await frameTarget.evaluate<FrameValueTargetResult>(
