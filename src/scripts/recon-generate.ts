@@ -7702,7 +7702,8 @@ export function stepFeedsDeclaredSubmit(
   const step = steps.find((s) => s.capture === capture);
   return (
     step?.consumers?.some(
-      (c) => matchesDeclaredSubmit(c) || stepFeedsDeclaredSubmit(c, steps, matchesDeclaredSubmit, seen)
+      (c) =>
+        matchesDeclaredSubmit(c) || stepFeedsDeclaredSubmit(c, steps, matchesDeclaredSubmit, seen)
     ) ?? false
   );
 }
