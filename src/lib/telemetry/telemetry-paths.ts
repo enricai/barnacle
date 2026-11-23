@@ -102,3 +102,8 @@ export function readSiteCallsNdjson(siteTelemetryDir: string): string {
   if (partitions.length === 0) return "";
   return partitions.map((p) => readFileSync(p, "utf8")).join("");
 }
+
+/** Filesystem-safe file path for one idempotency record within `dir`. */
+export function resolveIdempotencyEntryPath(dir: string, key: string): string {
+  return join(dir, `${createHash("sha256").update(key, "utf8").digest("hex")}.json`);
+}
