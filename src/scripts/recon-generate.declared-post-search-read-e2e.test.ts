@@ -1,14 +1,13 @@
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { main } from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import type { Capture } from "@/scripts/recon-shared";
 
 const REPO_ROOT = join(__dirname, "..", "..");
-const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 function cap(o: Partial<Capture>): Capture {
@@ -40,7 +39,7 @@ afterEach(() => {
 });
 
 describe("recon-generate: declared read-only POST search", () => {
-  it("is a read flow: no applicant/tracking/multipart, and the POST is emitted", () => {
+  it("is a read flow: no applicant/tracking/multipart, and the POST is emitted", async () => {
     workDir = mkdtempSync(join(tmpdir(), "declared-post-search-"));
     const runRoot = join(workDir, "run");
     mkdirSync(join(runRoot, "graphql"), { recursive: true });
@@ -84,12 +83,33 @@ describe("recon-generate: declared read-only POST search", () => {
         steps: [{ step: "open catalog" }, { step: "apply filters and search" }],
       })
     );
-    const r = spawnSync(
-      TSX_BIN,
-      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
+    const savedArgv = process.argv;
+    const savedCwd = process.cwd();
+    const spies = (["log", "info", "warn", "error"] as const).map((k) =>
+      vi.spyOn(console, k).mockImplementation(() => {})
     );
-    expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0);
+    const writes = [process.stdout, process.stderr].map((st) =>
+      vi.spyOn(st, "write").mockImplementation((() => true) as never)
+    );
+    try {
+      process.chdir(RECON_GENERATE_CWD);
+      process.argv = [
+        "node",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ];
+      await main();
+    } finally {
+      process.argv = savedArgv;
+      process.chdir(savedCwd);
+      for (const sp of [...spies, ...writes]) sp.mockRestore();
+    }
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).not.toContain("ApplicantContactSchema");
     expect(contract).not.toContain("JobTrackingSchema");
