@@ -52,6 +52,8 @@ export function httpStatusForCode(code: ErrorCode): number {
     case ERROR_CODES.RESOURCE_NOT_FOUND:
     case ERROR_CODES.INDEX_NOT_FOUND:
       return StatusCodes.NOT_FOUND;
+    case ERROR_CODES.UNKNOWN_OUTCOME:
+      return StatusCodes.CONFLICT;
     case ERROR_CODES.THROTTLED_REQUEST:
     case ERROR_CODES.URL_LOCKED:
       return StatusCodes.TOO_MANY_REQUESTS;
@@ -150,6 +152,19 @@ export class CaptchaEncounteredError extends ApiError {
 export class EmptyResultsApiError extends ApiError {
   constructor(message = "scrape completed but returned no results") {
     super(ERROR_CODES.EMPTY_RESULTS, message);
+  }
+}
+
+/**
+ * A prior run for the same idempotency key failed in a way that may have
+ * taken effect (an irreversible step might have completed). Re-running could
+ * duplicate the operation, so the caller must verify the outcome out of band.
+ */
+export class UnknownOutcomeError extends ApiError {
+  constructor(
+    message = "a previous run for this operation ended with an unknown outcome; verify before retrying"
+  ) {
+    super(ERROR_CODES.UNKNOWN_OUTCOME, message);
   }
 }
 
