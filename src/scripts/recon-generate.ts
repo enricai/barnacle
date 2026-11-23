@@ -67,10 +67,12 @@ import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   type Capture,
   CREDENTIAL_REQUEST_HEADERS,
+  type ExtraPayloadField,
   type RateLimitFinding,
   type ReplayResult,
   readBrowserFlowOnly,
   readCaptureDir,
+  readExtraPayloadFields,
   readJsonDir,
   readOwnBackendHostnames,
   replayReachable,
@@ -17323,6 +17325,9 @@ export function emitContractTsParts(opts: {
    * declared field with no matching discovered field is a no-op — it has no
    * schema line to attach to. */
   valueConstraints?: ReconValueConstraints;
+  /** Flow-declared `extraPayloadFields`: emitted into the payload schema
+   * unless a capture already discovered the same name. */
+  extraPayloadFields?: readonly ExtraPayloadField[];
   /** PascalCase candidate-PII field names the browser flow splices as
    * `payload.<field>` (from resolveStepPayloadField). Each is added to the
    * payload schema so those references typecheck. Shares the accumulator with
@@ -17412,6 +17417,7 @@ export function emitContractTsParts(opts: {
     discoveredAdditionalBodyKeys,
     discoveredStructuredKeys,
     valueConstraints = EMPTY_VALUE_CONSTRAINTS,
+    extraPayloadFields = [],
     payloadFieldNames,
     optionalPayloadFieldNames = new Set<string>(),
     flowSteps: contractFlowSteps = [],
@@ -17987,6 +17993,12 @@ export function emitContractTsParts(opts: {
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: z.string().optional(),`);
     }
+  }
+  // Flow-declared extra payload fields: declared type/optionality are
+  // authoritative; a name already discovered from captures is not duplicated.
+  for (const f of extraPayloadFields) {
+    if (extendFields.has(f.name)) continue;
+    extendFields.set(f.name, `  ${f.name}: z.${f.type}()${f.optional ? ".optional()" : ""},`);
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
@@ -21665,6 +21677,7 @@ export async function main(): Promise<void> {
       discoveredAdditionalBodyKeys,
       discoveredStructuredKeys,
       valueConstraints,
+      extraPayloadFields: readExtraPayloadFields(flowFile),
       payloadFieldNames: browserFlow.payloadFieldNames,
       optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
       headerBindings,
