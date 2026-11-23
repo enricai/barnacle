@@ -2961,13 +2961,19 @@ export function isMidFlowAdvanceCredited(params: {
   networkAdvanced: boolean;
   pageAdvanced: boolean;
   invalidMarkerCount: number;
+  /** Markers after the click minus the pre-click baseline (0 when unknown). */
+  invalidMarkerDelta?: number;
 }): boolean {
   // An explicit judge rejection is not overruled by the view-swap signal
   // alone; it needs a settled page advance or a real network advance too.
+  // Validation markers that grew past the pre-click baseline are blocked-submit
+  // evidence: they veto a network-only credit (never a settled page swap),
+  // matching isNullVerdictAdvanceCredited.
+  const markersGrew = (params.invalidMarkerDelta ?? 0) > 0;
   if (
     params.midFlowSubmit &&
     params.signalAdvanced &&
-    (params.judgeUnavailable || params.pageAdvanced || params.networkAdvanced)
+    (params.judgeUnavailable || params.pageAdvanced || (params.networkAdvanced && !markersGrew))
   ) {
     return true;
   }
@@ -17402,6 +17408,7 @@ export async function executeStepWithHealing(params: {
         networkAdvanced: networkIsRealAdvance,
         pageAdvanced: settledPageAdvanced,
         invalidMarkerCount,
+        invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
         logger.info(
@@ -18198,6 +18205,7 @@ export async function executeStepWithHealing(params: {
               networkAdvanced: retryNetworkFired && retryDestinationPlausible,
               pageAdvanced: retryPageAdvanced,
               invalidMarkerCount,
+              invalidMarkerDelta: invalidMarkerCount - preInvalidMarkerCount,
             });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {
               logger.info(

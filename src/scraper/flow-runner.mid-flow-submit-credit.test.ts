@@ -205,3 +205,43 @@ describe("isMidFlowAdvanceCredited judge rejection", () => {
     expect(isMidFlowAdvanceCredited({ ...base, judgeUnavailable: true })).toBe(true);
   });
 });
+
+describe("isMidFlowAdvanceCredited blocked-submit marker evidence", () => {
+  const base = {
+    midFlowSubmit: true,
+    signalAdvanced: true,
+    judgeUnavailable: false,
+    networkAdvanced: true,
+    pageAdvanced: false,
+    invalidMarkerCount: 3,
+    invalidMarkerDelta: 3,
+  };
+
+  it("does not credit a rejected network-only advance when markers grew", () => {
+    expect(isMidFlowAdvanceCredited(base)).toBe(false);
+  });
+
+  it("still credits a rejected network advance with no marker growth", () => {
+    expect(isMidFlowAdvanceCredited({ ...base, invalidMarkerDelta: 0 })).toBe(true);
+  });
+
+  it("still credits a rejected settled page swap despite marker growth", () => {
+    expect(isMidFlowAdvanceCredited({ ...base, networkAdvanced: false, pageAdvanced: true })).toBe(
+      true
+    );
+  });
+});
+
+describe("isMidFlowAdvanceCredited caller wiring", () => {
+  it("both executeStepWithHealing call sites pass invalidMarkerDelta", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync("src/scraper/flow-runner.ts", "utf8");
+    const calls = src.split("isMidFlowAdvanceCredited({").slice(1);
+    expect(calls.length).toBe(2);
+    const bodies = calls.map((c) => c.slice(0, c.indexOf("});")));
+    expect(bodies[0]).toContain(
+      "invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount"
+    );
+    expect(bodies[1]).toContain("invalidMarkerDelta: invalidMarkerCount - preInvalidMarkerCount");
+  });
+});
