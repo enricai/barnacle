@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstEndpointCapture } from "@/scripts/recon-generate";
+import { firstEndpointCapture, truncateActionSequenceAtSubmitPattern } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
 function cap(o: Partial<Capture>): Capture {
@@ -80,5 +80,23 @@ describe("firstEndpointCapture without a declared pattern", () => {
     );
     const get = cap({ url: "https://example.com/api/config?v=1" });
     expect(firstEndpointCapture([get, ...posts], [], null, null)).toBe(posts[0]);
+  });
+});
+
+describe("truncateActionSequenceAtSubmitPattern preflights", () => {
+  it("never matches or retains OPTIONS captures", () => {
+    const url = "https://example.com/api/search";
+    const seq = [
+      { capture: cap({ method: "OPTIONS", url }), index: 0 },
+      { capture: cap({ method: "POST", url }), index: 1 },
+      { capture: cap({ method: "OPTIONS", url }), index: 2 },
+      { capture: cap({ method: "POST", url }), index: 3 },
+      { capture: cap({ method: "OPTIONS", url }), index: 4 },
+    ];
+    const out = truncateActionSequenceAtSubmitPattern(seq, { endpoint: "/api/search", body: null });
+    expect(out.map((s) => s.index)).toEqual([1, 3]);
+    expect(
+      truncateActionSequenceAtSubmitPattern([seq[0]!], { endpoint: "/api/search", body: null })
+    ).toEqual([]);
   });
 });
