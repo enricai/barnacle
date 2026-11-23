@@ -65,6 +65,7 @@ import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-ru
 import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
+  buildExtraFieldRedaction,
   type Capture,
   CREDENTIAL_REQUEST_HEADERS,
   type ExtraPayloadField,
@@ -18722,6 +18723,10 @@ ${executeHttpBody}
     createsAccount || contractFlowSteps.some(stepUsesReconPassword)
       ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
       : "";
+  const extraRedaction = buildExtraFieldRedaction(extraPayloadFields);
+  const redactionLiteral = extraRedaction
+    ? `\n    redaction: ${JSON.stringify(extraRedaction)},`
+    : "";
   const pluginDocComment = omitExecuteHttp
     ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
@@ -18782,7 +18787,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // JSON-stringified encoding parseable.
     `
         : ""
-    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}${redactionLiteral}
   },
 ${executeHttpMethodBlock}
 ${executeDocComment}  async execute(
@@ -19388,6 +19393,8 @@ export function emitConfigManifest(opts: {
   formBodyFieldNames?: ReadonlySet<string>;
   /** Read-only GET flow: no submission, so the request schema omits TrackingUrl (mirrors the .ts contract). */
   readOnlyGet?: boolean;
+  /** Flow-declared extra payload fields; sensitive ones emit `spec.redaction`. */
+  extraPayloadFields?: readonly ExtraPayloadField[];
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -19541,6 +19548,9 @@ export function emitConfigManifest(opts: {
       ...(httpModulePath ? { httpModule: httpModulePath } : {}),
       ...(multipart ? { multipart: true } : {}),
       ...(flowSteps.some(stepUsesReconPassword) ? { maxAttempts: 1 } : {}),
+      ...(buildExtraFieldRedaction(opts.extraPayloadFields ?? []) !== null
+        ? { redaction: buildExtraFieldRedaction(opts.extraPayloadFields ?? []) }
+        : {}),
       request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
@@ -21552,6 +21562,7 @@ export async function main(): Promise<void> {
           browserFlowOnly,
           formBodyFieldNames,
           readOnlyGet: isReadOnlyGetFlow,
+          extraPayloadFields: readExtraPayloadFields(flowFile),
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.

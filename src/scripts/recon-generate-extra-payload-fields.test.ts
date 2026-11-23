@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emitContractTs } from "@/scripts/recon-generate";
+import { emitConfigManifest, emitContractTs } from "@/scripts/recon-generate";
 
 const BASE_OPTS = {
   siteId: "test-site",
@@ -41,5 +41,46 @@ describe("emitContractTs — extraPayloadFields", () => {
 
   it("is a no-op without declared fields", () => {
     expect(emit({ extraPayloadFields: [] })).toBe(emit({}));
+  });
+});
+
+describe("emitContractTs — meta.redaction", () => {
+  it("emits word/digit keys by declared kind", () => {
+    const c = emit({
+      extraPayloadFields: [
+        { name: "Nick", type: "string", sensitive: true },
+        { name: "Phone", type: "string", sensitive: true, redactionKind: "digit" },
+        { name: "Plain", type: "string" },
+      ],
+    });
+    expect(c).toContain('redaction: {"wordKeys":["Nick"],"digitKeys":["Phone"]},');
+  });
+
+  it("emits no redaction when nothing is sensitive", () => {
+    expect(emit({ extraPayloadFields: [{ name: "A", type: "string" }] })).not.toContain(
+      "redaction:"
+    );
+  });
+});
+
+describe("emitConfigManifest — spec.redaction", () => {
+  const spec = (extraPayloadFields: { name: string; type: "string"; sensitive?: boolean }[]) =>
+    JSON.parse(
+      emitConfigManifest({
+        siteId: "test-site",
+        baseUrl: "https://example.org",
+        flowSteps: ["Click the Apply button"],
+        extraPayloadFields,
+      })
+    ).spec;
+
+  it("emits wordKeys for sensitive declared fields", () => {
+    expect(spec([{ name: "Nick", type: "string", sensitive: true }]).redaction).toEqual({
+      wordKeys: ["Nick"],
+    });
+  });
+
+  it("omits redaction when nothing is sensitive", () => {
+    expect(spec([{ name: "A", type: "string" }])).not.toHaveProperty("redaction");
   });
 });
