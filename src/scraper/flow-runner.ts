@@ -2967,13 +2967,14 @@ export function isMidFlowAdvanceCredited(params: {
   // An explicit judge rejection is not overruled by the view-swap signal
   // alone; it needs a settled page advance or a real network advance too.
   // Validation markers that grew past the pre-click baseline are blocked-submit
-  // evidence: they veto a network-only credit (never a settled page swap),
-  // matching isNullVerdictAdvanceCredited.
+  // evidence: against an explicit rejection they veto every credit, including a
+  // settled text/header flip (a validation banner is exactly that flip).
   const markersGrew = (params.invalidMarkerDelta ?? 0) > 0;
   if (
     params.midFlowSubmit &&
     params.signalAdvanced &&
-    (params.judgeUnavailable || params.pageAdvanced || (params.networkAdvanced && !markersGrew))
+    (params.judgeUnavailable ||
+      (!markersGrew && (params.pageAdvanced || params.networkAdvanced)))
   ) {
     return true;
   }

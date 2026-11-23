@@ -225,9 +225,9 @@ describe("isMidFlowAdvanceCredited blocked-submit marker evidence", () => {
     expect(isMidFlowAdvanceCredited({ ...base, invalidMarkerDelta: 0 })).toBe(true);
   });
 
-  it("still credits a rejected settled page swap despite marker growth", () => {
+  it("does not credit a rejected settled page flip when markers grew", () => {
     expect(isMidFlowAdvanceCredited({ ...base, networkAdvanced: false, pageAdvanced: true })).toBe(
-      true
+      false
     );
   });
 });
