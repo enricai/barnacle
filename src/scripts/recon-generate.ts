@@ -2577,6 +2577,10 @@ function declaredOperationVariableNames(query: string): string[] {
  * repeat the same underlying query are recognized as recurring instead of
  * being permanently unjoinable.
  */
+function isGraphQLCapture(capture: Capture): boolean {
+  return capture.query !== null || capture.operationName !== null;
+}
+
 function operationGroupKey(capture: Capture): string {
   const endpointPath = (() => {
     try {
@@ -13240,6 +13244,32 @@ export function findFrozenVaryingDrillParams(
   return frozen;
 }
 
+/**
+ * Payload-variant evidence: the dotted `variables` paths whose primitive value
+ * differs across captures sharing `primary`'s operation identity
+ * ({@link operationGroupKey}). Those captures are one request issued with
+ * different inputs, so each differing path is a caller-supplied payload field
+ * (never a fold drill). Order follows the primary's own variables.
+ */
+export function collectPayloadVariantFields(
+  primary: Capture,
+  allCaptures: readonly Capture[]
+): string[] {
+  const identity = operationGroupKey(primary);
+  const siblings = allCaptures.filter((c) => c !== primary && operationGroupKey(c) === identity);
+  const fields: string[] = [];
+  for (const { path, value } of walkAllPrimitiveLeaves(primary.variables ?? {})) {
+    if (
+      siblings.some((c) => {
+        const other = readValueAtPath(c.variables ?? {}, path);
+        return other !== undefined && other !== value;
+      })
+    )
+      fields.push(path.join("."));
+  }
+  return fields;
+}
+
 /** Renders a {@link FoldReturnSpec.drillParamBindings} entry's default value
  * as a JS literal — a `string` default is quoted so the emitted `??` operand
  * is valid source text, while `int`/`boolean` defaults print as their bare
@@ -14074,7 +14104,17 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // author deliberately recorded. A DECLARED self-fold is unaffected: it
       // comes from buildFoldPlanFromSpec's `allowSelfFold` path, which the
       // structural detector has no equivalent of.
-      if (!allowSelfEndpointDrill && endpointKey(drill.capture.url) === primaryEndpointKey) {
+      // A GraphQL capture's URL is shared by every operation, so endpoint
+      // equality alone would also reject a genuine drill of a DIFFERENT
+      // operation. Same-operation identity (operationGroupKey) is what makes a
+      // capture a payload variant of the primary: it differs only in
+      // variables, is evidence for payload fields, and is never a drill.
+      if (
+        !allowSelfEndpointDrill &&
+        endpointKey(drill.capture.url) === primaryEndpointKey &&
+        (!isGraphQLCapture(primary.capture) ||
+          operationGroupKey(drill.capture) === operationGroupKey(primary.capture))
+      ) {
         continue;
       }
       if (consumedIndices.has(drillIndex)) continue;
