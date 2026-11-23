@@ -10632,7 +10632,7 @@ async function tryPromptSelectorPrimitive(params: {
     const renderedBase = ${PROMPT_RENDERED_EXPR};
     const unreachable = new Set();
     const rendered = (e) => renderedBase(e) && !unreachable.has(e);
-    for (const el of document.querySelectorAll("[" + markAttr + "-mate],[" + markAttr + "-layered],[" + markAttr + "-ctr]")) { el.removeAttribute(markAttr + "-mate"); el.removeAttribute(markAttr + "-layered"); el.removeAttribute(markAttr + "-ctr"); }
+    for (const el of document.querySelectorAll("[" + markAttr + "-mate],[" + markAttr + "-layered],[" + markAttr + "-ctr],[" + markAttr + "-ctr2]")) { el.removeAttribute(markAttr + "-mate"); el.removeAttribute(markAttr + "-layered"); el.removeAttribute(markAttr + "-ctr"); el.removeAttribute(markAttr + "-ctr2"); }
     // A rendered role=combobox anchor with no aria-controls/aria-haspopup is
     // outside the trigger union; adopt it when an unrendered union opener shares
     // its label (the layered shape), so the rendered control becomes the widget.
@@ -10816,7 +10816,10 @@ async function tryPromptSelectorPrimitive(params: {
     for (const w of widgets) {
       if (collapsed.has(w) || unreachable.has(w) || !isUnfilled(w)) continue;
       w.setAttribute(markAttr, String(idx));
-      if (w.parentElement) w.parentElement.setAttribute(markAttr + "-ctr", String(idx));
+      if (w.parentElement) {
+        w.parentElement.setAttribute(markAttr + "-ctr", String(idx));
+        if (w.parentElement.parentElement) w.parentElement.parentElement.setAttribute(markAttr + "-ctr2", String(idx));
+      }
       for (const [m, host] of collapsed) if (host === w && !layerHost.has(m)) m.setAttribute(markAttr + "-mate", String(idx));
       if (layerHost.size > 0 && Array.from(layerHost.values()).includes(w)) w.setAttribute(markAttr + "-layered", "1");
       candidates.push({ wIdx: idx, label: widgetLabel(w) });
@@ -11756,7 +11759,8 @@ async function commitPromptOption(params: {
         // The widget replaced itself after the commit: credit only a control now in
         // its stamped container holding exactly the requested option (letters/digits only).
         const alnum = (x) => (x || "").toLowerCase().replace(/[^\\p{L}\\p{N}]/gu, "");
-        const ctr = document.querySelector("[" + markAttr + '-ctr="' + wIdx + '"]');
+        // The widget's wrapper may be replaced along with it: fall back to the next ancestor.
+        const ctr = document.querySelector("[" + markAttr + '-ctr="' + wIdx + '"]') || document.querySelector("[" + markAttr + '-ctr2="' + wIdx + '"]');
         const want = alnum(wantText);
         if (ctr && want) {
           for (const c of Array.from(ctr.querySelectorAll("input, textarea, select, [role='combobox']"))) {
