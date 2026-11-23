@@ -7,8 +7,7 @@ import type { Capture } from "@/scripts/recon-shared";
 
 function cap(input: Record<string, unknown>): Capture {
   const variables = { input };
-  const query =
-    "query Search($input: SearchInput!) { search(input: $input) { id } }";
+  const query = "query Search($input: SearchInput!) { search(input: $input) { id } }";
   return {
     timestamp: "t",
     phase: "p",
@@ -50,11 +49,7 @@ describe("navigateTo URL param -> co-varying body variable", () => {
     cap({ currencyCode: "USD", travelParty: 3 }),
   ];
   it("maps payloadField to the co-varying variable by value", () => {
-    const m = correlateNavigateToParamsWithVariables(
-      steps,
-      caps,
-      caps[0]!.variables,
-    );
+    const m = correlateNavigateToParamsWithVariables(steps, caps, caps[0]!.variables);
     expect(m.get("travelParty")).toEqual(["input", "travelParty"]);
   });
   it("wires by value even when the variable name differs", () => {
@@ -71,17 +66,13 @@ describe("navigateTo URL param -> co-varying body variable", () => {
     expect(m.get("travelParty")).toEqual(["input", "party"]);
   });
   it("renders payload read so the field is not unread", () => {
-    const m = correlateNavigateToParamsWithVariables(
-      steps,
-      caps,
-      caps[0]!.variables,
-    );
+    const m = correlateNavigateToParamsWithVariables(steps, caps, caps[0]!.variables);
     const expr = renderGqlVariablesExpr(
       caps[0]!.variables,
       new Set(["currencyCode", "travelParty"]),
       new Set(),
       [],
-      m,
+      m
     );
     expect(expr).toContain("travelParty: payload.travelParty");
   });
