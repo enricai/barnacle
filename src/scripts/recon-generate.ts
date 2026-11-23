@@ -19979,7 +19979,7 @@ ${flowStepsBlock}
 }
 `
       : isSubmissionFlow
-      ? `
+        ? `
   // runHealingFlow above already verified the submit (submitStep:true), so the
   // application is already committed at the ATS. A schema-validation or
   // watchdog-timeout throw from this trailing confirmation extract must not
@@ -19998,7 +19998,7 @@ ${flowStepsBlock}
   }
 }
 `
-      : `
+        : `
   const result = await guardedExtract(
     stagehand,
     ${readOnlyGetFlow ? readOnlyGetExtractPromptExpr(getInputFields) : /* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ "`extract results matching query: ${payload.query}`"},
