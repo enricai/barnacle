@@ -13233,7 +13233,6 @@ export async function probeStepBeforeAttempts(params: {
     captureFn,
     frameTarget,
     reresolveFrameTarget,
-    optional,
     onFocusedCandidates,
   } = params;
   try {
