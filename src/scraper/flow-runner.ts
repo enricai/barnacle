@@ -10563,16 +10563,16 @@ async function tryPromptSelectorPrimitive(params: {
       if (alb) {
         const parts = [];
         for (const id of alb.split(/\\s+/)) { const el = document.getElementById(id); if (el) parts.push(el.textContent); }
-        if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim().slice(0, 600);
+        if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim();
       }
       // A trigger's aria-label can merely echo its placeholder ("Select One
       // Required"), which names no question — defer to the <label>/group lookup.
       const al = ariaLabelOf(w);
-      if (al) return al.slice(0, 600);
+      if (al) return al;
       const labelledIds = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
       for (const id of labelledIds) {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
-        if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
+        if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim();
       }
       // A label[for] naming a select/input/textarea in the trigger's own
       // container (the replaced native control the widget stands in for). A
@@ -10586,14 +10586,14 @@ async function tryPromptSelectorPrimitive(params: {
           if (!ctl.id || w.contains(ctl)) continue;
           if (pointerReaches(ctl) && (tabbable(ctl) || w.matches(popupLinkedSel))) continue;
           const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(ctl.id) : ctl.id) + "']");
-          if (lab && !w.contains(lab) && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
+          if (lab && !w.contains(lab) && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim();
         }
       }
       const grp = w.closest("[role='group'][aria-labelledby],fieldset");
       if (grp) {
         const gid = grp.getAttribute("aria-labelledby");
         const gref = gid ? document.getElementById(gid.split(/\\s+/)[0]) : grp.querySelector("legend");
-        if (gref && gref.textContent.trim()) return gref.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
+        if (gref && gref.textContent.trim()) return gref.textContent.replace(/\\s+/g, " ").trim();
       }
       // A trigger that declares no popup of its own has nothing tying it to the
       // surrounding text: that text names its neighbours as readily as it.
@@ -10601,7 +10601,7 @@ async function tryPromptSelectorPrimitive(params: {
       let node = w.parentElement;
       for (let d = 0; d < 5 && node; d++) {
         const t = (node.textContent || "").trim();
-        if (t) return t.replace(/\\s+/g, " ").trim().slice(0, 600);
+        if (t) return t.replace(/\\s+/g, " ").trim();
         node = node.parentElement;
       }
       return "";
@@ -10868,7 +10868,7 @@ async function tryPromptSelectorPrimitive(params: {
             : null;
     if (!chosen) {
       logger.info(
-        `prompt-selector primitive: no unambiguous widget match for ${optLabel} (candidates: ${candidates.map((c) => JSON.stringify(c.label)).join(", ")}); falling through to cascade`
+        `prompt-selector primitive: no unambiguous widget match for ${optLabel} (candidates: ${candidates.map((c) => JSON.stringify(c.label.slice(0, 120))).join(", ")}); falling through to cascade`
       );
       return null;
     }
