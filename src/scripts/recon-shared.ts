@@ -334,22 +334,12 @@ export function buildExtraFieldRedaction(
 /**
  * Reads and validates `extraPayloadFields` from a recon flow file.
  * Tolerant like `readOwnBackendHostnames`: `[]` for bare-array flows, a
- * missing/unreadable file, an absent key, or an invalid declaration.
+ * missing/unreadable file or an absent key; an invalid declaration throws.
  */
 export function readExtraPayloadFields(flowFile: string): ExtraPayloadField[] {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
-    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return [];
-    const raw = (parsed as { extraPayloadFields?: unknown }).extraPayloadFields;
-    if (raw === undefined) return [];
-    const result = z.array(EXTRA_PAYLOAD_FIELD_SCHEMA).safeParse(raw);
-    if (!result.success) {
-      logger.warn(
-        `flow file '${flowFile}' has invalid extraPayloadFields, ignoring: ${result.error.message}`
-      );
-      return [];
-    }
-    return result.data;
+    parsed = JSON.parse(readFileSync(flowFile, "utf8"));
   } catch (err) {
     logger.warn(
       `flow file '${flowFile}' unreadable for extraPayloadFields: ${
@@ -358,6 +348,16 @@ export function readExtraPayloadFields(flowFile: string): ExtraPayloadField[] {
     );
     return [];
   }
+  if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return [];
+  const raw = (parsed as { extraPayloadFields?: unknown }).extraPayloadFields;
+  if (raw === undefined) return [];
+  const result = z.array(EXTRA_PAYLOAD_FIELD_SCHEMA).safeParse(raw);
+  if (!result.success) {
+    throw new Error(
+      `flow file '${flowFile}' has invalid extraPayloadFields: ${result.error.message}`
+    );
+  }
+  return result.data;
 }
 
 /**
