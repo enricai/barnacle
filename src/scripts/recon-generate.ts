@@ -65,9 +65,9 @@ import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-ru
 import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
+  buildExtraFieldRedaction,
   type Capture,
   CREDENTIAL_REQUEST_HEADERS,
-  buildExtraFieldRedaction,
   type ExtraPayloadField,
   type RateLimitFinding,
   type ReplayResult,

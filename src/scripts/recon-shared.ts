@@ -318,8 +318,12 @@ export type ExtraPayloadField = z.infer<typeof EXTRA_PAYLOAD_FIELD_SCHEMA>;
 export function buildExtraFieldRedaction(
   fields: readonly ExtraPayloadField[]
 ): { wordKeys?: string[]; digitKeys?: string[] } | null {
-  const wordKeys = fields.filter((f) => f.sensitive && f.redactionKind !== "digit").map((f) => f.name);
-  const digitKeys = fields.filter((f) => f.sensitive && f.redactionKind === "digit").map((f) => f.name);
+  const wordKeys = fields
+    .filter((f) => f.sensitive && f.redactionKind !== "digit")
+    .map((f) => f.name);
+  const digitKeys = fields
+    .filter((f) => f.sensitive && f.redactionKind === "digit")
+    .map((f) => f.name);
   if (wordKeys.length === 0 && digitKeys.length === 0) return null;
   return {
     ...(wordKeys.length > 0 && { wordKeys }),
