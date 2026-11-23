@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { RECON_FLOW_FILE_SCHEMA } from "@/scripts/recon-browser";
 import { readExtraPayloadFields } from "@/scripts/recon-shared";
 
-const step = { action: "click", description: "go" };
+const step = { step: "Click Apply", optional: false, upload: false };
 const parse = (extra: unknown) =>
   RECON_FLOW_FILE_SCHEMA.safeParse({ steps: [step], extraPayloadFields: extra });
 const write = (content: unknown): string => {
