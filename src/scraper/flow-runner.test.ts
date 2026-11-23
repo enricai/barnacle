@@ -2165,4 +2165,21 @@ describe("flow-runner/flowHasSubmitSemantics read-only", () => {
       })
     ).toBe(true);
   });
+  it("invalid-regex pattern falls through to the default inference", () => {
+    expect(
+      flowHasSubmitSemantics({
+        ...base,
+        submitEndpointPattern: "([unclosed",
+        recentCaptureMeta: [{ method: "GET", url: "https://x.test/api/jobs" }],
+      })
+    ).toBe(true);
+  });
+  it("true when no capture matches the pattern", () => {
+    expect(
+      flowHasSubmitSemantics({
+        ...base,
+        recentCaptureMeta: [{ method: "GET", url: "https://x.test/other" }],
+      })
+    ).toBe(true);
+  });
 });
