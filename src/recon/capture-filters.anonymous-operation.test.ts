@@ -44,7 +44,7 @@ describe("anonymous GraphQL identity", () => {
     ];
     const all = [chrome(), chrome(), chrome(), chrome(), ...search];
     for (const s of search) expect(isZeroVarianceRepeatCapture(s, all)).toBe(false);
-    expect(isZeroVarianceRepeatCapture(all[0]!, all)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(all[0] as (typeof all)[number], all)).toBe(true);
   });
   it("retains a once-fired anonymous read", () => {
     const one = cap(
