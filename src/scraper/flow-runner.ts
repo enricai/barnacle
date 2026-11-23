@@ -2973,9 +2973,7 @@ export function isMidFlowAdvanceCredited(params: {
   if (
     params.midFlowSubmit &&
     params.signalAdvanced &&
-    (params.judgeUnavailable ||
-      params.pageAdvanced ||
-      (params.networkAdvanced && !markersGrew))
+    (params.judgeUnavailable || params.pageAdvanced || (params.networkAdvanced && !markersGrew))
   ) {
     return true;
   }
