@@ -7,7 +7,11 @@ import { z } from "zod/v4";
 
 import { FieldViolationError, toApiError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
-import { createIdempotencyGuard, type IdempotencyGuard } from "@/cache/idempotency-guard";
+import {
+  createIdempotencyGuard,
+  defaultIsSuccess,
+  type IdempotencyGuard,
+} from "@/cache/idempotency-guard";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
 import {
@@ -54,6 +58,7 @@ import {
 import { runWithSession } from "@/scraper/pool";
 import type { BrowserSession } from "@/scraper/session";
 import type {
+  PluginIdempotency,
   SitePlugin,
   SitePluginContext,
   SitePluginExtraRoute,
@@ -642,7 +647,7 @@ export async function registerRoutes(
           idempotencyGuard ??= createIdempotencyGuard();
           const operationId = await idempotencyGuard.start(
             plugin.meta.siteId,
-            declared,
+            dataPredicate(declared),
             request.body,
             () => dispatch(plugin, request.body, context, { forceFallback })
           );
@@ -710,6 +715,15 @@ export async function registerRoutes(
 let idempotencyGuard: IdempotencyGuard | undefined;
 
 /**
+ * dispatch() results are `{data, metrics}`; the plugin-declared `isSuccess`
+ * is a predicate over the result data, so apply it to `.data`.
+ */
+function dataPredicate(declared: PluginIdempotency): PluginIdempotency {
+  const isSuccess = declared.isSuccess ?? defaultIsSuccess;
+  return { ...declared, isSuccess: (r) => isSuccess((r as { data?: unknown } | null)?.data) };
+}
+
+/**
  * dispatch() wrapped in the duplicate-submission guard when the plugin
  * declares `meta.idempotency`; otherwise exactly dispatch().
  */
@@ -722,7 +736,7 @@ async function dispatchWithIdempotency(
   const declared = plugin.meta.idempotency;
   if (!declared) return dispatch(plugin, body, context, options);
   idempotencyGuard ??= createIdempotencyGuard();
-  return idempotencyGuard.run(plugin.meta.siteId, declared, body, () =>
+  return idempotencyGuard.run(plugin.meta.siteId, dataPredicate(declared), body, () =>
     dispatch(plugin, body, context, options)
   );
 }

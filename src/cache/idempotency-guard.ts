@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { UnknownOutcomeError } from "@/api/errors";
 
@@ -36,6 +36,11 @@ export interface IdempotencyStore {
   get(key: string): IdempotencyRecord | undefined | Promise<IdempotencyRecord | undefined>;
   set(key: string, record: IdempotencyRecord, ttlMs: number): void | Promise<void>;
   delete(key: string): void | Promise<void>;
+  /**
+   * Optional cross-process lease: atomically writes a `pending` record only if
+   * no live record exists. Returns false when another holder owns the key.
+   */
+  claim?(key: string, ttlMs: number): boolean | Promise<boolean>;
 }
 
 export function createInMemoryIdempotencyStore(): IdempotencyStore {
@@ -88,6 +93,30 @@ export function createFileIdempotencyStore(dir: string): IdempotencyStore {
     delete(key) {
       rmSync(resolveIdempotencyEntryPath(dir, key), { force: true });
     },
+    claim(key, ttlMs) {
+      const path = resolveIdempotencyEntryPath(dir, key);
+      mkdirSync(dirname(path), { recursive: true });
+      const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.claim`;
+      writeFileSync(
+        tmp,
+        JSON.stringify({ record: { state: "pending" }, expiresAt: Date.now() + ttlMs })
+      );
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            linkSync(tmp, path); // atomic: fails if the entry exists
+            return true;
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+            // get() evicts an expired entry; a live one means we lost the claim.
+            if (this.get(key) !== undefined) return false;
+          }
+        }
+        return false;
+      } finally {
+        rmSync(tmp, { force: true });
+      }
+    },
   };
 }
 
@@ -96,6 +125,10 @@ export function createConfiguredIdempotencyStore(): IdempotencyStore {
   const dir = config.telemetry.idempotencyDir;
   return dir ? createFileIdempotencyStore(dir) : createInMemoryIdempotencyStore();
 }
+
+/** Lease on an in-progress run held in a shared store; a crashed holder frees it after this. */
+const LEASE_MS = 5 * 60 * 1000;
+const LEASE_POLL_MS = 25;
 
 export const DEFAULT_IDEMPOTENCY_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -189,12 +222,14 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
   async function execAndRecord<T>(
     key: string,
     config: PluginIdempotency,
-    execute: () => Promise<T>
+    execute: () => Promise<T>,
+    leased = false
   ): Promise<T> {
     const isSuccess = config.isSuccess ?? defaultIsSuccess;
     try {
       const value = await execute();
       if (isSuccess(value)) await store.set(key, { state: "success", value }, ttlMs);
+      else if (leased) await store.delete(key);
       return value;
     } catch (err) {
       if (classifyUnknown(config, err)) {
@@ -206,6 +241,8 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
           },
           ttlMs
         );
+      } else if (leased) {
+        await Promise.resolve(store.delete(key)).catch(() => undefined);
       }
       throw err;
     }
@@ -227,9 +264,19 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     // Registered synchronously (no await before inFlight.set) so concurrent
     // duplicates always find it; the store lookup happens inside the promise.
     const promise = (async () => {
-      const recorded = await store.get(key);
-      if (recorded) return replay(recorded) as T;
-      return execAndRecord(key, config, execute);
+      for (;;) {
+        const recorded = await store.get(key);
+        if (recorded && recorded.state !== "pending") return replay(recorded) as T;
+        if (!store.claim) {
+          if (recorded) throw new Error("unexpected idempotency record state");
+          return execAndRecord(key, config, execute);
+        }
+        if (!recorded && (await store.claim(key, LEASE_MS))) {
+          return execAndRecord(key, config, execute, true);
+        }
+        // Another process holds the lease: wait for its outcome.
+        await new Promise((r) => setTimeout(r, LEASE_POLL_MS));
+      }
     })().finally(() => {
       inFlight.delete(key);
     });
