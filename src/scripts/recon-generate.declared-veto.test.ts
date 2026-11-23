@@ -55,7 +55,7 @@ describe("zero-variance veto still applies to undeclared captures", () => {
       { endpoint: null, body: "submitIt" },
       { endpointPattern: "/graphql", resultsPath: "data.items", joinFields: ["id"] }
     );
-    expect(kept.every((c) => !c.requestPostData?.includes("chrome"))).toBe(true);
+    expect(JSON.stringify(kept).includes("chrome")).toBe(false);
   });
 
   it("rest: declared repeated submit kept; undeclared repeats vetoed", () => {
