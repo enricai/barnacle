@@ -960,6 +960,11 @@ interface NormalizedStep {
   // executeNavigateStep (a direct page.goto) instead of the self-heal cascade.
   // Optional for the same reason as submitStep — absence is treated as false.
   navigateTo?: string;
+  // See RECON_FLOW_STEP_SCHEMA: recorded into the persisted flow but never
+  // executed, verified, or replanned at record time. Absence = false.
+  declareOnly?: boolean;
+  // See RECON_FLOW_STEP_SCHEMA: tags the payload field as sensitive for redaction.
+  sensitive?: "digits" | "word";
 }
 
 /**
@@ -996,6 +1001,8 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           // Preserve a persisted replan marker across runs; absence = authored.
           origin: s.origin ?? "original",
           navigateTo: s.navigateTo,
+          declareOnly: s.declareOnly,
+          sensitive: s.sensitive,
         }
   );
 }
@@ -1043,6 +1050,8 @@ function denormalizeStep(step: NormalizedStep):
       frameSelector?: string;
       origin?: "replan";
       navigateTo?: string;
+      declareOnly?: true;
+      sensitive?: "digits" | "word";
     } {
   const hasSplicerHint = step.payloadField !== undefined || step.payloadFieldNone === true;
   // targetId, a "replan" origin, and navigateTo are load-bearing identity that
@@ -1054,6 +1063,8 @@ function denormalizeStep(step: NormalizedStep):
     step.targetId !== undefined ||
     step.origin === "replan" ||
     step.navigateTo !== undefined ||
+    step.declareOnly === true ||
+    step.sensitive !== undefined ||
     step.frameSelector !== undefined;
   if (
     !step.optional &&
@@ -1080,6 +1091,8 @@ function denormalizeStep(step: NormalizedStep):
     frameSelector?: string;
     origin?: "replan";
     navigateTo?: string;
+    declareOnly?: true;
+    sensitive?: "digits" | "word";
   } = {
     step: step.instruction,
   };
@@ -1095,6 +1108,8 @@ function denormalizeStep(step: NormalizedStep):
   if (step.frameSelector !== undefined) out.frameSelector = step.frameSelector;
   if (step.origin === "replan") out.origin = "replan";
   if (step.navigateTo !== undefined) out.navigateTo = step.navigateTo;
+  if (step.declareOnly === true) out.declareOnly = true;
+  if (step.sensitive !== undefined) out.sensitive = step.sensitive;
   return out;
 }
 
@@ -3193,6 +3208,15 @@ async function main(): Promise<void> {
 
       for (let i = 0; i < plan.length; i++) {
         const step = plan[i]!;
+        if (step.declareOnly === true) {
+          // Declare-only: persisted with the flow but never dispatched to any
+          // executor, submit verification, or replan at record time.
+          logger.info(
+            `${formatStepPrefix(i, () => plan.length)}: declareOnly — recorded without executing: ${step.instruction}`
+          );
+          completedSteps.push(step.instruction);
+          continue;
+        }
         // Liveness gate: a closed/crashed Stagehand session makes `page.url()`
         // throw synchronously. Every downstream observe/act probe treats that
         // throw as "no candidates" and, for an optional step, silently skips

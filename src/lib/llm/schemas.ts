@@ -46,6 +46,13 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      */
     submitStep: z.boolean().default(false),
     /**
+     * Records the step into the persisted flow without executing it at recon
+     * time: it is never dispatched to a step executor, never verified, and
+     * never triggers a replan. For steps (e.g. a final submit) that recon must
+     * not perform but a generated plugin should carry. Default false.
+     */
+    declareOnly: z.boolean().default(false),
+    /**
      * Opts a submit/transition step into the pluggable captcha-solve hook.
      * Absent or false is a no-op for every existing flow; only a flow author
      * who explicitly sets this pays the solve-hook cost.
@@ -102,6 +109,14 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      * candidate payload field. Ignored by the recon runtime.
      */
     payloadFieldNone: z.boolean().optional(),
+    /**
+     * Marks the payload field this step types (its `payloadField`) as sensitive.
+     * The value names the redaction rule: `"digits"` (matched by digits in any
+     * formatting) or `"word"` (case-insensitive word match). The generator emits
+     * the field into `meta.redaction` (`digitKeys`/`wordKeys`) and the manifest's
+     * `spec.redaction`. Needs an explicit `payloadField`; ignored by the recon runtime.
+     */
+    sensitive: z.enum(["digits", "word"]).optional(),
     /**
      * Stable DOM identity of the element this step acts on, derived at
      * resolution time (`el.id`, else accessible name, else a content hash).

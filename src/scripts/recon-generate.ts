@@ -17579,6 +17579,12 @@ export function emitContractTsParts(opts: {
     payloadFieldNames,
     formBodyFieldNames: collectFormBodyFieldNames(actionSteps),
   });
+  const sensitivePolicy = buildSensitiveRedactionPolicy(
+    contractFlowSteps,
+    usesApplicantContactSchema
+  );
+  const sensitiveRedactionLiteral =
+    sensitivePolicy === undefined ? "" : `    redaction: ${JSON.stringify(sensitivePolicy)},\n`;
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
   // A resolved drill-down fold plan on the single-primary getGql/httpClient
@@ -18823,7 +18829,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     siteId: ${JSON.stringify(siteId)},${displayName !== undefined ? `\n    displayName: ${JSON.stringify(displayName)},` : ""}
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
-    defaultBaseUrl: ${JSON.stringify(baseUrl)},
+${sensitiveRedactionLiteral}    defaultBaseUrl: ${JSON.stringify(baseUrl)},
     ${
       payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep
         ? `// multipart is required whenever the flow itself uploads a file
@@ -19257,14 +19263,44 @@ type FlowStepInput =
       optional?: boolean;
       upload?: boolean;
       submitStep?: boolean;
+      /**
+       * Recon recorded this step without executing it (recon-browser `declareOnly`).
+       * It is still emitted like any other step, honoring an explicit `submitStep`;
+       * nothing derived from execution (captures, targetId) may be assumed for it.
+       */
+      declareOnly?: boolean;
       payloadField?: string;
       payloadFieldNone?: boolean;
+      sensitive?: "digits" | "word";
       emailStep?: boolean;
       emailStepConfig?: EmailStepConfig;
       navigateTo?: string;
       /** Per-step cross-origin `<iframe>` selector; overrides the flow-level one. */
       frameSelector?: string;
     };
+
+/**
+ * Redaction policy derived only from steps tagged `sensitive`: the tagged step's
+ * explicit `payloadField` lands in `digitKeys` or `wordKeys` per the tag. Returns
+ * undefined when no step is tagged, so untagged flows emit nothing.
+ */
+export function buildSensitiveRedactionPolicy(
+  flowSteps: readonly FlowStepInput[],
+  canonicalise = false
+): { digitKeys?: string[]; wordKeys?: string[] } | undefined {
+  const digitKeys = new Set<string>();
+  const wordKeys = new Set<string>();
+  for (const step of flowSteps) {
+    if (typeof step === "string" || !step.sensitive || !step.payloadField) continue;
+    const key = canonicalise ? canonicalPayloadField(step.payloadField) : step.payloadField;
+    (step.sensitive === "digits" ? digitKeys : wordKeys).add(key);
+  }
+  if (digitKeys.size === 0 && wordKeys.size === 0) return undefined;
+  return {
+    ...(digitKeys.size > 0 && { digitKeys: [...digitKeys].sort() }),
+    ...(wordKeys.size > 0 && { wordKeys: [...wordKeys].sort() }),
+  };
+}
 
 /**
  * Escape a literal string segment so it is safe INSIDE a JS backtick template
@@ -19384,7 +19420,21 @@ function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "ar
 function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
   const last = flowSteps.at(-1);
   if (last === undefined) return false;
+  // A flow containing a declare-only step was never fully executed by recon, so
+  // its trailing step is not a recon-verified submit unless explicitly flagged.
+  const anyDeclareOnly = flowSteps.some((s) => typeof s !== "string" && s.declareOnly === true);
+  const anyExplicitSubmit = flowSteps.some((s) => typeof s !== "string" && s.submitStep === true);
+  if (anyDeclareOnly && !anyExplicitSubmit) return true;
   const isObj = typeof last !== "string";
+  // An explicit submitStep:false or a declare-only step (never executed by
+  // recon) is an author's statement that this step is not a verified submit.
+  if (
+    isObj &&
+    (last.submitStep === false || last.declareOnly === true) &&
+    last.submitStep !== true
+  ) {
+    return true;
+  }
   return isStepDeclaredNonSubmit({
     step: isObj ? last.step : last,
     submitStep: isObj ? last.submitStep === true : false,
@@ -19589,6 +19639,10 @@ export function emitConfigManifest(opts: {
   const contractCarriesResume = hasMultipartStep || usesApplicantContactSchema;
   const multipart = hasUploadStep && contractCarriesResume;
 
+  const sensitiveManifestPolicy = buildSensitiveRedactionPolicy(
+    flowSteps,
+    usesApplicantContactSchema
+  );
   const manifest = {
     apiVersion: CONFIG_PLUGIN_API_VERSION,
     kind: CONFIG_PLUGIN_KIND,
@@ -19607,7 +19661,8 @@ export function emitConfigManifest(opts: {
         description: "TODO: declare the fields this site returns (recon leaves this empty).",
         properties: {},
       },
-      flow: { steps },
+      ...(sensitiveManifestPolicy !== undefined && { redaction: sensitiveManifestPolicy }),
+      flow: { steps, ...(isSubmissionFlow ? { submissionFlow: true } : {}) },
       extract: {
         instruction: `extract the confirmation id and status for ${siteId}`,
         schema: {
@@ -19893,11 +19948,18 @@ export function emitBrowserFlowTs(opts: {
     lastStepLiteral !== undefined &&
     !lastFlowStepDeclaresNonSubmit(flowSteps)
   ) {
-    stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
-      /submitStep: (true|false)(?= \},)/,
-      "submitStep: true"
-    );
+    // Flag sits before optional navigateTo/emailStep keys, so match it
+    // anywhere (last occurrence) rather than only directly before ` },`.
+    const flagIdx = lastStepLiteral.lastIndexOf("submitStep: ");
+    if (flagIdx >= 0) {
+      stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
+        /^([\s\S]*)submitStep: (true|false)/,
+        "$1submitStep: true"
+      );
+    }
   }
+  // Derived from the emitted literals so the tail can never disagree with them.
+  const hasSubmitStep = stepLiterals.some((l) => /submitStep: true/.test(l));
 
   // Per-step frameSelector: emit it on the step object so the runtime's
   // `s.frameSelector ?? deps.frameSelector` drives the frame this step names.
@@ -19968,7 +20030,8 @@ ${
     ? `
 const ${pascal}BrowserSchema = z.object({
   // runHealingFlow throws StepVerificationError on a failed submitStep, so
-  // reaching this point already proves the submission verified.
+  // reaching this point proves a submit verified only when the flow has a
+  // submitStep; the tail below decides verified from that, not from this field.
   verified: z.boolean(),
 });
 `
@@ -20015,8 +20078,25 @@ ${flowStepsBlock}
   // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
   // 2.4.3 / PR #944), and the caller-side safeParse defends against SDK
   // contract drift.${
-    isSubmissionFlow
+    isSubmissionFlow && !hasSubmitStep
       ? `
+  // No step in this flow is a submitStep (the last step declares itself
+  // non-submit), so nothing here verified a submit: never report a verified result.
+  try {
+    const result = await guardedExtract(
+      stagehand,
+      "is a submission confirmation shown, and what is its reference number?",
+      ${pascal}BrowserSchema
+    );
+    return { ...result, verified: false } as unknown as ${pascal}Response;
+  } catch (error) {
+    logger.error(\`GuardedExtractError: confirmation extract failed: \${error}\`);
+    return { verified: false } as unknown as ${pascal}Response;
+  }
+}
+`
+      : isSubmissionFlow
+        ? `
   // runHealingFlow above already verified the submit (submitStep:true), so the
   // application is already committed at the ATS. A schema-validation or
   // watchdog-timeout throw from this trailing confirmation extract must not
@@ -20035,7 +20115,7 @@ ${flowStepsBlock}
   }
 }
 `
-      : `
+        : `
   const result = await guardedExtract(
     stagehand,
     ${readOnlyGetFlow ? readOnlyGetExtractPromptExpr(getInputFields) : /* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ "`extract results matching query: ${payload.query}`"},

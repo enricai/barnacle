@@ -2504,7 +2504,7 @@ export function isSubmitIntentStep(instruction: string | null | undefined): bool
  * "Reserve", "Add to Cart"), or a "proceeds/leads/advances to" phrase naming one.
  */
 const SUBMIT_TARGET_SRC =
-  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|book(?:s|ing)? now|reserv(?:e|es|ing)|add(?:s|ing)? to (?:the |your )?(?:cart|basket|bag)|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
+  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|book(?:s|ing)? now|reserv(?:e|es|ing)|add(?:s|ing)? to (?:the |your )?(?:cart|basket|bag)|(?:enter|type|fill(?: in)?|input|provide|use)(?:s|ing)?\\s+(?:in\\s+)?(?:any\\s+|the\\s+|your\\s+|a\\s+)?(?:\\w+\\s+)?card(?:\\s+(?:number|details|info(?:rmation)?|data))?|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
 
 /**
  * A negation followed, in the same clause, by a submit target ("Do NOT click
@@ -2512,7 +2512,7 @@ const SUBMIT_TARGET_SRC =
  * submit click" / "without submitting" declaration.
  */
 const NEGATED_SUBMIT_CLAUSE = new RegExp(
-  `\\b(?:do not|don't|dont|never|must not|should not|shouldn't|does not|doesn't|avoid|refrain from)\\b[^.;\\n]*?\\b${SUBMIT_TARGET_SRC}\\b[^.;\\n]*|\\b(?:(?:this|that|it)\\s+(?:is|are)\\s+not|is not|isn't|not)\\s+(?:a|an|the)?\\s*(?:final\\s+|actual\\s+)?(?:submit|submission|checkout|payment|purchase)\\b[^.;\\n]*|\\bwithout\\s+(?:${SUBMIT_TARGET_SRC})\\b[^.;\\n]*`,
+  `\\b(?:do not|don't|dont|never|must not|should not|shouldn't|does not|doesn't|avoid|refrain from|not to|under no circumstances|not allowed to|not permitted to|stop before|stop short of)\\b[^.;\\n]*?\\b${SUBMIT_TARGET_SRC}\\b[^.;\\n]*|\\b(?:(?:this|that|it)\\s+(?:is|are)\\s+not|is not|isn't|not)\\s+(?:a|an|the)?\\s*(?:final\\s+|actual\\s+)?(?:submit|submission|checkout|payment|purchase)\\b[^.;\\n]*|\\bwithout\\s+(?:${SUBMIT_TARGET_SRC})\\b[^.;\\n]*`,
   "gi"
 );
 
