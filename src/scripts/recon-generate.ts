@@ -18393,7 +18393,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // See emitMultiStepExecuteHttp's identical guard: the frozen-
           // varying-param safety net does not apply once the capture is
           // already proven request-invariant.
-          if (!isProvenInvariant) {
+          if (!isProvenInvariant && !omitExecuteHttp) {
             assertNoFrozenVaryingDrillParams(
               "emitContractTs",
               chainCapture,
