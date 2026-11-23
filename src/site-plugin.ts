@@ -109,7 +109,6 @@ export interface SitePluginExtraRoute {
   handler(request: SitePluginExtraRouteRequest, context: SitePluginContext): Promise<unknown>;
 }
 
-
 /** Outcome of a failed attempt: `failed` is safe to retry; `unknown` means an irreversible step may have occurred. */
 export type IdempotencyFailureClass = 'failed' | 'unknown';
 
