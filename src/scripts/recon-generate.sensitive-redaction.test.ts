@@ -3,7 +3,9 @@ import { buildSensitiveRedactionPolicy } from "@/scripts/recon-generate";
 
 describe("buildSensitiveRedactionPolicy", () => {
   it("ignores tagged steps without an explicit payloadField and untagged steps", () => {
-    expect(buildSensitiveRedactionPolicy(["a", { step: "b", sensitive: "digits" }])).toBeUndefined();
+    expect(
+      buildSensitiveRedactionPolicy(["a", { step: "b", sensitive: "digits" }])
+    ).toBeUndefined();
   });
   it("dedupes and routes by rule", () => {
     expect(

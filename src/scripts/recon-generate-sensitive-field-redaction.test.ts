@@ -17,13 +17,23 @@ const OPTS = {
 
 const tagged = [
   'Type "123-45-6789" into the SSN field',
-  { step: 'Type "Smith" into the Surname field', payloadField: "Surname", sensitive: "word" as const },
-  { step: 'Type "5551234567" into the Phone field', payloadField: "Phone", sensitive: "digits" as const },
+  {
+    step: 'Type "Smith" into the Surname field',
+    payloadField: "Surname",
+    sensitive: "word" as const,
+  },
+  {
+    step: 'Type "5551234567" into the Phone field',
+    payloadField: "Phone",
+    sensitive: "digits" as const,
+  },
 ];
 const plain = ['Type "x" into the Name field', { step: "Click Next", optional: false }];
 
 const manifest = (flowSteps: unknown[]) =>
-  JSON.parse(emitConfigManifest({ siteId: "t", baseUrl: "https://example.com", flowSteps } as never));
+  JSON.parse(
+    emitConfigManifest({ siteId: "t", baseUrl: "https://example.com", flowSteps } as never)
+  );
 
 describe("sensitive payload-field tag", () => {
   it("emits meta.redaction naming only tagged fields in the ts plugin", () => {
@@ -31,7 +41,10 @@ describe("sensitive payload-field tag", () => {
     expect(src).toContain('redaction: {"digitKeys":["Phone"],"wordKeys":["Surname"]}');
   });
   it("emits spec.redaction in the manifest", () => {
-    expect(manifest(tagged).spec.redaction).toEqual({ digitKeys: ["Phone"], wordKeys: ["Surname"] });
+    expect(manifest(tagged).spec.redaction).toEqual({
+      digitKeys: ["Phone"],
+      wordKeys: ["Surname"],
+    });
   });
   it("emits nothing for untagged flows", () => {
     expect(emitContractTs({ ...OPTS, flowSteps: plain } as never)).not.toContain("redaction:");

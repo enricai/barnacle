@@ -17423,9 +17423,7 @@ export function emitContractTsParts(opts: {
   const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
   const sensitivePolicy = buildSensitiveRedactionPolicy(contractFlowSteps);
   const sensitiveRedactionLiteral =
-    sensitivePolicy === undefined
-      ? ""
-      : `    redaction: ${JSON.stringify(sensitivePolicy)},\n`;
+    sensitivePolicy === undefined ? "" : `    redaction: ${JSON.stringify(sensitivePolicy)},\n`;
   /** Single source of truth for every GraphQL-emission decision below
    * (clientImport, gqlCacheBlock, queryConst, and both executeHttpBody
    * fetch-call sites) — `gql` alone can be true with a null `gqlQuery`,
