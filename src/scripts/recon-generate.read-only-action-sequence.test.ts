@@ -68,7 +68,7 @@ describe("extractActionSequence declared submit endpoint repeated with differing
         url: `${HOST}/api/search`,
         method: "POST",
         requestPostData: JSON.stringify({ filter: `f${t}` }),
-        responseBody: { ok: true },
+        responseBody: null,
         timestamp: `2024-01-01T00:00:0${t}Z`,
       })
     );
