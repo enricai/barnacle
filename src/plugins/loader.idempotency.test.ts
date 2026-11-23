@@ -64,4 +64,45 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
     expect(executeHttp).toHaveBeenCalledTimes(1);
     await app.close();
   });
+
+  it("accepts async submissions with 202 and exposes the operation via polling", async () => {
+    const { app, executeHttp } = await appWith();
+    const payload = { orderRef: `async-${Date.now()}-${Math.random()}` };
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/idem-site/run",
+      payload,
+      headers: { "x-barnacle-async": "true" },
+    });
+    expect(res.statusCode).toBe(202);
+    const data = res.json();
+    expect(data.operationStatus).toBe("pending");
+    expect(data.pollUrl).toBe(`/v1/idem-site/run/operations/${data.operationId}`);
+    let body: { operationStatus: string; result?: unknown } | undefined;
+    for (let i = 0; i < 50; i++) {
+      const poll = await app.inject({ method: "GET", url: data.pollUrl });
+      expect(poll.statusCode).toBe(200);
+      body = poll.json();
+      if (body?.operationStatus !== "pending") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(body?.operationStatus).toBe("succeeded");
+    expect(body?.result).toMatchObject({ ok: true });
+    expect(executeHttp).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("falls back to sync when async has no key, and rejects unknown operations", async () => {
+    const { app } = await appWith();
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/idem-site/run",
+      payload: {},
+      headers: { "x-barnacle-async": "true" },
+    });
+    expect(res.statusCode).toBe(200);
+    const poll = await app.inject({ method: "GET", url: "/v1/idem-site/run/operations/nope" });
+    expect(poll.statusCode).toBeGreaterThanOrEqual(400);
+    await app.close();
+  });
 });

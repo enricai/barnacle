@@ -6,6 +6,7 @@ import {
   createInMemoryIdempotencyStore,
   defaultIsSuccess,
   deriveIdempotencyKey,
+  deriveOperationId,
 } from "@/cache/idempotency-guard";
 
 afterEach(() => vi.useRealTimers());
@@ -112,5 +113,104 @@ describe("createIdempotencyGuard", () => {
     vi.advanceTimersByTime(51);
     await g.run("s", cfg, { id: "1" }, ex);
     expect(ex).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("async operations (start/status)", () => {
+  const cfg = { keyFields: ["id"] };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it("start returns null without config or key; deriveOperationId is stable", async () => {
+    const g = createIdempotencyGuard({ store: createInMemoryIdempotencyStore() });
+    const ex = vi.fn().mockResolvedValue("v");
+    expect(await g.start("s", undefined, { id: "1" }, ex)).toBeNull();
+    expect(await g.start("s", cfg, {}, ex)).toBeNull();
+    expect(ex).not.toHaveBeenCalled();
+    expect(deriveOperationId("k")).toBe(deriveOperationId("k"));
+    expect(deriveOperationId("k")).toHaveLength(32);
+  });
+
+  it("runs in background, dedupes retries, and reports pending then succeeded", async () => {
+    const g = createIdempotencyGuard({ store: createInMemoryIdempotencyStore() });
+    let release!: (v: string) => void;
+    const ex = vi.fn(() => new Promise<string>((r) => (release = r)));
+    const id = await g.start("s", cfg, { id: "1" }, ex);
+    expect(id).toBeTruthy();
+    expect(await g.start("s", cfg, { id: "1" }, ex)).toBe(id);
+    expect(await g.status("s", id as string)).toEqual({ status: "pending" });
+    release("done");
+    await tick();
+    await tick();
+    expect(await g.status("s", id as string)).toEqual({ status: "succeeded", value: "done" });
+    // finished op: a retry returns the same id without re-executing
+    expect(await g.start("s", cfg, { id: "1" }, ex)).toBe(id);
+    expect(ex).toHaveBeenCalledTimes(1);
+    expect(await g.status("s", "nope")).toBeUndefined();
+  });
+
+  it("records failed and unknown-outcome failures", async () => {
+    const g = createIdempotencyGuard({ store: createInMemoryIdempotencyStore() });
+    const idF = (await g.start("s", cfg, { id: "f" }, async () => {
+      throw new Error("boom");
+    })) as string;
+    const idU = (await g.start(
+      "s",
+      { ...cfg, classifyFailure: () => "unknown" as const },
+      { id: "u" },
+      async () => {
+        throw new Error("lost");
+      }
+    )) as string;
+    await tick();
+    await tick();
+    expect(await g.status("s", idF)).toEqual({ status: "failed", message: "boom" });
+    const u = await g.status("s", idU);
+    expect(u?.status).toBe("unknown-outcome");
+  });
+
+  it("reports pending records with no live run as interrupted; start re-runs them", async () => {
+    const store = createInMemoryIdempotencyStore();
+    const g1 = createIdempotencyGuard({ store });
+    const id = (await g1.start(
+      "s",
+      cfg,
+      { id: "1" },
+      () => new Promise<string>(() => {})
+    )) as string;
+    const g2 = createIdempotencyGuard({ store });
+    expect((await g2.status("s", id))?.status).toBe("unknown-outcome");
+    const ex = vi.fn().mockResolvedValue("ok");
+    expect(await g2.start("s", cfg, { id: "1" }, ex)).toBe(id);
+    await tick();
+    await tick();
+    expect(ex).toHaveBeenCalledTimes(1);
+    expect(await g2.status("s", id)).toEqual({ status: "succeeded", value: "ok" });
+  });
+
+  it("clears the active marker and rethrows when the store fails", async () => {
+    const base = createInMemoryIdempotencyStore();
+    let fail = true;
+    const store = {
+      ...base,
+      get: (k: string) => {
+        if (fail) throw new Error("store down");
+        return base.get(k);
+      },
+    };
+    const g = createIdempotencyGuard({ store });
+    await expect(g.start("s", cfg, { id: "1" }, async () => 1)).rejects.toThrow("store down");
+    fail = false;
+    expect(await g.start("s", cfg, { id: "1" }, async () => 1)).toBeTruthy();
+  });
+
+  it("run throws on an unexpected stored record state", async () => {
+    const store = {
+      ...createInMemoryIdempotencyStore(),
+      get: () => ({ state: "failed", message: "x" }) as never,
+    };
+    const g = createIdempotencyGuard({ store });
+    await expect(g.run("s", cfg, { id: "1" }, async () => 1)).rejects.toThrow(
+      "unexpected idempotency record state"
+    );
   });
 });

@@ -100,7 +100,10 @@ export function buildPluginContext(input: BuildPluginContextInput): SitePluginCo
     config: cfg,
     requestId,
     metricsCollector: new MetricsCollector(),
-    recordBeaconOutcome: createBeaconOutcomeRecorder({ requestId, siteId: plugin.meta.siteId }),
+    recordBeaconOutcome: createBeaconOutcomeRecorder({
+      requestId,
+      siteId: plugin.meta.siteId,
+    }),
     telemetry: new RunTelemetry(),
   };
 }
@@ -210,8 +213,7 @@ async function runPluginPipeline<TResult>(
     const t0 = Date.now();
     const fresh = await getOrCreateInFlight(
       key,
-      // biome-ignore lint/style/noNonNullAssertion: guarded by !plugin.executeHttp above
-      () => plugin.executeHttp!(payload, context) as Promise<SitePluginResult<TResult>>
+      () => plugin.executeHttp?.(payload, context) as Promise<SitePluginResult<TResult>>
     );
     recordHotPathLatency(plugin.meta.siteId, Date.now() - t0);
     recordHotPathSuccess(plugin.meta.siteId);
@@ -383,7 +385,12 @@ function mergeJoinKeys(
  */
 function toEnvelopeSession(
   session: ReturnType<SitePluginContext["telemetry"]["snapshot"]>["session"]
-): { id: string; provider: string; ip: string | null; ipCapturedAt: string | null } | null {
+): {
+  id: string;
+  provider: string;
+  ip: string | null;
+  ipCapturedAt: string | null;
+} | null {
   if (!session) return null;
   return {
     id: session.sessionId,
@@ -422,7 +429,10 @@ export async function dispatch<TResult>(
   plugin: SitePlugin<unknown, unknown>,
   payload: unknown,
   context: SitePluginContext,
-  options: { forceFallback?: boolean; onCacheMiss?: (key: string) => void } = {}
+  options: {
+    forceFallback?: boolean;
+    onCacheMiss?: (key: string) => void;
+  } = {}
 ): Promise<SitePluginResult<TResult>> {
   const startedAt = Date.now();
   const hasHttpPath = !!plugin.executeHttp && !options.forceFallback;
@@ -502,7 +512,10 @@ export async function dispatch<TResult>(
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     const errorType = classifyDispatchError(err);
-    const failureTags: FailureDispatchTags = { ...ddTags, error_type: errorType };
+    const failureTags: FailureDispatchTags = {
+      ...ddTags,
+      error_type: errorType,
+    };
 
     recordDdFailure(failureTags);
     recordDdDuration(ddTags, durationMs);
@@ -561,6 +574,12 @@ const ResponseEnvelopeSchema = z.object({
   metrics: DispatchMetricsSchema.optional(),
 });
 
+const AcceptedResponseSchema = ResponseEnvelopeSchema.extend({
+  operationId: z.string(),
+  operationStatus: z.literal("pending"),
+  pollUrl: z.string(),
+}).passthrough();
+
 function buildEnvelopedResponseSchema(pluginSchema: z.ZodType): z.ZodType {
   if (pluginSchema instanceof z.ZodObject) {
     return ResponseEnvelopeSchema.extend(pluginSchema.shape).passthrough();
@@ -599,11 +618,14 @@ export async function registerRoutes(
         onRequest: [app.authenticate],
         schema: {
           body: plugin.meta.bodySchema,
-          response: { 200: buildEnvelopedResponseSchema(plugin.meta.responseSchema) },
+          response: {
+            200: buildEnvelopedResponseSchema(plugin.meta.responseSchema),
+            ...(plugin.meta.idempotency ? { 202: AcceptedResponseSchema } : {}),
+          },
           ...(plugin.meta.multipart === true ? { consumes: ["multipart/form-data"] } : {}),
         },
       },
-      async (request) => {
+      async (request, reply) => {
         const forceFallback = request.headers["x-barnacle-execution"] === "browser";
         const context = buildPluginContext({
           plugin,
@@ -611,6 +633,27 @@ export async function registerRoutes(
           requestId: request.id,
           logger: extendLogger(request.log as unknown as pino.Logger),
         });
+        const declared = plugin.meta.idempotency;
+        if (
+          declared &&
+          (declared.async === true || request.headers["x-barnacle-async"] === "true")
+        ) {
+          idempotencyGuard ??= createIdempotencyGuard();
+          const operationId = await idempotencyGuard.start(
+            plugin.meta.siteId,
+            declared,
+            request.body,
+            () => dispatch(plugin, request.body, context, { forceFallback })
+          );
+          if (operationId !== null) {
+            reply.code(202);
+            return successEnvelope({
+              operationId,
+              operationStatus: "pending" as const,
+              pollUrl: `${routePath}/operations/${operationId}`,
+            });
+          }
+        }
         const result = await dispatchWithIdempotency(plugin, request.body, context, {
           forceFallback,
           // Recorded so the error handler can evict this entry if the response
@@ -626,6 +669,36 @@ export async function registerRoutes(
         });
       }
     );
+
+    if (plugin.meta.idempotency) {
+      app.get(
+        `${routePath}/operations/:operationId`,
+        { onRequest: [app.authenticate] },
+        async (request) => {
+          const { operationId } = request.params as { operationId: string };
+          idempotencyGuard ??= createIdempotencyGuard();
+          const st = await idempotencyGuard.status(plugin.meta.siteId, operationId);
+          if (!st)
+            throw new FieldViolationError(`unknown operation ${JSON.stringify(operationId)}`);
+          if (st.status === "succeeded") {
+            const result = st.value as { data: unknown; metrics?: unknown };
+            return successEnvelope({
+              operationId,
+              operationStatus: "succeeded" as const,
+              result: {
+                ...(result.data as object),
+                ...(result.metrics ? { metrics: result.metrics } : {}),
+              },
+            });
+          }
+          return successEnvelope({
+            operationId,
+            operationStatus: st.status,
+            ...("message" in st ? { message: st.message } : {}),
+          });
+        }
+      );
+    }
 
     logger.info(`${plugin.meta.siteId} → ${routePath} (loaded)`);
   }
