@@ -11819,7 +11819,7 @@ async function commitPromptOption(params: {
             const v = (sel.value || "").trim();
             if (!v) continue;
             const selOpt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
-            const optText = selOpt ? norm(selOpt.textContent || selOpt.label || "") : "";
+            const optText = selOpt ? norm(selOpt.textContent || selOpt.getAttribute("label") || "") : "";
             // A selected option with no visible text (icon-only, value-only markup)
             // carries no corroborating signal — treating it as a match would credit
             // ANY selection change, including a different option than requested.
