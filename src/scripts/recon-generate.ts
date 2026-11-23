@@ -19949,7 +19949,9 @@ export function emitBrowserFlowTs(opts: {
 
   // Only claim a verified submission when an emitted step actually carries
   // submitStep:true (runHealingFlow verifies exactly those steps).
-  const hasSubmitStep = stepLiterals.some((l) => /submitStep: true(?= [,}])/.test(l));
+  // Judged from the DECLARED steps, not the literals: the last step is
+  // force-marked above, which must not by itself count as a declared submit.
+  const hasSubmitStep = flowSteps.some((st) => typeof st !== "string" && st.submitStep === true);
 
   const flowStepsBlock =
     stepLiterals.length > 0

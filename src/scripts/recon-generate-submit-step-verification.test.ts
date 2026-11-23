@@ -86,9 +86,24 @@ describe("recon-generate — submit-step verification", () => {
   });
 
   it("sets the runtime return value's verified field to true — the successful runHealingFlow call is the proof", () => {
-    const { code } = emitBrowserFlowTs(submissionOpts);
+    const { code } = emitBrowserFlowTs({
+      ...submissionOpts,
+      flowSteps: [
+        "Click the First Name field and type John",
+        { step: "Click the Submit Application button", submitStep: true },
+      ],
+    });
 
     expect(code).toContain("{ ...result, verified: true }");
+  });
+
+  it("does not claim verified:true when no step declares submitStep, even though the last step is force-marked", () => {
+    const { code } = emitBrowserFlowTs({
+      ...submissionOpts,
+      flowSteps: ["Click the First Name field and type John", "Click the 3 players option"],
+    });
+
+    expect(code).not.toContain("verified: true");
   });
 
   it("does not claim verified:true when a submission flow's last step declares non-submit and no step is a submitStep", () => {
