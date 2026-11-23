@@ -68,8 +68,11 @@ describe("zero-variance veto still applies to undeclared captures", () => {
       mk("2026-01-01T00:00:02.000Z", s),
       mk("2026-01-01T00:00:03.000Z", s),
     ];
-    const kept = extractActionSequence(caps, { endpoint: "/v1/book", body: null }, null);
-    expect(kept.some((c) => c.url === s)).toBe(true);
-    expect(kept.some((c) => c.url === u)).toBe(false);
+    const kept = extractActionSequence(caps, { endpoint: "/v1/book", body: null }, null, [
+      "api.example.com",
+    ]);
+
+    expect(JSON.stringify(kept).includes("/v1/book")).toBe(true);
+    expect(JSON.stringify(kept).includes("/v1/chrome")).toBe(false);
   });
 });
