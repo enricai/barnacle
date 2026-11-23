@@ -19332,6 +19332,16 @@ function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
 }
 
 /**
+ * The single fact both emitters share: does the emitted flow carry any
+ * submitStep, explicit or forced onto the last step? Only then may the
+ * generated function claim `verified: true`.
+ */
+function flowHasSubmitStep(flowSteps: FlowStepInput[], isSubmissionFlow: boolean): boolean {
+  if (flowSteps.some((s) => typeof s !== "string" && s.submitStep === true)) return true;
+  return isSubmissionFlow && flowSteps.length > 0 && !lastFlowStepDeclaresNonSubmit(flowSteps);
+}
+
+/**
  * Emits a config-only plugin manifest (`<siteId>.plugin.json`) from the recon
  * flow, as an alternative to the `.ts` trio for browser-only sites. Reuses the
  * SAME `resolveStepPayloadField` splice logic as the browser-flow emitter, so
@@ -19822,6 +19832,7 @@ export function emitBrowserFlowTs(opts: {
   // submitStep:true even when the source recon-flow.json step never declared
   // it, so the engine's pre-submit probe/StepVerificationError actually gates it.
   const lastStepLiteral = stepLiterals.at(-1);
+  const hasSubmitStep = flowHasSubmitStep(flowSteps, isSubmissionFlow);
   if (
     isSubmissionFlow &&
     lastStepLiteral !== undefined &&
@@ -19902,7 +19913,8 @@ ${
     ? `
 const ${pascal}BrowserSchema = z.object({
   // runHealingFlow throws StepVerificationError on a failed submitStep, so
-  // reaching this point already proves the submission verified.
+  // reaching this point proves a submit verified only when the flow has a
+  // submitStep; the tail below decides verified from that, not from this field.
   verified: z.boolean(),
 });
 `
@@ -19949,7 +19961,24 @@ ${flowStepsBlock}
   // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
   // 2.4.3 / PR #944), and the caller-side safeParse defends against SDK
   // contract drift.${
-    isSubmissionFlow
+    isSubmissionFlow && !hasSubmitStep
+      ? `
+  // No step in this flow is a submitStep (the last step declares itself
+  // non-submit), so nothing here verified a submit: never report verified:true.
+  try {
+    const result = await guardedExtract(
+      stagehand,
+      "is a submission confirmation shown, and what is its reference number?",
+      ${pascal}BrowserSchema
+    );
+    return { ...result, verified: false } as unknown as ${pascal}Response;
+  } catch (error) {
+    logger.error(\`GuardedExtractError: confirmation extract failed: \${error}\`);
+    return { verified: false } as unknown as ${pascal}Response;
+  }
+}
+`
+      : isSubmissionFlow
       ? `
   // runHealingFlow above already verified the submit (submitStep:true), so the
   // application is already committed at the ATS. A schema-validation or
