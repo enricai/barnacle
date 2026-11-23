@@ -2577,6 +2577,10 @@ function declaredOperationVariableNames(query: string): string[] {
  * repeat the same underlying query are recognized as recurring instead of
  * being permanently unjoinable.
  */
+function isGraphQLCapture(capture: Capture): boolean {
+  return capture.query !== null || capture.operationName !== null;
+}
+
 function operationGroupKey(capture: Capture): string {
   const endpointPath = (() => {
     try {
@@ -14074,7 +14078,17 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // author deliberately recorded. A DECLARED self-fold is unaffected: it
       // comes from buildFoldPlanFromSpec's `allowSelfFold` path, which the
       // structural detector has no equivalent of.
-      if (!allowSelfEndpointDrill && endpointKey(drill.capture.url) === primaryEndpointKey) {
+      // A GraphQL capture's URL is shared by every operation, so endpoint
+      // equality alone would also reject a genuine drill of a DIFFERENT
+      // operation. Same-operation identity (operationGroupKey) is what makes a
+      // capture a payload variant of the primary: it differs only in
+      // variables, is evidence for payload fields, and is never a drill.
+      if (
+        !allowSelfEndpointDrill &&
+        endpointKey(drill.capture.url) === primaryEndpointKey &&
+        (!isGraphQLCapture(primary.capture) ||
+          operationGroupKey(drill.capture) === operationGroupKey(primary.capture))
+      ) {
         continue;
       }
       if (consumedIndices.has(drillIndex)) continue;
