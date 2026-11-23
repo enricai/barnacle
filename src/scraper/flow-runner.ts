@@ -11743,6 +11743,7 @@ async function commitPromptOption(params: {
       const triggerReachable = ${PROMPT_TRIGGER_REACHABLE_EL_EXPR};
       const dec = (s) => { if (!s || s.indexOf("&") < 0) return s || ""; const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
       const norm = (s) => dec(s).replace(/\\s+/g, " ").trim().toLowerCase();
+      const edge = (x) => norm(x).replace(/^[^\\p{L}\\p{N}]+|[^\\p{L}\\p{N}]+$/gu, "");
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
@@ -11756,7 +11757,7 @@ async function commitPromptOption(params: {
         const want = alnum(wantText);
         if (ctr && want) {
           for (const c of Array.from(ctr.querySelectorAll("input, textarea, select, [role='combobox']"))) {
-            const v = c.tagName === "SELECT" ? (c.selectedIndex >= 0 && c.options[c.selectedIndex] ? c.options[c.selectedIndex].textContent : "") : (c.value !== undefined && c.value !== "" ? c.value : c.textContent);
+            const v = c.tagName === "SELECT" ? (c.selectedIndex >= 0 && c.options[c.selectedIndex] ? (c.options[c.selectedIndex].textContent || "").trim() || c.options[c.selectedIndex].getAttribute("value") || "" : "") : (c.value !== undefined && c.value !== "" ? c.value : c.textContent);
             if (alnum(v) === want) return { ok: true, id: c.id || "", stillInvalid: false };
           }
         }
@@ -11804,7 +11805,8 @@ async function commitPromptOption(params: {
               snode = snode.parentElement;
             }
             if (!pairedWithW) {
-              const wc = w.parentElement;
+              let wc = w.parentElement;
+              for (let wd = 0; wd < ${MAX_SELECTION_ANCESTOR_DEPTH} && wc && !wc.contains(sel); wd++) wc = wc.parentElement;
               pairedWithW = !!wc && wc.contains(sel) && Array.from(wc.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== w && o !== sel).every((o) => !triggerReachable(o));
             }
             if (!pairedWithW) continue;
@@ -11816,7 +11818,7 @@ async function commitPromptOption(params: {
             // carries no corroborating signal — treating it as a match would credit
             // ANY selection change, including a different option than requested.
             if (wantText && optText && optText.includes(wantText)) { hiddenSelectMatches = true; break; }
-            if (wantText && !optText && selOpt && [selOpt.getAttribute("value"), selOpt.getAttribute("text")].some((a) => norm(a) === wantText || (requestedText && norm(a) === requestedText))) { hiddenSelectMatches = true; break; }
+            if (wantText && !optText && selOpt && [selOpt.getAttribute("value"), selOpt.getAttribute("text")].some((a) => norm(a) === wantText || edge(a) === edge(wantText) || (requestedText && (norm(a) === requestedText || edge(a) === edge(requestedText))))) { hiddenSelectMatches = true; break; }
           }
           cnode = cnode.parentElement;
         }
