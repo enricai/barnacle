@@ -265,6 +265,11 @@ export interface AppConfig {
   };
   telemetry: {
     /**
+     * `IDEMPOTENCY_STORE_DIR` — directory for the durable idempotency store
+     * (sibling of the telemetry files). Unset => in-memory fallback.
+     */
+    idempotencyDir?: string;
+    /**
      * Master switch — set to false to disable all NDJSON telemetry writes.
      * Useful for environments where the disk path is unavailable or I/O is
      * cost-sensitive; the capture sink checks this before every append.
@@ -594,6 +599,7 @@ export function loadConfig(): AppConfig {
       maxFileSizeBytes: getNumericEnv("MULTIPART_MAX_FILE_SIZE_BYTES", 20 * 1024 * 1024),
     },
     telemetry: {
+      idempotencyDir: process.env.IDEMPOTENCY_STORE_DIR || undefined,
       enabled: getBoolEnv("TELEMETRY_ENABLED", true),
       eventsDir: getEnv("TELEMETRY_EVENTS_DIR", ".barnacle/events"),
       callsNdjsonPath: getEnv("CALLS_NDJSON_PATH", ".barnacle/calls.ndjson"),
