@@ -124,7 +124,7 @@ function setAtPath(body: unknown, path: ReadonlyArray<PropertyKey>, value: unkno
  * Returns the parsed data with the offending fields surfaced as `null`, or
  * `undefined` if the mismatch doesn't qualify for leniency.
  */
-function tolerateNullScalarMismatch(
+export function tolerateNullScalarMismatch(
   activeSchema: ZodType,
   body: unknown,
   issues: ReadonlyArray<ZodIssue>
