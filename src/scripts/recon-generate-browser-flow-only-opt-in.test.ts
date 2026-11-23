@@ -138,3 +138,22 @@ describe("recon-generate CLI — browserFlowOnly flow-file opt-in", () => {
     expect(contract).toContain("async executeHttp(");
   }, 60_000);
 });
+
+describe("recon-generate CLI — flow-declared maxAttempts", () => {
+  it("threads a declared maxAttempts into a replayable contract", () => {
+    const contract = generate({ ...FLOW, maxAttempts: 3 })["contract.ts"] ?? "";
+    expect(contract).toMatch(/maxAttempts: 3,/);
+  }, 60_000);
+
+  it("forces a single attempt for an irreversible browser-flow-only submit", () => {
+    const contract =
+      generate({ ...FLOW, browserFlowOnly: true, maxAttempts: 3 })["contract.ts"] ?? "";
+    expect(contract).toMatch(/maxAttempts: 1,/);
+    expect(contract).not.toMatch(/maxAttempts: 3/);
+  }, 60_000);
+
+  it("emits no maxAttempts when none is declared", () => {
+    const contract = generate(FLOW)["contract.ts"] ?? "";
+    expect(contract).not.toContain("maxAttempts");
+  }, 60_000);
+});
