@@ -18,6 +18,7 @@ import {
   recordDdRateLimit,
   recordDdSuccess,
 } from "@/lib/dd-metrics";
+import { createIdempotencyGuard, type IdempotencyGuard } from "@/cache/idempotency-guard";
 import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
@@ -610,7 +611,7 @@ export async function registerRoutes(
           requestId: request.id,
           logger: extendLogger(request.log as unknown as pino.Logger),
         });
-        const result = await dispatch(plugin, request.body, context, {
+        const result = await dispatchWithIdempotency(plugin, request.body, context, {
           forceFallback,
           // Recorded so the error handler can evict this entry if the response
           // fails schema serialization on the way out — otherwise the 500 it
@@ -630,6 +631,26 @@ export async function registerRoutes(
   }
 
   registerExtraRoutes(app, cfg, plugins);
+}
+
+let idempotencyGuard: IdempotencyGuard | undefined;
+
+/**
+ * dispatch() wrapped in the duplicate-submission guard when the plugin
+ * declares `meta.idempotency`; otherwise exactly dispatch().
+ */
+async function dispatchWithIdempotency(
+  plugin: SitePlugin<unknown, unknown>,
+  body: unknown,
+  context: SitePluginContext,
+  options: Parameters<typeof dispatch>[3]
+): Promise<Awaited<ReturnType<typeof dispatch>>> {
+  const declared = plugin.meta.idempotency;
+  if (!declared) return dispatch(plugin, body, context, options);
+  idempotencyGuard ??= createIdempotencyGuard();
+  return idempotencyGuard.run(plugin.meta.siteId, declared, body, () =>
+    dispatch(plugin, body, context, options)
+  );
 }
 
 /**
@@ -727,7 +748,7 @@ function registerExtraRoutes(
         if (route.dispatch === true) {
           // dispatch() owns redaction registration, tracking, timeout, fallback
           // and the submission envelope; shape the reply exactly as /run does.
-          const result = await dispatch(plugin, body, context, {
+          const result = await dispatchWithIdempotency(plugin, body, context, {
             forceFallback: request.headers["x-barnacle-execution"] === "browser",
           });
           return successEnvelope({
