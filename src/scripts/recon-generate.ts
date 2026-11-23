@@ -19355,6 +19355,15 @@ function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
   const last = flowSteps.at(-1);
   if (last === undefined) return false;
   const isObj = typeof last !== "string";
+  // An explicit submitStep:false or a declare-only step (never executed by
+  // recon) is an author's statement that this step is not a verified submit.
+  if (
+    isObj &&
+    (last.submitStep === false || last.declareOnly === true) &&
+    last.submitStep !== true
+  ) {
+    return true;
+  }
   return isStepDeclaredNonSubmit({
     step: isObj ? last.step : last,
     submitStep: isObj ? last.submitStep === true : false,
@@ -19995,7 +20004,7 @@ ${flowStepsBlock}
     isSubmissionFlow && !hasSubmitStep
       ? `
   // No step in this flow is a submitStep (the last step declares itself
-  // non-submit), so nothing here verified a submit: never report verified:true.
+  // non-submit), so nothing here verified a submit: never report a verified result.
   try {
     const result = await guardedExtract(
       stagehand,

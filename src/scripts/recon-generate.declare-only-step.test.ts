@@ -16,6 +16,7 @@ describe("declare-only step through every literal branch", () => {
           submitStep: true,
         },
         { step: "Read code", emailStep: true, declareOnly: true, submitStep: true },
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal token in a flow step
         { step: "Type password ${RECON_PASSWORD}", declareOnly: true, submitStep: true },
       ],
     }).code;

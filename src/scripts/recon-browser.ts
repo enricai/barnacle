@@ -961,6 +961,8 @@ interface NormalizedStep {
   // See RECON_FLOW_STEP_SCHEMA: recorded into the persisted flow but never
   // executed, verified, or replanned at record time. Absence = false.
   declareOnly?: boolean;
+  // See RECON_FLOW_STEP_SCHEMA: tags the payload field as sensitive for redaction.
+  sensitive?: "digits" | "word";
 }
 
 /**
@@ -998,6 +1000,7 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           origin: s.origin ?? "original",
           navigateTo: s.navigateTo,
           declareOnly: s.declareOnly,
+          sensitive: s.sensitive,
         }
   );
 }
@@ -1046,6 +1049,7 @@ function denormalizeStep(step: NormalizedStep):
       origin?: "replan";
       navigateTo?: string;
       declareOnly?: true;
+      sensitive?: "digits" | "word";
     } {
   const hasSplicerHint = step.payloadField !== undefined || step.payloadFieldNone === true;
   // targetId, a "replan" origin, and navigateTo are load-bearing identity that
@@ -1058,6 +1062,7 @@ function denormalizeStep(step: NormalizedStep):
     step.origin === "replan" ||
     step.navigateTo !== undefined ||
     step.declareOnly === true ||
+    step.sensitive !== undefined ||
     step.frameSelector !== undefined;
   if (
     !step.optional &&
@@ -1085,6 +1090,7 @@ function denormalizeStep(step: NormalizedStep):
     origin?: "replan";
     navigateTo?: string;
     declareOnly?: true;
+    sensitive?: "digits" | "word";
   } = {
     step: step.instruction,
   };
@@ -1101,6 +1107,7 @@ function denormalizeStep(step: NormalizedStep):
   if (step.origin === "replan") out.origin = "replan";
   if (step.navigateTo !== undefined) out.navigateTo = step.navigateTo;
   if (step.declareOnly === true) out.declareOnly = true;
+  if (step.sensitive !== undefined) out.sensitive = step.sensitive;
   return out;
 }
 
