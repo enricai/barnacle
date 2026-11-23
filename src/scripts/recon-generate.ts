@@ -17502,7 +17502,7 @@ export function emitContractTsParts(opts: {
     createsAccount = false,
     isSubmissionFlow = false,
     inputBody,
-    hasMultipartStep = false,
+    hasMultipartStep: hasMultipartStepRaw = false,
     actionSteps = [],
     foldReturnSpec = null,
     extraFoldSpecs = ambientExtraDrillSpecs,
@@ -17593,6 +17593,16 @@ export function emitContractTsParts(opts: {
             aggregateUnitBasisFindingsByPath,
             ...(leniencyForUnprovenLeaves ? { singleEntityEvidence: true } : {}),
           });
+  // D10: a flow whose every matched capture is a read (GraphQL query or
+  // non-mutating HTTP method) is never a job application, whatever fields the
+  // captured body happens to carry; it gets no applicant/tracking schema and
+  // no multipart forcing. A declared submission flow is never read-only.
+  const isReadOnlyQueryFlow =
+    !isSubmissionFlow &&
+    (actionSteps.length > 0
+      ? actionSteps.every((s) => !isMutationCapture(s.capture))
+      : gql && gqlQuery != null && !/^\s*mutation\b/.test(gqlQuery));
+  const hasMultipartStep = isReadOnlyQueryFlow ? false : hasMultipartStepRaw;
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -17616,13 +17626,14 @@ export function emitContractTsParts(opts: {
   // one of ApplicantContactSchema's own field names (case-insensitively,
   // checked at any depth via walkAllPrimitiveLeaves) before the template
   // applies (see recon-generate-payload-schema-mismatch.md).
-  const usesApplicantContactSchema = contractUsesApplicantContactSchema({
+  const usesApplicantContactSchemaRaw = contractUsesApplicantContactSchema({
     inputBody,
     isSubmissionFlow,
     browserFlowOnly: omitExecuteHttp,
     payloadFieldNames,
     formBodyFieldNames: collectFormBodyFieldNames(actionSteps),
   });
+  const usesApplicantContactSchema = !isReadOnlyQueryFlow && usesApplicantContactSchemaRaw;
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
   // A resolved drill-down fold plan on the single-primary getGql/httpClient
@@ -18095,7 +18106,7 @@ export function emitContractTsParts(opts: {
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
   // A read-only GET flow has no submission step, so no tracking click fires.
-  const mergesTracking = !getInputModel;
+  const mergesTracking = !getInputModel && !isReadOnlyQueryFlow;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
