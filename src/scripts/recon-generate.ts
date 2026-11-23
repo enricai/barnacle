@@ -7194,6 +7194,10 @@ interface ActionStep {
   isMultipart: boolean;
   /** True when the capture's host differs from the immediately-preceding action. */
   isCrossDomain: boolean;
+  /** Captures (other than this one) whose request re-sends a value this step
+   * produces. Lets callers decide whether the step feeds a particular later
+   * capture, transitively. */
+  consumers?: Capture[];
 }
 
 /** Matches strings that are valid JavaScript identifiers (start with letter/$/_,
@@ -7685,6 +7689,25 @@ function pathToVarName(path: string[]): string {
   return "value";
 }
 
+/** True only when a value the capture produces is re-sent, transitively through
+ * other steps, by a capture matching the declared submit pattern. */
+export function stepFeedsDeclaredSubmit(
+  capture: Capture,
+  steps: ActionStep[],
+  matchesDeclaredSubmit: (c: Capture) => boolean,
+  seen = new Set<Capture>()
+): boolean {
+  if (seen.has(capture)) return false;
+  seen.add(capture);
+  const step = steps.find((s) => s.capture === capture);
+  return (
+    step?.consumers?.some(
+      (c) =>
+        matchesDeclaredSubmit(c) || stepFeedsDeclaredSubmit(c, steps, matchesDeclaredSubmit, seen)
+    ) ?? false
+  );
+}
+
 /**
  * Walks the action sequence and decorates each step with: a unique response
  * var name, the state values its response produces (used by downstream steps),
@@ -7704,6 +7727,17 @@ export function compileActionSteps(
   // header downstream isn't a shape this models (see http-client.ts's `bind`,
   // which is single-target per binding).
   const usedValueTargetHeader = new Map<string, string>();
+  // Per used value: the captures whose request re-sends it.
+  const usedValueConsumers = new Map<string, Set<Capture>>();
+  const markUsed = (value: string, consumer: Capture): void => {
+    usedValues.add(value);
+    let set = usedValueConsumers.get(value);
+    if (!set) {
+      set = new Set();
+      usedValueConsumers.set(value, set);
+    }
+    set.add(consumer);
+  };
   // Pre-scan: collect all state values referenced by ANY action's URL/headers/body
   // so we only "produce" the values that are actually consumed downstream.
   for (const { capture } of actions) {
@@ -7717,7 +7751,7 @@ export function compileActionSteps(
       // unrelated opaque path segment) is not reuse and must not splice.
       if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture)) continue;
       if (resends(capture.url, sv.value)) {
-        usedValues.add(sv.value);
+        markUsed(sv.value, capture);
         continue;
       }
       // Body consumption is matched against JSON *values* only, never keys: a
@@ -7737,7 +7771,7 @@ export function compileActionSteps(
           typeof capture.requestPostData === "string" &&
           resends(capture.requestPostData, sv.value)
         )
-          usedValues.add(sv.value);
+          markUsed(sv.value, capture);
         continue;
       }
       // A produced value's SOURCE key name (the last segment of its response
@@ -7760,13 +7794,13 @@ export function compileActionSteps(
               keyNamesCorrelate(sourceKeyName, targetKey) &&
               [...leaves].some((leaf) => leaf.includes(sv.value))
           );
-      if (matches) usedValues.add(sv.value);
+      if (matches) markUsed(sv.value, capture);
     }
     for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
       for (const sv of stateIndex.values()) {
         if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture)) continue;
         if (!headerValue.includes(sv.value)) continue;
-        usedValues.add(sv.value);
+        markUsed(sv.value, capture);
         if (!usedValueTargetHeader.has(sv.value)) {
           usedValueTargetHeader.set(sv.value, headerName);
         }
@@ -7779,6 +7813,7 @@ export function compileActionSteps(
     const varName = `r${i}`;
     const produces: Produce[] = [];
     const seenNames = new Set<string>();
+    const producedValues = new Set<string>();
 
     // Header/cookie-origin produces — walked first so a value that appears in
     // BOTH a Set-Cookie and the JSON body (unlikely, but not ruled out) prefers
@@ -7801,6 +7836,7 @@ export function compileActionSteps(
           name = `${cookieName.replace(/[^A-Za-z0-9]/g, "")}Cookie${suffix}`;
         }
         seenNames.add(name);
+        producedValues.add(value);
         produces.push({
           kind: "header",
           name,
@@ -7835,6 +7871,7 @@ export function compileActionSteps(
         name = `${headerName.replace(/[^A-Za-z0-9]/g, "")}Header${suffix}`;
       }
       seenNames.add(name);
+      producedValues.add(headerValue);
       produces.push({
         kind: "header",
         name,
@@ -7865,6 +7902,7 @@ export function compileActionSteps(
             : typeof rawValue === "boolean"
               ? "boolean"
               : "string";
+        producedValues.add(value);
         produces.push({
           kind: "body",
           name,
@@ -7891,6 +7929,7 @@ export function compileActionSteps(
         name = `${base}${suffix}`;
       }
       seenNames.add(name);
+      producedValues.add(t.value);
       produces.push({
         kind: "html",
         name,
@@ -7924,7 +7963,18 @@ export function compileActionSteps(
     // Multipart steps are emitted through a path that cannot read the HTML
     // text, so an html produce there would be interpolated but never declared.
     const finalProduces = isMultipart ? produces.filter((q) => q.kind !== "html") : produces;
-    return { capture, varName, produces: finalProduces, isMultipart, isCrossDomain };
+    const consumers = new Set<Capture>();
+    for (const v of producedValues) {
+      for (const c of usedValueConsumers.get(v) ?? []) if (c !== capture) consumers.add(c);
+    }
+    return {
+      capture,
+      varName,
+      produces: finalProduces,
+      isMultipart,
+      isCrossDomain,
+      consumers: [...consumers],
+    };
   });
 }
 
@@ -21145,13 +21195,10 @@ export async function main(): Promise<void> {
     // step consumes (a one-off analytics or consent POST) is page chrome, not a
     // step. One whose response feeds a later request (a token mint) still is.
     const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
-    const feedsLaterStep = (capture: Capture): boolean =>
-      compiledActionSteps.some((s) => s.capture === capture && s.produces.length > 0);
+    const feedsDeclaredStep = (capture: Capture): boolean =>
+      stepFeedsDeclaredSubmit(capture, compiledActionSteps, matchesDeclaredSubmit);
     const isIncidentalReadFlowPost = (capture: Capture): boolean =>
-      declaresSubmitPattern &&
-      capture.method !== "GET" &&
-      !matchesDeclaredSubmit(capture) &&
-      !feedsLaterStep(capture);
+      declaresSubmitPattern && !matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
     const actionSequenceIsReadSamples =
       compiledActionSteps.length === 0 ||
       actionCaptures.every(
