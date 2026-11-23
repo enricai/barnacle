@@ -69,6 +69,7 @@ import {
   CREDENTIAL_REQUEST_HEADERS,
   type RateLimitFinding,
   type ReplayResult,
+  readApplicantContract,
   readBrowserFlowOnly,
   readCaptureDir,
   readJsonDir,
@@ -10252,7 +10253,9 @@ export function emitMultiStepExecuteHttp(
    * already uses, instead of never being decomposed at all. Defaults preserve
    * prior (no facet-splice) output for callers that don't pass a flow. */
   flowSteps: FlowStepInput[] = [],
-  vocabulary: ReconVocabulary | undefined = undefined
+  vocabulary: ReconVocabulary | undefined = undefined,
+  /** Explicit `applicantContract` flow declaration; see {@link contractUsesApplicantContactSchema}. */
+  applicantContract: boolean | undefined = undefined
 ): string {
   interface Rendered {
     url: string;
@@ -10901,6 +10904,7 @@ export function emitMultiStepExecuteHttp(
         isSubmissionFlow: true,
         payloadFieldNames: outDiscoveredFields,
         formBodyFieldNames: collectFormBodyFieldNames(actions),
+        applicantContract,
       })
     ) {
       bodyTemplate = bindMultipartSelectAnswers(bodyTemplate, cap, prior);
@@ -17133,6 +17137,31 @@ const applicantContactEvidenceFieldNamesLower = new Set(
   [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
 );
 
+const applicantFlowVocabulary =
+  /\b(resume|r[ée]sum[ée]|cv|curriculum vitae|cover letter|job application|applicant|apply for)\b/i;
+const applicantOnlyEvidenceFieldNamesLower = new Set(
+  ["FirstName", "LastName", "Resume", "ResumeContentType", "ResumeFilename", "ResumeBase64"].map(
+    (name) => name.toLowerCase()
+  )
+);
+
+/** Flow evidence that a browser-only submission flow is a job application. */
+function browserFlowHasApplicantEvidence(o: {
+  flowSteps?: readonly FlowStepInput[];
+  hasMultipartStep?: boolean;
+  names: readonly string[];
+}): boolean {
+  if (o.hasMultipartStep === true) return true;
+  for (const step of o.flowSteps ?? []) {
+    if (typeof step === "string") {
+      if (applicantFlowVocabulary.test(step)) return true;
+    } else if (step.upload === true || applicantFlowVocabulary.test(step.step)) {
+      return true;
+    }
+  }
+  return o.names.some((n) => applicantOnlyEvidenceFieldNamesLower.has(n.toLowerCase()));
+}
+
 /**
  * Single source of truth for "the contract extends ApplicantContactSchema", so
  * the contract and browser-flow emitters can't disagree about whether the
@@ -17148,13 +17177,37 @@ export function contractUsesApplicantContactSchema(opts: {
    * multipart/urlencoded bodies that carry no JSON `inputBody`, so the names of
    * the fields it submits are the only evidence of what the caller supplies. */
   formBodyFieldNames?: ReadonlySet<string>;
+  /** Explicit `applicantContract` declaration from the flow file; wins over
+   * every inferred signal when set. */
+  applicantContract?: boolean;
+  /** Flow-evidence inputs for the browser-only branch. */
+  flowSteps?: readonly FlowStepInput[];
+  hasMultipartStep?: boolean;
 }): boolean {
-  const { inputBody, isSubmissionFlow, browserFlowOnly, payloadFieldNames, formBodyFieldNames } =
-    opts;
+  const {
+    inputBody,
+    isSubmissionFlow,
+    browserFlowOnly,
+    payloadFieldNames,
+    formBodyFieldNames,
+    applicantContract,
+    flowSteps,
+    hasMultipartStep,
+  } = opts;
+  if (applicantContract !== undefined) return applicantContract;
   // A browser-flow-only submission flow has no HTTP body of its own: whatever
   // inputBody HTTP analysis captured describes a path the plugin won't emit,
   // so it is not evidence about the real caller's shape.
-  if (isSubmissionFlow === true && browserFlowOnly === true) return true;
+  // It is a job application only when the flow itself says so (upload step,
+  // resume/ATS vocabulary, applicant-only payload fields); a plain `email`
+  // field is not evidence.
+  if (isSubmissionFlow === true && browserFlowOnly === true) {
+    return browserFlowHasApplicantEvidence({
+      flowSteps,
+      hasMultipartStep,
+      names: [...(payloadFieldNames ?? []), ...(formBodyFieldNames ?? [])],
+    });
+  }
   // A body-less submission flow has no inputBody to inspect; the payload fields
   // its steps splice are the only evidence, whether or not it also has an HTTP
   // path (the browser-flow emitter can't know which the contract will take).
@@ -17287,6 +17340,8 @@ export function emitContractTsParts(opts: {
    * ships browser-only with the standard candidate payload schema — rather
    * than emitting a fabricated single-call HTTP stub. */
   omitExecuteHttp?: boolean;
+  /** Explicit `applicantContract` flow declaration; wins over inferred evidence. */
+  applicantContract?: boolean;
   /** The flow registers an account (its steps splice `${RECON_PASSWORD}`), so
    * a retry would try to re-register the same address. Emits
    * `meta.maxAttempts: 1`. */
@@ -17415,6 +17470,7 @@ export function emitContractTsParts(opts: {
     auxFiles,
     multiStepBody,
     omitExecuteHttp = false,
+    applicantContract,
     createsAccount = false,
     isSubmissionFlow = false,
     inputBody,
@@ -17538,6 +17594,9 @@ export function emitContractTsParts(opts: {
     browserFlowOnly: omitExecuteHttp,
     payloadFieldNames,
     formBodyFieldNames: collectFormBodyFieldNames(actionSteps),
+    applicantContract,
+    flowSteps: contractFlowSteps,
+    hasMultipartStep,
   });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
@@ -19395,6 +19454,8 @@ export function emitConfigManifest(opts: {
   hasMultipartStep?: boolean;
   /** Browser-flow-only emit (no executeHttp); feeds {@link contractUsesApplicantContactSchema}. */
   browserFlowOnly?: boolean;
+  /** Explicit `applicantContract` flow declaration. */
+  applicantContract?: boolean;
   /** Feeds {@link contractUsesApplicantContactSchema}; see {@link collectFormBodyFieldNames}. */
   formBodyFieldNames?: ReadonlySet<string>;
   /** Read-only GET flow: no submission, so the request schema omits TrackingUrl (mirrors the .ts contract). */
@@ -19415,6 +19476,7 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow = false,
     hasMultipartStep = false,
     browserFlowOnly = false,
+    applicantContract,
     formBodyFieldNames,
     readOnlyGet = false,
     env = process.env,
@@ -19426,6 +19488,9 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow,
     browserFlowOnly,
     formBodyFieldNames,
+    applicantContract,
+    flowSteps,
+    hasMultipartStep,
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
@@ -19531,6 +19596,9 @@ export function emitConfigManifest(opts: {
     browserFlowOnly,
     formBodyFieldNames,
     payloadFieldNames,
+    applicantContract,
+    flowSteps,
+    hasMultipartStep,
   });
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
   // without it would drop the TrackingUrl the engine reads after submission.
@@ -19683,6 +19751,8 @@ export function emitBrowserFlowTs(opts: {
   isSubmissionFlow: boolean;
   hasMultipartStep?: boolean;
   browserFlowOnly?: boolean;
+  /** Explicit `applicantContract` flow declaration. */
+  applicantContract?: boolean;
   /** Inputs to {@link contractUsesApplicantContactSchema}; the decision is made
    * here, after payload fields are accumulated, to match the contract emitter. */
   inputBody?: unknown;
@@ -19722,6 +19792,7 @@ export function emitBrowserFlowTs(opts: {
     isSubmissionFlow,
     hasMultipartStep = false,
     browserFlowOnly = false,
+    applicantContract,
     inputBody,
     formBodyFieldNames,
     vocabulary,
@@ -19737,6 +19808,9 @@ export function emitBrowserFlowTs(opts: {
     isSubmissionFlow,
     browserFlowOnly,
     formBodyFieldNames,
+    applicantContract,
+    flowSteps,
+    hasMultipartStep,
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
@@ -20696,6 +20770,7 @@ export async function main(): Promise<void> {
   })();
 
   const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
+  const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
@@ -21275,6 +21350,7 @@ export async function main(): Promise<void> {
         inputBody,
         isSubmissionFlow,
         browserFlowOnly: false,
+        applicantContract,
         formBodyFieldNames,
         payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env, false)
           .payloadFieldNames,
@@ -21442,7 +21518,8 @@ export async function main(): Promise<void> {
             foldReturnSpec,
             pascal,
             flowSteps,
-            vocabulary
+            vocabulary,
+            applicantContract
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
@@ -21575,6 +21652,7 @@ export async function main(): Promise<void> {
           isSubmissionFlow,
           hasMultipartStep,
           browserFlowOnly,
+          applicantContract,
           formBodyFieldNames,
           readOnlyGet: isReadOnlyGetFlow,
           // A submission flow is the case where the `.ts` emit carries an
@@ -21605,6 +21683,7 @@ export async function main(): Promise<void> {
       isSubmissionFlow,
       hasMultipartStep,
       browserFlowOnly,
+      applicantContract,
       inputBody,
       formBodyFieldNames,
       vocabulary,
@@ -21688,6 +21767,7 @@ export async function main(): Promise<void> {
       auxFiles,
       multiStepBody,
       omitExecuteHttp: browserFlowOnly,
+      applicantContract,
       createsAccount: browserFlow.usesThrowawayPassword,
       isSubmissionFlow,
       inputBody,
