@@ -2838,6 +2838,48 @@ export function isMidFlowAdvanceCredited(params: {
 }
 
 /**
+ * The single "content left the page" judgement shared by
+ * {@link isClickViewSwapVerified} (verdict credit) and
+ * {@link describeAttemptEffectSignals} (failure-reason diagnostic). Removal is
+ * credited only for a `click` whose target is positively confirmed absent
+ * (`clickedElementStillPresent === false`), with the body shrinking and either
+ * a measured visible-text shrink (`textShrunk`) or a changed text with an
+ * element-sized shrink (at least the reveal floor, below a whole screen swap).
+ */
+export function isContentRemovalCredited(params: {
+  method?: string | null;
+  clickedElementStillPresent: boolean;
+  /** Presence could not be read back (no resolved/xpath selector, evaluate failure). */
+  presenceUnknown?: boolean;
+  bytesDelta: number;
+  textChanged: boolean;
+  textShrunk: boolean;
+}): boolean {
+  const {
+    method,
+    clickedElementStillPresent,
+    presenceUnknown,
+    bytesDelta,
+    textChanged,
+    textShrunk,
+  } = params;
+  if (bytesDelta >= 0) return false;
+  // A measured visible-text shrink is itself the evidence of removal: when the
+  // action went unreported (null method) or presence is unreadable, credit it
+  // rather than scoring a client-side dismissal as no effect. A target
+  // positively read back as present still vetoes.
+  const unverifiable = presenceUnknown === true;
+  if (unverifiable && textShrunk && (method == null || method === "click")) return true;
+  if (method !== "click" || clickedElementStillPresent) return false;
+  return (
+    textShrunk ||
+    (textChanged &&
+      -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold &&
+      -bytesDelta < config.scraper.viewSwapMinBytesThreshold)
+  );
+}
+
+/**
  * Client-side view-swap verification gate. Credits a click that produces
  * substantial DOM growth with zero network as a verified step outcome when
  * the step is a plain client-side reveal (not a submit/final step, not an
@@ -2947,6 +2989,7 @@ export function isClickViewSwapVerified(params: {
   textChanged: boolean;
   invalidMarkerDelta?: number;
   clickedElementStillPresent?: boolean;
+  clickedElementPresenceUnknown?: boolean;
   resolvedElementIsSubmitShaped?: boolean;
   destinationPlausible?: boolean;
   midFlowSubmit?: boolean;
@@ -2968,6 +3011,7 @@ export function isClickViewSwapVerified(params: {
     textChanged,
     invalidMarkerDelta = 0,
     clickedElementStillPresent = true,
+    clickedElementPresenceUnknown = false,
     resolvedElementIsSubmitShaped = false,
     destinationPlausible,
     midFlowSubmit = false,
@@ -2995,7 +3039,12 @@ export function isClickViewSwapVerified(params: {
   ) {
     return true;
   }
-  if (resolvedAction?.method !== "click") return false;
+  if (
+    resolvedAction?.method !== "click" &&
+    !(resolvedAction == null && clickedElementPresenceUnknown)
+  ) {
+    return false;
+  }
   if (destinationPlausible === false) return false;
   if (midFlowSubmit && (submitStep || resolvedElementIsSubmitShaped)) return false;
   // Only the step's own explicit submitStep flag identifies the step that
@@ -3024,16 +3073,25 @@ export function isClickViewSwapVerified(params: {
   // removal. A shrink at screen-swap scale that also takes its own trigger
   // stays the reset the veto below targets.
   if (
-    !clickedElementStillPresent &&
-    bytesDelta < 0 &&
-    (contentRemoved ||
-      (textChanged &&
-        -bytesDelta >= VIEW_SWAP_REVEAL_MIN_BYTES &&
-        -bytesDelta < VIEW_SWAP_MIN_BYTES))
+    isContentRemovalCredited({
+      method: resolvedAction?.method,
+      clickedElementStillPresent,
+      presenceUnknown: clickedElementPresenceUnknown,
+      bytesDelta,
+      textChanged,
+      textShrunk: contentRemoved,
+    })
   ) {
     return true;
   }
+  // The null-action allowance above exists only for the removal credit; every
+  // growth-based credit below still needs a reported click.
+  if (resolvedAction?.method !== "click") return false;
   if (!clickedElementStillPresent && bytesDelta <= 0) return false;
+  // A shrink that did not qualify as a removal above (target still present)
+  // is not a reveal; growth-based credits need the body to have grown, unless
+  // it is a screen-swap-sized change.
+  if (bytesDelta < 0 && -bytesDelta < VIEW_SWAP_MIN_BYTES) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   // A small text-only reveal is what a blocked mid-flow submit's inline
   // validation message produces too; without a settled page advance it is
@@ -3133,7 +3191,12 @@ export function describeAttemptEffectSignals(
   pre: StepSnapshot,
   post: StepSnapshot,
   recentCaptureMeta: readonly CaptureMeta[],
-  preMetaLength: number
+  preMetaLength: number,
+  removal?: {
+    method?: string | null;
+    clickedElementStillPresent: boolean;
+    presenceUnknown?: boolean;
+  }
 ): string {
   const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
   const networkDelta = post.networkCount - pre.networkCount;
@@ -3155,17 +3218,32 @@ export function describeAttemptEffectSignals(
       );
     }
   }
-  // Mirrors the verdict's removal credit: an element-sized body shrink with
-  // changed visible text, or a measured visible-text shrink.
+  // Same predicate as the verdict's removal credit. Evidence defaults to a
+  // confirmed click removal for callers that do not supply it.
+  const shrinkMeasured = isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature);
   const contentRemoved =
     networkDelta === 0 &&
-    (isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature) ||
-      (bytesDelta < 0 &&
-        ((textChanged && -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold) ||
-          -bytesDelta >= config.scraper.viewSwapMinBytesThreshold)));
+    isContentRemovalCredited({
+      method: removal ? removal.method : "click",
+      clickedElementStillPresent: removal?.clickedElementStillPresent ?? false,
+      presenceUnknown: removal?.presenceUnknown,
+      bytesDelta,
+      textChanged,
+      textShrunk: shrinkMeasured,
+    });
   if (contentRemoved) {
     observations.push(
       `content-removed-without-network: visible text and body HTML shrank (body ${bytesDelta}B) with no network — real content left the page (an overlay/banner/target was dismissed), not a slight reflow`
+    );
+  } else if (
+    networkDelta === 0 &&
+    (shrinkMeasured ||
+      (textChanged &&
+        bytesDelta < 0 &&
+        -bytesDelta >= config.scraper.viewSwapRevealMinBytesThreshold))
+  ) {
+    observations.push(
+      `visible-text-shrank-without-confirmed-removal: visible text shrank (body ${bytesDelta}B) with no network, but the clicked target was not confirmed removed by a click — not a confirmed dismissal`
     );
   } else if (textChanged && networkDelta === 0 && bytesDelta < 500) {
     observations.push(
@@ -5782,22 +5860,21 @@ async function readElementSelectionFingerprint(
  * (e.g. a login-to-registration form swap) also removes its trigger, so
  * absence only vetoes when the DOM did not grow; the caller applies that
  * direction check. Returns
- * `true` — never veto — whenever presence genuinely can't be determined (a
- * non-xpath selector, an evaluate failure): only a positive `false` read
- * back from the DOM counts as proof of absence.
+ * `null` whenever presence can't be determined (a non-xpath selector, an
+ * evaluate failure); only a positive `false` counts as proof of absence.
  */
-async function resolvedClickTargetStillPresent(
+async function resolvedClickTargetPresence(
   target: FrameTarget,
   selector: string
-): Promise<boolean> {
+): Promise<boolean | null> {
   const xpath = xpathBodyForEvaluate(selector, target);
-  if (!xpath) return true;
+  if (!xpath) return null;
   const expr = `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); return r !== null; })()`;
   try {
     const result = await target.evaluate(expr);
-    return result !== false;
+    return result === false ? false : result === true ? true : null;
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -16631,13 +16708,15 @@ export async function executeStepWithHealing(params: {
     // the DOM, while a genuine same-page toggle leaves it in place and a
     // view swap removes it but grows the DOM (absence vetoes only when
     // bytesDelta <= 0). See isClickViewSwapVerified's doc comment.
-    const clickedElementStillPresent =
+    const clickedElementPresence: boolean | null =
       isClick && resolvedAction?.selector
-        ? await resolvedClickTargetStillPresent(
+        ? await resolvedClickTargetPresence(
             frameTarget ?? mainFrameTarget(page),
             resolvedAction.selector
           )
-        : true;
+        : null;
+    const clickedElementStillPresent = clickedElementPresence !== false;
+    const clickedElementPresenceUnknown = clickedElementPresence === null;
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
@@ -16705,6 +16784,7 @@ export async function executeStepWithHealing(params: {
       textChanged: hasVisibleTextChanged(advanceBaseline, post),
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
+      clickedElementPresenceUnknown,
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausibleForPost,
       midFlowSubmit,
@@ -17626,6 +17706,35 @@ export async function executeStepWithHealing(params: {
                 .evaluate(ERROR_SUMMARY_EXPR)
                 .catch(() => false)) as boolean)
             : false;
+          // Same removal judgement as the primary verdict, fed this fallback
+          // click's own pre/post pair. Credits only a click (the fallback's
+          // resolved action is `el.click()`) whose xpath is positively
+          // confirmed absent (`resolvedClickTargetStillPresent` returns true
+          // whenever presence can't be read), under the same no-network,
+          // submit-shape and destination vetoes as the weak-DOM branch.
+          // Presence is only read when the body shrank: the credit needs a shrink,
+          // and a growing page must not spend an extra evaluate on the target.
+          const retryPresence: boolean | null =
+            xpath !== null && retryPost.bodyHtmlLength < pre.bodyHtmlLength
+              ? await resolvedClickTargetPresence(frameTarget ?? mainFrameTarget(page), xpath)
+              : null;
+          const retryRemovalCredited =
+            !retryNetworkFired &&
+            !retrySubmitShaped &&
+            !retryMidFlowSubmit &&
+            retryDestinationPlausible &&
+            !isCheckboxOrRadioIntentStep(step) &&
+            isContentRemovalCredited({
+              method: "click",
+              clickedElementStillPresent: retryPresence !== false,
+              presenceUnknown: retryPresence === null,
+              bytesDelta: retryPost.bodyHtmlLength - pre.bodyHtmlLength,
+              textChanged: hasVisibleTextChanged(pre, retryPost),
+              textShrunk: isVisibleTextShrunk(
+                pre.visibleTextSignature,
+                retryPost.visibleTextSignature
+              ),
+            });
           let retryVerified =
             !clickBlockedByDisabled &&
             !retryShowsErrorSummary &&
@@ -17639,6 +17748,7 @@ export async function executeStepWithHealing(params: {
               (n16ClickDelivered &&
                 (!retrySubmitShaped || retryMidFlowSubmit) &&
                 retryVerdict === "effective") ||
+              (n16ClickDelivered && retryRemovalCredited) ||
               (n16ClickDelivered &&
                 retryMidFlowSubmit &&
                 retryPageAdvanced &&
@@ -17914,7 +18024,17 @@ export async function executeStepWithHealing(params: {
       return "completed";
     }
 
-    const effectSignals = describeAttemptEffectSignals(pre, post, recentCaptureMeta, preMetaLength);
+    const effectSignals = describeAttemptEffectSignals(
+      pre,
+      post,
+      recentCaptureMeta,
+      preMetaLength,
+      {
+        method: resolvedAction?.method,
+        clickedElementStillPresent,
+        presenceUnknown: clickedElementPresenceUnknown,
+      }
+    );
     // record.phantomClickVerdict was already computed above, before the
     // `verified` gate — reaching this point means it is NOT `"effective"`
     // (an effective verdict would have short-circuited to "completed"

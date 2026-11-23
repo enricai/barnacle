@@ -98,7 +98,11 @@ type Harness = {
  * Builds a live happy-dom page whose "Accept" button, on click, swaps the body
  * for `afterHtml`. Every production evaluate runs for real against that DOM.
  */
-async function buildHarness(beforeHtml: string, afterHtml: string): Promise<Harness> {
+async function buildHarness(
+  beforeHtml: string,
+  afterHtml: string,
+  method = "click"
+): Promise<Harness> {
   const window = new Window({ url: BASE_URL });
   const document = window.document;
   document.body.innerHTML = beforeHtml;
@@ -156,7 +160,7 @@ async function buildHarness(beforeHtml: string, afterHtml: string): Promise<Harn
   const action = {
     selector: `xpath=${buttonXPath}`,
     description: "Accept button",
-    method: "click",
+    method,
   };
   guardedAct.mockImplementation(async () => {
     (
@@ -253,5 +257,49 @@ describe("flow-runner banner dismissal is credited as a view-swap (offline fixtu
     await expect(h.call).rejects.toBeInstanceOf(StepVerificationError);
     expect(h.trajectory.some((t) => t.verifiedBy === "view-swap")).toBe(false);
     expect(SILENT_LOGGER_CALLS.info.some((l) => l.includes("n+16 probe"))).toBe(true);
+  });
+
+  const BANNER = `<main><h1>Headlines</h1><p>Top story.</p>
+        <div class="consentBanner" data-layout="${"x".repeat(1000)}">
+          <p>${BANNER_TEXT}</p>
+          <button id="acceptBtn">Accept</button>
+        </div></main>`;
+  // Shrink below the reveal floor (500B) with the target still present: the
+  // only route to credit would be the removal predicate, which must refuse it.
+  const SMALL_BEFORE = `<main><h1>Headlines</h1><p>Top story.</p>
+        <div class="consentBanner"><p>${"We use cookies. ".repeat(10)}</p>
+          <button id="acceptBtn">Accept</button></div></main>`;
+  const SMALL_AFTER_TARGET_PRESENT = `<main><h1>Headlines</h1><p>Top story.</p>
+        <div class="consentBanner"><button id="acceptBtn">Accept</button></div></main>`;
+
+  it("does not credit a shrink where the clicked target is still present, and does not label it content-removed", async () => {
+    const h = await buildHarness(SMALL_BEFORE, SMALL_AFTER_TARGET_PRESENT);
+    // A later n+16 fallback may still verify via a textChanged signal; what
+    // matters here is the removal credit is not what verified the step.
+    await h.call.catch(() => {});
+    expect(h.trajectory.some((t) => t.verifiedBy === "view-swap")).toBe(false);
+    const post = await h.post();
+    expect(h.pre.bodyHtmlLength - post.bodyHtmlLength).toBeGreaterThan(0);
+    const signals = describeAttemptEffectSignals(h.pre, post, [], 0, {
+      method: "click",
+      clickedElementStillPresent: true,
+    });
+    expect(signals).not.toContain("content-removed");
+  });
+
+  it("does not credit or label a non-click action even when the target is removed", async () => {
+    const h = await buildHarness(
+      BANNER,
+      `<main><h1>Headlines</h1><p>Top story.</p></main>`,
+      "fill"
+    );
+    await expect(h.call).rejects.toBeInstanceOf(StepVerificationError);
+    expect(h.trajectory.some((t) => t.verifiedBy === "view-swap")).toBe(false);
+    const post = await h.post();
+    const signals = describeAttemptEffectSignals(h.pre, post, [], 0, {
+      method: "fill",
+      clickedElementStillPresent: false,
+    });
+    expect(signals).not.toContain("content-removed");
   });
 });
