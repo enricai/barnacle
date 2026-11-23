@@ -13211,10 +13211,9 @@ export async function probeStepBeforeAttempts(params: {
    */
   reresolveFrameTarget?: () => Promise<FrameTarget | undefined>;
   /**
-   * When true and the step is click-shaped (not a fill/select/prompt-selector
-   * step), a zero-candidate focused probe is final: the unfocused-observe
-   * "treat as present" fallback is skipped so the optional step skips instead
-   * of running the cascade and replans. Required steps keep today's behavior.
+   * Marks the step optional. A zero-candidate focused probe now takes the same
+   * unfocused-observe fallback as required steps (focused observe can
+   * under-return); the step is "absent" (skipped) only when both are empty.
    */
   optional?: boolean;
   /**
@@ -13246,12 +13245,6 @@ export async function probeStepBeforeAttempts(params: {
       frameTarget
     );
     onFocusedCandidates?.(candidates);
-    if (candidates.length === 0 && optional && parsePromptSelectorStep(step) === null) {
-      logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)}: optional click-shaped step, focused probe found 0 candidates — treating as absent (skip, no cascade)`
-      );
-      return "absent";
-    }
     if (candidates.length === 0) {
       // Focused observe under-returns on some controlled-component forms:
       // Stagehand's instruction-scoped observe can resolve zero candidates for a
