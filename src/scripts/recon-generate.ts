@@ -19354,6 +19354,11 @@ function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "ar
 function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
   const last = flowSteps.at(-1);
   if (last === undefined) return false;
+  // A flow containing a declare-only step was never fully executed by recon, so
+  // its trailing step is not a recon-verified submit unless explicitly flagged.
+  const anyDeclareOnly = flowSteps.some((s) => typeof s !== "string" && s.declareOnly === true);
+  const anyExplicitSubmit = flowSteps.some((s) => typeof s !== "string" && s.submitStep === true);
+  if (anyDeclareOnly && !anyExplicitSubmit) return true;
   const isObj = typeof last !== "string";
   // An explicit submitStep:false or a declare-only step (never executed by
   // recon) is an author's statement that this step is not a verified submit.
