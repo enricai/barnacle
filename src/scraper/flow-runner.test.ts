@@ -2146,40 +2146,15 @@ describe("flow-runner/flowHasSubmitSemantics read-only", () => {
     submitEndpointPattern: "/api/jobs",
     requireSubmitEndpointMatch: false,
   };
-  it("false when the matched capture is a GET query", () => {
-    expect(
-      flowHasSubmitSemantics({
-        ...base,
-        recentCaptureMeta: [{ method: "GET", url: "https://x.test/api/jobs?q=1" }],
-      })
-    ).toBe(false);
-  });
   it("false when flow declares readOnly", () => {
     expect(flowHasSubmitSemantics({ ...base, readOnly: true })).toBe(false);
   });
-  it("still true for a POST match", () => {
+  it("readOnly wins even when requireSubmitEndpointMatch is true", () => {
     expect(
-      flowHasSubmitSemantics({
-        ...base,
-        recentCaptureMeta: [{ method: "POST", url: "https://x.test/api/jobs" }],
-      })
-    ).toBe(true);
+      flowHasSubmitSemantics({ ...base, requireSubmitEndpointMatch: true, readOnly: true })
+    ).toBe(false);
   });
-  it("invalid-regex pattern falls through to the default inference", () => {
-    expect(
-      flowHasSubmitSemantics({
-        ...base,
-        submitEndpointPattern: "([unclosed",
-        recentCaptureMeta: [{ method: "GET", url: "https://x.test/api/jobs" }],
-      })
-    ).toBe(true);
-  });
-  it("true when no capture matches the pattern", () => {
-    expect(
-      flowHasSubmitSemantics({
-        ...base,
-        recentCaptureMeta: [{ method: "GET", url: "https://x.test/other" }],
-      })
-    ).toBe(true);
+  it("pattern alone still implies submit semantics", () => {
+    expect(flowHasSubmitSemantics(base)).toBe(true);
   });
 });

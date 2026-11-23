@@ -5463,6 +5463,9 @@ function substituteOrigin(value: string, baseUrl: string): string {
  * (`api-token`, `x-*-token`, `*-api-token`).
  */
 function isCredentialHeaderName(lower: string): boolean {
+  // Cache validators share the "never frozen" set but are not credentials: they
+  // keep the old drop-when-unthreaded behaviour instead of throwing per call.
+  if (/^if-(none-match|match|modified-since|unmodified-since|range)$/.test(lower)) return false;
   return (
     CREDENTIAL_REQUEST_HEADERS.has(lower) ||
     lower === "api-token" ||
@@ -10991,6 +10994,9 @@ export function emitMultiStepExecuteHttp(
     }
 
     const joinCarryingHeaderNames = joinCarryingHeaderNamesByStep.get(i);
+    const boundHeaderNames = new Set(
+      collectHeaderBindings(actions as ActionStep[]).map((b) => b.targetHeader.toLowerCase())
+    );
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
@@ -11031,7 +11037,12 @@ export function emitMultiStepExecuteHttp(
       // closed set of header names left every other header name frozen as
       // a literal BASE_HEADERS entry (or dropped per-call) even when its
       // captured value was a real, already-produced response field.
-      if (isCredentialHeaderName(lower) && interpolated === v) {
+      if (
+        isCredentialHeaderName(lower) &&
+        interpolated === v &&
+        !joinCarryingHeaderNames?.has(k) &&
+        !boundHeaderNames.has(lower)
+      ) {
         perCallHeaders[k] = credentialHeaderThrowExpr(k);
       } else if (
         lower === "api-token" ||

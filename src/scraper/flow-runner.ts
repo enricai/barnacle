@@ -2680,31 +2680,12 @@ export function flowHasSubmitSemantics(params: {
   requireSubmitEndpointMatch: boolean;
   /** Flow declares itself read-only: the pattern alone never implies a submit. */
   readOnly?: boolean;
-  /** Captures seen so far; when every one matching `submitEndpointPattern` is a GET/HEAD, the pattern points at a query, not a submission. */
-  recentCaptureMeta?: readonly { method: string; url: string }[];
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
   const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
   if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
   if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
   if (params.readOnly === true) return false;
-  if (!requireSubmitEndpointMatch) {
-    if (submitEndpointPattern !== null && params.recentCaptureMeta) {
-      let re: RegExp | null = null;
-      try {
-        re = new RegExp(submitEndpointPattern);
-      } catch {
-        re = null;
-      }
-      const matched = re ? params.recentCaptureMeta.filter((c) => re.test(c.url)) : [];
-      if (
-        matched.length > 0 &&
-        matched.every((c) => ["GET", "HEAD"].includes(c.method.toUpperCase()))
-      ) {
-        return false;
-      }
-    }
-  }
   // An earlier step whose own wording declares submit already owns the role;
   // the fallback is only for a self-heal-appended final step.
   const earlierStepOwnsSubmit = steps
@@ -18757,6 +18738,8 @@ export interface RunHealingFlowDeps {
   submitEndpointPattern?: string | null;
   submittedStateSelectors?: string[];
   requireSubmitEndpointMatch?: boolean;
+  /** Flow declares itself read-only: the endpoint pattern never implies a submission. */
+  readOnly?: boolean;
   advanceTransitionBodyPattern?: string | null;
   successUrlFragments?: string[];
   successPageTitleHints?: string[];
@@ -18877,7 +18860,7 @@ async function runHealingFlowScoped(
       steps,
       submitEndpointPattern: deps.submitEndpointPattern ?? null,
       requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
-      recentCaptureMeta,
+      readOnly: deps.readOnly ?? false,
     });
   let flowHasSubmitSemanticsFlag = computeSubmitSemantics();
 

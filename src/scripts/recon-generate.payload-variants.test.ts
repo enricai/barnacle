@@ -57,9 +57,9 @@ describe.each([
   ["anonymous read", null],
 ])("payload variants: %s", (_label, name) => {
   const variants = [
-    search(name, { currencyCode: "USD", travelParty: "2A" }),
-    search(name, { currencyCode: "EUR", travelParty: "1A" }),
-    search(name, { currencyCode: "GBP", travelParty: "2A1C" }),
+    search(name, { currencyCode: "USD", partyCode: "2A" }),
+    search(name, { currencyCode: "EUR", partyCode: "1A" }),
+    search(name, { currencyCode: "GBP", partyCode: "2A1C" }),
   ];
   const all = [...variants, drill];
   const actions = all.map((capture) => ({ capture, isMultipart: false }));
@@ -82,7 +82,7 @@ describe.each([
   it("exposes variant fields as payload fields", () => {
     expect(collectPayloadVariantFields(variants[0]!, all)).toEqual([
       "input.currencyCode",
-      "input.travelParty",
+      "input.partyCode",
     ]);
   });
 });

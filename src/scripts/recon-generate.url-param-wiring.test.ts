@@ -39,18 +39,18 @@ const steps = [
   {
     step: "b",
     navigateTo: `${base}currencyCode=USD&guests=3`,
-    payloadField: "travelParty",
+    payloadField: "partyCode",
   },
 ];
 
 describe("navigateTo URL param -> co-varying body variable", () => {
   const caps = [
-    cap({ currencyCode: "GBP", travelParty: 2 }),
-    cap({ currencyCode: "USD", travelParty: 3 }),
+    cap({ currencyCode: "GBP", partyCode: 2 }),
+    cap({ currencyCode: "USD", partyCode: 3 }),
   ];
   it("maps payloadField to the co-varying variable by value", () => {
     const m = correlateNavigateToParamsWithVariables(steps, caps, caps[0]!.variables);
-    expect(m.get("travelParty")).toEqual(["input", "travelParty"]);
+    expect(m.get("partyCode")).toEqual(["input", "partyCode"]);
   });
   it("wires by value even when the variable name differs", () => {
     const c = [cap({ party: 2 }), cap({ party: 3 })];
@@ -58,26 +58,26 @@ describe("navigateTo URL param -> co-varying body variable", () => {
       {
         step: "a",
         navigateTo: `${base}guests=2`,
-        payloadField: "travelParty",
+        payloadField: "partyCode",
       },
       { step: "b", navigateTo: `${base}guests=3` },
     ];
     const m = correlateNavigateToParamsWithVariables(flow, c, c[0]!.variables);
-    expect(m.get("travelParty")).toEqual(["input", "party"]);
+    expect(m.get("partyCode")).toEqual(["input", "party"]);
   });
   it("renders payload read so the field is not unread", () => {
     const m = correlateNavigateToParamsWithVariables(steps, caps, caps[0]!.variables);
     const expr = renderGqlVariablesExpr(
       caps[0]!.variables,
-      new Set(["currencyCode", "travelParty"]),
+      new Set(["currencyCode", "partyCode"]),
       new Set(),
       [],
       m
     );
-    expect(expr).toContain("travelParty: payload.travelParty");
+    expect(expr).toContain("partyCode: payload.partyCode");
   });
   it("does not wire when values do not co-vary", () => {
-    const c = [cap({ travelParty: 2 }), cap({ travelParty: 2 })];
+    const c = [cap({ partyCode: 2 }), cap({ partyCode: 2 })];
     const m = correlateNavigateToParamsWithVariables(steps, c, c[0]!.variables);
     expect(m.size).toBe(0);
   });
@@ -85,7 +85,7 @@ describe("navigateTo URL param -> co-varying body variable", () => {
     const other = { ...cap({ x: 1 }), operationName: "Other", query: "query Other { o }" };
     const mixed = [caps[0]!, other, caps[1]!, other];
     const m = correlateNavigateToParamsWithVariables(steps, mixed, caps[0]!.variables);
-    expect(m.get("travelParty")).toEqual(["input", "travelParty"]);
+    expect(m.get("partyCode")).toEqual(["input", "partyCode"]);
   });
   it("does not wire when capture order disagrees with navigateTo step order", () => {
     const reversed = [caps[1]!, caps[0]!];

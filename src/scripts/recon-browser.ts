@@ -3303,7 +3303,6 @@ async function main(): Promise<void> {
           submitEndpointPattern,
           requireSubmitEndpointMatch,
           readOnly,
-          recentCaptureMeta,
         });
         const midFlowSubmitShaped = isMidFlowSubmitShapedStep({
           step: step.instruction,
@@ -3379,7 +3378,6 @@ async function main(): Promise<void> {
                       submitEndpointPattern,
                       requireSubmitEndpointMatch,
                       readOnly,
-                      recentCaptureMeta,
                     }),
                     stepIndex: i,
                     totalSteps: () => plan.length,
@@ -3604,7 +3602,6 @@ async function main(): Promise<void> {
               submitEndpointPattern,
               requireSubmitEndpointMatch,
               readOnly,
-              recentCaptureMeta,
             });
             // A dead session throws synchronously here too — fall back to ""
             // rather than let the trailing-grace check itself crash the run.

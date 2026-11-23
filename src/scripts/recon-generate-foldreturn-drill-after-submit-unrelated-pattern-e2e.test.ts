@@ -189,7 +189,9 @@ describe("recon-generate CLI — declared foldReturn drill after the submit step
     // Four entries (the submit re-fired) against a four-capture heuristic
     // chain: on length alone the manifest would be trusted and the drill
     // it never recorded would be dropped again.
-    writeSubmitManifest(runRoot, all, [0, 1, 2, 2]);
+    // Every entry matches the declared submit pattern, so the manifest filter
+    // (which drops non-matching entries) leaves all four in place.
+    writeSubmitManifest(runRoot, all, [2, 2, 2, 2]);
 
     const siteId = `foldreturn-post-submit-drill-manifest-e2e-test-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
