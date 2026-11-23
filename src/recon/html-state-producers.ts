@@ -193,14 +193,17 @@ export function extractHtmlBearerTokens(body: unknown): HtmlBearerToken[] {
       }
     }
   };
-  const rowRe = /(?:^|[\n:,\s"])([0-9a-zA-Z]+):T([0-9a-fA-F]+),/g;
-  for (const m of stream.matchAll(rowRe)) {
-    const start = (m.index ?? 0) + m[0].length;
+  const rowRe = /([0-9a-zA-Z]+):T([0-9a-fA-F]+),/g;
+  for (let m = rowRe.exec(stream); m; m = rowRe.exec(stream)) {
+    const start = m.index + m[0].length;
     const len = parseInt(m[2] as string, 16);
     add(tokensIn(stream.slice(start, start + len), "rsc-row", m[1]));
+    // Resume right after the row's text; the next row id may follow directly.
+    rowRe.lastIndex = start + len;
   }
   const rscTokens = new Set(found.map((t) => t.token));
-  add(tokensIn(body, "html").filter((t) => !rscTokens.has(t.token)));
+  const plain = body.replace(/push\(\s*\[\s*1\s*,\s*"(?:[^"\\]|\\.)*"\s*\]\s*\)/g, "");
+  add(tokensIn(plain, "html").filter((t) => !rscTokens.has(t.token)));
   return found;
 }
 
