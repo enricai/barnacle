@@ -110,6 +110,14 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      */
     payloadFieldNone: z.boolean().optional(),
     /**
+     * Marks the payload field this step types (its `payloadField`) as sensitive.
+     * The value names the redaction rule: `"digits"` (matched by digits in any
+     * formatting) or `"word"` (case-insensitive word match). The generator emits
+     * the field into `meta.redaction` (`digitKeys`/`wordKeys`) and the manifest's
+     * `spec.redaction`. Needs an explicit `payloadField`; ignored by the recon runtime.
+     */
+    sensitive: z.enum(["digits", "word"]).optional(),
+    /**
      * Stable DOM identity of the element this step acts on, derived at
      * resolution time (`el.id`, else accessible name, else a content hash).
      * The runtime stamps it after a primitive succeeds; persisted so the next

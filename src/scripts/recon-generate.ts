@@ -17421,6 +17421,9 @@ export function emitContractTsParts(opts: {
   } = opts;
 
   const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
+  const sensitivePolicy = buildSensitiveRedactionPolicy(contractFlowSteps);
+  const sensitiveRedactionLiteral =
+    sensitivePolicy === undefined ? "" : `    redaction: ${JSON.stringify(sensitivePolicy)},\n`;
   /** Single source of truth for every GraphQL-emission decision below
    * (clientImport, gqlCacheBlock, queryConst, and both executeHttpBody
    * fetch-call sites) — `gql` alone can be true with a null `gqlQuery`,
@@ -18757,7 +18760,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     siteId: ${JSON.stringify(siteId)},${displayName !== undefined ? `\n    displayName: ${JSON.stringify(displayName)},` : ""}
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
-    defaultBaseUrl: ${JSON.stringify(baseUrl)},
+${sensitiveRedactionLiteral}    defaultBaseUrl: ${JSON.stringify(baseUrl)},
     ${
       payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep
         ? `// multipart is required whenever the flow itself uploads a file
@@ -19199,12 +19202,34 @@ type FlowStepInput =
       declareOnly?: boolean;
       payloadField?: string;
       payloadFieldNone?: boolean;
+      sensitive?: "digits" | "word";
       emailStep?: boolean;
       emailStepConfig?: EmailStepConfig;
       navigateTo?: string;
       /** Per-step cross-origin `<iframe>` selector; overrides the flow-level one. */
       frameSelector?: string;
     };
+
+/**
+ * Redaction policy derived only from steps tagged `sensitive`: the tagged step's
+ * explicit `payloadField` lands in `digitKeys` or `wordKeys` per the tag. Returns
+ * undefined when no step is tagged, so untagged flows emit nothing.
+ */
+export function buildSensitiveRedactionPolicy(
+  flowSteps: readonly FlowStepInput[]
+): { digitKeys?: string[]; wordKeys?: string[] } | undefined {
+  const digitKeys = new Set<string>();
+  const wordKeys = new Set<string>();
+  for (const step of flowSteps) {
+    if (typeof step === "string" || !step.sensitive || !step.payloadField) continue;
+    (step.sensitive === "digits" ? digitKeys : wordKeys).add(step.payloadField);
+  }
+  if (digitKeys.size === 0 && wordKeys.size === 0) return undefined;
+  return {
+    ...(digitKeys.size > 0 && { digitKeys: [...digitKeys].sort() }),
+    ...(wordKeys.size > 0 && { wordKeys: [...wordKeys].sort() }),
+  };
+}
 
 /**
  * Escape a literal string segment so it is safe INSIDE a JS backtick template
@@ -19536,6 +19561,7 @@ export function emitConfigManifest(opts: {
   const contractCarriesResume = hasMultipartStep || usesApplicantContactSchema;
   const multipart = hasUploadStep && contractCarriesResume;
 
+  const sensitiveManifestPolicy = buildSensitiveRedactionPolicy(flowSteps);
   const manifest = {
     apiVersion: CONFIG_PLUGIN_API_VERSION,
     kind: CONFIG_PLUGIN_KIND,
@@ -19551,6 +19577,7 @@ export function emitConfigManifest(opts: {
         description: "TODO: declare the fields this site returns (recon leaves this empty).",
         properties: {},
       },
+      ...(sensitiveManifestPolicy !== undefined && { redaction: sensitiveManifestPolicy }),
       flow: { steps, ...(isSubmissionFlow ? { submissionFlow: true } : {}) },
       extract: {
         instruction: `extract the confirmation id and status for ${siteId}`,
