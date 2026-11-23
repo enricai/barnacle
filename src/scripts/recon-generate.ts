@@ -17996,9 +17996,8 @@ export function emitContractTsParts(opts: {
     }
   }
   // Flow-declared extra payload fields: declared type/optionality are
-  // authoritative; a name already discovered from captures is not duplicated.
+  // authoritative and override a name discovered from captures (one entry per name).
   for (const f of extraPayloadFields) {
-    if (extendFields.has(f.name)) continue;
     extendFields.set(f.name, `  ${f.name}: z.${f.type}()${f.optional ? ".optional()" : ""},`);
   }
   const mergedExtension =
@@ -19517,6 +19516,7 @@ export function emitConfigManifest(opts: {
       requestProperties[name] = { type: jsonSchemaTypeOf(value) };
     }
   }
+  for (const f of opts.extraPayloadFields ?? []) requestProperties[f.name] = { type: f.type };
   const usesApplicantContactSchema = contractUsesApplicantContactSchema({
     inputBody,
     isSubmissionFlow,
