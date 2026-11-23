@@ -1,12 +1,5 @@
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -36,7 +29,7 @@ function get(
   url: string,
   responseBody: unknown,
   timestamp: string,
-  headers?: Record<string, string>,
+  headers?: Record<string, string>
 ) {
   return buildCapture({
     method: "GET",
@@ -52,7 +45,7 @@ function fixtureCaptures(readSendsMintToken: boolean): Capture[] {
   const mint = get(
     `${ORIGIN}/open-slots-token.json`,
     { csrf: { token: MINT_TOKEN, param: "authenticity_token" } },
-    "2026-01-01T00:00:00Z",
+    "2026-01-01T00:00:00Z"
   );
   const visits = buildCapture({
     url: `${ORIGIN}/a/visits`,
@@ -74,11 +67,7 @@ function fixtureCaptures(readSendsMintToken: boolean): Capture[] {
   const readUrl =
     `${ORIGIN}/rooms/7/open-slots.json?room_ids[]=7&date_from=2026-11-22&date_to=2026-11-28` +
     (readSendsMintToken ? `&authenticity_token=${MINT_TOKEN}` : "");
-  const read = get(
-    readUrl,
-    { slots: [{ time: "10:00", price: 30 }] },
-    "2026-01-01T00:00:03Z",
-  );
+  const read = get(readUrl, { slots: [{ time: "10:00", price: 30 }] }, "2026-01-01T00:00:03Z");
   return [mint, visits, events, read];
 }
 
@@ -93,25 +82,16 @@ afterEach(() => {
 });
 
 function generate(readSendsMintToken: boolean, tag: string) {
-  workDir = mkdtempSync(
-    join(tmpdir(), "barnacle-read-flow-incidental-chrome-e2e-"),
-  );
+  workDir = mkdtempSync(join(tmpdir(), "barnacle-read-flow-incidental-chrome-e2e-"));
   const runRoot = join(workDir, "run");
   mkdirSync(join(runRoot, "graphql"), { recursive: true });
   mkdirSync(join(runRoot, "replays"), { recursive: true });
   mkdirSync(join(runRoot, "aux"), { recursive: true });
-  writeFileSync(
-    join(runRoot, "replays", "rate-limit.json"),
-    JSON.stringify([]),
-  );
+  writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
   fixtureCaptures(readSendsMintToken).forEach((capture, index) => {
     writeFileSync(
-      join(
-        runRoot,
-        "graphql",
-        `${String(index).padStart(3, "0")}-capture.json`,
-      ),
-      JSON.stringify(capture),
+      join(runRoot, "graphql", `${String(index).padStart(3, "0")}-capture.json`),
+      JSON.stringify(capture)
     );
   });
 
@@ -129,23 +109,14 @@ function generate(readSendsMintToken: boolean, tag: string) {
       submitEndpointPattern: "/open-slots.json",
       requireSubmitEndpointMatch: true,
       ownBackendHostnames: [HOST],
-    }),
+    })
   );
 
   if (!existsSync(TSX_BIN)) throw new Error("tsx not installed");
   const result = spawnSync(
     TSX_BIN,
-    [
-      GENERATE_SCRIPT,
-      "--site-id",
-      siteId,
-      "--run-dir",
-      runRoot,
-      "--emit",
-      "ts",
-      "--force",
-    ],
-    { cwd: RECON_GENERATE_CWD, encoding: "utf8" },
+    [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   const output = `${result.stdout}\n${result.stderr}`;
   expect(result.status, output).toBe(0);
