@@ -7713,7 +7713,10 @@ export function compileActionSteps(
   const markUsed = (value: string, consumer: Capture): void => {
     usedValues.add(value);
     let set = usedValueConsumers.get(value);
-    if (!set) usedValueConsumers.set(value, (set = new Set()));
+    if (!set) {
+      set = new Set();
+      usedValueConsumers.set(value, set);
+    }
     set.add(consumer);
   };
   // Pre-scan: collect all state values referenced by ANY action's URL/headers/body
