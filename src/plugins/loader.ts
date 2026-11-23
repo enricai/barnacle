@@ -183,7 +183,7 @@ async function runPluginPipeline<TResult>(
     return (await runWithSession(
       (session) =>
         withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
-      { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
+      { onRetry: plugin.onRetry, maxAttempts: effectiveMaxAttempts(plugin) },
       plugin.meta.taskTimeoutMs,
       {
         advancedStealth: plugin.meta.advancedStealth,
@@ -238,7 +238,7 @@ async function runPluginPipeline<TResult>(
       return (await runWithSession(
         (session) =>
           withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
-        { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
+        { onRetry: plugin.onRetry, maxAttempts: effectiveMaxAttempts(plugin) },
         plugin.meta.browserFallbackTaskTimeoutMs ?? plugin.meta.taskTimeoutMs,
         {
           advancedStealth: plugin.meta.advancedStealth,
@@ -815,4 +815,9 @@ function registerExtraRoutes(
       `${entry.path} → [${[...entry.owners.keys()].join(", ")}] via ${entry.method} (loaded)`
     );
   }
+}
+
+/** Declaring idempotency means a blind whole-task retry is unsafe: default to 1 attempt. */
+function effectiveMaxAttempts(plugin: { meta: { maxAttempts?: number; idempotency?: unknown } }): number | undefined {
+  return plugin.meta.maxAttempts ?? (plugin.meta.idempotency ? 1 : undefined);
 }
