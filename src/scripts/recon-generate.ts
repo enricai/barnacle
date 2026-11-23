@@ -5457,6 +5457,32 @@ function substituteOrigin(value: string, baseUrl: string): string {
   return value.split(baseUrl).join(`$${"{"}context.baseUrl${"}"}`);
 }
 
+/**
+ * True for a request header whose captured value is a per-session credential
+ * (see CREDENTIAL_REQUEST_HEADERS) or a token-bearing custom header
+ * (`api-token`, `x-*-token`, `*-api-token`).
+ */
+function isCredentialHeaderName(lower: string): boolean {
+  return (
+    CREDENTIAL_REQUEST_HEADERS.has(lower) ||
+    lower === "api-token" ||
+    /^x-.*(token|auth|api-key)$/.test(lower) ||
+    /-api-token$/.test(lower)
+  );
+}
+
+/**
+ * Template-literal interpolation that throws at call time instead of freezing
+ * a captured credential into generated source.
+ * TODO(recon): supply a runtime token source (bootstrap + html extractor).
+ */
+function credentialHeaderThrowExpr(headerName: string): string {
+  const msg = JSON.stringify(
+    `TODO: ${headerName} requires a runtime credential; none is wired (captured value intentionally not emitted)`
+  ).replace(/[`\\]|\$\{/g, (m) => (m === "`" ? "'" : m));
+  return `\${(() => { throw new Error(${msg}); })()}`;
+}
+
 /** Sorts recorded base headers into static, origin-derived and tenant-subdomain buckets. */
 export function partitionBaseHeaders(
   baseHeaders: Record<string, string>,
@@ -10999,7 +11025,9 @@ export function emitMultiStepExecuteHttp(
       // closed set of header names left every other header name frozen as
       // a literal BASE_HEADERS entry (or dropped per-call) even when its
       // captured value was a real, already-produced response field.
-      if (
+      if (isCredentialHeaderName(lower) && interpolated === v) {
+        perCallHeaders[k] = credentialHeaderThrowExpr(k);
+      } else if (
         lower === "api-token" ||
         lower === "authorization" ||
         joinCarryingHeaderNames?.has(k) ||
@@ -11806,7 +11834,9 @@ export function emitMultiStepExecuteHttp(
         // recognizes as a prior step's produced state var must thread
         // per-call too, or its custom name freezes into an invariant
         // BASE_HEADERS-equivalent literal.
-        if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
+        if (isCredentialHeaderName(lower) && interpolated === v) {
+          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k)}\``);
+        } else if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
           perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
         }
       }
