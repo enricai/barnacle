@@ -972,7 +972,10 @@ export function selectRateLimitTargets(
     }
   }
   for (const replay of replays) {
-    if (!replayReachable(replay)) continue;
+    // A 401 replay that succeeded once re-sent with the captured authorization
+    // is reachable via replayed auth; its probe must carry that header.
+    const viaAuth = !replayReachable(replay) && replay.authReplay?.tokenReplayable === true;
+    if (!replayReachable(replay) && !viaAuth) continue;
     if (!isReplayResultSafe(replay)) continue;
     if (isNoiseUrl(replay.url)) {
       skipped++;
@@ -1018,7 +1021,11 @@ export function selectRateLimitTargets(
         const provenEntries = (replay.shapeRestoringHeaders ?? [])
           .filter((h) => captured[h] !== undefined)
           .map((h) => [h, captured[h]!] as const);
-        const proven = provenEntries.length > 0 ? Object.fromEntries(provenEntries) : undefined;
+        const authEntries = viaAuth
+          ? Object.entries(captured).filter(([k]) => k.toLowerCase() === "authorization")
+          : [];
+        const merged = Object.fromEntries([...provenEntries, ...authEntries]);
+        const proven = Object.keys(merged).length > 0 ? merged : undefined;
         collected.set(`${endpointKey}${u.search}`, {
           method: replay.method,
           body: replay.requestBody,
