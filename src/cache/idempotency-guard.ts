@@ -1,4 +1,9 @@
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { UnknownOutcomeError } from "@/api/errors";
+
+import { config } from "@/config";
+import { resolveIdempotencyEntryPath } from "@/lib/telemetry/telemetry-paths";
 import type { PluginIdempotency } from "@/site-plugin";
 
 /**
@@ -42,6 +47,44 @@ export function createInMemoryIdempotencyStore(): IdempotencyStore {
       entries.delete(key);
     },
   };
+}
+
+/** Durable store: one JSON file per key under `dir`; survives restarts. */
+export function createFileIdempotencyStore(dir: string): IdempotencyStore {
+  return {
+    get(key) {
+      const path = resolveIdempotencyEntryPath(dir, key);
+      try {
+        const e = JSON.parse(readFileSync(path, "utf8")) as {
+          record: IdempotencyRecord;
+          expiresAt: number;
+        };
+        if (e.expiresAt <= Date.now()) {
+          rmSync(path, { force: true });
+          return undefined;
+        }
+        return e.record;
+      } catch {
+        return undefined;
+      }
+    },
+    set(key, record, ttlMs) {
+      const path = resolveIdempotencyEntryPath(dir, key);
+      mkdirSync(dirname(path), { recursive: true });
+      const tmp = `${path}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ record, expiresAt: Date.now() + ttlMs }));
+      renameSync(tmp, path);
+    },
+    delete(key) {
+      rmSync(resolveIdempotencyEntryPath(dir, key), { force: true });
+    },
+  };
+}
+
+/** Durable store when telemetry persistence is configured, else in-memory. */
+export function createConfiguredIdempotencyStore(): IdempotencyStore {
+  const dir = config.telemetry.idempotencyDir;
+  return dir ? createFileIdempotencyStore(dir) : createInMemoryIdempotencyStore();
 }
 
 export const DEFAULT_IDEMPOTENCY_TTL_MS = 6 * 60 * 60 * 1000;
@@ -95,7 +138,7 @@ export interface IdempotencyGuard {
 }
 
 export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): IdempotencyGuard {
-  const store = options.store ?? createInMemoryIdempotencyStore();
+  const store = options.store ?? createConfiguredIdempotencyStore();
   const ttlMs = options.ttlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS;
   const inFlight = new Map<string, Promise<unknown>>();
 
