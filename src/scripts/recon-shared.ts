@@ -419,6 +419,30 @@ export function readBrowserFlowOnly(flowFile: string): boolean {
   return (parsed as { browserFlowOnly?: unknown } | null)?.browserFlowOnly === true;
 }
 
+/**
+ * Resolves the flow file's retry declaration to one number: `irreversible: true`
+ * yields 1, else a valid declared `maxAttempts` (positive integer), else null.
+ * When both are declared the smaller wins. Null on absent/invalid/legacy-array/unreadable.
+ */
+export function readDeclaredMaxAttempts(flowFile: string): number | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return null;
+    const { maxAttempts, irreversible } = parsed as {
+      maxAttempts?: unknown;
+      irreversible?: unknown;
+    };
+    const declared =
+      typeof maxAttempts === "number" && Number.isInteger(maxAttempts) && maxAttempts > 0
+        ? maxAttempts
+        : null;
+    if (irreversible === true) return declared === null ? 1 : Math.min(1, declared);
+    return declared;
+  } catch {
+    return null;
+  }
+}
+
 /** True when the replay got a 2xx response, whether or not its shape matched the capture. */
 export function replayReachable(r: ReplayResult): boolean {
   return r.replayStatus !== null && r.replayStatus >= 200 && r.replayStatus < 300;

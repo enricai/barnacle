@@ -772,9 +772,33 @@ const RECON_FOLD_RETURN_ENTRY_SCHEMA = z.object({
     .optional(),
 });
 
+/**
+ * Declared retry budget for the generated plugin: `maxAttempts`, a positive
+ * integer that `recon:generate` emits as `meta.maxAttempts` (when combined
+ * with `irreversible`, the smaller wins). recon-browser itself never consumes
+ * it — `recon:generate` reads it from the flow file (`readDeclaredMaxAttempts`)
+ * and replan write-back carries it through `extractUnmanagedFlowFileKeys` — so
+ * the flow-file object branch validates it as a check over the loose object
+ * ({@link flowFileObjectSchema}) rather than declaring it as a typed shape key.
+ */
+export const RECON_FLOW_RETRY_BUDGET_SCHEMA = z.object({
+  maxAttempts: z.int().positive().optional(),
+});
+
+/** The flow file's object form: the declared keys, plus the retry budget checked on the raw object. */
+function flowFileObjectSchema<Shape extends z.core.$ZodLooseShape>(shape: Shape) {
+  return z.looseObject(shape).superRefine((flow, ctx) => {
+    const budget = RECON_FLOW_RETRY_BUDGET_SCHEMA.safeParse(flow);
+    if (budget.success) return;
+    for (const issue of budget.error.issues) {
+      ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
+    }
+  });
+}
+
 export const RECON_FLOW_FILE_SCHEMA = z.union([
   RECON_FLOW_SCHEMA,
-  z.object({
+  flowFileObjectSchema({
     steps: RECON_FLOW_SCHEMA,
     /**
      * The flow author's real, human-readable name for the site plugin,
@@ -851,6 +875,11 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * a browser-flow-only plugin regardless of HTTP analysis.
      */
     browserFlowOnly: z.boolean().optional(),
+    /**
+     * Declares the submission cannot be safely repeated; implies maxAttempts 1
+     * (the numeric budget is {@link RECON_FLOW_RETRY_BUDGET_SCHEMA}).
+     */
+    irreversible: z.boolean().optional(),
     /**
      * Optional site-specific class-name prefixes that wrap form/error
      * state. The Haiku invalid-fields judge uses these as additional

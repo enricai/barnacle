@@ -73,6 +73,7 @@ import {
   type ReplayResult,
   readBrowserFlowOnly,
   readCaptureDir,
+  readDeclaredMaxAttempts,
   readExtraPayloadFields,
   readJsonDir,
   readOwnBackendHostnames,
@@ -17327,6 +17328,8 @@ export function emitContractTsParts(opts: {
    * a retry would try to re-register the same address. Emits
    * `meta.maxAttempts: 1`. */
   createsAccount?: boolean;
+  /** Resolved retry budget (see `resolveMaxAttempts`); folded with the recon-password signal. */
+  maxAttempts?: number | null;
   /** Multi-action flow whose last step is a submit — when combined with
    * `omitExecuteHttp`, `runHealingFlow`'s `submitStep` verification already
    * gates a successful return, so the response schema carries a real
@@ -17455,6 +17458,7 @@ export function emitContractTsParts(opts: {
     multiStepBody,
     omitExecuteHttp = false,
     createsAccount = false,
+    maxAttempts: resolvedMaxAttempts = null,
     isSubmissionFlow = false,
     inputBody,
     hasMultipartStep = false,
@@ -18774,10 +18778,15 @@ ${executeHttpBody}
   // Derived here as well as from the caller's flag: a caller that hands over
   // flowSteps but not the browser-flow emitter's signal must not ship a
   // retry-enabled account-creating flow.
+  const accountSignal = createsAccount || contractFlowSteps.some(stepUsesReconPassword);
+  const contractMaxAttempts = resolveMaxAttempts({
+    createsAccount: accountSignal,
+    declared: resolvedMaxAttempts,
+  });
   const maxAttemptsLiteral =
-    createsAccount || contractFlowSteps.some(stepUsesReconPassword)
-      ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
-      : "";
+    contractMaxAttempts === null
+      ? ""
+      : `\n    // ${accountSignal ? "A retry would re-register the same account the first attempt created." : contractMaxAttempts === 1 ? "A retry could repeat an irreversible submission." : "Retry budget declared by the flow file."}\n    maxAttempts: ${contractMaxAttempts},`;
   const extraRedaction = buildExtraFieldRedaction(extraPayloadFields);
   const redactionLiteral = extraRedaction
     ? `\n    redaction: ${JSON.stringify(extraRedaction)},`
@@ -19442,6 +19451,19 @@ function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
 }
 
 /**
+ * The generated plugin's retry budget, decided once for both emitters:
+ * an irreversibility signal forces 1, else the flow-declared value, else null
+ * (engine default).
+ */
+export function resolveMaxAttempts(o: {
+  createsAccount?: boolean;
+  declared?: number | null;
+}): number | null {
+  if (o.createsAccount) return 1;
+  return o.declared ?? null;
+}
+
+/**
  * Emits a config-only plugin manifest (`<siteId>.plugin.json`) from the recon
  * flow, as an alternative to the `.ts` trio for browser-only sites. Reuses the
  * SAME `resolveStepPayloadField` splice logic as the browser-flow emitter, so
@@ -19494,6 +19516,8 @@ export function emitConfigManifest(opts: {
   readOnlyGet?: boolean;
   /** Flow-declared extra payload fields; sensitive ones emit `spec.redaction`. */
   extraPayloadFields?: readonly ExtraPayloadField[];
+  /** Resolved retry budget (see `resolveMaxAttempts`). */
+  maxAttempts?: number | null;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -19651,7 +19675,13 @@ export function emitConfigManifest(opts: {
       defaultBaseUrl: baseUrl,
       ...(httpModulePath ? { httpModule: httpModulePath } : {}),
       ...(multipart ? { multipart: true } : {}),
-      ...(flowSteps.some(stepUsesReconPassword) ? { maxAttempts: 1 } : {}),
+      ...(() => {
+        const n = resolveMaxAttempts({
+          createsAccount: flowSteps.some(stepUsesReconPassword),
+          declared: opts.maxAttempts ?? null,
+        });
+        return n === null ? {} : { maxAttempts: n };
+      })(),
       ...(buildExtraFieldRedaction(opts.extraPayloadFields ?? []) !== null
         ? { redaction: buildExtraFieldRedaction(opts.extraPayloadFields ?? []) }
         : {}),
@@ -20811,6 +20841,7 @@ export async function main(): Promise<void> {
   })();
 
   const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
+  const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
@@ -21672,6 +21703,15 @@ export async function main(): Promise<void> {
       `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
     );
 
+    // Non-GET mutating submit on a browser-flow-only plugin cannot be replayed
+    // safely, so it defaults to a single attempt; an explicit declaration wins.
+    const submitIsIrreversible =
+      browserFlowOnly &&
+      !isReadOnlyGetFlow &&
+      winningCapture !== null &&
+      winningCapture.method !== "GET";
+    const derivedMaxAttempts = declaredMaxAttempts ?? (submitIsIrreversible ? 1 : null);
+
     if (emit === "config") {
       mkdirSync(outDir, { recursive: true });
       writeFileSync(
@@ -21690,6 +21730,7 @@ export async function main(): Promise<void> {
           formBodyFieldNames,
           readOnlyGet: isReadOnlyGetFlow,
           extraPayloadFields: readExtraPayloadFields(flowFile),
+          maxAttempts: derivedMaxAttempts,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
@@ -21802,6 +21843,7 @@ export async function main(): Promise<void> {
       multiStepBody,
       omitExecuteHttp: browserFlowOnly,
       createsAccount: browserFlow.usesThrowawayPassword,
+      maxAttempts: derivedMaxAttempts,
       isSubmissionFlow,
       inputBody,
       hasMultipartStep,
