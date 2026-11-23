@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { applyDrillParamBindings, type FoldReturnSpec } from "@/scripts/recon-generate";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { applyDrillParamBindings, type FoldReturnSpec, main } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
 const URL_ = "https://api.example.com/itinerary/api/v1/sailings";
@@ -39,12 +43,6 @@ describe("applyDrillParamBindings JSON body keys", () => {
 
 describe("declared submit endpoint re-queried with differing body arrays", () => {
   it("generates without a freeze error and without a drill chain", async () => {
-    const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const { vi } = await import("vitest");
-    const { main } = await import("@/scripts/recon-generate");
-    const { RECON_GENERATE_CWD } = await import("@/scripts/recon-generate-cwd.test-helper");
     const workDir = mkdtempSync(join(tmpdir(), "declared-facet-requery-"));
     const runRoot = join(workDir, "run");
     for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(runRoot, d), { recursive: true });
