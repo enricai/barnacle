@@ -7,6 +7,7 @@ import { z } from "zod/v4";
 
 import { FieldViolationError, toApiError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
+import { createIdempotencyGuard, type IdempotencyGuard } from "@/cache/idempotency-guard";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
 import {
@@ -610,7 +611,7 @@ export async function registerRoutes(
           requestId: request.id,
           logger: extendLogger(request.log as unknown as pino.Logger),
         });
-        const result = await dispatch(plugin, request.body, context, {
+        const result = await dispatchWithIdempotency(plugin, request.body, context, {
           forceFallback,
           // Recorded so the error handler can evict this entry if the response
           // fails schema serialization on the way out — otherwise the 500 it
@@ -630,6 +631,26 @@ export async function registerRoutes(
   }
 
   registerExtraRoutes(app, cfg, plugins);
+}
+
+let idempotencyGuard: IdempotencyGuard | undefined;
+
+/**
+ * dispatch() wrapped in the duplicate-submission guard when the plugin
+ * declares `meta.idempotency`; otherwise exactly dispatch().
+ */
+async function dispatchWithIdempotency(
+  plugin: SitePlugin<unknown, unknown>,
+  body: unknown,
+  context: SitePluginContext,
+  options: Parameters<typeof dispatch>[3]
+): Promise<Awaited<ReturnType<typeof dispatch>>> {
+  const declared = plugin.meta.idempotency;
+  if (!declared) return dispatch(plugin, body, context, options);
+  idempotencyGuard ??= createIdempotencyGuard();
+  return idempotencyGuard.run(plugin.meta.siteId, declared, body, () =>
+    dispatch(plugin, body, context, options)
+  );
 }
 
 /**
@@ -727,7 +748,7 @@ function registerExtraRoutes(
         if (route.dispatch === true) {
           // dispatch() owns redaction registration, tracking, timeout, fallback
           // and the submission envelope; shape the reply exactly as /run does.
-          const result = await dispatch(plugin, body, context, {
+          const result = await dispatchWithIdempotency(plugin, body, context, {
             forceFallback: request.headers["x-barnacle-execution"] === "browser",
           });
           return successEnvelope({
