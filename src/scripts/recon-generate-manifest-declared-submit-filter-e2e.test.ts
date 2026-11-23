@@ -46,10 +46,7 @@ describe("recon-generate: declared submit pattern filters a padded submit-manife
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
       JSON.stringify({
-        steps: [
-          { step: "fill out the sections" },
-          { step: "click place order", submitStep: true },
-        ],
+        steps: [{ step: "fill out the sections" }, { step: "click place order", submitStep: true }],
         submitEndpointPattern: "place-order",
       })
     );
