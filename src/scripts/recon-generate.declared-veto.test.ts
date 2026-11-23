@@ -31,7 +31,7 @@ describe("declared selection is honored before the zero-variance veto", () => {
     const kept = extractGraphQLActionSequence(
       caps,
       { endpoint: null, body: "allSailings|cabinCategoriesAvailability" },
-      { endpointPattern: "/graphql", resultsPath: "data.items" }
+      { endpointPattern: "/graphql", resultsPath: "data.items", joinFields: ["id"] }
     );
     expect(kept.length).toBe(3);
   });
