@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractGraphQLActionSequence } from "@/scripts/recon-generate";
+import { extractActionSequence, extractGraphQLActionSequence } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
 function read(ts: string, operationName: string, body: unknown): Capture {
@@ -34,5 +34,42 @@ describe("declared selection is honored before the zero-variance veto", () => {
       { endpointPattern: "/graphql", resultsPath: "data.items", joinFields: ["id"] }
     );
     expect(kept.length).toBe(3);
+  });
+});
+
+function post(ts: string, url: string, body: string): Capture {
+  return { ...read(ts, "x", {}), url, requestPostData: body, query: null };
+}
+
+describe("zero-variance veto still applies to undeclared captures", () => {
+  it("graphql: undeclared identical repeats are vetoed", () => {
+    const same = {};
+    const caps = [
+      read("2026-01-01T00:00:00.000Z", "chrome", same),
+      read("2026-01-01T00:00:01.000Z", "chrome", same),
+      read("2026-01-01T00:00:02.000Z", "chrome", same),
+      read("2026-01-01T00:00:03.000Z", "submitIt", { ok: 1 }),
+    ];
+    const kept = extractGraphQLActionSequence(
+      caps,
+      { endpoint: null, body: "submitIt" },
+      { endpointPattern: "/graphql", resultsPath: "data.items", joinFields: ["id"] }
+    );
+    expect(kept.every((c) => !c.requestPostData?.includes("chrome"))).toBe(true);
+  });
+
+  it("rest: declared repeated submit kept; undeclared repeats vetoed", () => {
+    const u = "https://api.example.com/v1/chrome";
+    const s = "https://api.example.com/v1/book";
+    const mk = (ts: string, url: string) => post(ts, url, "{}");
+    const caps = [
+      mk("2026-01-01T00:00:00.000Z", u),
+      mk("2026-01-01T00:00:01.000Z", u),
+      mk("2026-01-01T00:00:02.000Z", s),
+      mk("2026-01-01T00:00:03.000Z", s),
+    ];
+    const kept = extractActionSequence(caps, { endpoint: "/v1/book", body: null }, null);
+    expect(kept.some((c) => c.url === s)).toBe(true);
+    expect(kept.some((c) => c.url === u)).toBe(false);
   });
 });
