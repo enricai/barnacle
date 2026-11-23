@@ -1134,8 +1134,15 @@ function stripLeadingGraphQLComments(query: string): string {
  * separate operationName was still sent with a named `query`/`mutation`).
  */
 export function parsedOperationName(query: string): string | null {
-  const signature = /^\s*(?:query|mutation)\s+(\w+)/.exec(stripLeadingGraphQLComments(query));
-  return signature?.[1] ?? null;
+  const doc = stripLeadingGraphQLComments(query);
+  const signature = /^\s*(?:query|mutation)\s+(\w+)/.exec(doc);
+  if (signature) return signature[1] ?? null;
+  // Anonymous document (`query ($v: T!) { field(...) }`, `mutation { field }`
+  // or a bare `{ field }`): the identity is the first root field.
+  const anonymous = /^\s*(?:(?:query|mutation)\s*(?:\([^)]*\))?\s*)?\{\s*(?:\w+\s*:\s*)?(\w+)/.exec(
+    doc
+  );
+  return anonymous?.[1] ?? null;
 }
 
 /**
@@ -1238,6 +1245,27 @@ function hasStableOperationIdentity(
   if (!matchedIdentity) return false;
   const matchedCount = groupCounts.get(matchedIdentity) ?? 0;
   return matchedCount >= 2;
+}
+
+/**
+ * True when the candidate carries its own operation identity and that
+ * identity is not shared by any other same-endpoint capture while other
+ * identified operations are multiplexed on the endpoint: a once-fired read
+ * distinct from repeating chrome is not a repeat of anything.
+ */
+function hasDistinctOperationIdentity(
+  candidate: { operationName?: string | null; query?: string | null },
+  sameEndpoint: readonly { operationName?: string | null; query?: string | null }[]
+): boolean {
+  const identity = effectiveOperationName(candidate);
+  if (!identity) return false;
+  const counts = new Map<string, number>();
+  for (const c of sameEndpoint) {
+    const id = effectiveOperationName(c);
+    if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  if (counts.get(identity) !== 1) return false;
+  return [...counts.values()].some((n) => n >= 2);
 }
 
 /**
@@ -1347,6 +1375,7 @@ export function isZeroVarianceRepeatCapture(
     if (hasResponseFullyExplainedByOwnRequestPerOccurrence(sameEndpoint)) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
     if (hasStableOperationIdentity(candidate, sameEndpoint)) return false;
+    if (hasDistinctOperationIdentity(candidate, sameEndpoint)) return false;
     // Unlike the identical-request branch above (where a fixed/degenerate
     // request can never explain response variance, so the dense-repeat floor
     // is a safe shortcut past corroboration), a request that ALSO varies
