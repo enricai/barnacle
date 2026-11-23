@@ -245,7 +245,9 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     activeOps.add(k);
     try {
       const existing = await store.get(k);
-      if (existing && existing.state !== "pending") {
+      // Success, unknown and interrupted-pending outcomes are never blindly
+      // re-run; only a recorded plain failure ("safe to retry") may run again.
+      if (existing && existing.state !== "failed") {
         activeOps.delete(k);
         return id;
       }
@@ -260,7 +262,7 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
         (err) =>
           store.set(
             k,
-            config.classifyFailure?.(err) === "unknown"
+            err instanceof UnknownOutcomeError || config.classifyFailure?.(err) === "unknown"
               ? {
                   state: "unknown",
                   message: err instanceof Error ? err.message : String(err),

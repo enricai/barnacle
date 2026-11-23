@@ -172,7 +172,7 @@ describe("async operations (start/status)", () => {
     expect(u?.status).toBe("unknown-outcome");
   });
 
-  it("reports pending records with no live run as interrupted; start re-runs them", async () => {
+  it("reports pending records with no live run as interrupted; start does not re-run them", async () => {
     const store = createInMemoryIdempotencyStore();
     const g1 = createIdempotencyGuard({ store });
     const id = (await g1.start(
@@ -187,8 +187,8 @@ describe("async operations (start/status)", () => {
     expect(await g2.start("s", cfg, { id: "1" }, ex)).toBe(id);
     await tick();
     await tick();
-    expect(ex).toHaveBeenCalledTimes(1);
-    expect(await g2.status("s", id)).toEqual({ status: "succeeded", value: "ok" });
+    expect(ex).not.toHaveBeenCalled();
+    expect((await g2.status("s", id))?.status).toBe("unknown-outcome");
   });
 
   it("clears the active marker and rethrows when the store fails", async () => {
