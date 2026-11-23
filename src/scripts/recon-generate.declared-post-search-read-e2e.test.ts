@@ -68,12 +68,12 @@ describe("recon-generate: declared read-only POST search", () => {
         })
       );
     }
-    caps.forEach((c, i) =>
+    for (const [i, c] of caps.entries()) {
       writeFileSync(
         join(runRoot, "graphql", `${String(i).padStart(3, "0")}-capture.json`),
         JSON.stringify(c)
-      )
-    );
+      );
+    }
     const siteId = `declared-post-search-read-e2e-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
