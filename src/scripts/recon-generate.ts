@@ -17151,7 +17151,6 @@ function browserFlowHasApplicantEvidence(o: {
   hasMultipartStep?: boolean;
   names: readonly string[];
 }): boolean {
-  if (o.hasMultipartStep === true) return true;
   for (const step of o.flowSteps ?? []) {
     if (typeof step === "string") {
       if (applicantFlowVocabulary.test(step)) return true;
@@ -18073,7 +18072,8 @@ export function emitContractTsParts(opts: {
   // A browser-only submission flow that is not a job application (per the
   // applicant decision) has no job tracking click to carry.
   const nonJobBrowserOnly =
-    omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema;
+    applicantContract === false ||
+    (omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema);
   const mergesTracking = !getInputModel && !nonJobBrowserOnly;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
@@ -19607,7 +19607,8 @@ export function emitConfigManifest(opts: {
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
   // without it would drop the TrackingUrl the engine reads after submission.
   const nonJobBrowserOnly =
-    browserFlowOnly === true && isSubmissionFlow === true && !usesApplicantContactSchema;
+    applicantContract === false ||
+    (browserFlowOnly === true && isSubmissionFlow === true && !usesApplicantContactSchema);
   if (!readOnlyGet && !nonJobBrowserOnly) requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)

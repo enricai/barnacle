@@ -18,6 +18,7 @@ const emit = (flowSteps: string[], browserFlowOnly = false): ManifestShape =>
       baseUrl: "https://example.org",
       flowSteps,
       isSubmissionFlow: true,
+      applicantContract: true,
       browserFlowOnly,
     })
   );

@@ -28,7 +28,7 @@ describe("contractUsesApplicantContactSchema (browser-only decision)", () => {
         flowSteps: [{ step: "Choose file", upload: true }],
       })
     ).toBe(true);
-    expect(contractUsesApplicantContactSchema({ ...base, hasMultipartStep: true })).toBe(true);
+    expect(contractUsesApplicantContactSchema({ ...base, hasMultipartStep: true })).toBe(false);
     expect(contractUsesApplicantContactSchema({ ...base, flowSteps: ["Attach your resume"] })).toBe(
       true
     );
