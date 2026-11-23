@@ -10954,6 +10954,23 @@ async function tryPromptSelectorPrimitive(params: {
       const vis = widgets.filter((o) => labelOf.get(o) === l && rendered(o) && !layerHost.has(o));
       if (vis.length === 1) collapsed.set(w, vis[0]);
     }
+    // One field rendered as a visible face plus empty shell openers that share
+    // its label (no common wrapper to pair them by): the shells have no face of
+    // their own, so they collapse into the single widget that shows text.
+    const faceText = (e) => (buttonValue(e) || "").trim();
+    const byLabel = new Map();
+    for (const w of widgets) {
+      const l = labelOf.get(w);
+      if (!l || collapsed.has(w) || layerHost.has(w) || unreachable.has(w)) continue;
+      if (!byLabel.has(l)) byLabel.set(l, []);
+      byLabel.get(l).push(w);
+    }
+    for (const group of byLabel.values()) {
+      if (group.length < 2) continue;
+      const faces = group.filter((w) => faceText(w) !== "");
+      if (faces.length !== 1) continue;
+      for (const w of group) if (w !== faces[0]) { collapsed.set(w, faces[0]); layerHost.set(w, faces[0]); }
+    }
     const candidates = [];
     let idx = 0;
     for (const w of widgets) {
