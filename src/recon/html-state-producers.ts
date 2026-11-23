@@ -201,9 +201,16 @@ export function extractHtmlBearerTokens(body: unknown): HtmlBearerToken[] {
   for (let m = rowRe.exec(stream); m; m = rowRe.exec(stream)) {
     const start = m.index + m[0].length;
     const len = parseInt(m[2] as string, 16);
-    add(tokensIn(stream.slice(start, start + len), "rsc-row", m[1]));
+    // React counts UTF-8 bytes, not JS characters: walk code points until the byte budget is spent.
+    let end = start;
+    for (let used = 0; end < stream.length && used < len; ) {
+      const cp = stream.codePointAt(end) as number;
+      used += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+      end += cp > 0xffff ? 2 : 1;
+    }
+    add(tokensIn(stream.slice(start, end), "rsc-row", m[1]));
     // Resume right after the row's text; the next row id may follow directly.
-    rowRe.lastIndex = start + len;
+    rowRe.lastIndex = end;
   }
   const rscTokens = new Set(found.map((t) => t.token));
   const plain = body.replace(/push\(\s*\[\s*1\s*,\s*"(?:[^"\\]|\\.)*"\s*\]\s*\)/g, "");
