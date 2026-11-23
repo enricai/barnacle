@@ -60,7 +60,11 @@ describe("navigateTo URL param -> co-varying body variable", () => {
   it("wires by value even when the variable name differs", () => {
     const c = [cap({ party: 2 }), cap({ party: 3 })];
     const flow = [
-      { step: "a", navigateTo: `${base}sailors=2`, payloadField: "travelParty" },
+      {
+        step: "a",
+        navigateTo: `${base}sailors=2`,
+        payloadField: "travelParty",
+      },
       { step: "b", navigateTo: `${base}sailors=3` },
     ];
     const m = correlateNavigateToParamsWithVariables(flow, c, c[0]!.variables);
