@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { format } from "date-fns";
+import { z } from "zod";
 import { getScriptLogger } from "@/lib/logging";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
 
@@ -281,6 +282,54 @@ export function readOwnBackendHostnames(flowFile: string): string[] {
   } catch (err) {
     logger.warn(
       `flow file '${flowFile}' unreadable for ownBackendHostnames, aux-fixture allowlist disabled: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return [];
+  }
+}
+
+/**
+ * One caller-supplied payload field the generator adds beyond the recorded
+ * form fields. `sensitive` fields must be strings: the engine registers only
+ * string values for PII scrubbing.
+ */
+export const EXTRA_PAYLOAD_FIELD_SCHEMA = z
+  .object({
+    name: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/, "name must be a valid JS identifier"),
+    type: z.enum(["string", "number", "boolean"]).default("string"),
+    optional: z.boolean().optional(),
+    sensitive: z.boolean().optional(),
+  })
+  .refine((f) => !f.sensitive || f.type === "string", {
+    message: "a sensitive extraPayloadField must be string-typed",
+    path: ["type"],
+  });
+
+export type ExtraPayloadField = z.infer<typeof EXTRA_PAYLOAD_FIELD_SCHEMA>;
+
+/**
+ * Reads and validates `extraPayloadFields` from a recon flow file.
+ * Tolerant like `readOwnBackendHostnames`: `[]` for bare-array flows, a
+ * missing/unreadable file, an absent key, or an invalid declaration.
+ */
+export function readExtraPayloadFields(flowFile: string): ExtraPayloadField[] {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return [];
+    const raw = (parsed as { extraPayloadFields?: unknown }).extraPayloadFields;
+    if (raw === undefined) return [];
+    const result = z.array(EXTRA_PAYLOAD_FIELD_SCHEMA).safeParse(raw);
+    if (!result.success) {
+      logger.warn(
+        `flow file '${flowFile}' has invalid extraPayloadFields, ignoring: ${result.error.message}`
+      );
+      return [];
+    }
+    return result.data;
+  } catch (err) {
+    logger.warn(
+      `flow file '${flowFile}' unreadable for extraPayloadFields: ${
         err instanceof Error ? err.message : String(err)
       }`
     );
