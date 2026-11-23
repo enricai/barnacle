@@ -60,3 +60,28 @@ describe("extractActionSequence repeated pages/drill calls", () => {
     expect(urls.indexOf("/search")).toBeLessThan(urls.findIndex((u) => u.startsWith("/lookup/")));
   });
 });
+
+describe("extractActionSequence declared submit endpoint repeated with differing bodies", () => {
+  it("keeps every repeat of the declared POST search", () => {
+    const caps = [1, 2, 3].map((t) =>
+      buildCapture({
+        url: `${HOST}/api/search`,
+        method: "POST",
+        requestPostData: JSON.stringify({ filter: `f${t}` }),
+        responseBody: null,
+        timestamp: `2024-01-01T00:00:0${t}Z`,
+      })
+    );
+    const out = extractActionSequence(
+      caps,
+      { endpoint: "/api/search", body: null },
+      null,
+      [],
+      "example.com",
+      true,
+      null
+    );
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.every((a) => new URL(a.capture.url).pathname === "/api/search")).toBe(true);
+  });
+});
