@@ -595,6 +595,7 @@ function walkNavigateToFacets(
 ): WalkedNavigateToFacet[] {
   const facets: WalkedNavigateToFacet[] = [];
   let baselineHash: string | undefined;
+  let baselineQuery: Map<string, string> = new Map();
   for (const step of flowSteps) {
     if (typeof step === "string") continue;
     if (step.navigateTo === undefined) {
@@ -613,18 +614,29 @@ function walkNavigateToFacets(
     }
     const hashIndex = step.navigateTo.indexOf("#");
     const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
+    const currentQuery = parseUrlQueryParams(step.navigateTo);
     if (step.payloadField) {
+      const hashValue = extractNavigateToHashFragmentValue(step.navigateTo, baselineHash);
+      // A hashless URL carries its facet in the query string: the one param
+      // whose value changed since the previous navigation. Several changed
+      // params are ambiguous, so none is taken (the facet stays unwired).
+      const changed = [...currentQuery].filter(([key, v]) => baselineQuery.get(key) !== v);
+      const queryValue = hashValue === null && changed.length === 1 ? changed[0]![1] : "";
       facets.push({
-        value: extractNavigateToHashFragmentValue(step.navigateTo, baselineHash),
+        value: hashValue ?? (queryValue.length > 0 ? queryValue : null),
         field: step.payloadField,
         optional: step.optional === true,
         origin: "navigateTo",
-        literals: collectHashFacetLiterals(step.navigateTo, baselineHash),
+        literals:
+          hashValue === null && queryValue.length > 0
+            ? [queryValue]
+            : collectHashFacetLiterals(step.navigateTo, baselineHash),
         kind: deriveFacetKind(step.payloadField),
         kindHints: collectHashFacetKindHints(step.navigateTo, baselineHash),
       });
     }
     if (currentHash !== undefined) baselineHash = currentHash;
+    baselineQuery = currentQuery;
   }
   return facets;
 }
