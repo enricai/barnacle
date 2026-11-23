@@ -20,6 +20,9 @@ vi.mock("@/config", () => ({
     },
     telemetry: { callsNdjsonPath: ".barnacle/calls.ndjson" },
   },
+}));
+vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
+vi.mock("@/scraper/session", () => ({ createBrowserSession: vi.fn() }));
 
 import {
   denormalizeStep,
