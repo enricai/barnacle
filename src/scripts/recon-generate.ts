@@ -3461,6 +3461,25 @@ export interface SubmitPatterns {
 }
 
 /**
+ * Shared zero-variance veto for selection callers: a capture the flow
+ * explicitly declared (submit endpoint/body pattern or foldReturn drill) is
+ * authoritative and is never vetoed as request-invariant chrome. Only
+ * undeclared captures fall through to {@link isZeroVarianceRepeatCapture}.
+ */
+function isZeroVarianceUnlessDeclared(
+  capture: Capture,
+  pool: Capture[],
+  submitPatterns: SubmitPatterns | null,
+  matchesFoldReturn: (capture: Capture) => boolean
+): boolean {
+  const hasDeclaredSubmit =
+    submitPatterns !== null && (submitPatterns.endpoint !== null || submitPatterns.body !== null);
+  if (hasDeclaredSubmit && compileSubmitMatcher(submitPatterns)(capture)) return false;
+  if (matchesFoldReturn(capture)) return false;
+  return isZeroVarianceRepeatCapture(capture, pool);
+}
+
+/**
  * Builds the compiled submit-pattern predicate. A flow-declared regex that
  * fails to compile is a broken flow (recon-browser validates it eagerly too),
  * so we let the `RegExp` constructor throw rather than silently reverting to
@@ -3792,7 +3811,10 @@ export function extractActionSequence(
       if ((capture.status < 200 || capture.status >= 300) && !isServerRenderedFormSubmit(capture))
         return false;
       if (isNoiseUrl(capture.url)) return false;
-      if (index !== firstPrimaryIndex && isZeroVarianceRepeatCapture(capture, captures))
+      if (
+        index !== firstPrimaryIndex &&
+        isZeroVarianceUnlessDeclared(capture, captures, submitPatterns, matchesFoldReturn)
+      )
         return false;
       if (index !== firstPrimaryIndex && !matchesSubmit(capture)) return false;
       if (
@@ -4422,7 +4444,15 @@ export function extractGraphQLActionSequence(
     .filter(({ capture }) => {
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
-      if (isZeroVarianceRepeatCapture(capture, captures)) return false;
+      if (
+        isZeroVarianceUnlessDeclared(
+          capture,
+          captures,
+          submitPatterns,
+          (c) => matchesFoldReturn(c) || matchesFoldReturnResults(c)
+        )
+      )
+        return false;
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
