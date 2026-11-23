@@ -2126,6 +2126,53 @@ export function bindMultipartSelectAnswers(
   );
 }
 
+const UPLOAD_HANDLE_NAME_RE = /(?:_TEMP|resume|\bcv\b|_cv|cv_|upload|attachment|handle|file)/i;
+
+function findStringLeafPath(node: unknown, target: string, path: string[] = []): string[] | null {
+  if (typeof node === "string") return node === target ? path : null;
+  if (node === null || typeof node !== "object" || Array.isArray(node)) return null;
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    const hit = findStringLeafPath(v, target, [...path, k]);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * In a text-captured multipart body, rebinds each upload-handle text part
+ * (e.g. `resume_TEMP`) whose recorded value is returned by a prior multipart
+ * upload step's JSON response to that step's live response, so the replay
+ * threads the handle the freshly uploaded payload.Resume produced.
+ */
+export function bindMultipartUploadHandles(
+  body: string,
+  prior: readonly { capture: Capture; isMultipart: boolean; varName: string }[]
+): string {
+  const uploads = prior.filter((p) => p.isMultipart);
+  if (uploads.length === 0) return body;
+  return body.replace(
+    /(Content-Disposition: form-data; name="([^"]+)"\r?\n\r?\n)([^\r\n]*)(?=\r?\n--)/g,
+    (whole, head: string, name: string, value: string) => {
+      if (!UPLOAD_HANDLE_NAME_RE.test(name) || value.length < 12 || /[\s$]/.test(value))
+        return whole;
+      for (let k = uploads.length - 1; k >= 0; k--) {
+        const u = uploads[k]!;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(String(u.capture.responseBody ?? ""));
+        } catch {
+          continue;
+        }
+        const path = findStringLeafPath(parsed, value);
+        if (!path) continue;
+        const access = path.map((seg) => `[${JSON.stringify(seg)}]`).join("");
+        return `${head}\${(${u.varName} as Record<string, any>)${access}}`;
+      }
+      return whole;
+    }
+  );
+}
+
 const IGNORE_REQUEST_HEADERS = new Set([
   "host",
   "content-length",
@@ -10841,6 +10888,10 @@ export function emitMultiStepExecuteHttp(
       bodyTemplate = bindMultipartSelectAnswers(bodyTemplate, cap, prior);
     }
 
+    if (bodyTemplate && cap.requestPostData !== REQUEST_BODY_UNAVAILABLE) {
+      bodyTemplate = bindMultipartUploadHandles(bodyTemplate, prior);
+    }
+
     const joinCarryingHeaderNames = joinCarryingHeaderNamesByStep.get(i);
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
@@ -10975,7 +11026,7 @@ export function emitMultiStepExecuteHttp(
       : [r.url, r.headersExpr, r.bodyArg];
     for (const haystack of haystacks) {
       for (const match of haystack.matchAll(
-        /\$\{(?:encodeURIComponent\()*([A-Za-z_$][A-Za-z0-9_$]*)/g
+        /\$\{(?:encodeURIComponent\(|\()*([A-Za-z_$][A-Za-z0-9_$]*)/g
       )) {
         referencedNames.add(match[1]!);
       }
