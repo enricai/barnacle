@@ -99,6 +99,8 @@ describe("declared submit endpoint re-queried with differing body arrays", () =>
       const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
       expect(contract).toContain("/v1/catalog/query");
       expect(contract).not.toMatch(/would freeze/);
+      expect(contract).not.toMatch(/drill/i);
+      expect(contract.match(/\/v1\/catalog\/query/g)).toHaveLength(1);
     } finally {
       process.argv = savedArgv;
       process.chdir(savedCwd);
