@@ -37,6 +37,7 @@ import {
   isHtmlFormStep,
   isNavigatedSiblingHost,
   isNoiseUrl,
+  isRawCaptureFilename,
   isSamePathFamily,
   isSameSiteHost,
   isServerRenderedFormSubmit,
@@ -67,6 +68,7 @@ import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   type Capture,
   CREDENTIAL_REQUEST_HEADERS,
+  compareCaptureFilenames,
   type RateLimitFinding,
   type ReplayResult,
   readBrowserFlowOnly,
@@ -3562,11 +3564,26 @@ export function resolveManifestActionSequence(
     return null;
   }
   if (!Array.isArray(entries) || entries.length === 0) return null;
+  // The writer recorded `index` under lexical filename order, while `captures`
+  // is in numeric order; resolve by filename against the numeric ordering and
+  // use the recorded index only as a fallback.
+  let numericPosition: Map<string, number> | null = null;
+  try {
+    numericPosition = new Map(
+      readdirSync(join(runRoot, "graphql"))
+        .filter(isRawCaptureFilename)
+        .sort(compareCaptureFilenames)
+        .map((f, i) => [f, i])
+    );
+  } catch {
+    numericPosition = null;
+  }
   const resolved: ActionCapture[] = [];
   for (const entry of entries) {
-    const capture = captures[entry.index];
+    const index = numericPosition?.get(entry.filename) ?? entry.index;
+    const capture = captures[index];
     if (capture === undefined || capture.url !== entry.url) return null;
-    resolved.push({ capture, index: entry.index });
+    resolved.push({ capture, index });
   }
   return resolved;
 }
