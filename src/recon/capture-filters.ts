@@ -1257,14 +1257,13 @@ function hasDistinctOperationIdentity(
 ): boolean {
   const identity = effectiveOperationName(candidate);
   if (!identity) return false;
-  let own = 0;
-  let others = 0;
+  const counts = new Map<string, number>();
   for (const c of sameEndpoint) {
     const id = effectiveOperationName(c);
-    if (id === identity) own++;
-    else if (id) others++;
+    if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
   }
-  return own === 1 && others > 0;
+  if (counts.get(identity) !== 1) return false;
+  return [...counts.values()].some((n) => n >= 2);
 }
 
 /**

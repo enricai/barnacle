@@ -16,7 +16,7 @@ const cap = (query: string, variables: unknown, resp: unknown, op: string | null
 });
 const ANON = "query ($input: ItemsInput!) { allItems(input: $input) { name region } }";
 const chrome = (i: number) =>
-  cap("query Nav { menu { id } }", {}, { data: { menu: [{ id: "a" }] } }, "Nav");
+  cap("query Nav { menu { id } }", {}, {}, "Nav");
 
 describe("anonymous GraphQL identity", () => {
   it("derives root-field identity", () => {
