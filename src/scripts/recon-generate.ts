@@ -12584,6 +12584,62 @@ export function spliceFacetsIntoArrayVariable(
 }
 
 /**
+ * Wires a `navigateTo` step's declared `payloadField` to the GraphQL variable
+ * whose value co-varies with a URL query parameter across the flow. The
+ * correlation is by value, never by name: a URL parameter's value sequence
+ * over the navigateTo steps (consecutive duplicates collapsed) must equal a
+ * variable path's value sequence over the primary's payload-variant captures
+ * (same operation identity, capture order). When several variables co-vary
+ * with the step's parameters, the one whose leaf key names the payloadField
+ * wins; an ambiguity with no such tiebreak leaves the field unwired.
+ */
+export function correlateNavigateToParamsWithVariables(
+  flowSteps: readonly FlowStepInput[],
+  allCaptures: readonly Capture[],
+  primaryVariables: unknown
+): Map<string, string[]> {
+  const wired = new Map<string, string[]>();
+  const primary = allCaptures.find((c) => c.variables === primaryVariables);
+  if (primary === undefined) return wired;
+  const identity = operationGroupKey(primary);
+  const group = allCaptures.filter((c) => c.variables != null && operationGroupKey(c) === identity);
+  if (group.length < 2) return wired;
+  const collapse = (values: string[]): string =>
+    JSON.stringify(values.filter((v, i) => i === 0 || values[i - 1] !== v));
+  const steps = flowSteps.filter(
+    (s): s is Exclude<FlowStepInput, string> => typeof s !== "string" && s.navigateTo !== undefined
+  );
+  const queries = steps.map((s) => parseUrlQueryParams(s.navigateTo!));
+  const varSeq = new Map<string, string>();
+  for (const { path } of walkAllPrimitiveLeaves(primary.variables ?? {})) {
+    const seq = group.map((c) => readValueAtPath(c.variables ?? {}, path));
+    if (seq.some((v) => v === undefined || (v !== null && typeof v === "object"))) continue;
+    varSeq.set(path.join("."), collapse(seq.map(String)));
+  }
+  const paramSeq = new Map<string, string>();
+  for (const key of new Set(queries.flatMap((q) => [...q.keys()]))) {
+    const seq = queries.map((q) => q.get(key)).filter((v): v is string => v !== undefined);
+    if (new Set(seq).size > 1) paramSeq.set(key, collapse(seq));
+  }
+  steps.forEach((step, i) => {
+    const field = step.payloadField;
+    if (!field || step.payloadFieldNone) return;
+    const paths = new Set<string>();
+    for (const [key, value] of queries[i]!) {
+      const seq = paramSeq.get(key);
+      if (seq === undefined || value === undefined) continue;
+      for (const [path, vs] of varSeq) if (vs === seq) paths.add(path);
+    }
+    const leafMatch = [...paths].filter(
+      (p) => p.split(".").pop()!.toLowerCase() === field.toLowerCase()
+    );
+    const chosen = paths.size === 1 ? [...paths] : leafMatch;
+    if (chosen.length === 1 && !wired.has(field)) wired.set(field, chosen[0]!.split("."));
+  });
+  return wired;
+}
+
+/**
  * Renders the variables literal for the primary-operation getGql() call —
  * each key from the selected capture's own recorded variables is bound to
  * `payload.<Field>` when it correlates (case-insensitively) with one of the
@@ -12603,10 +12659,14 @@ export function renderGqlVariablesExpr(
   variables: unknown,
   payloadFieldNames: Set<string> | undefined,
   optionalFieldNames: ReadonlySet<string> = new Set(),
-  navigateToFacets: readonly NavigateToFacetBinding[] = []
+  navigateToFacets: readonly NavigateToFacetBinding[] = [],
+  fieldVariablePaths: ReadonlyMap<string, readonly string[]> = new Map()
 ): string {
   if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
+  const pathToField = new Map<string, string>(
+    [...fieldVariablePaths].map(([field, path]) => [path.join("."), field])
+  );
   const renderValue = (value: unknown): string => {
     const spliced =
       spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
@@ -12617,10 +12677,16 @@ export function renderGqlVariablesExpr(
     if (value !== null && typeof value === "object") return renderObject(value);
     return JSON.stringify(value);
   };
-  const renderObject = (obj: object): string => {
+  const renderObject = (obj: object, prefix: string[] = []): string => {
     const entries = Object.entries(obj).map(([key, value]) => {
-      const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
-      return `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${matchedField ? `payload.${matchedField}` : renderValue(value)}`;
+      const matchedField =
+        pathToField.get([...prefix, key].join(".")) ??
+        fields.find((field) => field.toLowerCase() === key.toLowerCase());
+      const nested =
+        !matchedField && value !== null && typeof value === "object" && !Array.isArray(value)
+          ? renderObject(value, [...prefix, key])
+          : null;
+      return `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${matchedField ? `payload.${matchedField}` : (nested ?? renderValue(value))}`;
     });
     return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
   };
@@ -18464,19 +18530,26 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     extractNavigateToFacetOrder(contractFlowSteps, process.env),
     facetResolutionPool(actionSteps, allCaptures)
   );
+  const urlParamVariablePaths = correlateNavigateToParamsWithVariables(
+    contractFlowSteps,
+    allCaptures,
+    gqlVariables
+  );
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(
         gqlVariables,
         payloadFieldNames,
         optionalPayloadFieldNames,
-        navigateToFacets
+        navigateToFacets,
+        urlParamVariablePaths
       )
     : paginationSignal
       ? renderGqlVariablesExpr(
           gqlVariables,
           payloadFieldNames,
           optionalPayloadFieldNames,
-          navigateToFacets
+          navigateToFacets,
+          urlParamVariablePaths
         )
       : "{ q: payload.query }";
 
