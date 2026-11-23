@@ -102,3 +102,62 @@ describe("flow-runner/executeNavigateStep", () => {
     });
   });
 });
+
+describe("flow-runner/executeNavigateStep settle", () => {
+  const settleOpts = { endpointRx: /\/graphql/, bodyRx: /SearchQuery/ };
+
+  it("does not return until a body-matching capture plus quiet window; URL-only chrome capture does not satisfy", async () => {
+    const { createCaptureTracker, NAVIGATE_SETTLE_QUIET_MS } = await import("@/scraper/navigate");
+    const tracker = createCaptureTracker();
+    const { page } = fakePage({
+      gotoImpl: async () => {
+        tracker.observe("https://x.com/graphql", '{"operationName":"Chrome"}');
+      },
+    });
+    vi.useFakeTimers();
+    try {
+      let done = false;
+      const p = executeNavigateStep({
+        page,
+        url: "https://x.com/list",
+        optional: false,
+        logger: testLogger,
+        settle: () => ({
+          wait: tracker.begin(settleOpts).wait,
+        }),
+      }).then((r) => {
+        done = true;
+        return r;
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(done).toBe(false);
+      tracker.observe("https://x.com/graphql", '{"operationName":"SearchQuery"}');
+      await vi.advanceTimersByTimeAsync(NAVIGATE_SETTLE_QUIET_MS + 50);
+      expect(await p).toBe("completed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("proceeds with a warning on timeout and does not wait without a settle hook", async () => {
+    const { createCaptureTracker } = await import("@/scraper/navigate");
+    const tracker = createCaptureTracker();
+    const { page } = fakePage({ gotoImpl: async () => undefined });
+    const warn = vi.fn();
+    const logger = { ...testLogger, warn } as unknown as Logger;
+    const outcome = await executeNavigateStep({
+      page,
+      url: "https://x.com/list",
+      optional: false,
+      logger,
+      settle: () => {
+        const w = tracker.begin(settleOpts);
+        return { wait: () => w.wait({ timeoutMs: 30, quietMs: 5 }) };
+      },
+    });
+    expect(outcome).toBe("completed");
+    expect(warn).toHaveBeenCalled();
+    const { buildNavigateSettle } = await import("@/scraper/navigate");
+    expect(buildNavigateSettle(tracker, null)).toBeUndefined();
+  });
+});

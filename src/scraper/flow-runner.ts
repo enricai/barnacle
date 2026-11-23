@@ -13,6 +13,7 @@
  * the terminal failure dump.
  */
 
+import type { NavigateSettle } from "@/scraper/navigate";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18690,8 +18691,11 @@ export async function executeNavigateStep(params: {
   logger: Logger;
   waitUntil?: "load" | "domcontentloaded" | "networkidle";
   timeoutMs?: number;
+  /** Optional: wait after goto for the declared data call (see navigate.ts). Absent = no wait. */
+  settle?: NavigateSettle;
 }): Promise<"completed" | "skipped"> {
-  const { page, url, optional, logger: log, waitUntil, timeoutMs } = params;
+  const { page, url, optional, logger: log, waitUntil, timeoutMs, settle } = params;
+  const settleWait = settle?.();
   try {
     await page.goto(url, {
       waitUntil: waitUntil ?? "domcontentloaded",
@@ -18708,6 +18712,12 @@ export async function executeNavigateStep(params: {
     );
   }
   await waitForSpaReady(page, log);
+  if (settleWait !== undefined) {
+    const result = await settleWait.wait();
+    if (result === "timeout") {
+      log.warn(`navigate step: no capture matching the declared data call after goto ${url}; proceeding`);
+    }
+  }
   return "completed";
 }
 
