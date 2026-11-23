@@ -120,7 +120,7 @@ export interface PluginIdempotency {
   isSuccess?: (data: unknown) => boolean;
   /** Maps a thrown error to `failed` (safe to retry) or `unknown` (may have taken effect). */
   classifyFailure?: (error: unknown) => IdempotencyFailureClass;
-  /** Opt in to asynchronous execution (consumed by later work). */
+  /** Opt in to accept-then-poll: /run returns 202 + operation id; poll GET <route>/operations/:id. */
   async?: boolean;
 }
 

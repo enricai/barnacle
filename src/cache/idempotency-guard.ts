@@ -1,4 +1,11 @@
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { UnknownOutcomeError } from "@/api/errors";
 
@@ -19,17 +26,35 @@ import type { PluginIdempotency } from "@/site-plugin";
 
 export type IdempotencyRecord =
   | { state: "success"; value: unknown }
-  | { state: "unknown"; message: string };
+  | { state: "unknown"; message: string }
+  | { state: "pending" }
+  | { state: "failed"; message: string };
+
+/** Poll view of an async operation. */
+export type OperationStatus =
+  | { status: "pending" }
+  | { status: "succeeded"; value: unknown }
+  | { status: "failed"; message: string }
+  | { status: "unknown-outcome"; message: string };
 
 /** Minimal store contract; swap in a durable implementation as needed. */
 export interface IdempotencyStore {
-  get(key: string): IdempotencyRecord | undefined | Promise<IdempotencyRecord | undefined>;
-  set(key: string, record: IdempotencyRecord, ttlMs: number): void | Promise<void>;
+  get(
+    key: string,
+  ): IdempotencyRecord | undefined | Promise<IdempotencyRecord | undefined>;
+  set(
+    key: string,
+    record: IdempotencyRecord,
+    ttlMs: number,
+  ): void | Promise<void>;
   delete(key: string): void | Promise<void>;
 }
 
 export function createInMemoryIdempotencyStore(): IdempotencyStore {
-  const entries = new Map<string, { record: IdempotencyRecord; expiresAt: number }>();
+  const entries = new Map<
+    string,
+    { record: IdempotencyRecord; expiresAt: number }
+  >();
   return {
     get(key) {
       const e = entries.get(key);
@@ -72,7 +97,10 @@ export function createFileIdempotencyStore(dir: string): IdempotencyStore {
       const path = resolveIdempotencyEntryPath(dir, key);
       mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ record, expiresAt: Date.now() + ttlMs }));
+      writeFileSync(
+        tmp,
+        JSON.stringify({ record, expiresAt: Date.now() + ttlMs }),
+      );
       renameSync(tmp, path);
     },
     delete(key) {
@@ -84,7 +112,9 @@ export function createFileIdempotencyStore(dir: string): IdempotencyStore {
 /** Durable store when telemetry persistence is configured, else in-memory. */
 export function createConfiguredIdempotencyStore(): IdempotencyStore {
   const dir = config.telemetry.idempotencyDir;
-  return dir ? createFileIdempotencyStore(dir) : createInMemoryIdempotencyStore();
+  return dir
+    ? createFileIdempotencyStore(dir)
+    : createInMemoryIdempotencyStore();
 }
 
 export const DEFAULT_IDEMPOTENCY_TTL_MS = 6 * 60 * 60 * 1000;
@@ -104,9 +134,10 @@ export function defaultIsSuccess(data: unknown): boolean {
 export function deriveIdempotencyKey(
   siteId: string,
   keyFields: readonly string[],
-  body: unknown
+  body: unknown,
 ): string | null {
-  if (keyFields.length === 0 || body === null || typeof body !== "object") return null;
+  if (keyFields.length === 0 || body === null || typeof body !== "object")
+    return null;
   const parts: string[] = [];
   for (const field of keyFields) {
     const v = (body as Record<string, unknown>)[field];
@@ -133,29 +164,57 @@ export interface IdempotencyGuard {
     siteId: string,
     config: PluginIdempotency | undefined,
     body: unknown,
-    execute: () => Promise<T>
+    execute: () => Promise<T>,
   ): Promise<T>;
+  /**
+   * Starts the guarded run in the background and returns an operation id
+   * derived from the idempotency key (retries get the same id), or `null`
+   * when no key can be derived (caller should run synchronously).
+   */
+  start<T>(
+    siteId: string,
+    config: PluginIdempotency | undefined,
+    body: unknown,
+    execute: () => Promise<T>,
+  ): Promise<string | null>;
+  /** Current state of an operation; `undefined` when unknown to the store. */
+  status(
+    siteId: string,
+    operationId: string,
+  ): Promise<OperationStatus | undefined>;
 }
 
-export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): IdempotencyGuard {
+export function deriveOperationId(key: string): string {
+  return createHash("sha256").update(key).digest("hex").slice(0, 32);
+}
+
+export function createIdempotencyGuard(
+  options: IdempotencyGuardOptions = {},
+): IdempotencyGuard {
   const store = options.store ?? createConfiguredIdempotencyStore();
   const ttlMs = options.ttlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS;
   const inFlight = new Map<string, Promise<unknown>>();
 
+  const activeOps = new Set<string>();
+  const opKey = (siteId: string, id: string) => `op:${siteId}:${id}`;
+
   function replay(record: IdempotencyRecord): unknown {
-    if (record.state === "unknown") throw new UnknownOutcomeError(record.message);
-    return record.value;
+    if (record.state === "unknown")
+      throw new UnknownOutcomeError(record.message);
+    if (record.state === "success") return record.value;
+    throw new Error("unexpected idempotency record state");
   }
 
   async function execAndRecord<T>(
     key: string,
     config: PluginIdempotency,
-    execute: () => Promise<T>
+    execute: () => Promise<T>,
   ): Promise<T> {
     const isSuccess = config.isSuccess ?? defaultIsSuccess;
     try {
       const value = await execute();
-      if (isSuccess(value)) await store.set(key, { state: "success", value }, ttlMs);
+      if (isSuccess(value))
+        await store.set(key, { state: "success", value }, ttlMs);
       return value;
     } catch (err) {
       if (config.classifyFailure?.(err) === "unknown") {
@@ -165,7 +224,7 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
             state: "unknown",
             message: `previous run ended with an unknown outcome: ${err instanceof Error ? err.message : String(err)}`,
           },
-          ttlMs
+          ttlMs,
         );
       }
       throw err;
@@ -176,7 +235,7 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     siteId: string,
     config: PluginIdempotency | undefined,
     body: unknown,
-    execute: () => Promise<T>
+    execute: () => Promise<T>,
   ): Promise<T> {
     if (!config) return execute();
     const key = deriveIdempotencyKey(siteId, config.keyFields, body);
@@ -198,5 +257,78 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     return promise;
   }
 
-  return { run };
+  async function start<T>(
+    siteId: string,
+    config: PluginIdempotency | undefined,
+    body: unknown,
+    execute: () => Promise<T>,
+  ): Promise<string | null> {
+    if (!config) return null;
+    const key = deriveIdempotencyKey(siteId, config.keyFields, body);
+    if (key === null) return null;
+    const id = deriveOperationId(key);
+    const k = opKey(siteId, id);
+    // Registered synchronously so concurrent retries rediscover the operation.
+    if (activeOps.has(k)) return id;
+    activeOps.add(k);
+    try {
+      const existing = await store.get(k);
+      if (existing && existing.state !== "pending") {
+        activeOps.delete(k);
+        return id;
+      }
+      await store.set(k, { state: "pending" }, ttlMs);
+    } catch (err) {
+      activeOps.delete(k);
+      throw err;
+    }
+    void run(siteId, config, body, execute)
+      .then(
+        (value) => store.set(k, { state: "success", value }, ttlMs),
+        (err) =>
+          store.set(
+            k,
+            config.classifyFailure?.(err) === "unknown"
+              ? {
+                  state: "unknown",
+                  message: err instanceof Error ? err.message : String(err),
+                }
+              : {
+                  state: "failed",
+                  message: err instanceof Error ? err.message : String(err),
+                },
+            ttlMs,
+          ),
+      )
+      .catch(() => undefined)
+      .finally(() => activeOps.delete(k));
+    return id;
+  }
+
+  async function status(
+    siteId: string,
+    id: string,
+  ): Promise<OperationStatus | undefined> {
+    const k = opKey(siteId, id);
+    const rec = await store.get(k);
+    if (!rec) return undefined;
+    switch (rec.state) {
+      case "pending":
+        // Pending with no live run in this process means a restart cut it off.
+        return activeOps.has(k)
+          ? { status: "pending" }
+          : {
+              status: "unknown-outcome",
+              message: "operation was interrupted by a restart",
+            };
+      case "success":
+        return { status: "succeeded", value: rec.value };
+      case "failed":
+        return { status: "failed", message: rec.message };
+      case "unknown":
+        return { status: "unknown-outcome", message: rec.message };
+    }
+  }
+
+  return { run, start, status };
 }

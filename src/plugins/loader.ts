@@ -7,7 +7,10 @@ import { z } from "zod/v4";
 
 import { FieldViolationError, toApiError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
-import { createIdempotencyGuard, type IdempotencyGuard } from "@/cache/idempotency-guard";
+import {
+  createIdempotencyGuard,
+  type IdempotencyGuard,
+} from "@/cache/idempotency-guard";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
 import {
@@ -27,8 +30,14 @@ import {
   registerSensitiveValues,
   releaseSensitiveValues,
 } from "@/lib/pii-redaction";
-import { captureBeaconEvent, createBeaconOutcomeRecorder } from "@/lib/telemetry/beacon-capture";
-import { type HotPathErrorTelemetry, RunTelemetry } from "@/lib/telemetry/run-telemetry";
+import {
+  captureBeaconEvent,
+  createBeaconOutcomeRecorder,
+} from "@/lib/telemetry/beacon-capture";
+import {
+  type HotPathErrorTelemetry,
+  RunTelemetry,
+} from "@/lib/telemetry/run-telemetry";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
 import {
@@ -59,7 +68,10 @@ import type {
   SitePluginExtraRoute,
   SitePluginResult,
 } from "@/site-plugin";
-import { type DispatchMetrics, DispatchMetricsSchema } from "@/types/dispatch-metrics";
+import {
+  type DispatchMetrics,
+  DispatchMetricsSchema,
+} from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "plugins/loader" });
@@ -91,16 +103,24 @@ export interface BuildPluginContextInput {
  * routes, `runIntegrationJob`) so a new context member is a one-line change
  * here instead of three drifting literals.
  */
-export function buildPluginContext(input: BuildPluginContextInput): SitePluginContext {
+export function buildPluginContext(
+  input: BuildPluginContextInput,
+): SitePluginContext {
   const { plugin, cfg, requestId, logger, baseUrl } = input;
   return {
     baseUrl:
-      baseUrl ?? cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "",
+      baseUrl ??
+      cfg.scraper.siteBaseUrls[plugin.meta.siteId] ??
+      plugin.meta.defaultBaseUrl ??
+      "",
     logger,
     config: cfg,
     requestId,
     metricsCollector: new MetricsCollector(),
-    recordBeaconOutcome: createBeaconOutcomeRecorder({ requestId, siteId: plugin.meta.siteId }),
+    recordBeaconOutcome: createBeaconOutcomeRecorder({
+      requestId,
+      siteId: plugin.meta.siteId,
+    }),
     telemetry: new RunTelemetry(),
   };
 }
@@ -119,7 +139,7 @@ export function buildPluginContext(input: BuildPluginContextInput): SitePluginCo
 async function withSessionTelemetry<T>(
   session: BrowserSession | null,
   context: SitePluginContext,
-  run: () => Promise<T>
+  run: () => Promise<T>,
 ): Promise<T> {
   try {
     return await run();
@@ -157,7 +177,10 @@ function toHotPathErrorTelemetry(err: ScraperError): HotPathErrorTelemetry {
  * preserves today's unconditional cascade; `false` (or a predicate
  * resolving `false` for this error) means fail fast instead.
  */
-function isFallbackAllowed(plugin: SitePlugin<unknown, unknown>, err: ScraperError): boolean {
+function isFallbackAllowed(
+  plugin: SitePlugin<unknown, unknown>,
+  err: ScraperError,
+): boolean {
   const gate = plugin.meta.browserFallbackGate;
   if (gate === undefined) return true;
   return typeof gate === "function" ? gate(err) : gate;
@@ -173,7 +196,7 @@ async function runPluginPipeline<TResult>(
   plugin: SitePlugin<unknown, unknown>,
   payload: unknown,
   context: SitePluginContext,
-  options: { forceFallback?: boolean; onCacheMiss?: (key: string) => void }
+  options: { forceFallback?: boolean; onCacheMiss?: (key: string) => void },
 ): Promise<SitePluginResult<TResult>> {
   if (!plugin.executeHttp || options.forceFallback) {
     if (options.forceFallback) {
@@ -182,22 +205,25 @@ async function runPluginPipeline<TResult>(
     }
     return (await runWithSession(
       (session) =>
-        withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
+        withSessionTelemetry(session, context, () =>
+          plugin.execute(payload, session, context),
+        ),
       { onRetry: plugin.onRetry, maxAttempts: effectiveMaxAttempts(plugin) },
       plugin.meta.taskTimeoutMs,
       {
         advancedStealth: plugin.meta.advancedStealth,
         ...(plugin.meta.browserbaseSessionCreateParams && {
-          browserbaseSessionCreateParams: plugin.meta.browserbaseSessionCreateParams,
+          browserbaseSessionCreateParams:
+            plugin.meta.browserbaseSessionCreateParams,
         }),
-      }
+      },
     )) as SitePluginResult<TResult>;
   }
 
   try {
     const { value: cached, key } = getCachedResponse<SitePluginResult<TResult>>(
       `${context.baseUrl}:${plugin.meta.siteId}`,
-      payload
+      payload,
     );
     if (cached) {
       recordHotPathSuccess(plugin.meta.siteId);
@@ -211,7 +237,10 @@ async function runPluginPipeline<TResult>(
     const fresh = await getOrCreateInFlight(
       key,
       // biome-ignore lint/style/noNonNullAssertion: guarded by !plugin.executeHttp above
-      () => plugin.executeHttp!(payload, context) as Promise<SitePluginResult<TResult>>
+      () =>
+        plugin.executeHttp!(payload, context) as Promise<
+          SitePluginResult<TResult>
+        >,
     );
     recordHotPathLatency(plugin.meta.siteId, Date.now() - t0);
     recordHotPathSuccess(plugin.meta.siteId);
@@ -226,32 +255,35 @@ async function runPluginPipeline<TResult>(
       context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
       if (!isFallbackAllowed(plugin, httpErr)) {
         logger.warn(
-          `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — browser fallback gated off, not falling back`
+          `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — browser fallback gated off, not falling back`,
         );
         throw httpErr;
       }
       logger.warn(
-        `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — engaging browser fallback`
+        `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — engaging browser fallback`,
       );
       recordFallbackActivation(plugin.meta.siteId);
       recordDdFallback(plugin.meta.siteId);
       return (await runWithSession(
         (session) =>
-          withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
+          withSessionTelemetry(session, context, () =>
+            plugin.execute(payload, session, context),
+          ),
         { onRetry: plugin.onRetry, maxAttempts: effectiveMaxAttempts(plugin) },
         plugin.meta.browserFallbackTaskTimeoutMs ?? plugin.meta.taskTimeoutMs,
         {
           advancedStealth: plugin.meta.advancedStealth,
           ...(plugin.meta.browserbaseSessionCreateParams && {
-            browserbaseSessionCreateParams: plugin.meta.browserbaseSessionCreateParams,
+            browserbaseSessionCreateParams:
+              plugin.meta.browserbaseSessionCreateParams,
           }),
-        }
+        },
       )) as SitePluginResult<TResult>;
     }
     if (isHttpRateLimitError(httpErr)) {
       context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
       logger.warn(
-        `hot path rate-limited for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
+        `hot path rate-limited for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`,
       );
       recordRateLimitRejection(plugin.meta.siteId);
       recordDdRateLimit(plugin.meta.siteId);
@@ -259,13 +291,13 @@ async function runPluginPipeline<TResult>(
     if (isHttpUrlLockedError(httpErr)) {
       context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
       logger.warn(
-        `hot path url-locked for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
+        `hot path url-locked for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`,
       );
     }
     if (isHttpClientError(httpErr)) {
       context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
       logger.warn(
-        `hot path client error for ${plugin.meta.siteId}: ${httpErr.message} — deterministic, not falling back`
+        `hot path client error for ${plugin.meta.siteId}: ${httpErr.message} — deterministic, not falling back`,
       );
     }
     throw httpErr;
@@ -280,7 +312,7 @@ async function runPluginPipeline<TResult>(
  * propagate into the request path.
  */
 async function emitEnvelopeSafely(
-  input: Parameters<typeof captureSubmissionEnvelope>[0]
+  input: Parameters<typeof captureSubmissionEnvelope>[0],
 ): Promise<void> {
   try {
     await captureSubmissionEnvelope(input);
@@ -316,11 +348,14 @@ async function emitExtraRouteEnvelope(
   outcome: Pick<
     Parameters<typeof captureSubmissionEnvelope>[0],
     "status" | "auditPayload" | "errorMessage"
-  >
+  >,
 ): Promise<void> {
   try {
     const snapshot = context.telemetry.snapshot();
-    const joinKeys = mergeJoinKeys(plugin.extractJoinKeys?.(body) ?? null, snapshot.joinKeys);
+    const joinKeys = mergeJoinKeys(
+      plugin.extractJoinKeys?.(body) ?? null,
+      snapshot.joinKeys,
+    );
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
@@ -332,18 +367,23 @@ async function emitExtraRouteEnvelope(
       ...outcome,
     });
     if (outcome.status !== "submitted") return;
-    const rawTrackingUrl = (body as Record<string, unknown> | null)?.TrackingUrl;
+    const rawTrackingUrl = (body as Record<string, unknown> | null)
+      ?.TrackingUrl;
     await emitBeaconSafely({
       requestId: context.requestId,
       siteId: plugin.meta.siteId,
       joinKeys,
       beaconStatus: "skipped",
       trackingUrl:
-        typeof rawTrackingUrl === "string" && rawTrackingUrl.length > 0 ? rawTrackingUrl : null,
+        typeof rawTrackingUrl === "string" && rawTrackingUrl.length > 0
+          ? rawTrackingUrl
+          : null,
       durationMs: 0,
     });
   } catch (err) {
-    logger.warn(`extra-route submission envelope failed: ${toErrorMessage(err)}`);
+    logger.warn(
+      `extra-route submission envelope failed: ${toErrorMessage(err)}`,
+    );
   }
 }
 
@@ -353,7 +393,9 @@ async function emitExtraRouteEnvelope(
  * test double or unexpected synchronous throw must still never propagate into
  * dispatch's success path.
  */
-async function emitBeaconSafely(input: Parameters<typeof captureBeaconEvent>[0]): Promise<void> {
+async function emitBeaconSafely(
+  input: Parameters<typeof captureBeaconEvent>[0],
+): Promise<void> {
   try {
     await captureBeaconEvent(input);
   } catch (err) {
@@ -370,7 +412,7 @@ async function emitBeaconSafely(input: Parameters<typeof captureBeaconEvent>[0])
  */
 function mergeJoinKeys(
   extracted: Record<string, unknown> | null,
-  attached: Record<string, unknown> | null
+  attached: Record<string, unknown> | null,
 ): Record<string, unknown> | null {
   if (!extracted && !attached) return null;
   return { ...extracted, ...attached };
@@ -382,8 +424,13 @@ function mergeJoinKeys(
  * `docs/telemetry-and-judging.md`'s "session" field.
  */
 function toEnvelopeSession(
-  session: ReturnType<SitePluginContext["telemetry"]["snapshot"]>["session"]
-): { id: string; provider: string; ip: string | null; ipCapturedAt: string | null } | null {
+  session: ReturnType<SitePluginContext["telemetry"]["snapshot"]>["session"],
+): {
+  id: string;
+  provider: string;
+  ip: string | null;
+  ipCapturedAt: string | null;
+} | null {
   if (!session) return null;
   return {
     id: session.sessionId,
@@ -422,7 +469,10 @@ export async function dispatch<TResult>(
   plugin: SitePlugin<unknown, unknown>,
   payload: unknown,
   context: SitePluginContext,
-  options: { forceFallback?: boolean; onCacheMiss?: (key: string) => void } = {}
+  options: {
+    forceFallback?: boolean;
+    onCacheMiss?: (key: string) => void;
+  } = {},
 ): Promise<SitePluginResult<TResult>> {
   const startedAt = Date.now();
   const hasHttpPath = !!plugin.executeHttp && !options.forceFallback;
@@ -439,7 +489,12 @@ export async function dispatch<TResult>(
   registerSensitiveValues(context.requestId, payload, plugin.meta.redaction);
 
   try {
-    const result = await runPluginPipeline<TResult>(plugin, payload, context, options);
+    const result = await runPluginPipeline<TResult>(
+      plugin,
+      payload,
+      context,
+      options,
+    );
     const durationMs = Date.now() - startedAt;
 
     // Short-circuit: the hot path signalled that the user must supply additional
@@ -475,7 +530,9 @@ export async function dispatch<TResult>(
 
     const rawTrackingUrl = (payload as Record<string, unknown>)?.TrackingUrl;
     const trackingUrl =
-      typeof rawTrackingUrl === "string" && rawTrackingUrl.length > 0 ? rawTrackingUrl : null;
+      typeof rawTrackingUrl === "string" && rawTrackingUrl.length > 0
+        ? rawTrackingUrl
+        : null;
     if (!managesOwnTracking && trackingUrl) {
       fireTrackingClick(trackingUrl, plugin.meta.siteId, {
         requestId: context.requestId,
@@ -502,7 +559,10 @@ export async function dispatch<TResult>(
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     const errorType = classifyDispatchError(err);
-    const failureTags: FailureDispatchTags = { ...ddTags, error_type: errorType };
+    const failureTags: FailureDispatchTags = {
+      ...ddTags,
+      error_type: errorType,
+    };
 
     recordDdFailure(failureTags);
     recordDdDuration(ddTags, durationMs);
@@ -561,6 +621,12 @@ const ResponseEnvelopeSchema = z.object({
   metrics: DispatchMetricsSchema.optional(),
 });
 
+const AcceptedResponseSchema = ResponseEnvelopeSchema.extend({
+  operationId: z.string(),
+  operationStatus: z.literal("pending"),
+  pollUrl: z.string(),
+}).passthrough();
+
 function buildEnvelopedResponseSchema(pluginSchema: z.ZodType): z.ZodType {
   if (pluginSchema instanceof z.ZodObject) {
     return ResponseEnvelopeSchema.extend(pluginSchema.shape).passthrough();
@@ -575,12 +641,19 @@ function buildEnvelopedResponseSchema(pluginSchema: z.ZodType): z.ZodType {
  * (path, schema, dispatch) to this module instead of maintaining an inline loop.
  */
 export async function registerRoutes(
-  app: FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse, Logger>,
+  app: FastifyInstance<
+    RawServerDefault,
+    IncomingMessage,
+    ServerResponse,
+    Logger
+  >,
   cfg: AppConfig,
-  plugins: SitePlugin<unknown, unknown>[]
+  plugins: SitePlugin<unknown, unknown>[],
 ): Promise<void> {
   const needsMultipart = plugins.some(
-    (p) => p.meta.multipart === true || p.meta.extraRoutes?.some((r) => r.multipart === true)
+    (p) =>
+      p.meta.multipart === true ||
+      p.meta.extraRoutes?.some((r) => r.multipart === true),
   );
   if (needsMultipart) {
     await app.register(fastifyMultipart, {
@@ -590,7 +663,8 @@ export async function registerRoutes(
   }
 
   for (const plugin of plugins) {
-    const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
+    const routePath =
+      plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
     registerRedactionPolicy(plugin.meta.siteId, plugin.meta.redaction);
 
     app.post(
@@ -599,33 +673,101 @@ export async function registerRoutes(
         onRequest: [app.authenticate],
         schema: {
           body: plugin.meta.bodySchema,
-          response: { 200: buildEnvelopedResponseSchema(plugin.meta.responseSchema) },
-          ...(plugin.meta.multipart === true ? { consumes: ["multipart/form-data"] } : {}),
+          response: {
+            200: buildEnvelopedResponseSchema(plugin.meta.responseSchema),
+            ...(plugin.meta.idempotency ? { 202: AcceptedResponseSchema } : {}),
+          },
+          ...(plugin.meta.multipart === true
+            ? { consumes: ["multipart/form-data"] }
+            : {}),
         },
       },
-      async (request) => {
-        const forceFallback = request.headers["x-barnacle-execution"] === "browser";
+      async (request, reply) => {
+        const forceFallback =
+          request.headers["x-barnacle-execution"] === "browser";
         const context = buildPluginContext({
           plugin,
           cfg,
           requestId: request.id,
           logger: extendLogger(request.log as unknown as pino.Logger),
         });
-        const result = await dispatchWithIdempotency(plugin, request.body, context, {
-          forceFallback,
-          // Recorded so the error handler can evict this entry if the response
-          // fails schema serialization on the way out — otherwise the 500 it
-          // produces would be served from cache for the whole TTL.
-          onCacheMiss: (key) => {
-            request.responseCacheKey = key;
+        const declared = plugin.meta.idempotency;
+        if (
+          declared &&
+          (declared.async === true ||
+            request.headers["x-barnacle-async"] === "true")
+        ) {
+          idempotencyGuard ??= createIdempotencyGuard();
+          const operationId = await idempotencyGuard.start(
+            plugin.meta.siteId,
+            declared,
+            request.body,
+            () => dispatch(plugin, request.body, context, { forceFallback }),
+          );
+          if (operationId !== null) {
+            reply.code(202);
+            return successEnvelope({
+              operationId,
+              operationStatus: "pending" as const,
+              pollUrl: `${routePath}/operations/${operationId}`,
+            });
+          }
+        }
+        const result = await dispatchWithIdempotency(
+          plugin,
+          request.body,
+          context,
+          {
+            forceFallback,
+            // Recorded so the error handler can evict this entry if the response
+            // fails schema serialization on the way out — otherwise the 500 it
+            // produces would be served from cache for the whole TTL.
+            onCacheMiss: (key) => {
+              request.responseCacheKey = key;
+            },
           },
-        });
+        );
         return successEnvelope({
           ...(result.data as object),
           ...(result.metrics && { metrics: result.metrics }),
         });
-      }
+      },
     );
+
+    if (plugin.meta.idempotency) {
+      app.get(
+        `${routePath}/operations/:operationId`,
+        { onRequest: [app.authenticate] },
+        async (request) => {
+          const { operationId } = request.params as { operationId: string };
+          idempotencyGuard ??= createIdempotencyGuard();
+          const st = await idempotencyGuard.status(
+            plugin.meta.siteId,
+            operationId,
+          );
+          if (!st)
+            throw new FieldViolationError(
+              `unknown operation ${JSON.stringify(operationId)}`,
+            );
+          if (st.status === "succeeded") {
+            const result = st.value as { data: unknown; metrics?: unknown };
+            return successEnvelope({
+              operationId,
+              operationStatus: "succeeded" as const,
+              result: {
+                ...(result.data as object),
+                ...(result.metrics ? { metrics: result.metrics } : {}),
+              },
+            });
+          }
+          return successEnvelope({
+            operationId,
+            operationStatus: st.status,
+            ...("message" in st ? { message: st.message } : {}),
+          });
+        },
+      );
+    }
 
     logger.info(`${plugin.meta.siteId} → ${routePath} (loaded)`);
   }
@@ -643,13 +785,13 @@ async function dispatchWithIdempotency(
   plugin: SitePlugin<unknown, unknown>,
   body: unknown,
   context: SitePluginContext,
-  options: Parameters<typeof dispatch>[3]
+  options: Parameters<typeof dispatch>[3],
 ): Promise<Awaited<ReturnType<typeof dispatch>>> {
   const declared = plugin.meta.idempotency;
   if (!declared) return dispatch(plugin, body, context, options);
   idempotencyGuard ??= createIdempotencyGuard();
   return idempotencyGuard.run(plugin.meta.siteId, declared, body, () =>
-    dispatch(plugin, body, context, options)
+    dispatch(plugin, body, context, options),
   );
 }
 
@@ -668,9 +810,14 @@ async function dispatchWithIdempotency(
  * carry different body contracts.
  */
 function registerExtraRoutes(
-  app: FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse, Logger>,
+  app: FastifyInstance<
+    RawServerDefault,
+    IncomingMessage,
+    ServerResponse,
+    Logger
+  >,
   cfg: AppConfig,
-  plugins: SitePlugin<unknown, unknown>[]
+  plugins: SitePlugin<unknown, unknown>[],
 ): void {
   const byMethodPath = new Map<
     string,
@@ -684,7 +831,9 @@ function registerExtraRoutes(
 
   for (const plugin of plugins) {
     for (const route of plugin.meta.extraRoutes ?? []) {
-      const method = route.method.toUpperCase() as Uppercase<SitePluginExtraRoute["method"]>;
+      const method = route.method.toUpperCase() as Uppercase<
+        SitePluginExtraRoute["method"]
+      >;
       const key = `${method} ${route.path}`;
       const entry = byMethodPath.get(key) ?? {
         method,
@@ -701,9 +850,11 @@ function registerExtraRoutes(
   for (const entry of byMethodPath.values()) {
     const shared = entry.owners.size > 1;
 
-    const findRoute = (plugin: SitePlugin<unknown, unknown>): SitePluginExtraRoute | undefined =>
+    const findRoute = (
+      plugin: SitePlugin<unknown, unknown>,
+    ): SitePluginExtraRoute | undefined =>
       plugin.meta.extraRoutes?.find(
-        (r) => r.method.toUpperCase() === entry.method && r.path === entry.path
+        (r) => r.method.toUpperCase() === entry.method && r.path === entry.path,
       );
 
     const soleOwner = shared ? undefined : [...entry.owners.values()][0];
@@ -715,8 +866,12 @@ function registerExtraRoutes(
       onRequest: [app.authenticate],
       schema: {
         ...(shared ? { params: siteIdRouteParamsSchema } : {}),
-        ...(!shared && soleRoute?.bodySchema ? { body: soleRoute.bodySchema } : {}),
-        ...(!shared && soleRoute?.paramsSchema ? { params: soleRoute.paramsSchema } : {}),
+        ...(!shared && soleRoute?.bodySchema
+          ? { body: soleRoute.bodySchema }
+          : {}),
+        ...(!shared && soleRoute?.paramsSchema
+          ? { params: soleRoute.paramsSchema }
+          : {}),
         ...(entry.multipart ? { consumes: ["multipart/form-data"] } : {}),
       },
       handler: async (request, reply) => {
@@ -724,13 +879,13 @@ function registerExtraRoutes(
         const plugin = shared ? entry.owners.get(siteId) : soleOwner;
         if (!plugin) {
           throw new FieldViolationError(
-            `no plugin registered for siteId ${JSON.stringify(siteId)} on ${entry.method} ${entry.path}`
+            `no plugin registered for siteId ${JSON.stringify(siteId)} on ${entry.method} ${entry.path}`,
           );
         }
         const route = findRoute(plugin);
         if (!route) {
           throw new FieldViolationError(
-            `plugin ${plugin.meta.siteId} has no handler for ${entry.method} ${entry.path}`
+            `plugin ${plugin.meta.siteId} has no handler for ${entry.method} ${entry.path}`,
           );
         }
 
@@ -738,7 +893,9 @@ function registerExtraRoutes(
         // above); shared routes defer body validation to here, against the
         // resolved plugin's own contract.
         const body =
-          shared && route.bodySchema ? route.bodySchema.parse(request.body) : request.body;
+          shared && route.bodySchema
+            ? route.bodySchema.parse(request.body)
+            : request.body;
         const context = buildPluginContext({
           plugin,
           cfg,
@@ -749,7 +906,8 @@ function registerExtraRoutes(
           // dispatch() owns redaction registration, tracking, timeout, fallback
           // and the submission envelope; shape the reply exactly as /run does.
           const result = await dispatchWithIdempotency(plugin, body, context, {
-            forceFallback: request.headers["x-barnacle-execution"] === "browser",
+            forceFallback:
+              request.headers["x-barnacle-execution"] === "browser",
           });
           return successEnvelope({
             ...(result.data as object),
@@ -765,11 +923,14 @@ function registerExtraRoutes(
               body,
               params: request.params as Record<string, string>,
               log: request.log as unknown as Logger,
-              query: request.query as Record<string, string | string[] | undefined>,
+              query: request.query as Record<
+                string,
+                string | string[] | undefined
+              >,
               headers: request.headers,
               reply,
             },
-            context
+            context,
           );
           // A handler that answered via `reply.send(...)` returns the reply
           // itself, not the body: judge success by status code and never pass
@@ -795,7 +956,9 @@ function registerExtraRoutes(
               errorMessage: null,
             });
           }
-          return route.envelope === false ? result : successEnvelope(result as object);
+          return route.envelope === false
+            ? result
+            : successEnvelope(result as object);
         } catch (err) {
           if (route.submits) {
             await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
@@ -812,7 +975,7 @@ function registerExtraRoutes(
     });
 
     logger.info(
-      `${entry.path} → [${[...entry.owners.keys()].join(", ")}] via ${entry.method} (loaded)`
+      `${entry.path} → [${[...entry.owners.keys()].join(", ")}] via ${entry.method} (loaded)`,
     );
   }
 }
