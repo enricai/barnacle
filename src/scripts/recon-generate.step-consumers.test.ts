@@ -58,3 +58,44 @@ describe("step consumers and declared-submit feed", () => {
     expect(stepFeedsDeclaredSubmit(mint!, steps, () => false)).toBe(false);
   });
 });
+
+describe("compileActionSteps produces for each origin kind", () => {
+  const T1 = "Aq8wXv81T3mWb7LpR2dYc5Hn";
+  const T2 = "Bq8wXv81T3mWb7LpR2dYc5Hn";
+  const T3 = "Cq8wXv81T3mWb7LpR2dYc5Hn";
+  const compile = (caps: ReturnType<typeof buildCapture>[]) => {
+    const seq = extractActionSequence(caps);
+    const idx = new Set(seq.map((a) => a.index));
+    return compileActionSteps(seq, indexStateValues(caps, new Set(), idx));
+  };
+
+  it("produces cookie, header and html bindings and records URL/raw-body consumers", () => {
+    const caps = [
+      buildCapture({
+        url: "https://a.example.com/page",
+        method: "GET",
+        requestPostData: null,
+        responseBody: `<html><form action="/go?csrf=${T3}"></form></html>`,
+        responseHeaders: {
+          "content-type": "text/html",
+          "set-cookie": `sid=${T1}; Path=/`,
+          "x-price-token": T2,
+        },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildCapture({
+        url: `https://a.example.com/go?csrf=${T3}`,
+        requestPostData: `raw=${T1}&t=${T2}`,
+        requestHeaders: { "Content-Type": "text/plain", "X-Price": T2, "X-Sid": T1 },
+        responseBody: { ok: true },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ];
+    const steps = compile(caps);
+    const first = steps.find((s) => s.capture === caps[0]);
+    const kinds = (first?.produces ?? []).map((p) => `${p.kind}`);
+    expect(kinds.filter((k) => k === "header").length).toBeGreaterThanOrEqual(2);
+    expect(kinds).toContain("html");
+    expect(first?.consumers).toContain(caps[1]);
+  });
+});
