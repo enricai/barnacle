@@ -4979,7 +4979,10 @@ export function isRedundantSameEndpointGroup(
  * later page's item can never resolve a join match and falls through to a
  * hardcoded per-capture `httpClient` call instead of folding into the loop.
  */
-function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): ActionCapture[] {
+function collapseRedundantSameEndpointCaptures(
+  actions: ActionCapture[],
+  isDeclaredSubmit: ((c: Capture) => boolean) | null = null
+): ActionCapture[] {
   const positionsByGroup = new Map<string, number[]>();
   actions.forEach((a, i) => {
     const key = `${a.capture.method} ${endpointKey(a.capture.url)}`;
@@ -4993,6 +4996,19 @@ function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): Action
   for (const positions of positionsByGroup.values()) {
     if (positions.length < 2) continue;
     const group = positions.map((i) => actions[i]!);
+    // A declared submit endpoint re-queried with a differing non-pagination
+    // field (a filter) is the flow's own search, not a redundant re-poll.
+    if (isDeclaredSubmit !== null && group.every((a) => isDeclaredSubmit(a.capture))) {
+      const sets = group.map((a) => captureRequestFields(a.capture));
+      const keys = new Set(sets.flatMap((f) => Object.keys(f)));
+      const filterVaries = [...keys].some(
+        (k) =>
+          !CACHE_BUSTER_QUERY_KEYS.has(k) &&
+          !PAGINATION_FIELD_NAME_PATTERN.test(fieldKeyLeafName(k)) &&
+          new Set(sets.map((f) => JSON.stringify(f[k]))).size > 1
+      );
+      if (filterVaries) continue;
+    }
     if (!isRedundantSameEndpointGroup(group, actions)) continue;
     const merged = mergeCollapsedGroupItemsIntoRepresentative(group);
     if (merged !== null) mergedRepresentativeByPosition.set(positions[0]!, merged);
@@ -17241,13 +17257,49 @@ export function classifySubmissionFlow(o: {
   gql: boolean;
   actionCaptureMethods: Array<string | null | undefined>;
   graphqlActionSequenceHasMutation: boolean;
+  /** A declared submit endpoint re-queried with differing filter bodies. */
+  isDeclaredPostSearchRead?: boolean;
 }): boolean {
   if (o.noReplayableActionFlow) return true;
-  if (o.isReadOnlyGetFlow || o.actionStepCount <= 1) return false;
+  if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
     : // A read flow whose manifest holds only GET captures is not a submission.
-      o.actionCaptureMethods.some((m) => (m ?? "").toUpperCase() !== "GET");
+      // OPTIONS preflights are transport, never a submission signal.
+      o.actionCaptureMethods.some((m) => {
+        const u = (m ?? "").toUpperCase();
+        return u !== "GET" && u !== "OPTIONS";
+      });
+}
+
+/** True when the declared submit pattern's non-OPTIONS, non-noise captures are
+ * one endpoint re-queried with >= 2 distinct JSON bodies (filter variations)
+ * and none is a form/multipart body (a wizard step or upload). */
+export function isDeclaredPostSearchRepeat(
+  captures: Capture[],
+  matchesDeclaredSubmit: (c: Capture) => boolean
+): boolean {
+  const hits = captures.filter(
+    (c) =>
+      c.method !== "GET" &&
+      c.method.toUpperCase() !== "OPTIONS" &&
+      !isNoiseUrl(c.url) &&
+      matchesDeclaredSubmit(c)
+  );
+  if (hits.length < 2) return false;
+  if (new Set(hits.map((c) => `${c.method} ${endpointKey(c.url)}`)).size !== 1) return false;
+  const jsonBody = (c: Capture): boolean => {
+    const raw = c.requestPostData;
+    if (typeof raw !== "string") return false;
+    try {
+      const v = JSON.parse(raw);
+      return v !== null && typeof v === "object";
+    } catch {
+      return false;
+    }
+  };
+  if (!hits.every(jsonBody)) return false;
+  return new Set(hits.map((c) => c.requestPostData)).size >= 2;
 }
 
 /** Generates a complete contract.ts source string for a plugin — exported so
@@ -17300,6 +17352,8 @@ export function emitContractTsParts(opts: {
   endpointPath: string;
   /** Derived GET input model (read-only REST GET flows); null/absent otherwise. */
   getInputModel?: GetInputModel | null;
+  /** A declared read-only POST search: no submission step, so no tracking merge. */
+  readOnlyPostSearch?: boolean;
   /** operationName recorded on the primary-operation capture selected by
    * {@link selectPrimaryGraphQLOperation} — when set, replaces the
    * `${pascal}Search` placeholder in the single-endpoint getGql() call. */
@@ -17446,6 +17500,7 @@ export function emitContractTsParts(opts: {
     gqlQuery,
     endpointPath,
     getInputModel: suppliedGetInputModel = null,
+    readOnlyPostSearch = false,
     gqlOperationName,
     gqlVariables,
     allCaptures = [],
@@ -18048,7 +18103,7 @@ export function emitContractTsParts(opts: {
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
   // A read-only GET flow has no submission step, so no tracking click fires.
-  const mergesTracking = !getInputModel;
+  const mergesTracking = !getInputModel && !readOnlyPostSearch;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
@@ -21021,7 +21076,10 @@ export async function main(): Promise<void> {
               false,
               primaryHost
             )
-          )
+          ),
+          submitPatterns.endpoint === null && submitPatterns.body === null
+            ? null
+            : compileSubmitMatcher(submitPatterns)
         );
     const patternedHeuristicActionCaptures =
       submitPatterns.endpoint === null && submitPatterns.body === null
@@ -21254,9 +21312,17 @@ export async function main(): Promise<void> {
     const actionSteps = isReadOnlyGetFlow && !readFlowHasDeclaredDrill ? [] : compiledActionSteps;
     const noReplayableActionFlow =
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
+    const isDeclaredPostSearchRead =
+      !gql &&
+      declaresSubmitPattern &&
+      isDeclaredPostSearchRepeat(
+        actionCaptures.map((a) => a.capture),
+        matchesDeclaredSubmit
+      );
     const isSubmissionFlow = classifySubmissionFlow({
       noReplayableActionFlow,
       isReadOnlyGetFlow,
+      isDeclaredPostSearchRead,
       actionStepCount: actionSteps.length,
       gql: !!gql,
       actionCaptureMethods: actionCaptures.map((a) => a.capture.method),
@@ -21689,6 +21755,7 @@ export async function main(): Promise<void> {
       gqlQuery,
       endpointPath,
       getInputModel,
+      readOnlyPostSearch: isDeclaredPostSearchRead,
       gqlOperationName: primaryGraphQLOperation
         ? (primaryGraphQLOperation.capture.operationName ??
           parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
