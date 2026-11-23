@@ -81,4 +81,15 @@ describe("navigateTo URL param -> co-varying body variable", () => {
     const m = correlateNavigateToParamsWithVariables(steps, c, c[0]!.variables);
     expect(m.size).toBe(0);
   });
+  it("ignores interleaved captures of other operations when matching order", () => {
+    const other = { ...cap({ x: 1 }), operationName: "Other", query: "query Other { o }" };
+    const mixed = [caps[0]!, other, caps[1]!, other];
+    const m = correlateNavigateToParamsWithVariables(steps, mixed, caps[0]!.variables);
+    expect(m.get("travelParty")).toEqual(["input", "travelParty"]);
+  });
+  it("does not wire when capture order disagrees with navigateTo step order", () => {
+    const reversed = [caps[1]!, caps[0]!];
+    const m = correlateNavigateToParamsWithVariables(steps, reversed, reversed[0]!.variables);
+    expect(m.size).toBe(0);
+  });
 });
