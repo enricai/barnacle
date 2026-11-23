@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  findFrozenVaryingDrillParams,
-  resolveFoldPlan,
-} from "@/scripts/recon-generate";
+import { findFrozenVaryingDrillParams, resolveFoldPlan } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
 const URL_ = "https://api.example.com/graphql";
@@ -42,8 +39,8 @@ function search(name: string | null, input: Record<string, unknown>): Capture {
 }
 const drill = gql(
   "ItemDetail",
-  "query ItemDetail($id: ID!) { item(id: $id) { itemId detail { rooms { code } } } }",
-  { id: "item-beta-222" },
+  "query ItemDetail($itemId: ID!) { item(id: $itemId) { itemId detail { rooms { code } } } }",
+  { itemId: "item-beta-222" },
   { data: { item: { itemId: "item-beta-222", detail: { rooms: [{ code: "R1" }] } } } }
 );
 
@@ -58,7 +55,7 @@ describe.each([
   ];
   const all = [...variants, drill];
   const actions = all.map((capture) => ({ capture, isMultipart: false }));
-  const anchor = `/graphql::${name ?? "anonymous"}`;
+  const anchor = `/graphql::${name ?? "search"}`;
 
   it("folds one drill onto the search primary", () => {
     const plans = resolveFoldPlan(actions, null, anchor);
