@@ -28,17 +28,17 @@ describe("anonymous GraphQL identity", () => {
     const search = [
       cap(
         ANON,
-        { input: { currencyCode: "USD", travelParty: 2 } },
+        { input: { currencyCode: "USD", partySize: 2 } },
         { data: { allItems: [{ name: "a" }] } }
       ),
       cap(
         ANON,
-        { input: { currencyCode: "GBP", travelParty: 2 } },
+        { input: { currencyCode: "GBP", partySize: 2 } },
         { data: { allItems: [{ name: "b" }] } }
       ),
       cap(
         ANON,
-        { input: { currencyCode: "USD", travelParty: 3 } },
+        { input: { currencyCode: "USD", partySize: 3 } },
         { data: { allItems: [{ name: "c" }] } }
       ),
     ];

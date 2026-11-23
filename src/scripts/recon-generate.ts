@@ -13340,7 +13340,13 @@ export function findFrozenVaryingDrillParams(
     }
   })();
   if (parsedBody !== undefined) {
+    // Same-operation GraphQL captures are one request issued with different
+    // inputs (payload variants), never a fold drill — only a DIFFERENT
+    // operation on the endpoint can be a drill whose params freeze.
+    const isGraphql = capture.query != null || capture.operationName != null;
+    const ownIdentity = operationGroupKey(capture);
     const otherBodies = sameEndpointCaptures
+      .filter((c) => !isGraphql || operationGroupKey(c) !== ownIdentity)
       .map((c) => {
         try {
           return typeof c.requestPostData === "string" && c.requestPostData.length > 0
@@ -13757,7 +13763,7 @@ function isFoldTargetAncestorScoped(
  * threaded field still bound to `itemVar` names a field that also lives on
  * an ancestor object under the SAME trailing path segment (e.g.
  * `itinerary.code` on both the item and, nested differently, on an
- * ancestor's `masterSailing.itinerary.code`) — even though that ancestor
+ * ancestor's `masterItem.itinerary.code`) — even though that ancestor
  * field's own VALUE differs from what was captured, since the ancestor's
  * representative sub-object (its master/lowest-price/etc. child) is not the
  * same runtime object as the loop item. Structural correspondence, not
@@ -15225,20 +15231,26 @@ export function collectRequestValuesIncludingHeaders(capture: Capture): Set<stri
 function resolveSpecMatchedPrimaryItemIndex(
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
-  drillCapture: Capture
+  drillCapture: Capture,
+  joinTemplate?: string
 ): number | null {
   const requestValues = collectRequestValuesIncludingHeaders(drillCapture);
   if (requestValues.size === 0) return null;
-  const matchedIndex = primaryItems.findIndex((item) =>
-    joinFields.every((field) => {
+  const templateTokens = joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
+  const matchedIndex = primaryItems.findIndex((item) => {
+    // A declared computed key matches on its composed value alone: the drill
+    // never carries the template's constituent fields separately.
+    const composed = templateTokens ? evalJoinTemplate(templateTokens, item) : undefined;
+    if (composed !== undefined && composed !== "" && requestValues.has(composed)) return true;
+    return joinFields.every((field) => {
       const value = readValueAtPath(item, field.split("."));
       return (
         (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
         (typeof value === "number" && requestValues.has(String(value))) ||
         (typeof value === "boolean" && requestValues.has(String(value)))
       );
-    })
-  );
+    });
+  });
   return matchedIndex === -1 ? null : matchedIndex;
 }
 
@@ -15256,20 +15268,26 @@ function resolveSpecMatchedPrimaryItemIndex(
 function resolveSpecMatchedPrimaryItemIndexFromResponse(
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
-  drillCapture: Capture
+  drillCapture: Capture,
+  joinTemplate?: string
 ): number | null {
   const responseValues = collectResponseLeafValues(drillCapture);
   if (responseValues.size === 0) return null;
-  const matchedIndex = primaryItems.findIndex((item) =>
-    joinFields.every((field) => {
+  const templateTokens = joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
+  const matchedIndex = primaryItems.findIndex((item) => {
+    // A declared computed key matches on its composed value alone: the drill
+    // never carries the template's constituent fields separately.
+    const composed = templateTokens ? evalJoinTemplate(templateTokens, item) : undefined;
+    if (composed !== undefined && composed !== "" && responseValues.has(composed)) return true;
+    return joinFields.every((field) => {
       const value = readValueAtPath(item, field.split("."));
       return (
         (typeof value === "string" && value.length > 0 && responseValues.has(value)) ||
         (typeof value === "number" && responseValues.has(String(value))) ||
         (typeof value === "boolean" && responseValues.has(String(value)))
       );
-    })
-  );
+    });
+  });
   return matchedIndex === -1 ? null : matchedIndex;
 }
 
@@ -15417,7 +15435,8 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
   // could ever match. Walking this instead of every index down to
   // `primaryStepIndex` is what collapses the backward search from
   // O(actions) to O(occurrences of the actual join value) per candidate.
-  candidateEntryIndicesDescending: readonly number[]
+  candidateEntryIndicesDescending: readonly number[],
+  joinTemplate?: string
 ): { entryIndex: number; primaryMatchedItemIndex: number } | null {
   resolveSpecMatchedPrimaryItemIndexAlongChainCallCount++;
   for (const entryIndex of candidateEntryIndicesDescending) {
@@ -15430,7 +15449,8 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
             const resolved = resolveSpecMatchedPrimaryItemIndex(
               primaryItems,
               joinFields,
-              actions[entryIndex]!.capture
+              actions[entryIndex]!.capture,
+              joinTemplate
             );
             matchedItemIndexCache.set(entryIndex, resolved);
             return resolved;
@@ -15731,7 +15751,8 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         spec.joinFields,
         drillStepIndex,
         matchedItemIndexCache,
-        candidateEntryIndicesDescending
+        candidateEntryIndicesDescending,
+        spec.joinTemplate
       );
       // A request-carried join value (checked above, across this whole
       // primary/drill chain) disambiguates unambiguously; only fall back to
@@ -15743,7 +15764,8 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
           const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndexFromResponse(
             primaryItems,
             spec.joinFields,
-            drill.capture
+            drill.capture,
+            spec.joinTemplate
           );
           return primaryMatchedItemIndex === null
             ? null
@@ -20375,7 +20397,7 @@ ${flowStepsBlock}
     logger,
     anthropic: buildAnthropicClient(),
     rephraseModel: buildRephraseModel(),
-    uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}${usesEmailStep ? "\n    allocatedInbox: allocatedInbox," : ""}
+    uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}${usesEmailStep ? "\n    allocatedInbox: allocatedInbox," : ""}${!isSubmissionFlow ? "\n    readOnly: true," : ""}
     sessionProxy,
   });
 
