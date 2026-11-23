@@ -17421,9 +17421,6 @@ export function emitContractTsParts(opts: {
   } = opts;
 
   const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
-  const sensitivePolicy = buildSensitiveRedactionPolicy(contractFlowSteps);
-  const sensitiveRedactionLiteral =
-    sensitivePolicy === undefined ? "" : `    redaction: ${JSON.stringify(sensitivePolicy)},\n`;
   /** Single source of truth for every GraphQL-emission decision below
    * (clientImport, gqlCacheBlock, queryConst, and both executeHttpBody
    * fetch-call sites) — `gql` alone can be true with a null `gqlQuery`,
@@ -17525,6 +17522,12 @@ export function emitContractTsParts(opts: {
     payloadFieldNames,
     formBodyFieldNames: collectFormBodyFieldNames(actionSteps),
   });
+  const sensitivePolicy = buildSensitiveRedactionPolicy(
+    contractFlowSteps,
+    usesApplicantContactSchema
+  );
+  const sensitiveRedactionLiteral =
+    sensitivePolicy === undefined ? "" : `    redaction: ${JSON.stringify(sensitivePolicy)},\n`;
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
   // A resolved drill-down fold plan on the single-primary getGql/httpClient
@@ -19216,13 +19219,15 @@ type FlowStepInput =
  * undefined when no step is tagged, so untagged flows emit nothing.
  */
 export function buildSensitiveRedactionPolicy(
-  flowSteps: readonly FlowStepInput[]
+  flowSteps: readonly FlowStepInput[],
+  canonicalise = false
 ): { digitKeys?: string[]; wordKeys?: string[] } | undefined {
   const digitKeys = new Set<string>();
   const wordKeys = new Set<string>();
   for (const step of flowSteps) {
     if (typeof step === "string" || !step.sensitive || !step.payloadField) continue;
-    (step.sensitive === "digits" ? digitKeys : wordKeys).add(step.payloadField);
+    const key = canonicalise ? canonicalPayloadField(step.payloadField) : step.payloadField;
+    (step.sensitive === "digits" ? digitKeys : wordKeys).add(key);
   }
   if (digitKeys.size === 0 && wordKeys.size === 0) return undefined;
   return {
@@ -19354,16 +19359,6 @@ function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
     step: isObj ? last.step : last,
     submitStep: isObj ? last.submitStep === true : false,
   });
-}
-
-/**
- * The single fact both emitters share: does the emitted flow carry any
- * submitStep, explicit or forced onto the last step? Only then may the
- * generated function claim `verified: true`.
- */
-function flowHasSubmitStep(flowSteps: FlowStepInput[], isSubmissionFlow: boolean): boolean {
-  if (flowSteps.some((s) => typeof s !== "string" && s.submitStep === true)) return true;
-  return isSubmissionFlow && flowSteps.length > 0 && !lastFlowStepDeclaresNonSubmit(flowSteps);
 }
 
 /**
@@ -19561,7 +19556,10 @@ export function emitConfigManifest(opts: {
   const contractCarriesResume = hasMultipartStep || usesApplicantContactSchema;
   const multipart = hasUploadStep && contractCarriesResume;
 
-  const sensitiveManifestPolicy = buildSensitiveRedactionPolicy(flowSteps);
+  const sensitiveManifestPolicy = buildSensitiveRedactionPolicy(
+    flowSteps,
+    usesApplicantContactSchema
+  );
   const manifest = {
     apiVersion: CONFIG_PLUGIN_API_VERSION,
     kind: CONFIG_PLUGIN_KIND,
@@ -19859,17 +19857,23 @@ export function emitBrowserFlowTs(opts: {
   // submitStep:true even when the source recon-flow.json step never declared
   // it, so the engine's pre-submit probe/StepVerificationError actually gates it.
   const lastStepLiteral = stepLiterals.at(-1);
-  const hasSubmitStep = flowHasSubmitStep(flowSteps, isSubmissionFlow);
   if (
     isSubmissionFlow &&
     lastStepLiteral !== undefined &&
     !lastFlowStepDeclaresNonSubmit(flowSteps)
   ) {
-    stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
-      /submitStep: (true|false)(?= \},)/,
-      "submitStep: true"
-    );
+    // Flag sits before optional navigateTo/emailStep keys, so match it
+    // anywhere (last occurrence) rather than only directly before ` },`.
+    const flagIdx = lastStepLiteral.lastIndexOf("submitStep: ");
+    if (flagIdx >= 0) {
+      stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
+        /^([\s\S]*)submitStep: (true|false)/,
+        "$1submitStep: true"
+      );
+    }
   }
+  // Derived from the emitted literals so the tail can never disagree with them.
+  const hasSubmitStep = stepLiterals.some((l) => /submitStep: true/.test(l));
 
   // Per-step frameSelector: emit it on the step object so the runtime's
   // `s.frameSelector ?? deps.frameSelector` drives the frame this step names.
