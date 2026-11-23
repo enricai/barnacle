@@ -11835,9 +11835,7 @@ export function emitMultiStepExecuteHttp(
         // per-call too, or its custom name freezes into an invariant
         // BASE_HEADERS-equivalent literal.
         if (isCredentialHeaderName(lower) && interpolated === v) {
-          perCallHeaderEntries.push(
-            `${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k)}\``
-          );
+          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k)}\``);
         } else if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
           perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
         }
