@@ -19839,6 +19839,10 @@ export function emitBrowserFlowTs(opts: {
     }
   }
 
+  // Only claim a verified submission when an emitted step actually carries
+  // submitStep:true (runHealingFlow verifies exactly those steps).
+  const hasSubmitStep = stepLiterals.some((l) => /submitStep: true(?= [,}])/.test(l));
+
   const flowStepsBlock =
     stepLiterals.length > 0
       ? stepLiterals.join("\n")
@@ -19945,18 +19949,23 @@ ${flowStepsBlock}
   // contract drift.${
     isSubmissionFlow
       ? `
-  // runHealingFlow above already verified the submit (submitStep:true), so the
+  ${
+    hasSubmitStep
+      ? `// runHealingFlow above already verified the submit (submitStep:true), so the
   // application is already committed at the ATS. A schema-validation or
   // watchdog-timeout throw from this trailing confirmation extract must not
   // propagate and trigger a duplicate re-dispatch — catch it, log it, and
-  // degrade to a not-confirmed result instead.
+  // degrade to a not-confirmed result instead.`
+      : `// No step declares submitStep, so runHealingFlow verified no submission:
+  // never claim verified:true. The confirmation extract is best-effort only.`
+  }
   try {
     const result = await guardedExtract(
       stagehand,
       "is a submission confirmation shown, and what is its reference number?",
       ${pascal}BrowserSchema
     );
-    return { ...result, verified: true } as unknown as ${pascal}Response;
+    return { ...result, verified: ${hasSubmitStep} } as unknown as ${pascal}Response;
   } catch (error) {
     logger.error(\`GuardedExtractError: post-submit confirmation extract failed on an already-verified submit, degrading to not-confirmed: \${error}\`);
     return { verified: false } as unknown as ${pascal}Response;
