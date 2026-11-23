@@ -3480,6 +3480,8 @@ function compileSubmitMatcher(patterns: SubmitPatterns | null): (capture: Captur
   const endpointRx = patterns.endpoint === null ? null : new RegExp(patterns.endpoint);
   const bodyRx = patterns.body === null ? null : new RegExp(patterns.body);
   return (capture: Capture): boolean => {
+    // A CORS preflight is never the declared submit; the runtime issues it itself.
+    if (capture.method?.toUpperCase() === "OPTIONS") return false;
     if (endpointRx !== null && !endpointRx.test(capture.url)) return false;
     if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? "")) return false;
     return true;
@@ -3563,7 +3565,10 @@ export function truncateActionSequenceAtSubmitPattern(
     if (matchesFoldReturn(sequence[i]!.capture)) lastFoldIndex = i;
   }
   if (lastSubmitIndex === -1) return [];
-  return sequence.slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1);
+  // Preflights are not emitted as steps (the runtime issues them itself).
+  return sequence
+    .slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1)
+    .filter((step) => step.capture.method?.toUpperCase() !== "OPTIONS");
 }
 
 /**
