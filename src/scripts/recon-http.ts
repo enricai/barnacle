@@ -567,7 +567,9 @@ export async function replayCapture(
           `[${capture.method}] ${capture.url} 401 → ${retry.response.status} with captured authorization (${replayable ? "token-replayable" : "needs-browser"})`
         );
       } catch (err) {
-        logger.warn(`auth re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`);
+        logger.warn(
+          `auth re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`
+        );
       }
     }
     const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, sentHeaders);
