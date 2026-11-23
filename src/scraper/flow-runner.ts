@@ -1258,7 +1258,7 @@ const BUTTON_VALUE_EXPR =
  * committed via the same resolved label regardless of which node carries it.
  */
 const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
-  const dec = (s) => { if (!s || s.indexOf("&") < 0) return s || ""; const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+  const dec = (s) => { let v = s || ""; for (let i = 0; i < 3 && v.indexOf("&") >= 0; i++) { const t = document.createElement("textarea"); t.innerHTML = v; if (t.value === v) break; v = t.value; } return v; };
   const norm = (s) => dec(s).replace(/\\s+/g, " ").trim();
   const nrm = (s) => (s || "").replace(/\\s+/g, " ").trim();
   const auto = el.getAttribute && el.getAttribute("data-automation-label");
@@ -10700,16 +10700,16 @@ async function tryPromptSelectorPrimitive(params: {
       if (alb) {
         const parts = [];
         for (const id of alb.split(/\\s+/)) { const el = document.getElementById(id); if (el) parts.push(el.textContent); }
-        if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim().slice(0, 600);
+        if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim();
       }
       // A trigger's aria-label can merely echo its placeholder ("Select One
       // Required"), which names no question — defer to the <label>/group lookup.
       const al = ariaLabelOf(w);
-      if (al) return al.slice(0, 600);
+      if (al) return al;
       const labelledIds = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
       for (const id of labelledIds) {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
-        if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
+        if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim();
       }
       // A label[for] naming a select/input/textarea in the trigger's own
       // container (the replaced native control the widget stands in for). A
@@ -10723,14 +10723,14 @@ async function tryPromptSelectorPrimitive(params: {
           if (!ctl.id || w.contains(ctl)) continue;
           if (pointerReaches(ctl) && (tabbable(ctl) || w.matches(popupLinkedSel))) continue;
           const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(ctl.id) : ctl.id) + "']");
-          if (lab && !w.contains(lab) && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
+          if (lab && !w.contains(lab) && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim();
         }
       }
       const grp = w.closest("[role='group'][aria-labelledby],fieldset");
       if (grp) {
         const gid = grp.getAttribute("aria-labelledby");
         const gref = gid ? document.getElementById(gid.split(/\\s+/)[0]) : grp.querySelector("legend");
-        if (gref && gref.textContent.trim()) return gref.textContent.replace(/\\s+/g, " ").trim().slice(0, 600);
+        if (gref && gref.textContent.trim()) return gref.textContent.replace(/\\s+/g, " ").trim();
       }
       // A trigger that declares no popup of its own has nothing tying it to the
       // surrounding text: that text names its neighbours as readily as it.
@@ -10738,7 +10738,7 @@ async function tryPromptSelectorPrimitive(params: {
       let node = w.parentElement;
       for (let d = 0; d < 5 && node; d++) {
         const t = (node.textContent || "").trim();
-        if (t) return t.replace(/\\s+/g, " ").trim().slice(0, 600);
+        if (t) return t.replace(/\\s+/g, " ").trim();
         node = node.parentElement;
       }
       return "";
@@ -10769,7 +10769,7 @@ async function tryPromptSelectorPrimitive(params: {
     const renderedBase = ${PROMPT_RENDERED_EXPR};
     const unreachable = new Set();
     const rendered = (e) => renderedBase(e) && !unreachable.has(e);
-    for (const el of document.querySelectorAll("[" + markAttr + "-mate],[" + markAttr + "-layered],[" + markAttr + "-ctr]")) { el.removeAttribute(markAttr + "-mate"); el.removeAttribute(markAttr + "-layered"); el.removeAttribute(markAttr + "-ctr"); }
+    for (const el of document.querySelectorAll("[" + markAttr + "-mate],[" + markAttr + "-layered],[" + markAttr + "-ctr],[" + markAttr + "-ctr2]")) { el.removeAttribute(markAttr + "-mate"); el.removeAttribute(markAttr + "-layered"); el.removeAttribute(markAttr + "-ctr"); el.removeAttribute(markAttr + "-ctr2"); }
     // A rendered role=combobox anchor with no aria-controls/aria-haspopup is
     // outside the trigger union; adopt it when an unrendered union opener shares
     // its label (the layered shape), so the rendered control becomes the widget.
@@ -10904,7 +10904,10 @@ async function tryPromptSelectorPrimitive(params: {
       // A layout-sized 0x0 opener passes the style-only rendered test; laid-out
       // geometry, when the DOM has any, singles out the visible trigger.
       const sized = outer.length > 1 ? outer.filter((c) => { const r = c.getBoundingClientRect(); return r.width > 0 && r.height > 0; }) : [];
-      const pick = sized.length === 1 ? sized : outer;
+      // Without layout geometry, an empty shell opener (no text of its own) is
+      // not the visible face: a single outer candidate showing text is.
+      const texted = outer.length > 1 && sized.length !== 1 ? outer.filter((c) => (c.textContent || "").trim() !== "") : [];
+      const pick = sized.length === 1 ? sized : texted.length === 1 ? texted : outer;
       if (pick.length !== 1) continue;
       const t = pick[0];
       if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText)) continue;
@@ -10950,7 +10953,10 @@ async function tryPromptSelectorPrimitive(params: {
     for (const w of widgets) {
       if (collapsed.has(w) || unreachable.has(w) || !isUnfilled(w)) continue;
       w.setAttribute(markAttr, String(idx));
-      if (w.parentElement) w.parentElement.setAttribute(markAttr + "-ctr", String(idx));
+      if (w.parentElement) {
+        w.parentElement.setAttribute(markAttr + "-ctr", String(idx));
+        if (w.parentElement.parentElement) w.parentElement.parentElement.setAttribute(markAttr + "-ctr2", String(idx));
+      }
       for (const [m, host] of collapsed) if (host === w && !layerHost.has(m)) m.setAttribute(markAttr + "-mate", String(idx));
       if (layerHost.size > 0 && Array.from(layerHost.values()).includes(w)) w.setAttribute(markAttr + "-layered", "1");
       candidates.push({ wIdx: idx, label: widgetLabel(w) });
@@ -11005,7 +11011,7 @@ async function tryPromptSelectorPrimitive(params: {
             : null;
     if (!chosen) {
       logger.info(
-        `prompt-selector primitive: no unambiguous widget match for ${optLabel} (candidates: ${candidates.map((c) => JSON.stringify(c.label)).join(", ")}); falling through to cascade`
+        `prompt-selector primitive: no unambiguous widget match for ${optLabel} (candidates: ${candidates.map((c) => JSON.stringify(c.label.slice(0, 120))).join(", ")}); falling through to cascade`
       );
       return null;
     }
@@ -11310,6 +11316,27 @@ async function tryPromptSelectorPrimitive(params: {
         enumerateOptionsExpr,
         (r) => isOwnScopePopup(r) && promptOptionsNameOption(r, option)
       );
+    }
+    // A filter that matches by exact substring can hide an option the committer
+    // would accept on letters/digits alone ("Other (Specify)" for "other specify").
+    // When the filtered list holds no real option, clear the filter and let the
+    // committer match against the full list.
+    if (realPromptOptions(optionsFiltered?.options ?? [], option).length === 0) {
+      try {
+        await target.locator(`[${PROMPT_OPTION_MARK_ATTR}-search="1"]`).first().fill("");
+        await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+        const full = await pollEnumerate<EnumerateOptionsResult>(
+          page,
+          target,
+          enumerateOptionsExpr,
+          (r) => isOwnScopePopup(r) && realPromptOptions(r?.options ?? [], option).length > 0
+        );
+        if (full?.optionsPresent) optionsFiltered = full;
+      } catch (err) {
+        logger.info(
+          `prompt-selector primitive: clearing filter failed for ${optLabel}: ${toErrorMessage(err)}`
+        );
+      }
     }
     if (!optionsFiltered?.optionsPresent) {
       logger.info(
@@ -11853,12 +11880,13 @@ async function commitPromptOption(params: {
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
     const isRequestedOption = norm(chosenOption.text) === wantOpt;
-    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
+    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf, requestedText) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const triggerReachable = ${PROMPT_TRIGGER_REACHABLE_EL_EXPR};
       const dec = (s) => { if (!s || s.indexOf("&") < 0) return s || ""; const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
       const norm = (s) => dec(s).replace(/\\s+/g, " ").trim().toLowerCase();
+      const edge = (x) => norm(x).replace(/^[^\\p{L}\\p{N}]+|[^\\p{L}\\p{N}]+$/gu, "");
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
@@ -11868,17 +11896,20 @@ async function commitPromptOption(params: {
         // The widget replaced itself after the commit: credit only a control now in
         // its stamped container holding exactly the requested option (letters/digits only).
         const alnum = (x) => (x || "").toLowerCase().replace(/[^\\p{L}\\p{N}]/gu, "");
-        const ctr = document.querySelector("[" + markAttr + '-ctr="' + wIdx + '"]');
+        // The widget's wrapper may be replaced along with it: fall back to the next ancestor.
+        const ctr = document.querySelector("[" + markAttr + '-ctr="' + wIdx + '"]') || document.querySelector("[" + markAttr + '-ctr2="' + wIdx + '"]');
         const want = alnum(wantText);
         if (ctr && want) {
           for (const c of Array.from(ctr.querySelectorAll("input, textarea, select, [role='combobox']"))) {
-            const v = c.tagName === "SELECT" ? (c.selectedIndex >= 0 && c.options[c.selectedIndex] ? c.options[c.selectedIndex].textContent : "") : (c.value !== undefined && c.value !== "" ? c.value : c.textContent);
+            const so = c.tagName === "SELECT" ? (c.selectedOptions && c.selectedOptions[0]) || (c.selectedIndex >= 0 ? c.options[c.selectedIndex] : null) : null;
+            const v = c.tagName === "SELECT" ? (so ? ((so.textContent || "").trim() || so.getAttribute("value") || so.value || "") : "") : (c.value !== undefined && c.value !== "" ? c.value : c.textContent);
             if (alnum(v) === want) return { ok: true, id: c.id || "", stillInvalid: false };
           }
         }
         return { ok: false, id: "", stillInvalid: false };
       }
-      const text = dec(currentText(w, valueSel, emptyRx));
+      const decode = (v) => { let r = v || ""; for (let i = 0; i < 3 && r.indexOf("&") >= 0; i++) { const t = document.createElement("textarea"); t.innerHTML = r; if (t.value === r) break; r = t.value; } return r; };
+      const text = decode(currentText(w, valueSel, emptyRx));
       const textMatches = wantText ? text.includes(wantText) : text !== "";
       let node = w;
       let stillInvalid = false;
@@ -11892,6 +11923,8 @@ async function commitPromptOption(params: {
       // (read-only — never written here) that, when its selected option's own
       // text is available, also matches the requested option.
       let hiddenSelectMatches = false;
+      // Without layout geometry an empty shell opener cannot be told from a covered one.
+      const laidOut = (() => { const r = document.documentElement.getBoundingClientRect(); return r.width > 0 && r.height > 0; })();
       if (!textMatches) {
         let cnode = w;
         for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && cnode && !hiddenSelectMatches; d++) {
@@ -11910,7 +11943,7 @@ async function commitPromptOption(params: {
             let pairedWithW = false;
             for (let sd = 0; sd < ${MAX_SELECTION_ANCESTOR_DEPTH} && snode && !pairedWithW; sd++) {
               const openersHere = snode.querySelectorAll
-                ? Array.from(snode.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== sel)
+                ? Array.from(snode.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== sel && (o === w || (triggerReachable(o) && (laidOut || (o.textContent || "").trim() !== ""))))
                 : [];
               if (openersHere.length > 0) {
                 pairedWithW = openersHere.includes(w);
@@ -11919,25 +11952,26 @@ async function commitPromptOption(params: {
               snode = snode.parentElement;
             }
             if (!pairedWithW) {
-              const wc = w.parentElement;
+              let wc = w.parentElement;
+              for (let wd = 0; wd < ${MAX_SELECTION_ANCESTOR_DEPTH} && wc && !wc.contains(sel); wd++) wc = wc.parentElement;
               pairedWithW = !!wc && wc.contains(sel) && Array.from(wc.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== w && o !== sel).every((o) => !triggerReachable(o));
             }
             if (!pairedWithW) continue;
             const v = (sel.value || "").trim();
             if (!v) continue;
-            const selOpt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
-            const optText = selOpt ? norm(selOpt.textContent || selOpt.label || "") : "";
+            const selOpt = sel.options ? (sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : Array.from(sel.options).find((o) => o.selected) || null) : null;
+            const optText = selOpt ? norm(selOpt.textContent || selOpt.getAttribute("label") || "") : "";
             // A selected option with no visible text (icon-only, value-only markup)
             // carries no corroborating signal — treating it as a match would credit
             // ANY selection change, including a different option than requested.
             if (wantText && optText && optText.includes(wantText)) { hiddenSelectMatches = true; break; }
-            if (wantText && !optText && selOpt && [selOpt.getAttribute("value"), selOpt.getAttribute("text")].some((a) => norm(a) === wantText)) { hiddenSelectMatches = true; break; }
+            if (wantText && !optText && selOpt && [selOpt.getAttribute("value"), selOpt.getAttribute("text")].some((a) => norm(a) === wantText || (requestedText && norm(a) === requestedText))) { hiddenSelectMatches = true; break; }
           }
           cnode = cnode.parentElement;
         }
       }
       // The widget's own announcement of what it committed is ground truth when readable.
-      const committed = announcedValue(w);
+      const committed = decode(announcedValue(w));
       if (committed) {
         return { ok: !!wantText && namesOption(committed, wantText), id: w.id || "", stillInvalid, committed };
       }
@@ -11951,7 +11985,7 @@ async function commitPromptOption(params: {
         return { ok: false, id: w.id || "", stillInvalid, committed: text };
       }
       return { ok: textMatches || hiddenSelectMatches, id: w.id || "", stillInvalid };
-    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedOption)})`;
+    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedOption)}, ${JSON.stringify(wantOpt)})`;
     type PromptReadback = { ok: boolean; id: string; stillInvalid: boolean; committed?: string };
     const runReadback = async (): Promise<PromptReadback> =>
       (await target
