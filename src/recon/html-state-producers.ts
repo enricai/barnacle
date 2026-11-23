@@ -165,7 +165,11 @@ function unescapePushPayloads(html: string): string {
   return out;
 }
 
-function tokensIn(text: string, source: HtmlBearerToken["source"], row?: string): HtmlBearerToken[] {
+function tokensIn(
+  text: string,
+  source: HtmlBearerToken["source"],
+  row?: string
+): HtmlBearerToken[] {
   const out: HtmlBearerToken[] = [];
   for (const m of text.matchAll(JWT_RE)) {
     const claims = jwtClaims(m[0]);
@@ -214,12 +218,13 @@ export function extractHtmlBearerTokens(body: unknown): HtmlBearerToken[] {
  */
 export function locateHtmlBearerToken(
   documents: ReadonlyArray<unknown>,
-  want: { value?: string; claims?: Record<string, unknown> },
+  want: { value?: string; claims?: Record<string, unknown> }
 ): HtmlBearerLocation | null {
   for (let i = 0; i < documents.length; i++) {
     for (const t of extractHtmlBearerTokens(documents[i])) {
       if (want.value !== undefined && t.token !== want.value) continue;
-      if (want.claims && !Object.entries(want.claims).every(([k, v]) => t.claims[k] === v)) continue;
+      if (want.claims && !Object.entries(want.claims).every(([k, v]) => t.claims[k] === v))
+        continue;
       return { ...t, document: i };
     }
   }
