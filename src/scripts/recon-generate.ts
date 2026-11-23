@@ -3590,6 +3590,25 @@ export function resolveManifestActionSequence(
   return resolved;
 }
 
+/**
+ * Filters a submit-manifest sequence through the flow's declared submit
+ * patterns so a URL-only manifest (every same-URL capture, page chrome
+ * included) is never authoritative over a declared submitBodyPattern /
+ * submitEndpointPattern. With no declared pattern, or when the pattern matches
+ * nothing in the manifest, the manifest is returned unchanged (never
+ * hard-fails on a pattern that does not apply).
+ */
+export function filterManifestByDeclaredSubmit(
+  manifest: ActionCapture[],
+  submitPatterns: SubmitPatterns | null
+): ActionCapture[] {
+  if (submitPatterns === null || (submitPatterns.endpoint === null && submitPatterns.body === null))
+    return manifest;
+  const matchesSubmit = compileSubmitMatcher(submitPatterns);
+  const matching = manifest.filter((a) => matchesSubmit(a.capture));
+  return matching.length > 0 ? matching : manifest;
+}
+
 /** Shortest string a response leaf must be to count as a server-issued token. */
 const ISSUED_TOKEN_MIN_LENGTH = 16;
 /** Longest string considered a token (a larger leaf is document content). */
@@ -21035,7 +21054,20 @@ export async function main(): Promise<void> {
         );
       }
     }
-    const manifestActionCaptures = resolveManifestActionSequence(runRoot, activeCaptures);
+    const resolvedManifestActionCaptures = resolveManifestActionSequence(runRoot, activeCaptures);
+    const manifestActionCaptures =
+      resolvedManifestActionCaptures === null
+        ? null
+        : filterManifestByDeclaredSubmit(resolvedManifestActionCaptures, submitPatterns);
+    if (
+      resolvedManifestActionCaptures !== null &&
+      manifestActionCaptures !== null &&
+      manifestActionCaptures.length < resolvedManifestActionCaptures.length
+    ) {
+      logger.info(
+        `submission selection: filtered submit-manifest.json from ${resolvedManifestActionCaptures.length} to ${manifestActionCaptures.length} capture(s) matching the declared submit pattern`
+      );
+    }
     // A manifest only ever records submit-pattern matches, so it can never
     // carry a declared foldReturn drill-down the heuristic sequence found
     // past the submit step — and a manifest padded by re-fired submits can
