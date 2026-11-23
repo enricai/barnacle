@@ -7,6 +7,7 @@ import { z } from "zod/v4";
 
 import { FieldViolationError, toApiError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
+import { createIdempotencyGuard, type IdempotencyGuard } from "@/cache/idempotency-guard";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
 import {
@@ -18,7 +19,6 @@ import {
   recordDdRateLimit,
   recordDdSuccess,
 } from "@/lib/dd-metrics";
-import { createIdempotencyGuard, type IdempotencyGuard } from "@/cache/idempotency-guard";
 import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
