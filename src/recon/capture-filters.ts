@@ -1294,7 +1294,8 @@ export function isZeroVarianceRepeatCapture(
     query?: string | null;
     status?: number;
     requestHeaders?: Record<string, string>;
-  }[]
+  }[],
+  isDeclaredSubmit?: (capture: { method: string; url: string }) => boolean
 ): boolean {
   let candidateUrl: URL;
   try {
@@ -1309,6 +1310,14 @@ export function isZeroVarianceRepeatCapture(
     captureEndpointIndexFor(allCaptures).byMethodEndpoint.get(
       `${candidate.method}::${candidateEndpoint}`
     ) ?? [];
+  // The flow's declared read-only submit endpoint re-issued with differing
+  // bodies is the flow's search action, never a beacon (any method).
+  if (
+    isDeclaredSubmit?.(candidate) &&
+    sameEndpoint.some((c) => c.requestPostData !== candidate.requestPostData)
+  ) {
+    return false;
+  }
   // A server-rendered form's redirect/HTML answer reads as "no response state"
   // below, but distinct bodies are distinct steps: never zero-variance.
   if (
