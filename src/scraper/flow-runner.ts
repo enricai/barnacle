@@ -11828,7 +11828,7 @@ async function commitPromptOption(params: {
             // carries no corroborating signal — treating it as a match would credit
             // ANY selection change, including a different option than requested.
             if (wantText && optText && optText.includes(wantText)) { hiddenSelectMatches = true; break; }
-            if (wantText && !optText && selOpt && [selOpt.getAttribute("value"), selOpt.getAttribute("text")].some((a) => norm(a) === wantText || edge(a) === edge(wantText) || (requestedText && (norm(a) === requestedText || edge(a) === edge(requestedText))))) { hiddenSelectMatches = true; break; }
+            if (wantText && !optText && selOpt && [selOpt.getAttribute("value"), selOpt.getAttribute("text")].some((a) => norm(a) === wantText || (requestedText && norm(a) === requestedText))) { hiddenSelectMatches = true; break; }
           }
           cnode = cnode.parentElement;
         }
