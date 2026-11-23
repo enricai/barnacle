@@ -1232,7 +1232,8 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
  * different option no longer does.
  */
 const PROMPT_NAMES_OPTION_EXPR = `((committed, wanted) => {
-  const words = (s) => " " + (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ";
+  const dec = (s) => { if (!s || s.indexOf("&") < 0) return s || ""; const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+  const words = (s) => " " + dec(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ";
   const want = words(wanted);
   return want.trim() === "" || words(committed).includes(want);
 })`;
@@ -11045,8 +11046,27 @@ const PROMPT_SELECTOR_SEARCH_WAIT_MS = 500;
 const PROMPT_SELECTOR_MAX_ENTER_SUBMITS = 2;
 
 /** Shared option-text normalisation so submit detection and commit agree on a match. */
-function normPromptOptionText(s: string): string {
-  return s.replace(/\s+/g, " ").trim().toLowerCase();
+export function normPromptOptionText(s: string): string {
+  return decodeHtmlCharRefs(s).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+const HTML_NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
+/** Decodes numeric and common named HTML character references; unknown ones are left as-is. */
+function decodeHtmlCharRefs(s: string): string {
+  return s.replace(/&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|([a-zA-Z]+));/g, (m, dec, hex, name) => {
+    if (name !== undefined) return HTML_NAMED_ENTITIES[name.toLowerCase()] ?? m;
+    const cp = dec !== undefined ? Number.parseInt(dec, 10) : Number.parseInt(hex, 16);
+    if (!(cp > 0 && cp <= 0x10ffff) || (cp >= 0xd800 && cp <= 0xdfff)) return m;
+    return String.fromCodePoint(cp);
+  });
 }
 
 /** Entries a widget renders when it holds no results (e.g. "No Items.", "No results for x"). */
@@ -11062,7 +11082,7 @@ const PROMPT_PLACEHOLDER_RE =
  * names nothing requested. Placeholder entries never count, even when they
  * echo the requested text.
  */
-function promptOptionsNameOption(
+export function promptOptionsNameOption(
   result: { options?: { text: string }[] } | null | undefined,
   option: string
 ): boolean {
@@ -11149,18 +11169,28 @@ async function sendTrustedKey(
 /**
  * Dispatches a trusted Enter to the focused element (the filter input) via the
  * target frame's CDP session. The browser's implicit submission of an enclosing
- * form is cancelled for this one keypress (bubble-phase preventDefault on window, after the target and
- * widget handlers have run, so they still see an uncancelled Enter); listeners are removed in a finally.
+ * form is cancelled for this one keypress (capture-phase preventDefault on window, which runs before any
+ * target or widget handler, so stopPropagation / stopImmediatePropagation there cannot defeat it; the
+ * handlers are still invoked, since only the default action is cancelled); listeners are removed in a finally.
  */
 async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> {
   const guardKey = "__leerieNoImplicitSubmit";
   // A failed install throws: Enter is never sent unguarded (the caller's catch breaks out).
   await target.evaluate(
     `(() => {
-      const h = (e) => { if (e.key === "Enter") e.preventDefault(); };
+      const deepActive = () => { let a = document.activeElement; while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement; return a; };
+      const h = (e) => { if (e.key !== "Enter") return; const a = deepActive(); if (a && a.form) e.preventDefault(); };
       window.${guardKey} = h;
-      window.addEventListener("keydown", h, false);
-      window.addEventListener("keypress", h, false);
+      // Earlier page handlers must not be able to stop the event before the guard runs:
+      // neutralise propagation stopping for Enter key events while the guard is installed.
+      const P = window.Event.prototype;
+      const origStop = P.stopPropagation, origImm = P.stopImmediatePropagation;
+      const isEnterKey = (e) => e && e.key === "Enter" && (e.type === "keydown" || e.type === "keypress");
+      P.stopPropagation = function () { if (!isEnterKey(this)) return origStop.call(this); };
+      P.stopImmediatePropagation = function () { if (!isEnterKey(this)) return origImm.call(this); };
+      window.${guardKey}Restore = () => { P.stopPropagation = origStop; P.stopImmediatePropagation = origImm; };
+      window.addEventListener("keydown", h, true);
+      window.addEventListener("keypress", h, true);
     })()`
   );
   try {
@@ -11176,9 +11206,11 @@ async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> 
         `(() => {
           const h = window.${guardKey};
           if (!h) return;
-          window.removeEventListener("keydown", h, false);
-          window.removeEventListener("keypress", h, false);
+          window.removeEventListener("keydown", h, true);
+          window.removeEventListener("keypress", h, true);
           delete window.${guardKey};
+          const r = window.${guardKey}Restore;
+          if (r) { r(); delete window.${guardKey}Restore; }
         })()`
       )
       .catch(() => undefined);
@@ -11479,7 +11511,8 @@ async function commitPromptOption(params: {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const triggerReachable = ${PROMPT_TRIGGER_REACHABLE_EL_EXPR};
-      const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+      const dec = (s) => { if (!s || s.indexOf("&") < 0) return s || ""; const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+      const norm = (s) => dec(s).replace(/\\s+/g, " ").trim().toLowerCase();
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
@@ -11499,7 +11532,7 @@ async function commitPromptOption(params: {
         }
         return { ok: false, id: "", stillInvalid: false };
       }
-      const text = currentText(w, valueSel, emptyRx);
+      const text = dec(currentText(w, valueSel, emptyRx));
       const textMatches = wantText ? text.includes(wantText) : text !== "";
       let node = w;
       let stillInvalid = false;
