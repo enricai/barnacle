@@ -52,6 +52,12 @@ describe("ERROR_CODES — new verification codes", () => {
   it("httpStatusForCode returns 429 for URL_LOCKED", () => {
     expect(httpStatusForCode(ERROR_CODES.URL_LOCKED)).toBe(429);
   });
+
+  it("UNKNOWN_OUTCOME is 2009, described, and maps to 409", () => {
+    expect(ERROR_CODES.UNKNOWN_OUTCOME).toBe(2009);
+    expect(ERROR_CODE_DESCRIPTIONS[ERROR_CODES.UNKNOWN_OUTCOME]).toBe("UNKNOWN_OUTCOME");
+    expect(httpStatusForCode(ERROR_CODES.UNKNOWN_OUTCOME)).toBe(409);
+  });
 });
 
 const validStatus = {
