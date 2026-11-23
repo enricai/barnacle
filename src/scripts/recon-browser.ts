@@ -852,6 +852,15 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      */
     browserFlowOnly: z.boolean().optional(),
     /**
+     * Declared retry budget for the generated plugin (positive integer).
+     * Lowers meta.maxAttempts; when combined with `irreversible`, the smaller wins.
+     */
+    maxAttempts: z.number().int().positive().optional(),
+    /**
+     * Declares the submission cannot be safely repeated; implies maxAttempts 1.
+     */
+    irreversible: z.boolean().optional(),
+    /**
      * Optional site-specific class-name prefixes that wrap form/error
      * state. The Haiku invalid-fields judge uses these as additional
      * structural evidence beyond framework-conventional patterns
