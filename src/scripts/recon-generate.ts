@@ -2041,7 +2041,7 @@ export function addClickUrlPathBindings(
     /^[A-Za-z][A-Za-z0-9]*$/.test(segments[i] ?? "") && (segments[i + 1] ?? "") !== "";
   const isShortIdWithSlug = (seg: string, i: number): boolean =>
     /^\d{3,}$/.test(seg) &&
-    (/^[A-Za-z0-9]+(?:-(?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(segments[i + 1] ?? "") ||
+    (/^[A-Za-z0-9]+(?:[-_.+](?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(segments[i + 1] ?? "") ||
       isSingleWordSlugAt(i + 1));
   const isIdSegmentAt = (i: number): boolean => {
     const seg = segments[i];
@@ -2061,8 +2061,8 @@ export function addClickUrlPathBindings(
     const slugAfterId =
       afterId &&
       ((isStateLikeSegment(seg) && seg.length >= MIN_STATE_VALUE_LENGTH) ||
-        (/-/.test(seg) &&
-          /^[A-Za-z0-9]+(?:-(?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(seg) &&
+        (/[-_.+]/.test(seg) &&
+          /^[A-Za-z0-9]+(?:[-_.+](?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(seg) &&
           isIdSegmentAt(i - 1)) ||
         (isSingleWordSlugAt(i) && isShortIdWithSlug(segments[i - 1] ?? "", i - 1)));
     if ((!isIdSegmentAt(i) && !slugAfterId) || into.has(seg)) return;
