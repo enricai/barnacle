@@ -17366,13 +17366,6 @@ export function isDeclaredPostSearchRepeat(
       matchesDeclaredSubmit(c)
   );
   if (hits.length < 2) return false;
-  // Any other real GET in the action sequence (an authz/listing step feeding a
-  // drill) makes this a multi-step chain, not a lone search.
-  const hitSet = new Set(hits);
-  if (
-    captures.some((c) => !hitSet.has(c) && c.method.toUpperCase() === "GET" && !isNoiseUrl(c.url))
-  )
-    return false;
   if (new Set(hits.map((c) => `${c.method} ${endpointKey(c.url)}`)).size !== 1) return false;
   const jsonBody = (c: Capture): boolean => {
     const raw = c.requestPostData;
