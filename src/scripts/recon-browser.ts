@@ -137,6 +137,7 @@ import {
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
+import { buildNavigateSettle, type CaptureTracker, createCaptureTracker } from "@/scraper/navigate";
 import {
   isPassiveNoopInstruction,
   isPlausibleStepDestination,
@@ -254,7 +255,8 @@ export function wireNetworkCapture(
   recentCaptures: string[],
   recentCaptureMeta: { method: string; status: number; url: string }[],
   getCurrentPhase: () => string,
-  getCurrentPageOrigin: () => string
+  getCurrentPageOrigin: () => string,
+  captureTracker?: CaptureTracker
 ): () => void {
   const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
@@ -270,6 +272,7 @@ export function wireNetworkCapture(
       // and let the cascade continue. The capture is forensic-only — the
       // happy-path doesn't read these files until something else fails.
       if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) bodyUnavailableCounter.n++;
+      captureTracker?.observe(capture.url, capture.requestPostData);
       try {
         writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
@@ -3121,6 +3124,7 @@ async function main(): Promise<void> {
           return new URL(url).origin;
         }
       };
+      const captureTracker = createCaptureTracker();
       const capture = createCaptureRebinder(page, (target) =>
         wireNetworkCapture(
           target,
@@ -3129,7 +3133,8 @@ async function main(): Promise<void> {
           recentCaptures,
           recentCaptureMeta,
           () => currentPhase,
-          currentPageOrigin
+          currentPageOrigin,
+          captureTracker
         )
       );
       const stopCapture = capture.stopAll;
@@ -3328,6 +3333,11 @@ async function main(): Promise<void> {
                     logger,
                     waitUntil: GOTO_WAIT_UNTIL,
                     timeoutMs: GOTO_TIMEOUT_MS,
+                    settle: buildNavigateSettle(
+                      captureTracker,
+                      submitEndpointPattern,
+                      submitBodyPattern
+                    ),
                   })
                 : executeStepWithHealing({
                     stagehand,
