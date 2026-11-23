@@ -552,22 +552,28 @@ export function wireSignalCapture(
       // browser says so via redirectHasExtraInfo. Skip that hop's slot so the
       // next hop's extra-info is not attributed to it.
       if (params.redirectHasExtraInfo === false) {
-        // A request extra-info already buffered for this slot, with no response
-        // extra-info for the hop, belongs to the next hop's request.
-        if (
-          reqExtraSeq.get(params.requestId) === hop + 1 &&
-          (respExtraSeq.get(params.requestId) ?? 0) <= hop
-        ) {
-          const from = hopKey(params.requestId, hop);
-          const moved = extraRequestHeaders.get(from);
+        // Response extra-info already buffered for this slot, though the hop
+        // has none, belongs to the next hop; its request extra-info too.
+        const rid = params.requestId;
+        const movedResp = (respExtraSeq.get(rid) ?? 0) === hop + 1;
+        const moveReq =
+          (reqExtraSeq.get(rid) ?? 0) === hop + 1 &&
+          (movedResp || (respExtraSeq.get(rid) ?? 0) <= hop);
+        const shift = (buf: Map<string, Record<string, string>>): void => {
+          const from = hopKey(rid, hop);
+          const moved = buf.get(from);
           if (moved) {
-            extraRequestHeaders.delete(from);
-            extraRequestHeaders.set(hopKey(params.requestId, hop + 1), moved);
+            buf.delete(from);
+            buf.set(hopKey(rid, hop + 1), moved);
           }
+        };
+        if (movedResp) {
+          shift(extraResponseHeaders);
+          hopSignal(hopKey(rid, hop + 1)).release();
         }
-        for (const seq of [respExtraSeq, reqExtraSeq]) {
-          seq.set(params.requestId, Math.max(seq.get(params.requestId) ?? 0, hop + 1));
-        }
+        if (moveReq) shift(extraRequestHeaders);
+        respExtraSeq.set(rid, Math.max(respExtraSeq.get(rid) ?? 0, hop + (movedResp ? 2 : 1)));
+        reqExtraSeq.set(rid, Math.max(reqExtraSeq.get(rid) ?? 0, hop + (moveReq ? 2 : 1)));
       }
       // Wait unless the browser declared there is no extra-info for this hop.
       const expectExtra =
