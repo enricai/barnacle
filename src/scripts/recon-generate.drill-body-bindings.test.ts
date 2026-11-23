@@ -36,3 +36,75 @@ describe("applyDrillParamBindings JSON body keys", () => {
     );
   });
 });
+
+describe("declared submit endpoint re-queried with differing body arrays", () => {
+  it("generates without a freeze error and without a drill chain", async () => {
+    const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { vi } = await import("vitest");
+    const { main } = await import("@/scripts/recon-generate");
+    const { RECON_GENERATE_CWD } = await import("@/scripts/recon-generate-cwd.test-helper");
+    const workDir = mkdtempSync(join(tmpdir(), "declared-facet-requery-"));
+    const runRoot = join(workDir, "run");
+    for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(runRoot, d), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), "[]");
+    const bodies = [
+      { filters: { tags: ["a"], mode: "any" }, page: 1 },
+      { filters: { tags: ["a", "b"], mode: "all" }, page: 1 },
+      { filters: { tags: ["c"], mode: "any" }, page: 1 },
+      { filters: { tags: ["c", "d", "e"], mode: "all" }, page: 1 },
+    ];
+    for (const [i, b] of bodies.entries()) {
+      const c = buildCapture({
+        url: "https://api.example.com/v1/catalog/query",
+        requestPostData: JSON.stringify(b),
+        responseBody: { items: [{ sku: `s${i}`, name: `thing ${i}` }] },
+        timestamp: `2024-01-01T00:00:${String(10 + i).padStart(2, "0")}Z`,
+      });
+      writeFileSync(
+        join(runRoot, "graphql", `${String(i).padStart(3, "0")}-capture.json`),
+        JSON.stringify({ ...c, method: "POST", phase: "action" })
+      );
+    }
+    const siteId = `declared-facet-requery-${process.pid}`;
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        submitEndpointPattern: "/v1/catalog/query",
+        steps: [{ step: "open catalog" }, { step: "apply filters and search" }],
+      })
+    );
+    const savedArgv = process.argv;
+    const savedCwd = process.cwd();
+    const spies = (["log", "info", "warn", "error"] as const).map((k) =>
+      vi.spyOn(console, k).mockImplementation(() => {})
+    );
+    try {
+      process.chdir(RECON_GENERATE_CWD);
+      process.argv = [
+        "node",
+        "recon-generate.ts",
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ];
+      await main();
+      const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+      expect(contract).toContain("/v1/catalog/query");
+      expect(contract).not.toMatch(/would freeze/);
+    } finally {
+      process.argv = savedArgv;
+      process.chdir(savedCwd);
+      for (const sp of spies) sp.mockRestore();
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(siteOutDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
