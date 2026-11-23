@@ -94,7 +94,7 @@ vi.mock("@/scraper/spa-readiness", async (importOriginal) => {
 });
 
 import { createBrowserSession } from "@/scraper/session";
-import { main, parseCli } from "@/scripts/recon-browser";
+import { main } from "@/scripts/recon-browser";
 
 function makeFakePage(getUrl: () => string = (): string => "https://example.com"): {
   page: Page;
@@ -125,7 +125,6 @@ function makeFakePage(getUrl: () => string = (): string => "https://example.com"
   } as unknown as Stagehand;
   return { page, stagehand };
 }
-
 
 describe("recon-browser main() — declareOnly steps are recorded, never executed", () => {
   const ORIGINAL_ARGV = process.argv;
