@@ -135,7 +135,7 @@ describe("recon-generate CLI — read flow with incidental same-origin chrome", 
     expect(contract).toMatch(/date_from/);
     expect(contract).toMatch(/date_to/);
     expect(contract).not.toContain("/a/visits");
-    expect(contract).not.toContain("session-token.json");
+    expect(contract).not.toContain("open-slots-token.json");
   }, 60_000);
 
   it("keeps the mint as a step when the declared read re-sends its token", () => {
