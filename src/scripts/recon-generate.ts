@@ -19451,6 +19451,19 @@ function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
 }
 
 /**
+ * The generated plugin's retry budget, decided once for both emitters:
+ * an irreversibility signal forces 1, else the flow-declared value, else null
+ * (engine default).
+ */
+export function resolveMaxAttempts(o: {
+  createsAccount?: boolean;
+  declared?: number | null;
+}): number | null {
+  if (o.createsAccount) return 1;
+  return o.declared ?? null;
+}
+
+/**
  * Emits a config-only plugin manifest (`<siteId>.plugin.json`) from the recon
  * flow, as an alternative to the `.ts` trio for browser-only sites. Reuses the
  * SAME `resolveStepPayloadField` splice logic as the browser-flow emitter, so
@@ -19468,19 +19481,6 @@ function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
  * for the imperative hot path a JSON manifest cannot express. Absent that, the
  * browser `flow` is the only execution path, and the field is omitted.
  */
-/**
- * The generated plugin's retry budget, decided once for both emitters:
- * an irreversibility signal forces 1, else the flow-declared value, else null
- * (engine default).
- */
-export function resolveMaxAttempts(o: {
-  createsAccount?: boolean;
-  declared?: number | null;
-}): number | null {
-  if (o.createsAccount) return 1;
-  return o.declared ?? null;
-}
-
 export function emitConfigManifest(opts: {
   siteId: string;
   /**
