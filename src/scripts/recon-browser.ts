@@ -58,11 +58,6 @@
  * per act; healing and replans push the upper bound higher on flaky sites).
  */
 
-import {
-  buildNavigateSettle,
-  type CaptureTracker,
-  createCaptureTracker,
-} from "@/scraper/navigate";
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -142,6 +137,7 @@ import {
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
+import { buildNavigateSettle, type CaptureTracker, createCaptureTracker } from "@/scraper/navigate";
 import {
   isPassiveNoopInstruction,
   isPlausibleStepDestination,

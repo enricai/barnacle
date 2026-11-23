@@ -2,12 +2,12 @@ import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
 import { StepVerificationError } from "@/scraper/errors";
+import { executeNavigateStep, GOTO_TIMEOUT_MS } from "@/scraper/flow-runner";
 import {
   buildNavigateSettle,
   createCaptureTracker,
   NAVIGATE_SETTLE_QUIET_MS,
 } from "@/scraper/navigate";
-import { executeNavigateStep, GOTO_TIMEOUT_MS } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 const testLogger = {
