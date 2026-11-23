@@ -11782,6 +11782,8 @@ async function commitPromptOption(params: {
       // (read-only — never written here) that, when its selected option's own
       // text is available, also matches the requested option.
       let hiddenSelectMatches = false;
+      // Without layout geometry an empty shell opener cannot be told from a covered one.
+      const laidOut = (() => { const r = document.documentElement.getBoundingClientRect(); return r.width > 0 && r.height > 0; })();
       if (!textMatches) {
         let cnode = w;
         for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && cnode && !hiddenSelectMatches; d++) {
@@ -11800,7 +11802,7 @@ async function commitPromptOption(params: {
             let pairedWithW = false;
             for (let sd = 0; sd < ${MAX_SELECTION_ANCESTOR_DEPTH} && snode && !pairedWithW; sd++) {
               const openersHere = snode.querySelectorAll
-                ? Array.from(snode.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== sel && (o === w || triggerReachable(o)))
+                ? Array.from(snode.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== sel && (o === w || (triggerReachable(o) && (laidOut || (o.textContent || "").trim() !== ""))))
                 : [];
               if (openersHere.length > 0) {
                 pairedWithW = openersHere.includes(w);
