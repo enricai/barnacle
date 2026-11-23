@@ -18072,7 +18072,8 @@ export function emitContractTsParts(opts: {
   // A read-only GET flow has no submission step, so no tracking click fires.
   // A browser-only submission flow that is not a job application (per the
   // applicant decision) has no job tracking click to carry.
-  const nonJobBrowserOnly = omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema;
+  const nonJobBrowserOnly =
+    omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema;
   const mergesTracking = !getInputModel && !nonJobBrowserOnly;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
