@@ -18778,14 +18778,15 @@ ${executeHttpBody}
   // Derived here as well as from the caller's flag: a caller that hands over
   // flowSteps but not the browser-flow emitter's signal must not ship a
   // retry-enabled account-creating flow.
+  const accountSignal = createsAccount || contractFlowSteps.some(stepUsesReconPassword);
   const contractMaxAttempts = resolveMaxAttempts({
-    createsAccount: createsAccount || contractFlowSteps.some(stepUsesReconPassword),
+    createsAccount: accountSignal,
     declared: resolvedMaxAttempts,
   });
   const maxAttemptsLiteral =
     contractMaxAttempts === null
       ? ""
-      : `\n    // ${contractMaxAttempts === 1 ? "A retry could repeat an irreversible submission (e.g. re-register the same account)." : "Retry budget declared by the flow file."}\n    maxAttempts: ${contractMaxAttempts},`;
+      : `\n    // ${accountSignal ? "A retry would re-register the same account the first attempt created." : contractMaxAttempts === 1 ? "A retry could repeat an irreversible submission." : "Retry budget declared by the flow file."}\n    maxAttempts: ${contractMaxAttempts},`;
   const extraRedaction = buildExtraFieldRedaction(extraPayloadFields);
   const redactionLiteral = extraRedaction
     ? `\n    redaction: ${JSON.stringify(extraRedaction)},`
