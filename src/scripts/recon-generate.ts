@@ -2038,7 +2038,8 @@ export function addClickUrlPathBindings(
   // length floor still applies so it cannot collide with arbitrary substrings.
   // A single-word slug (`/jobs/123/nurse/login`) counts only when more path follows it.
   const isSingleWordSlugAt = (i: number): boolean =>
-    /^[A-Za-z][A-Za-z0-9]*$/.test(segments[i] ?? "") && (segments[i + 1] ?? "") !== "";
+    /^[A-Za-z][A-Za-z0-9]*$/.test(segments[i] ?? "") &&
+    ((segments[i + 1] ?? "") !== "" || (i === segments.length - 1 && u.search !== ""));
   const isShortIdWithSlug = (seg: string, i: number): boolean =>
     /^\d{3,}$/.test(seg) &&
     (/^[A-Za-z0-9]+(?:[-_.+](?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(segments[i + 1] ?? "") ||
