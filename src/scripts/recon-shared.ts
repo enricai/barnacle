@@ -428,7 +428,10 @@ export function readDeclaredMaxAttempts(flowFile: string): number | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
     if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return null;
-    const { maxAttempts, irreversible } = parsed as { maxAttempts?: unknown; irreversible?: unknown };
+    const { maxAttempts, irreversible } = parsed as {
+      maxAttempts?: unknown;
+      irreversible?: unknown;
+    };
     const declared =
       typeof maxAttempts === "number" && Number.isInteger(maxAttempts) && maxAttempts > 0
         ? maxAttempts
