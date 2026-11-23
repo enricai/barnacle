@@ -2936,7 +2936,11 @@ export function selectPrimaryGraphQLOperation(
  * its requests, is not one. Always false for GET: a read is judged by its
  * response, not its recurrence.
  */
-function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
+function nonGetBeaconPredicate(
+  pool: Capture[],
+  submitPatterns: SubmitPatterns | null = null
+): (c: Capture) => boolean {
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   const occurrences = new Map<string, Capture[]>();
   for (const c of pool) {
     if (c.method === "GET") continue;
@@ -2955,7 +2959,7 @@ function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
   };
   return (c) => {
     if (c.method === "GET") return false;
-    if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool)) return true;
+    if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool, isDeclaredSubmit)) return true;
     const same = occurrences.get(`${c.method} ${endpointKey(c.url)}`) ?? [];
     // A server-rendered form submit whose body differs from another same-endpoint
     // capture is a distinct step, not a beacon.
@@ -3022,7 +3026,7 @@ export function firstEndpointCapture(
   // A non-GET only beats a read when it can be the flow's real endpoint
   // ({@link isRecurringNonGetBeacon}): "any non-GET wins" let a bot-manager's
   // recurring sensor POST outrank the GET search that produced the flow's data.
-  const isRecurringBeacon = nonGetBeaconPredicate(pool);
+  const isRecurringBeacon = nonGetBeaconPredicate(pool, submitPatterns);
   const nonGet = pool.find((c) => c.method !== "GET" && valid(c) && !isRecurringBeacon(c));
   if (nonGet) return nonGet;
   // Read-only REST flow: prefer a successful non-noise GET, richest query first
@@ -3483,6 +3487,29 @@ function compileSubmitMatcher(patterns: SubmitPatterns | null): (capture: Captur
 }
 
 /**
+ * Matcher for the flow's DECLARED submit endpoint/body (never true when none
+ * is declared, and never for OPTIONS preflights). Unlike
+ * {@link compileSubmitMatcher}, an absent declaration matches nothing, so it
+ * is safe to hand to {@link isZeroVarianceRepeatCapture} as its declared-submit
+ * exemption.
+ */
+function compileDeclaredSubmitMatcher(
+  patterns: SubmitPatterns | null
+): (capture: { method: string; url: string; requestPostData?: string | null }) => boolean {
+  if (patterns === null || (patterns.endpoint === null && patterns.body === null)) {
+    return () => false;
+  }
+  const endpointRx = patterns.endpoint === null ? null : new RegExp(patterns.endpoint);
+  const bodyRx = patterns.body === null ? null : new RegExp(patterns.body);
+  return (capture) => {
+    if (capture.method.toUpperCase() === "OPTIONS") return false;
+    if (endpointRx !== null && !endpointRx.test(capture.url)) return false;
+    if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? "")) return false;
+    return true;
+  };
+}
+
+/**
  * Restricts a single-endpoint primary-capture candidate pool to captures
  * matching the flow's declared submit pattern, when one is declared AND at
  * least one candidate in the pool matches it. A pattern that matches nothing
@@ -3760,6 +3787,7 @@ export function extractActionSequence(
   // body pattern (no endpoint pattern) is just as author-declared and
   // authoritative, so its genuine matches must not be dropped as
   // "structurally isolated" once same-host noise outnumbers them.
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   const declaredSubmitEndpointRx =
     submitPatterns?.endpoint != null ? new RegExp(submitPatterns.endpoint) : null;
   const matchesDeclaredSubmitEndpoint = (capture: Capture): boolean =>
@@ -3809,7 +3837,7 @@ export function extractActionSequence(
       if ((capture.status < 200 || capture.status >= 300) && !isServerRenderedFormSubmit(capture))
         return false;
       if (isNoiseUrl(capture.url)) return false;
-      if (index !== firstPrimaryIndex && isZeroVarianceRepeatCapture(capture, captures))
+      if (index !== firstPrimaryIndex && isZeroVarianceRepeatCapture(capture, captures, isDeclaredSubmit))
         return false;
       if (index !== firstPrimaryIndex && !matchesSubmit(capture)) return false;
       if (
@@ -4424,6 +4452,7 @@ export function extractGraphQLActionSequence(
   primaryHost: string | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
   const matchesFoldReturnResults = compileFoldReturnResultsMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
@@ -4439,7 +4468,7 @@ export function extractGraphQLActionSequence(
     .filter(({ capture }) => {
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
-      if (isZeroVarianceRepeatCapture(capture, captures)) return false;
+      if (isZeroVarianceRepeatCapture(capture, captures, isDeclaredSubmit)) return false;
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
@@ -21156,7 +21185,7 @@ export async function main(): Promise<void> {
     const readSiblings = readFlowWinner ? sameRouteGetSiblings(readFlowWinner, activeCaptures) : [];
     // Recurring beacons (a bot-manager's sensor POSTs) in the action sequence are
     // page chrome, not steps of the flow: they must not turn a read into a submission.
-    const isRecurringReadFlowBeacon = nonGetBeaconPredicate(activeCaptures);
+    const isRecurringReadFlowBeacon = nonGetBeaconPredicate(activeCaptures, submitPatterns);
     // A flow that declares its submit endpoint names the only non-GET that can
     // be its submission: a non-GET outside that pattern whose response no later
     // step consumes (a one-off analytics or consent POST) is page chrome, not a
