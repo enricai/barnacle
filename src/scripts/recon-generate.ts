@@ -13244,6 +13244,32 @@ export function findFrozenVaryingDrillParams(
   return frozen;
 }
 
+/**
+ * Payload-variant evidence: the dotted `variables` paths whose primitive value
+ * differs across captures sharing `primary`'s operation identity
+ * ({@link operationGroupKey}). Those captures are one request issued with
+ * different inputs, so each differing path is a caller-supplied payload field
+ * (never a fold drill). Order follows the primary's own variables.
+ */
+export function collectPayloadVariantFields(
+  primary: Capture,
+  allCaptures: readonly Capture[]
+): string[] {
+  const identity = operationGroupKey(primary);
+  const siblings = allCaptures.filter((c) => c !== primary && operationGroupKey(c) === identity);
+  const fields: string[] = [];
+  for (const { path, value } of walkAllPrimitiveLeaves(primary.variables ?? {})) {
+    if (
+      siblings.some((c) => {
+        const other = readValueAtPath(c.variables ?? {}, path);
+        return other !== undefined && other !== value;
+      })
+    )
+      fields.push(path.join("."));
+  }
+  return fields;
+}
+
 /** Renders a {@link FoldReturnSpec.drillParamBindings} entry's default value
  * as a JS literal — a `string` default is quoted so the emitted `??` operand
  * is valid source text, while `int`/`boolean` defaults print as their bare
