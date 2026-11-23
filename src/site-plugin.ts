@@ -110,7 +110,7 @@ export interface SitePluginExtraRoute {
 }
 
 /** Outcome of a failed attempt: `failed` is safe to retry; `unknown` means an irreversible step may have occurred. */
-export type IdempotencyFailureClass = 'failed' | 'unknown';
+export type IdempotencyFailureClass = "failed" | "unknown";
 
 /** Plugin-declared idempotency contract; see `SitePluginMeta.idempotency`. */
 export interface PluginIdempotency {
