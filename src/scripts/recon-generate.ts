@@ -3837,7 +3837,10 @@ export function extractActionSequence(
       if ((capture.status < 200 || capture.status >= 300) && !isServerRenderedFormSubmit(capture))
         return false;
       if (isNoiseUrl(capture.url)) return false;
-      if (index !== firstPrimaryIndex && isZeroVarianceRepeatCapture(capture, captures, isDeclaredSubmit))
+      if (
+        index !== firstPrimaryIndex &&
+        isZeroVarianceRepeatCapture(capture, captures, isDeclaredSubmit)
+      )
         return false;
       if (index !== firstPrimaryIndex && !matchesSubmit(capture)) return false;
       if (
