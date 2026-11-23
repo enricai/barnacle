@@ -49,7 +49,8 @@ describe("recon-generate in-process — declared submit pattern with incidental 
         timestamp: "2024-02-01T00:00:03Z",
       }),
     ];
-    caps.forEach((c, i) => writeFileSync(join(capturesDir, `00${i}-cap.json`), JSON.stringify(c)));
+    for (const [i, c] of caps.entries())
+      writeFileSync(join(capturesDir, `00${i}-cap.json`), JSON.stringify(c));
     const siteId = `incidental-post-ip-${process.pid}`;
     const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
     dirs.push(siteOutDir);
