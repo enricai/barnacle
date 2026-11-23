@@ -155,11 +155,27 @@ function namesAWidgetLabel(instruction: string, span: QuotedSpan): boolean {
  * yield Texas, not the label. Any other step (`Fill`/`Enter`/`Type`) names the
  * field label first and the value last, so it is the LAST quoted span.
  */
-function pickValueSpan(instruction: string, spans: readonly QuotedSpan[]): QuotedSpan {
+function pickValueSpan(
+  instruction: string,
+  spans: readonly QuotedSpan[],
+  knownValue?: string | null
+): QuotedSpan {
+  // Identity match: when the recon-typed value is known, the span carrying it IS the value.
+  if (knownValue) {
+    const want = knownValue.trim().toLowerCase();
+    const hit = spans.find((span) => span.text.trim().toLowerCase() === want);
+    if (hit) return hit;
+  }
   const verb = /\b(select|choose|pick)\b/i.exec(instruction);
   const afterVerb = verb ? spans.filter((span) => span.start >= verb.index + verb[0].length) : [];
   const answer = afterVerb.find((span) => !namesAWidgetLabel(instruction, span)) ?? afterVerb[0];
-  return answer ?? spans[spans.length - 1]!;
+  if (answer) return answer;
+  // Non-select grammar: value last — but a trailing span that names a widget
+  // ("... so a 'players:' list opens") is a label, not the value.
+  for (let i = spans.length - 1; i >= 0; i--) {
+    if (!namesAWidgetLabel(instruction, spans[i]!)) return spans[i]!;
+  }
+  return spans[spans.length - 1]!;
 }
 
 /**
@@ -175,7 +191,8 @@ function pickValueSpan(instruction: string, spans: readonly QuotedSpan[]): Quote
  * @returns null when the instruction carries no spliceable site
  */
 function locateSpliceSite(
-  instruction: string
+  instruction: string,
+  knownValue?: string | null
 ): { before: string; matched: string; after: string } | null {
   const envToken = RESERVED_ENV_TOKEN.exec(instruction);
   if (envToken) {
@@ -187,7 +204,7 @@ function locateSpliceSite(
   }
   const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
-  const span = pickValueSpan(instruction, spans);
+  const span = pickValueSpan(instruction, spans, knownValue);
   return {
     before: instruction.slice(0, span.start + 1),
     matched: instruction.slice(span.start + 1, span.end - 1),
@@ -19223,10 +19240,11 @@ function escapeForTemplateLiteral(segment: string): string {
 export function buildStepInstructionExpr(
   instruction: string,
   field: string | null,
-  capturedFallback = false
+  capturedFallback = false,
+  knownValue: string | null = null
 ): string {
   if (field === null) return JSON.stringify(instruction);
-  const site = locateSpliceSite(instruction);
+  const site = locateSpliceSite(instruction, knownValue);
   if (site === null) return JSON.stringify(instruction);
   const captured = pickedQuotedValue(instruction);
   const read =
@@ -19246,9 +19264,10 @@ export function buildStepInstructionExpr(
 function buildCompositeStepInstructionExpr(
   instruction: string,
   fieldA: string,
-  fieldB: string
+  fieldB: string,
+  knownValue: string | null = null
 ): string {
-  const site = locateSpliceSite(instruction);
+  const site = locateSpliceSite(instruction, knownValue);
   if (site === null) return JSON.stringify(instruction);
   return `\`${escapeForTemplateLiteral(site.before)}\${payload.${fieldA}} \${payload.${fieldB}}${escapeForTemplateLiteral(site.after)}\``;
 }
@@ -19285,9 +19304,13 @@ function buildPasswordInstructionExpr(instruction: string): string {
  * emitter never lands the splice on a selector's or label's quoted span, the
  * same guarantee {@link buildStepInstructionExpr} makes.
  */
-function buildManifestInstruction(instruction: string, field: string | null): string {
+function buildManifestInstruction(
+  instruction: string,
+  field: string | null,
+  knownValue: string | null = null
+): string {
   if (field === null) return instruction;
-  const site = locateSpliceSite(instruction);
+  const site = locateSpliceSite(instruction, knownValue);
   if (site === null) return instruction;
   return `${site.before}{{ .request.${field} }}${site.after}`;
 }
@@ -19450,7 +19473,11 @@ export function emitConfigManifest(opts: {
       canonicalise
     );
     if (field !== null) payloadFieldNames.add(field);
-    const rewritten = buildManifestInstruction(instruction, field);
+    const rewritten = buildManifestInstruction(
+      instruction,
+      field,
+      field !== null ? (knownFieldValues.get(field) ?? null) : null
+    );
     const optional = isObj ? step.optional === true : false;
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
@@ -19805,7 +19832,8 @@ export function emitBrowserFlowTs(opts: {
         : buildStepInstructionExpr(
             instruction,
             field,
-            field !== null && capturedFallbackFields.has(field)
+            field !== null && capturedFallbackFields.has(field),
+            field !== null ? (knownFieldValues.get(field) ?? null) : null
           );
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
