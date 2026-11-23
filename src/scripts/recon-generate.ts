@@ -17289,6 +17289,15 @@ export function isDeclaredPostSearchRepeat(
       matchesDeclaredSubmit(c)
   );
   if (hits.length < 2) return false;
+  // Any other real GET in the action sequence (an authz/listing step feeding a
+  // drill) makes this a multi-step chain, not a lone search.
+  const hitSet = new Set(hits);
+  if (
+    captures.some(
+      (c) => !hitSet.has(c) && c.method.toUpperCase() === "GET" && !isNoiseUrl(c.url)
+    )
+  )
+    return false;
   if (new Set(hits.map((c) => `${c.method} ${endpointKey(c.url)}`)).size !== 1) return false;
   const jsonBody = (c: Capture): boolean => {
     const raw = c.requestPostData;
@@ -21317,6 +21326,8 @@ export async function main(): Promise<void> {
     const isDeclaredPostSearchRead =
       !gql &&
       declaresSubmitPattern &&
+      // An explicit submitStep means the author declared a submission, not a read.
+      !flowSteps.some((st) => typeof st !== "string" && st.submitStep === true) &&
       isDeclaredPostSearchRepeat(
         actionCaptures.map((a) => a.capture),
         matchesDeclaredSubmit
