@@ -347,6 +347,18 @@ export function readBrowserFlowOnly(flowFile: string): boolean {
   return (parsed as { browserFlowOnly?: unknown } | null)?.browserFlowOnly === true;
 }
 
+/**
+ * Reads the explicit top-level `applicantContract` declaration out of a recon
+ * flow file: true/false when declared as a boolean, undefined when absent,
+ * non-boolean, or the legacy bare-array shape.
+ */
+export function readApplicantContract(flowFile: string): boolean | undefined {
+  const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+  if (Array.isArray(parsed)) return undefined;
+  const v = (parsed as { applicantContract?: unknown } | null)?.applicantContract;
+  return typeof v === "boolean" ? v : undefined;
+}
+
 /** True when the replay got a 2xx response, whether or not its shape matched the capture. */
 export function replayReachable(r: ReplayResult): boolean {
   return r.replayStatus !== null && r.replayStatus >= 200 && r.replayStatus < 300;

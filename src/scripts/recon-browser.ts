@@ -849,6 +849,8 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * a browser-flow-only plugin regardless of HTTP analysis.
      */
     browserFlowOnly: z.boolean().optional(),
+    /** Explicitly declares whether the flow is a job-application contract (overrides inference). */
+    applicantContract: z.boolean().optional(),
     /**
      * Optional site-specific class-name prefixes that wrap form/error
      * state. The Haiku invalid-fields judge uses these as additional
