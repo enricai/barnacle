@@ -245,3 +245,45 @@ describe("isMidFlowAdvanceCredited caller wiring", () => {
     expect(bodies[1]).toContain("invalidMarkerDelta: invalidMarkerCount - preInvalidMarkerCount");
   });
 });
+
+describe("isMidFlowAdvanceCredited 'Save and Continue' blocked submit", () => {
+  // Step: "Click the 'Save and Continue' button to save the profile and advance to the next step"
+  const blocked = {
+    midFlowSubmit: true,
+    signalAdvanced: false,
+    judgeUnavailable: false,
+    networkAdvanced: false,
+    pageAdvanced: false,
+    invalidMarkerCount: 2,
+    invalidMarkerDelta: 2,
+  };
+
+  it("does not credit a weak signal when markers grew", () => {
+    expect(isMidFlowAdvanceCredited(blocked)).toBe(false);
+  });
+
+  it("does not credit a non-advancing network response when markers grew", () => {
+    expect(isMidFlowAdvanceCredited({ ...blocked, networkAdvanced: true })).toBe(false);
+    expect(
+      isMidFlowAdvanceCredited({ ...blocked, signalAdvanced: true, networkAdvanced: true })
+    ).toBe(false);
+  });
+
+  it("credits a settled page swap without marker growth", () => {
+    expect(
+      isMidFlowAdvanceCredited({
+        ...blocked,
+        signalAdvanced: true,
+        pageAdvanced: true,
+        invalidMarkerDelta: 0,
+        invalidMarkerCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("leaves the judge-unavailable credit unchanged", () => {
+    expect(
+      isMidFlowAdvanceCredited({ ...blocked, signalAdvanced: true, judgeUnavailable: true })
+    ).toBe(true);
+  });
+});
