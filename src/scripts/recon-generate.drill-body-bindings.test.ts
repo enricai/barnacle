@@ -95,6 +95,10 @@ describe("declared submit endpoint re-queried with differing body arrays", () =>
       ];
       await main();
       const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+      expect(contract).toContain("filtersTags: z.array(z.string())");
+      expect(contract).toContain("filtersMode: z.string()");
+      expect(contract).toContain("payload.filtersTags");
+      expect(contract).toContain("payload.filtersMode");
       expect(contract).toContain("/v1/catalog/query");
       expect(contract).not.toMatch(/would freeze/);
       expect(contract).not.toMatch(/drill/i);

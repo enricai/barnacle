@@ -3044,6 +3044,83 @@ export function firstEndpointCapture(
   return pool.find(valid) ?? null;
 }
 
+interface PostBodyBinding {
+  field: string;
+  zod: string;
+}
+
+/**
+ * Body model for a declared read-only POST search whose captures re-issue the
+ * endpoint with different JSON bodies. Every leaf (scalar or array) whose
+ * value differs between captures becomes a defaulted payload field and the
+ * emitted request body is rebuilt around `payload.<field>`; invariant leaves
+ * stay literal. Returns null when no body varies or bodies are not JSON objects.
+ */
+function derivePostBodyModel(
+  captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
+  endpointPath: string
+): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
+  const bodies: Record<string, unknown>[] = [];
+  for (const c of captures) {
+    if (c.method !== undefined && c.method.toUpperCase() !== "POST") continue;
+    if (safeUrlPathname(c.url) !== endpointPath) continue;
+    try {
+      const parsed: unknown = JSON.parse(c.requestPostData ?? "");
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed))
+        bodies.push(parsed as Record<string, unknown>);
+    } catch {
+      // non-JSON body: not modelled
+    }
+  }
+  if (bodies.length < 2) return null;
+  const bindings: PostBodyBinding[] = [];
+  const used = new Set<string>();
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v);
+  const at = (b: unknown, path: string[]): unknown =>
+    path.reduce<unknown>((acc, k) => (isObj(acc) ? acc[k] : undefined), b);
+  const build = (path: string[]): string => {
+    const first = at(bodies[0], path);
+    const values = bodies.map((b) => at(b, path));
+    if (isObj(first) && values.every(isObj)) {
+      const keys = [...new Set(values.flatMap((v) => Object.keys(v as object)))];
+      return `{ ${keys.map((k) => `${JSON.stringify(k)}: ${build([...path, k])}`).join(", ")} }`;
+    }
+    const distinct = new Set(values.map((v) => JSON.stringify(v)));
+    if (distinct.size === 1) return JSON.stringify(first);
+    const base = path
+      .map((seg, i) => {
+        const w = seg
+          .replace(/[^A-Za-z0-9]+/g, " ")
+          .trim()
+          .split(" ")
+          .join("_");
+        return i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1);
+      })
+      .join("");
+    let field = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
+    for (let n = 2; used.has(field); n++) field = `${base}${n}`;
+    used.add(field);
+    const def = JSON.stringify(first ?? null);
+    const sample = Array.isArray(first) ? first[0] : first;
+    const elem =
+      typeof sample === "number"
+        ? "z.coerce.number()"
+        : typeof sample === "boolean"
+          ? "z.coerce.boolean()"
+          : "z.string()";
+    const zod = Array.isArray(first)
+      ? `z.array(${elem}).optional().default(${def})`
+      : first === null || first === undefined
+        ? "z.unknown().optional()"
+        : `${elem}.optional().default(${def})`;
+    bindings.push({ field, zod });
+    return `payload.${field}`;
+  };
+  const bodyExpr = build([]);
+  return bindings.length > 0 ? { bodyExpr, bindings } : null;
+}
+
 function safeUrlPathname(url: string): string {
   try {
     return new URL(url).pathname;
@@ -17702,9 +17779,13 @@ export function emitContractTsParts(opts: {
   // captured, it just isn't an application) gets a plain empty base instead
   // — extend() below still layers on every genuinely-discovered field from
   // the other sources unchanged.
+  const postBodyModel =
+    readOnlyPostSearch && !gql && !multiStepBody && !suppliedGetInputModel
+      ? derivePostBodyModel(allCaptures, endpointPath)
+      : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow) || derivedGetInputModel
+    : inputBody || (omitExecuteHttp && isSubmissionFlow) || derivedGetInputModel || postBodyModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -18104,6 +18185,13 @@ export function emitContractTsParts(opts: {
       if (extendFields.has(field)) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: z.string().optional(),`);
+    }
+  }
+  if (postBodyModel) {
+    for (const { field, zod } of postBodyModel.bindings) {
+      if (extendFields.has(field)) continue;
+      const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
+      extendFields.set(field, `  ${key}: ${zod},`);
     }
   }
   const mergedExtension =
@@ -18728,7 +18816,7 @@ ${dataFoldMergeBlock}    return { data };`
 ${dataFoldMergeBlock}    return { data };`
           : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
-      body: JSON.stringify({ query: payload.query }),
+      body: JSON.stringify(${postBodyModel ? postBodyModel.bodyExpr : "{ query: payload.query }"}),
     });
 ${dataFoldMergeBlock}    return { data };`;
 
