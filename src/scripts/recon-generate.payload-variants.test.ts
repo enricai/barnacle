@@ -12,7 +12,7 @@ function gql(
   name: string | null,
   query: string,
   variables: Record<string, unknown>,
-  responseBody: unknown,
+  responseBody: unknown
 ): Capture {
   return {
     timestamp: "t",
@@ -39,12 +39,7 @@ const searchBody = { data: { search: { results: items } } };
 
 function search(name: string | null, input: Record<string, unknown>): Capture {
   const q = `query ${name ?? ""} ($input: SearchInput!) { search(input: $input) { results { itemId label } } }`;
-  return gql(
-    name,
-    name === null ? q.replace("query  (", "query (") : q,
-    { input },
-    searchBody,
-  );
+  return gql(name, name === null ? q.replace("query  (", "query (") : q, { input }, searchBody);
 }
 const drill = gql(
   "ItemDetail",
@@ -54,7 +49,7 @@ const drill = gql(
     data: {
       item: { itemId: "item-beta-222", detail: { rooms: [{ code: "R1" }] } },
     },
-  },
+  }
 );
 
 describe.each([
@@ -81,9 +76,7 @@ describe.each([
 
   it("variant captures are not frozen-varying drills", () => {
     const rendered = variants[1]!.requestPostData!;
-    expect(findFrozenVaryingDrillParams(variants[1]!, rendered, all)).toEqual(
-      [],
-    );
+    expect(findFrozenVaryingDrillParams(variants[1]!, rendered, all)).toEqual([]);
   });
 
   it("exposes variant fields as payload fields", () => {
