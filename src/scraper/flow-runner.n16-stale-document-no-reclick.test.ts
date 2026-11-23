@@ -236,4 +236,20 @@ describe("flow-runner n+16 fallback — two-form stale document", () => {
     expect(lines.some((l) => l.includes("frame document replaced"))).toBe(false);
     expect(getClicks()).toBeGreaterThan(0);
   });
+
+  it("stops attempt>1 re-acts once the document was replaced after the step-start baseline", async () => {
+    const { page, stagehand } = buildHarness("Submit", {
+      replaceDocument: true,
+      replaceAfterReads: 1,
+    });
+    const lines: string[] = [];
+    await executeStepWithHealing(
+      baseArgs(stagehand, page, makeLogger(lines), STEP, () => null)
+    ).catch(() => undefined);
+    expect(
+      lines.some((l) =>
+        /attempt \d+ skipped: frame document replaced since step start; not re-acting/.test(l)
+      )
+    ).toBe(true);
+  });
 });
