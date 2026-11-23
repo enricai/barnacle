@@ -18858,12 +18858,16 @@ async function runHealingFlowScoped(
   // Listeners on earlier pages stay wired (a prior tab can still emit) and all stop on exit.
   const stopFns: (() => void)[] = [wireCapture(page)];
 
-  const flowHasSubmitSemanticsFlag = flowHasSubmitSemantics({
-    steps,
-    submitEndpointPattern: deps.submitEndpointPattern ?? null,
-    requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
-    recentCaptureMeta,
-  });
+  // Re-derived before each step: captures accumulate as the flow runs, so a
+  // GET-only endpoint match is only visible after earlier steps have fired.
+  const computeSubmitSemantics = (): boolean =>
+    flowHasSubmitSemantics({
+      steps,
+      submitEndpointPattern: deps.submitEndpointPattern ?? null,
+      requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
+      recentCaptureMeta,
+    });
+  let flowHasSubmitSemanticsFlag = computeSubmitSemantics();
 
   if (
     shouldWarnMissingAdvancePattern(
@@ -18904,6 +18908,7 @@ async function runHealingFlowScoped(
         );
       }
       lastStepIndex = i;
+      flowHasSubmitSemanticsFlag = computeSubmitSemantics();
       // A cross-origin hop (redirect, new tab, navigateTo) lands on a SPA the initial
       // readiness gate never covered; wait for hydration before the step probes a shell.
       const currentOrigin = liveOriginOf(activePage);
