@@ -104,11 +104,19 @@ function makeFakePage(): Page {
 function wireRephraseResolvesTo(description: string): void {
   // The pre-cascade probe sees one candidate (so the optional step is not skipped as
   // "absent"); every later observe is empty.
+  // The rephrased instruction is observed (resolved without acting) so it can be vetted
+  // before any click; it resolves to the same element a string act would have clicked.
   guardedObserve
     .mockResolvedValueOnce([
       { selector: "xpath=//*[@id='h']", description: "page heading", method: "click" },
     ])
-    .mockResolvedValue([]);
+    .mockImplementation(async (_s: unknown, instruction: unknown) =>
+      instruction === REPHRASED
+        ? [{ selector: "xpath=//*[@id='t']", description, method: "click" }]
+        : instruction === STEP
+          ? [{ selector: "xpath=//*[@id='h']", description: "page heading", method: "click" }]
+          : []
+    );
   guardedAct.mockImplementation(async (_s: unknown, instruction: unknown) =>
     instruction === STEP
       ? {
@@ -120,7 +128,8 @@ function wireRephraseResolvesTo(description: string): void {
             { selector: "xpath=//*[@id='h']", description: "page heading", method: "click" },
           ],
         }
-      : instruction === REPHRASED
+      : instruction === REPHRASED ||
+          (instruction as { selector?: string })?.selector === "xpath=//*[@id='t']"
         ? {
             success: true,
             message: "ok",
@@ -164,6 +173,38 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
     OPTIONAL = true;
   });
 
+  it("attempt 1 never acts on the raw step when it resolves to an interactive control", async () => {
+    guardedObserve
+      .mockResolvedValueOnce([
+        { selector: "xpath=//*[@id='h']", description: "page heading", method: "click" },
+      ])
+      .mockImplementation(async (_s: unknown, instruction: unknown) =>
+        instruction === STEP
+          ? [
+              {
+                selector: "xpath=//*[@id='b']",
+                description: "language menu button",
+                method: "click",
+              },
+            ]
+          : []
+      );
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "x",
+      actionDescription: "",
+      actions: [],
+    });
+    generateObject.mockResolvedValue({ object: { outcome: "impossible" }, usage: {} });
+    await runOptionalStep().catch(() => undefined);
+    expect(guardedAct.mock.calls.some((c) => c[1] === STEP)).toBe(false);
+    expect(
+      guardedAct.mock.calls.some(
+        (c) => (c[1] as { selector?: string })?.selector === "xpath=//*[@id='b']"
+      )
+    ).toBe(false);
+  });
+
   it("rejects a rephrase that resolves to an unrelated menu button instead of crediting it", async () => {
     wireRephraseResolvesTo("language selector menu button");
 
@@ -180,11 +221,29 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
     expect(err).not.toMatchObject({ kind: "probe-absent" });
     expect(logged("info")).not.toMatch(/skipped \(optional, probe found no candidates\)/);
 
-    expect(guardedAct.mock.calls.some((c) => c[1] === REPHRASED)).toBe(true);
+    // Vetted before acting: neither the rephrased string nor the control Action is ever clicked.
+    expect(guardedAct.mock.calls.some((c) => c[1] === REPHRASED)).toBe(false);
+    expect(
+      guardedAct.mock.calls.some(
+        (c) => (c[1] as { selector?: string })?.selector === "xpath=//*[@id='t']"
+      )
+    ).toBe(false);
     expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
   });
 
-  it("still credits a rephrase that resolves to the quoted heading", async () => {
+  it("skips an optional step whose rephrase heal is evidenced only by a view-swap", async () => {
+    wireRephraseResolvesTo("Application Questions page heading");
+
+    await expect(runOptionalStep()).resolves.toBeUndefined();
+
+    expect(logged("info")).toMatch(
+      /skipped \(optional, llm-rephrase credited only by view-swap; network=false url=false dom=false\)/
+    );
+    expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
+  it("still credits a required step whose rephrase resolves to the quoted heading", async () => {
+    OPTIONAL = false;
     wireRephraseResolvesTo("Application Questions page heading");
 
     await expect(runOptionalStep()).resolves.toBeUndefined();
@@ -216,6 +275,80 @@ describe("flow-runner — targetless quoted-heading step, llm-rephrase resolutio
 
     await expect(runOptionalStep()).rejects.toMatchObject({ kind: "cascade-exhausted" });
     expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
+  it("refuses (and never acts) when observing the rephrase throws", async () => {
+    wireRephraseResolvesTo("Application Questions page heading");
+    const wired = guardedObserve.getMockImplementation() as (...a: unknown[]) => Promise<unknown>;
+    guardedObserve.mockImplementation(async (...args: unknown[]) => {
+      if (args[1] === REPHRASED) throw new Error("observe blew up");
+      return wired(...args);
+    });
+
+    await expect(runOptionalStep()).rejects.toMatchObject({ kind: "cascade-exhausted" });
+    expect(guardedAct.mock.calls.some((c) => c[1] === REPHRASED)).toBe(false);
+    expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
+  it("rejects a vetted rephrase whose act then lands on a control", async () => {
+    wireRephraseResolvesTo("Application Questions page heading");
+    const wired = guardedAct.getMockImplementation() as (...a: unknown[]) => Promise<unknown>;
+    guardedAct.mockImplementation(async (...args: unknown[]) =>
+      (args[1] as { selector?: string })?.selector === "xpath=//*[@id='t']"
+        ? {
+            success: true,
+            message: "ok",
+            actionDescription: "clicked",
+            actions: [
+              {
+                selector: "xpath=//*[@id='m']",
+                description: "language selector menu button",
+                method: "click",
+              },
+            ],
+          }
+        : wired(...args)
+    );
+
+    await expect(runOptionalStep()).rejects.toMatchObject({ kind: "cascade-exhausted" });
+    expect(logged("info")).not.toMatch(/healed on attempt \d+ via llm-rephrase/);
+  });
+
+  it("observe-act (attempt 2) never clicks an interactive control for the verbatim dismiss-only step", async () => {
+    let stepObserves = 0;
+    guardedObserve
+      .mockResolvedValueOnce([
+        { selector: "xpath=//*[@id='h']", description: "page heading", method: "click" },
+      ])
+      .mockImplementation(async (_s: unknown, instruction: unknown) => {
+        if (instruction !== STEP) return [];
+        stepObserves++;
+        // Attempt 1's vetting observe sees the heading (act fails below); every later
+        // observe of the step resolves to an interactive control.
+        return stepObserves === 1
+          ? [{ selector: "xpath=//*[@id='h']", description: "page heading", method: "click" }]
+          : [
+              {
+                selector: "xpath=//*[@id='b']",
+                description: "prompt list dropdown button",
+                method: "click",
+              },
+            ];
+      });
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "x",
+      actionDescription: "",
+      actions: [],
+    });
+    generateObject.mockResolvedValue({ object: { outcome: "impossible" }, usage: {} });
+    await runOptionalStep().catch(() => undefined);
+    expect(stepObserves).toBeGreaterThan(1);
+    expect(
+      guardedAct.mock.calls.some(
+        (c) => (c[1] as { selector?: string })?.selector === "xpath=//*[@id='b']"
+      )
+    ).toBe(false);
   });
 
   describe("a step with no quoted target that declares a blank, non-interactive spot", () => {

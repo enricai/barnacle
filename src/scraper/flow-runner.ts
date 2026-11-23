@@ -5352,7 +5352,7 @@ export function stepQuotesValueNotControlName(step: string): boolean {
  * dismiss open UI. Such a step is satisfied by no control at all.
  */
 export function stepDeclaresNonInteractiveTarget(step: string): boolean {
-  return /\b(?:non|un)-?(?:interactive|clickable)\b|\bnot\s+(?:interactive|clickable)\b|\bstatic\s+(?:\w+\s+)?(?:spot|area|space|region|part|text|content)\b|\b(?:empty|blank|neutral|inert|dead)\s+(?:\w+\s+)?(?:spot|area|space|region|part)\b|\bwhite-?space\b|\bon\s+(?:absolutely\s+)?nothing\b|\b(?:click|tap)\s+anywhere\b|\bnothing\s+in\s+particular\b/i.test(
+  return /\b(?:non|un)-?(?:interactive|clickable)\b|\bnot\s+(?:interactive|clickable)\b|\bstatic\s+(?:\w+\s+)?(?:spot|area|space|region|part|text|content)\b|\b(?:empty|blank|neutral|inert|dead)\s+(?:\w+\s+)?(?:spot|area|space|region|part)\b|\bwhite-?space\b|\bon\s+(?:absolutely\s+)?nothing\b|\b(?:click|tap)\s+anywhere\b|\bnothing\s+in\s+particular\b|\bnot\s+(?:a|an)\s+(?:control|button|link|interactive\s+\w+)\b|\bplain\s+text\b|\b(?:page|empty|blank)\s+background\b/i.test(
     step
   );
 }
@@ -5360,6 +5360,10 @@ export function stepDeclaresNonInteractiveTarget(step: string): boolean {
 /** Words an act() description uses to name a control rather than static content. */
 const CONTROL_DESCRIPTION_PATTERN =
   /\b(?:button|link|menu|menuitem|dropdown|drop-down|selector|select|option|checkbox|radio|tab|toggle|switch|combobox|listbox|input|textbox|icon|anchor)\b/i;
+
+/** Words an act() description uses to name static, non-actionable content. */
+const STATIC_DESCRIPTION_PATTERN =
+  /\b(?:heading|title|text|paragraph|label|caption|background|body|page|container|wrapper|section|header|banner|area|spot|space|whitespace|blank|empty|static|content|image|div|span)\b/i;
 
 /** Elements (or ancestors) a page treats as a control: clicking one acts, it does not merely dismiss. */
 const INTERACTIVE_CONTROL_CSS =
@@ -5414,11 +5418,34 @@ export function resolvedActionNamesStepTarget(
   const namesControl = CONTROL_DESCRIPTION_PATTERN.test(description);
   const nonInteractiveTarget = stepDeclaresNonInteractiveTarget(step);
   if (nonInteractiveTarget && (options.isInteractive === true || namesControl)) return false;
+  // A non-interactive step is satisfied only by an element affirmatively
+  // described as static content; an opaque name ("Language") proves nothing.
+  if (nonInteractiveTarget && description !== "" && !STATIC_DESCRIPTION_PATTERN.test(description))
+    return false;
   if (stepQuotesValueNotControlName(step)) return true;
   if (options.requireNamedControl === true && !nonInteractiveTarget && !namesControl) return true;
   const phrases = extractTaggedPhrases(step);
   if (phrases.length === 0 || description === "") return true;
   return !vetObserveCandidates([{ description }], phrases).refuse;
+}
+
+/**
+ * Pre-act vet for a step that declares a non-interactive target: returns the
+ * first observed candidate whose DOM read and description do not contradict
+ * the step, or null when none qualifies. Nothing is clicked here, so a
+ * rejected candidate never actuates a control.
+ */
+async function firstVettedCandidateForNonInteractiveStep(
+  step: string,
+  candidates: readonly Action[],
+  target: FrameTarget
+): Promise<Action | null> {
+  for (const candidate of candidates) {
+    const isInteractive =
+      !!candidate.selector && (await resolvedClickTargetIsInteractive(target, candidate.selector));
+    if (resolvedActionNamesStepTarget(step, candidate, { isInteractive })) return candidate;
+  }
+  return null;
 }
 
 /**
@@ -12857,6 +12884,12 @@ export async function probeStepBeforeAttempts(params: {
    * of running the cascade and replans. Required steps keep today's behavior.
    */
   optional?: boolean;
+  /**
+   * Receives the focused observe's candidates for `step`, so the cascade's
+   * first attempt can vet the very elements that made the probe report
+   * "present" instead of re-resolving the same instruction.
+   */
+  onFocusedCandidates?: (candidates: readonly Action[]) => void;
 }): Promise<"present" | "absent"> {
   const {
     stagehand,
@@ -12869,6 +12902,7 @@ export async function probeStepBeforeAttempts(params: {
     frameTarget,
     reresolveFrameTarget,
     optional,
+    onFocusedCandidates,
   } = params;
   try {
     const candidates = await guardedObserve(
@@ -12878,6 +12912,7 @@ export async function probeStepBeforeAttempts(params: {
       captureFn,
       frameTarget
     );
+    onFocusedCandidates?.(candidates);
     if (candidates.length === 0 && optional && parsePromptSelectorStep(step) === null) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)}: optional click-shaped step, focused probe found 0 candidates — treating as absent (skip, no cascade)`
@@ -14426,6 +14461,9 @@ export async function executeStepWithHealing(params: {
   // (optional) or escalate straight to replan (required) — far cheaper than
   // burning 4 attempts on a page that clearly isn't the right one.
   params.abortSignal?.throwIfAborted();
+  // What the probe's focused observe resolved the step to; attempt 1 vets
+  // these for a non-interactive-target step rather than observing again.
+  let probeFocusedCandidates: readonly Action[] = [];
   const probeResult = await raceAbortSignal(
     probeStepBeforeAttempts({
       stagehand,
@@ -14437,6 +14475,9 @@ export async function executeStepWithHealing(params: {
       captureFn,
       frameTarget,
       optional,
+      onFocusedCandidates: (candidates) => {
+        probeFocusedCandidates = candidates;
+      },
       reresolveFrameTarget: async () => {
         await reresolveFrameTargetIfLost();
         return frameTarget;
@@ -15107,6 +15148,10 @@ export async function executeStepWithHealing(params: {
     // whether this attempt's signal should come from the network/URL pair or
     // from DOM re-read. Captured here so both branches of the cascade write to it.
     let resolvedAction: Action | null = null;
+    // Set when an llm-rephrase resolved an element contradicting a
+    // non-interactive step target; resolvedAction then stays null, which must
+    // not read as "names the step target" for the view-swap credit.
+    let rephraseContradictedTarget = false;
 
     // Submit shape of the control observe resolved BEFORE the act clicked it.
     // The act performs the click itself, so a page that swaps at once has
@@ -15226,15 +15271,56 @@ export async function executeStepWithHealing(params: {
         record.technique = "act-string";
         record.instruction = step;
         params.abortSignal?.throwIfAborted();
-        const preCentred = await preCentreNaturalLanguageClick(step);
-        const result = await guardedAct(
-          stagehand,
-          step,
-          { timeout: STEP_WATCHDOG_MS },
-          captureFn,
-          frameTarget ?? mainFrameTarget(page),
-          preCentred
-        );
+        const attemptTarget = frameTarget ?? mainFrameTarget(page);
+        let vettedAction: Action | null = null;
+        let attemptRefused = false;
+        if (stepDeclaresNonInteractiveTarget(step)) {
+          // Vet what the step resolves to BEFORE acting: act(string) would
+          // click first and be judged only afterwards. The probe has just
+          // resolved this same instruction; only when it resolved nothing is
+          // the step observed again.
+          const resolvedCandidates =
+            probeFocusedCandidates.length > 0
+              ? probeFocusedCandidates
+              : await guardedObserve(
+                  stagehand,
+                  step,
+                  { timeout: STEP_WATCHDOG_MS },
+                  captureFn,
+                  frameTarget
+                ).catch(() => [] as Action[]);
+          vettedAction = await firstVettedCandidateForNonInteractiveStep(
+            step,
+            resolvedCandidates,
+            attemptTarget
+          );
+          // Record only what is acted on (or everything when all are refused):
+          // a refused control in triedSelectors would be re-clicked,
+          // unvetted, by the trusted-click-retry top-window arm.
+          if (vettedAction) {
+            if (vettedAction.selector) triedSelectors.push(vettedAction.selector);
+          } else {
+            for (const c of resolvedCandidates) if (c.selector) triedSelectors.push(c.selector);
+          }
+          if (!vettedAction) {
+            attemptRefused = true;
+            const named = resolvedCandidates[0]?.description ?? "";
+            record.errorMessage = resolvedCandidates.length
+              ? `act-string resolved an element that contradicts the step's target: "${named.slice(0, 60)}"`
+              : "act-string observe resolved no candidate for a non-interactive-target step";
+          }
+        }
+        const preCentred = attemptRefused ? false : await preCentreNaturalLanguageClick(step);
+        const result = attemptRefused
+          ? { success: false, actionDescription: "", actions: [] as Action[] }
+          : await guardedAct(
+              stagehand,
+              vettedAction ?? step,
+              { timeout: STEP_WATCHDOG_MS },
+              captureFn,
+              attemptTarget,
+              vettedAction ? false : preCentred
+            );
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
         // Deny-list guard (post-hoc): attempt-1 act resolves internally, so we
@@ -15562,9 +15648,11 @@ export async function executeStepWithHealing(params: {
             await resolveDeepLocatorCandidatesWithWidening(page, frameTarget.frameSelector, step, {
               frameTarget,
             });
-          let deepLocatorCandidates = retryCandidates.filter(
-            (c) => !triedSelectors.includes(c.selector)
-          );
+          // A non-interactive-target step must never fall back to clicking the
+          // first interactive control the widened resolver finds.
+          let deepLocatorCandidates = stepDeclaresNonInteractiveTarget(step)
+            ? []
+            : retryCandidates.filter((c) => !triedSelectors.includes(c.selector));
           if (deepLocatorCandidates.length === 0) {
             const failureMessage =
               "trusted-click-retry: no deepLocator candidate resolved for the phantomed target";
@@ -15664,9 +15752,11 @@ export async function executeStepWithHealing(params: {
           (resolveDeepLocatorActuation(step).kind === "click"
             ? INTERACTIVE_CANDIDATE_SELECTOR
             : FILLABLE_CANDIDATE_SELECTOR);
-        let deepLocatorCandidates = (deepLocatorResolution?.candidates ?? []).filter(
-          (c) => !triedSelectors.includes(c.selector)
-        );
+        let deepLocatorCandidates = stepDeclaresNonInteractiveTarget(step)
+          ? []
+          : (deepLocatorResolution?.candidates ?? []).filter(
+              (c) => !triedSelectors.includes(c.selector)
+            );
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
           // Field-label routing for a fill/select-shaped step already ran
           // (and returned/continued on a MATCH) in the field-label-first
@@ -15818,7 +15908,28 @@ export async function executeStepWithHealing(params: {
             );
             continue;
           }
-          const target = verdict.candidate;
+          let target = verdict.candidate;
+          if (stepDeclaresNonInteractiveTarget(step)) {
+            // Vet before acting: an interactive control must never be clicked
+            // for a step that declares its target to be nothing in particular.
+            const vetted = await firstVettedCandidateForNonInteractiveStep(
+              step,
+              candidates,
+              frameTarget ?? mainFrameTarget(page)
+            );
+            if (!vetted) {
+              record.errorMessage = `observe candidate contradicts the step's non-interactive target: "${target.description.slice(0, 60)}"`;
+              for (const c of candidates) if (c.selector) triedSelectors.push(c.selector);
+              record.triedSelectors = candidates.map((c) => c.selector).filter(Boolean);
+              attempts.push(record);
+              failureReasons.push(record.errorMessage);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+              );
+              continue;
+            }
+            target = vetted;
+          }
           // Deny-list guard: never act on a wizard-exit control (save-and-exit,
           // cancel, restart) for a click/advance step. Record it as tried (so a
           // re-observe with ignoreSelectors surfaces a different candidate) and
@@ -16239,36 +16350,70 @@ export async function executeStepWithHealing(params: {
           } else {
             record.instruction = rephrased;
             params.abortSignal?.throwIfAborted();
-            const preCentred = await preCentreNaturalLanguageClick(rephrased);
-            const result = await guardedAct(
-              stagehand,
-              rephrased,
-              { timeout: STEP_WATCHDOG_MS },
-              captureFn,
-              frameTarget ?? mainFrameTarget(page),
-              preCentred
-            );
-            record.actResultSuccess = result.success;
-            record.actResultDescription = result.actionDescription;
-            for (const action of result.actions ?? []) {
-              if (action.selector) triedSelectors.push(action.selector);
-              if (!resolvedAction) {
-                if (
-                  resolvedActionNamesStepTarget(step, action, {
-                    isInteractive:
-                      stepDeclaresNonInteractiveTarget(step) &&
-                      !!action.selector &&
-                      (await resolvedClickTargetIsInteractive(
-                        frameTarget ?? mainFrameTarget(page),
-                        action.selector
-                      )),
-                    fallbackDescription: result.actionDescription,
-                  })
-                ) {
-                  resolvedAction = action;
-                } else {
-                  record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${(action.description || result.actionDescription || "").slice(0, 60)}"`;
-                  failureReasons.push(record.errorMessage);
+            const rephraseTarget = frameTarget ?? mainFrameTarget(page);
+            let vettedRephraseAction: Action | null = null;
+            let rephraseRefused = false;
+            if (stepDeclaresNonInteractiveTarget(step)) {
+              // Vet what the rephrase resolves to BEFORE acting: act(string)
+              // would click first and be judged only afterwards.
+              const resolvedCandidates = await guardedObserve(
+                stagehand,
+                rephrased,
+                { timeout: STEP_WATCHDOG_MS },
+                captureFn,
+                frameTarget
+              ).catch(() => [] as Action[]);
+              for (const c of resolvedCandidates) if (c.selector) triedSelectors.push(c.selector);
+              vettedRephraseAction = await firstVettedCandidateForNonInteractiveStep(
+                step,
+                resolvedCandidates,
+                rephraseTarget
+              );
+              if (!vettedRephraseAction) {
+                rephraseRefused = true;
+                rephraseContradictedTarget = true;
+                const named = resolvedCandidates[0]?.description ?? "";
+                record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${named.slice(0, 60)}"`;
+                failureReasons.push(record.errorMessage);
+              }
+            }
+            const preCentred = rephraseRefused
+              ? false
+              : await preCentreNaturalLanguageClick(rephrased);
+            const result = rephraseRefused
+              ? null
+              : await guardedAct(
+                  stagehand,
+                  vettedRephraseAction ?? rephrased,
+                  { timeout: STEP_WATCHDOG_MS },
+                  captureFn,
+                  rephraseTarget,
+                  vettedRephraseAction ? false : preCentred
+                );
+            if (result) {
+              record.actResultSuccess = result.success;
+              record.actResultDescription = result.actionDescription;
+              for (const action of result.actions ?? []) {
+                if (action.selector) triedSelectors.push(action.selector);
+                if (!resolvedAction) {
+                  if (
+                    resolvedActionNamesStepTarget(step, action, {
+                      isInteractive:
+                        stepDeclaresNonInteractiveTarget(step) &&
+                        !!action.selector &&
+                        (await resolvedClickTargetIsInteractive(
+                          frameTarget ?? mainFrameTarget(page),
+                          action.selector
+                        )),
+                      fallbackDescription: result.actionDescription,
+                    })
+                  ) {
+                    resolvedAction = action;
+                  } else {
+                    rephraseContradictedTarget = true;
+                    record.errorMessage = `rephrase resolved an element that contradicts the step's target: "${(action.description || result.actionDescription || "").slice(0, 60)}"`;
+                    failureReasons.push(record.errorMessage);
+                  }
                 }
               }
             }
@@ -16537,19 +16682,20 @@ export async function executeStepWithHealing(params: {
     // its description is engine-authored (it embeds the selector), so it says
     // nothing about which control the page exposed.
     const resolvedTargetNamesStep =
-      resolvedAction === null ||
+      (resolvedAction === null && !rephraseContradictedTarget) ||
       record.technique === "trusted-click-retry" ||
-      resolvedActionNamesStepTarget(step, resolvedAction, {
-        requireNamedControl: true,
-        isInteractive:
-          stepDeclaresNonInteractiveTarget(step) &&
-          !!resolvedAction.selector &&
-          (await resolvedClickTargetIsInteractive(
-            frameTarget ?? mainFrameTarget(page),
-            resolvedAction.selector
-          )),
-        fallbackDescription: record.actResultDescription ?? undefined,
-      });
+      (resolvedAction !== null &&
+        resolvedActionNamesStepTarget(step, resolvedAction, {
+          requireNamedControl: true,
+          isInteractive:
+            stepDeclaresNonInteractiveTarget(step) &&
+            !!resolvedAction.selector &&
+            (await resolvedClickTargetIsInteractive(
+              frameTarget ?? mainFrameTarget(page),
+              resolvedAction.selector
+            )),
+          fallbackDescription: record.actResultDescription ?? undefined,
+        }));
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
@@ -17722,6 +17868,24 @@ export async function executeStepWithHealing(params: {
     }
 
     attempts.push(record);
+
+    if (
+      verified &&
+      optional &&
+      record.technique === "llm-rephrase" &&
+      record.verifiedBy === "view-swap" &&
+      !networkFired &&
+      !urlChanged &&
+      !domVerifiedForStep
+    ) {
+      // A view-swap alone is too weak to credit a rephrase heal of an optional
+      // step: skip it, like the other optional-skip paths.
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} skipped (optional, llm-rephrase credited only by view-swap; network=false url=false dom=false)`
+      );
+      record.verifiedBy = null;
+      return "skipped";
+    }
 
     if (verified) {
       if (attempt > 1) {
