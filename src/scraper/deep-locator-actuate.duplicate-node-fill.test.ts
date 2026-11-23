@@ -171,6 +171,6 @@ describe("duplicate accessible-name candidates: write-verify distinguishes the c
     // the caller never sees a false "written" for a value that reverted on
     // a tick the write's own synchronous evaluate call couldn't observe.
     expect(result).toBe(false);
-    expect(evaluateCallCount).toBe(2);
+    expect(evaluateCallCount).toBe(3);
   });
 });

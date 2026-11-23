@@ -225,7 +225,7 @@ describe("fillDeepLocatorCandidate batched frame-scoped fill", () => {
     );
 
     expect(result).toBe(true);
-    expect(evaluateSpy).toHaveBeenCalledTimes(2);
+    expect(evaluateSpy).toHaveBeenCalledTimes(3);
     expect(deepLocatorSpy).toHaveBeenCalled();
     expect(frame.get(`${FRAME_SELECTOR} >> input`)?.elements[1]?.filledWith).toBe("Ada");
   });
@@ -980,5 +980,47 @@ describe("fillDeepLocatorCandidate date-segment refusal", () => {
     expect(expr.indexOf("isDateSegment(target)")).toBeLessThan(
       expr.indexOf("insertText") === -1 ? Infinity : expr.indexOf("insertText")
     );
+  });
+});
+
+describe("delegate fallback never actuates a label", () => {
+  const innerSel = `${FRAME_SELECTOR} >> label`;
+  it("fills the stamped control (not the label) when the indexed node is a label with a control", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, innerSel, ["Name"]);
+    const markHop = `${FRAME_SELECTOR} >> [data-leerie-value-target="1"]`;
+    const control = registerDeepLocatorHopElements(frame, markHop, [""]);
+    const { frameTarget } = makeFakeFrameTarget(async (expression: unknown) => {
+      if (typeof expression === "string" && expression.includes("dispatchEvent")) {
+        throw new Error("batched wedged");
+      }
+      return { kind: "control" };
+    });
+    const page = { deepLocator: makeFakeDeepLocator(frame) };
+    // biome-ignore lint/suspicious/noExplicitAny: fake Page
+    const r = await fillDeepLocatorCandidate(page as any, FRAME_SELECTOR, "label", 0, "Ada", {
+      frameTarget,
+    });
+    expect(r).toBe(true);
+    expect(control.elements[0]?.filledWith).toBe("Ada");
+    expect(frame.get(innerSel)?.elements[0]?.filledWith).toBeNull();
+  });
+
+  it("returns false without writing for a control-less label", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, innerSel, ["Name"]);
+    const { frameTarget } = makeFakeFrameTarget(async (expression: unknown) => {
+      if (typeof expression === "string" && expression.includes("dispatchEvent")) {
+        throw new Error("batched wedged");
+      }
+      return { kind: "none" };
+    });
+    const page = { deepLocator: makeFakeDeepLocator(frame) };
+    // biome-ignore lint/suspicious/noExplicitAny: fake Page
+    const r = await selectDeepLocatorCandidateOption(page as any, FRAME_SELECTOR, "label", 0, "x", {
+      frameTarget,
+    });
+    expect(r).toBe(false);
+    expect(hop.elements[0]?.selectedWith).toBeNull();
   });
 });

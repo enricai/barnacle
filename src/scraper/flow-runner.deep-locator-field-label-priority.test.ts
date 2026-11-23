@@ -4,7 +4,7 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
-import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import { FILLABLE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -24,7 +24,7 @@ const TOP_ORIGIN = "https://careers.example.org";
 const CHILD_ORIGIN = "https://apply.example-vendor.com";
 const IFRAME_SELECTOR = "iframe#apply_iframe";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
-const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${FILLABLE_CANDIDATE_SELECTOR}`;
 const PROBE_HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
 
 const FILL_CITY_STEP = "Fill in the City field with 'Austin'";

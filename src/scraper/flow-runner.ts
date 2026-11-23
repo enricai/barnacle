@@ -12966,17 +12966,12 @@ async function probeFormValidityBeforeSubmit(params: {
 /**
  * Resolves deepLocator candidates scoped to `INTERACTIVE_CANDIDATE_SELECTOR`,
  * widening once to the unscoped `"*"` hop when the scoped pass finds
- * nothing. A fill/select step (see {@link resolveDeepLocatorActuation}) over
- * a non-empty scoped pass is then narrowed to its `FILLABLE_CANDIDATE_SELECTOR`
- * subset — only controls that can hold the value, so a focusable
- * `<label tabindex>` naming the field can never outrank the input it labels —
- * whenever that subset actually excludes a scoped candidate and still holds
- * the step's named field. Because the subset is contained in the scoped
- * pass, an equal count means the two universes coincide, so that frame keeps
- * resolving on the interactive hop exactly as before; a field only a custom
- * widget carries also keeps the interactive universe, where a label still
- * writes only through its `label.control` (`deep-locator-scan.ts`). The
- * fillable subset is never consulted when the scoped pass is empty.
+ * nothing. A fill/select step (see {@link resolveDeepLocatorActuation})
+ * resolves unconditionally over `FILLABLE_CANDIDATE_SELECTOR` and never
+ * widens to `"*"` — only controls that can hold the value are ranked, so a
+ * focusable `<label tabindex>` naming the field can never outrank (or stand
+ * in for) the input it labels. The returned `innerSelector` is that same
+ * fillable hop.
  * `INTERACTIVE_CANDIDATE_SELECTOR` is what makes a dense OOPIF
  * form's candidate set tractable (371 nodes down to a handful — see
  * `deep-locator-candidates.ts`'s module docblock), but it over-narrows a
@@ -12995,6 +12990,30 @@ async function resolveDeepLocatorCandidatesWithWidening(
   instruction: string | null | undefined,
   timeoutOptions: DeepLocatorTimeoutOptions
 ): Promise<{ candidates: DeepLocatorCandidate[]; innerSelector: string }> {
+  if (instruction && resolveDeepLocatorActuation(instruction).kind !== "click") {
+    // fill/select: rank over the fillable universe unconditionally, and never
+    // widen to "*" — a widened pass would admit a tabindex'd <label>.
+    const fillable = await resolveDeepLocatorCandidates(
+      page,
+      frameSelector,
+      FILLABLE_CANDIDATE_SELECTOR,
+      instruction,
+      timeoutOptions
+    );
+    if (fillable.length > 0) {
+      return { candidates: fillable, innerSelector: FILLABLE_CANDIDATE_SELECTOR };
+    }
+    // Nothing fillable: fall back to the interactive universe only (never
+    // "*"), so a fill still lands when the control is matched only there.
+    const interactive = await resolveDeepLocatorCandidates(
+      page,
+      frameSelector,
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      instruction,
+      timeoutOptions
+    );
+    return { candidates: interactive, innerSelector: INTERACTIVE_CANDIDATE_SELECTOR };
+  }
   const scoped = await resolveDeepLocatorCandidates(
     page,
     frameSelector,
@@ -13003,22 +13022,6 @@ async function resolveDeepLocatorCandidatesWithWidening(
     timeoutOptions
   );
   if (scoped.length > 0) {
-    if (instruction && resolveDeepLocatorActuation(instruction).kind !== "click") {
-      const fillable = await resolveDeepLocatorCandidates(
-        page,
-        frameSelector,
-        FILLABLE_CANDIDATE_SELECTOR,
-        instruction,
-        timeoutOptions
-      );
-      const fieldLabel = parseFieldLabelTarget(instruction)?.fieldLabel;
-      const excludesNonFillable = fillable.length > 0 && fillable.length < scoped.length;
-      const holdsField =
-        !fieldLabel || findDeepLocatorCandidateByFieldLabel(fillable, fieldLabel) !== null;
-      if (excludesNonFillable && holdsField) {
-        return { candidates: fillable, innerSelector: FILLABLE_CANDIDATE_SELECTOR };
-      }
-    }
     return { candidates: scoped, innerSelector: INTERACTIVE_CANDIDATE_SELECTOR };
   }
   const widened = await resolveDeepLocatorCandidates(
