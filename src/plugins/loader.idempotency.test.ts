@@ -10,6 +10,14 @@ import { getLogger } from "@/lib/logging";
 import { registerRoutes } from "@/plugins/loader";
 import type { SitePlugin } from "@/site-plugin";
 
+const mockRunWithSession = vi.hoisted(() =>
+  vi.fn(async (task: (s: unknown) => unknown) => task(null))
+);
+vi.mock("@/scraper/pool", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/scraper/pool")>()),
+  runWithSession: mockRunWithSession,
+}));
+
 vi.mock("@/lib/telemetry/submission-capture", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/telemetry/submission-capture")>()),
   captureSubmissionEnvelope: vi.fn().mockResolvedValue(undefined),
@@ -103,6 +111,52 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
     expect(res.statusCode).toBe(200);
     const poll = await app.inject({ method: "GET", url: "/v1/idem-site/run/operations/nope" });
     expect(poll.statusCode).toBeGreaterThanOrEqual(400);
+    await app.close();
+  });
+
+  it("dedupes a dispatch-opted extra route and defaults maxAttempts to 1 on the browser path", async () => {
+    const execute = vi.fn(async () => ({ data: { ok: true } }));
+    const handler = vi.fn(async () => ({ from: "handler" }));
+    const plugin = {
+      meta: {
+        siteId: "idem-extra-site",
+        displayName: "idem-extra-site",
+        bodySchema: z.looseObject({}),
+        responseSchema: z.unknown(),
+        idempotency: { keyFields: ["orderRef"] },
+        extraRoutes: [
+          {
+            method: "post",
+            path: "/v1/idem-extra-site/apply",
+            handler,
+            dispatch: true,
+            envelope: false,
+          },
+        ],
+      },
+      execute,
+    } as unknown as SitePlugin<unknown, unknown>;
+    const app = Fastify({ loggerInstance: getLogger({ name: "loader-idempotency-extra" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [plugin]);
+    await app.ready();
+    const payload = { orderRef: `extra-${Date.now()}-${Math.random()}` };
+    const url = "/v1/idem-extra-site/apply";
+    const a = await app.inject({ method: "POST", url, payload });
+    const b = await app.inject({ method: "POST", url, payload });
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+    expect(handler).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(mockRunWithSession).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ maxAttempts: 1 }),
+      undefined,
+      expect.anything()
+    );
     await app.close();
   });
 });

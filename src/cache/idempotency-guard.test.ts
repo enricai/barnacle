@@ -1,7 +1,11 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { UnknownOutcomeError } from "@/api/errors";
 import {
+  createFileIdempotencyStore,
   createIdempotencyGuard,
   createInMemoryIdempotencyStore,
   defaultIsSuccess,
@@ -212,5 +216,33 @@ describe("async operations (start/status)", () => {
     await expect(g.run("s", cfg, { id: "1" }, async () => 1)).rejects.toThrow(
       "unexpected idempotency record state"
     );
+  });
+});
+
+describe("durable store reload", () => {
+  it("replays a success and blocks an unknown outcome after a simulated restart", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "idem-"));
+    try {
+      const cfg = {
+        keyFields: ["ref"],
+        classifyFailure: (e: unknown) => ((e as Error).message === "lost" ? "unknown" : "failed"),
+      } as never;
+      const g1 = createIdempotencyGuard({ store: createFileIdempotencyStore(dir) });
+      await g1.run("fict-site", cfg, { ref: "a" }, async () => "done");
+      await expect(
+        g1.run("fict-site", cfg, { ref: "b" }, async () => {
+          throw new Error("lost");
+        })
+      ).rejects.toThrow("lost");
+      const g2 = createIdempotencyGuard({ store: createFileIdempotencyStore(dir) });
+      const exec = vi.fn(async () => "again");
+      expect(await g2.run("fict-site", cfg, { ref: "a" }, exec)).toBe("done");
+      await expect(g2.run("fict-site", cfg, { ref: "b" }, exec)).rejects.toBeInstanceOf(
+        UnknownOutcomeError
+      );
+      expect(exec).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
