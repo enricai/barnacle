@@ -18070,7 +18070,10 @@ export function emitContractTsParts(opts: {
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
   // A read-only GET flow has no submission step, so no tracking click fires.
-  const mergesTracking = !getInputModel;
+  // A browser-only submission flow that is not a job application (per the
+  // applicant decision) has no job tracking click to carry.
+  const nonJobBrowserOnly = omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema;
+  const mergesTracking = !getInputModel && !nonJobBrowserOnly;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
@@ -19602,7 +19605,9 @@ export function emitConfigManifest(opts: {
   });
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
   // without it would drop the TrackingUrl the engine reads after submission.
-  if (!readOnlyGet) requestProperties.TrackingUrl ??= { type: "string" };
+  const nonJobBrowserOnly =
+    browserFlowOnly === true && isSubmissionFlow === true && !usesApplicantContactSchema;
+  if (!readOnlyGet && !nonJobBrowserOnly) requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
