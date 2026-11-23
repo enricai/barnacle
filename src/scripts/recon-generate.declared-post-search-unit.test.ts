@@ -76,9 +76,9 @@ describe("classifySubmissionFlow", () => {
     expect(
       classifySubmissionFlow({ ...base, gql: true, graphqlActionSequenceHasMutation: true })
     ).toBe(true);
-    expect(
-      classifySubmissionFlow({ ...base, actionCaptureMethods: ["GET", "OPTIONS"] })
-    ).toBe(false);
+    expect(classifySubmissionFlow({ ...base, actionCaptureMethods: ["GET", "OPTIONS"] })).toBe(
+      false
+    );
     expect(classifySubmissionFlow({ ...base, noReplayableActionFlow: true })).toBe(true);
   });
 });
