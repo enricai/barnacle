@@ -2980,6 +2980,11 @@ export function isContentRemovalCredited(params: {
  * Omitted,
  * the submit-shaped rejection is unchanged.
  */
+function visibleTextLengthOfSignature(signature: string | undefined): number | null {
+  const m = signature === undefined ? null : /^(\d+):/.exec(signature);
+  return m ? Number(m[1]) : null;
+}
+
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
   submitStep: boolean;
@@ -2999,6 +3004,12 @@ export function isClickViewSwapVerified(params: {
   contentRemoved?: boolean;
   /** False when the resolved element contradicts the step's quoted target. */
   resolvedElementNamesStepTarget?: boolean;
+  /**
+   * The visible text only grew while the page's invalid markers grew too:
+   * validation messages appearing over the same form, a blocked submit whose
+   * text swap is not a page advance.
+   */
+  blockedSubmitShape?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -3019,10 +3030,14 @@ export function isClickViewSwapVerified(params: {
     actSucceeded = false,
     contentRemoved = false,
     resolvedElementNamesStepTarget = true,
+    blockedSubmitShape = false,
   } = params;
   // A click on a control unrelated to the step's quoted target is not the
   // step's success, whatever the DOM did afterwards.
   if (!resolvedElementNamesStepTarget) return false;
+  if (midFlowSubmit && blockedSubmitShape && networkDelta === 0 && invalidMarkerDelta > 0) {
+    return false;
+  }
   // The page advancing is the evidence for a mid-flow submit, so it does not
   // depend on how Stagehand reported the gesture: a successful act that
   // listed no actions, or a non-state-class method, still ran a click-class
@@ -5201,21 +5216,69 @@ export async function verifyPromptSelectorCommitted(
     const selectStep = ${JSON.stringify(selectStep)};
     const xpath = ${JSON.stringify(xpath)};
     const result = ${SHADOW_XPATH_FIRST_NODE}(xpath);
-    const el = result;
+    let el = result;
+    if (!el && typeof document.evaluate !== "function") {
+      // A document with no native xpath support: resolve the plain
+      // id-anchored shape ("//tag[@id='x']") directly.
+      const idm = /^\\/\\/(?:[A-Za-z][\\w-]*|\\*)\\[@id=(['"])([^'"]+)\\1\\]$/.exec(xpath);
+      if (idm) el = document.getElementById(idm[2]);
+    }
     if (!el) return { isPromptWidget: false, committed: false };
     const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
     if (!widget) {
-      // A select step resolved to a field outside any trigger widget: read the
-      // field's own committed value. Non-field elements stay untouched.
-      if (!selectStep || !el.tagName || !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) {
-        return { isPromptWidget: false, committed: false };
+      // A select step resolved outside any trigger widget: read the target
+      // field's own committed value. When the element is not itself a field
+      // (a popup opener or label, e.g. an "Industry" multiselect button),
+      // resolve the associated control via label/for, aria-owns/controls or
+      // the closest field container; unresolvable openers stay untouched.
+      const isField = (n) => !!n && !!n.tagName && /^(INPUT|SELECT|TEXTAREA)$/.test(n.tagName);
+      let field = null;
+      if (selectStep && el.tagName) {
+        if (isField(el)) field = el;
+        else {
+          const doc = el.ownerDocument || document;
+          if (el.tagName === "LABEL" && isField(el.control) && !/^(radio|checkbox|hidden)$/.test(el.control.type || "")) field = el.control;
+          if (!field && el.tagName === "LABEL" && el.htmlFor) {
+            const t = doc.getElementById(el.htmlFor);
+            if (isField(t)) field = t;
+          }
+          if (!field) {
+            for (const attr of ["aria-owns", "aria-controls"]) {
+              for (const id of (el.getAttribute(attr) || "").split(/\\s+/).filter(Boolean)) {
+                const t = doc.getElementById(id);
+                if (isField(t)) { field = t; break; }
+                const inner = t && t.querySelector ? t.querySelector("select, input:not([type=search]), textarea") : null;
+                if (inner) { field = inner; break; }
+              }
+              if (field) break;
+            }
+          }
+          if (!field) {
+            const box = el.closest("[class*='field'], [class*='form-group'], [role='group'], fieldset, li, .form-row, div");
+            // Only trust an unambiguous container: exactly one text-like
+            // field. Hidden id-stores, radios/checkboxes and multi-field
+            // wrappers do not hold the option label, so stay untouched.
+            const cs = box && box.querySelectorAll ? box.querySelectorAll("select, input:not([type=button]):not([type=submit]):not([type=search]):not([type=hidden]):not([type=radio]):not([type=checkbox]), textarea") : [];
+            if (cs.length === 1) field = cs[0];
+          }
+        }
       }
+      if (!field && selectStep && el.tagName && want && !/^(BUTTON|A|LABEL|INPUT|SELECT|TEXTAREA)$/.test(el.tagName) && el.getAttribute("role") !== "button") {
+        // A non-button custom dropdown display with no backing control: its
+        // own text is the committed value, so an opener still showing a
+        // placeholder/count (popup merely opened) is not a commit.
+        const own = (el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+        const count = /^(\\d+)\\s+items?\\s+selected\\b/.exec(own);
+        if (count) return { isPromptWidget: true, committed: Number(count[1]) > 0 };
+        return { isPromptWidget: true, committed: own !== "" && namesOption(own, want) };
+      }
+      if (!field) return { isPromptWidget: false, committed: false };
       let fv = "";
-      if (el.tagName === "SELECT") {
-        const so = el.selectedOptions && el.selectedOptions[0];
+      if (field.tagName === "SELECT") {
+        const so = field.selectedOptions && field.selectedOptions[0];
         fv = so && (so.value || "") !== "" ? (so.textContent || "") : "";
       } else {
-        fv = el.value || "";
+        fv = field.value || "";
       }
       fv = fv.replace(/\\s+/g, " ").trim().toLowerCase();
       return { isPromptWidget: true, committed: fv !== "" && (!want || namesOption(fv, want)) };
@@ -5543,6 +5606,25 @@ function xpathBodyForEvaluate(selector: string, target?: FrameTarget): string | 
   return stripped.startsWith("/") || stripped.startsWith("(")
     ? toFrameRelativeXpath(stripped, target)
     : null;
+}
+
+/**
+ * Shared committed-value reject decision for the primary verifier and the n+16
+ * fallback: true when the resolved element is a prompt-selector widget (or a
+ * select step's target field/opener) and no committed value landed.
+ */
+async function promptSelectorReadbackRejects(
+  target: FrameTarget,
+  selector: string,
+  step: string
+): Promise<boolean> {
+  const readback = await verifyPromptSelectorCommitted(
+    target,
+    selector,
+    parsePromptSelectorStep(step)?.option,
+    parseSelectStep(step) !== null
+  );
+  return readback?.isPromptWidget === true && readback.committed === false;
 }
 
 /**
@@ -14467,6 +14549,7 @@ export async function executeStepWithHealing(params: {
   // step's processing — earlier-step transitions don't count.
   const stepStartMetaLength = recentCaptureMeta.length;
   let firstAttemptPre: StepSnapshot | null = null;
+  let stepStartInvalidMarkerCount: number | null = null;
   let stepStartSnapshot = isStepSubmitShaped({
     step,
     submitStep,
@@ -14524,6 +14607,23 @@ export async function executeStepWithHealing(params: {
     // A document swap alone (same URL: a rejected server-rendered submit that
     // re-rendered with errors) is not an advance; it needs a changed URL.
     if (!pageAdvanced && settled.url === stepStartSnapshot.url) return false;
+    // Validation messages appearing over the same form (invalid markers grew,
+    // the text only grew) are a blocked submit, not a page advance.
+    if (stepStartInvalidMarkerCount !== null) {
+      const markersNow = await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page)).catch(
+        () => 0
+      );
+      const lenNow = /^(\d+):/.exec(settled.visibleTextSignature ?? "");
+      const lenStart = /^(\d+):/.exec(stepStartSnapshot.visibleTextSignature ?? "");
+      if (
+        markersNow > stepStartInvalidMarkerCount &&
+        lenNow &&
+        lenStart &&
+        Number(lenNow[1]) > Number(lenStart[1])
+      ) {
+        return false;
+      }
+    }
     // A DOM change that came from bouncing to an auth gate is not an advance.
     if (!isPlausibleStepDestination(step, settled.url, stepStartSnapshot.url)) return false;
     logger.info(
@@ -15177,6 +15277,7 @@ export async function executeStepWithHealing(params: {
     const preInvalidMarkerCount = await countNgInvalidContainers(
       frameTarget ?? mainFrameTarget(page)
     ).catch(() => 0);
+    stepStartInvalidMarkerCount ??= preInvalidMarkerCount;
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -16792,6 +16893,9 @@ export async function executeStepWithHealing(params: {
       actSucceeded: record.actResultSuccess === true,
       contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
       resolvedElementNamesStepTarget: resolvedTargetNamesStep,
+      blockedSubmitShape:
+        (visibleTextLengthOfSignature(post.visibleTextSignature) ?? 0) >
+        (visibleTextLengthOfSignature(advanceBaseline.visibleTextSignature) ?? 0),
     });
     if (
       clickViewSwapVerified === false &&
@@ -16927,13 +17031,7 @@ export async function executeStepWithHealing(params: {
         resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
       if (readbackSelector) {
         const readbackTarget = frameTarget ?? mainFrameTarget(page);
-        const promptReadback = await verifyPromptSelectorCommitted(
-          readbackTarget,
-          readbackSelector,
-          parsePromptSelectorStep(step)?.option,
-          parseSelectStep(step) !== null
-        );
-        if (promptReadback?.isPromptWidget === true && promptReadback.committed === false) {
+        if (await promptSelectorReadbackRejects(readbackTarget, readbackSelector, step)) {
           promptSelectorRejected = true;
           record.actResultSuccess = false;
           record.errorMessage = `prompt-selector-fill-rejected: resolved element <${readbackSelector}> is a prompt-selector-shaped widget but no committed value landed`;
@@ -17757,6 +17855,30 @@ export async function executeStepWithHealing(params: {
                 weakDomSignalsAllowed &&
                 retryDestinationPlausible &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
+          // Same committed-value guard as the primary path: weak signals must
+          // not credit a select step whose target value never committed.
+          if (
+            retryVerified &&
+            !retryNetworkIsRealAdvance &&
+            !retryUrlChanged &&
+            parseSelectStep(step) !== null
+          ) {
+            const fbSelector =
+              resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
+            if (
+              fbSelector &&
+              (await promptSelectorReadbackRejects(
+                frameTarget ?? mainFrameTarget(page),
+                fbSelector,
+                step
+              ).catch(() => false))
+            ) {
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} n+16 fallback: select step target value unchanged; not treating as verified`
+              );
+              retryVerified = false;
+            }
+          }
           if (retryVerified) {
             record.phantomClickVerdict = retryVerdict;
           }

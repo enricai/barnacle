@@ -279,4 +279,62 @@ describe("verifyPromptSelectorCommitted reads the target field outside any trigg
       committed: false,
     });
   });
+  const opener = (v: string) =>
+    `<div class="form-field"><button id="o">Industry</button><input id="f" type="text" value="${v}"></div>`;
+  const osel = "xpath=//*[@id='o']";
+  it("popup opener with unchanged target field is uncommitted", async () => {
+    expect(await verifyPromptSelectorCommitted(mk(opener("")), osel, "Alpha", true)).toEqual({
+      isPromptWidget: true,
+      committed: false,
+    });
+  });
+  it("popup opener with a committed target field is committed", async () => {
+    expect(await verifyPromptSelectorCommitted(mk(opener("Alpha")), osel, "Alpha", true)).toEqual({
+      isPromptWidget: true,
+      committed: true,
+    });
+  });
+  const cases: Array<[string, string, string]> = [
+    [
+      "label[for]",
+      `<label id="o" for="f">Industry</label><input id="f" value="Alpha">`,
+      "xpath=//*[@id='o']",
+    ],
+    [
+      "aria-owns input",
+      `<button id="o" aria-owns="f">Industry</button><input id="f" value="Alpha">`,
+      "xpath=//*[@id='o']",
+    ],
+    [
+      "aria-controls inner field",
+      `<button id="o" aria-controls="p">Industry</button><div id="p"><input type="search"><input id="f" value="Alpha"></div>`,
+      "xpath=//*[@id='o']",
+    ],
+  ];
+  for (const [name, h, sel] of cases) {
+    it(`${name}: resolves the associated control`, async () => {
+      expect(await verifyPromptSelectorCommitted(mk(h), sel, "Alpha", true)).toEqual({
+        isPromptWidget: true,
+        committed: true,
+      });
+      expect(
+        await verifyPromptSelectorCommitted(
+          mk(h.replace('value="Alpha"', 'value=""')),
+          sel,
+          "Alpha",
+          true
+        )
+      ).toEqual({ isPromptWidget: true, committed: false });
+    });
+  }
+  it("opener with no associated field stays untouched", async () => {
+    expect(
+      await verifyPromptSelectorCommitted(
+        mk(`<span><button id="o">x</button></span>`),
+        "xpath=//*[@id='o']",
+        "Alpha",
+        true
+      )
+    ).toEqual({ isPromptWidget: false, committed: false });
+  });
 });
