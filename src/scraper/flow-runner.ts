@@ -201,6 +201,34 @@ const MULTI_LABEL_SUFFIX_SECOND = new Set([
   "ac",
   "ne",
   "or",
+  "me",
+  "ltd",
+  "plc",
+  "sch",
+  "go",
+  "gob",
+  "gouv",
+  "govt",
+  "parliament",
+  "school",
+  "iwi",
+  "cri",
+  "health",
+  "mod",
+  "police",
+  "nhs",
+  "gv",
+  "mil",
+  "ed",
+  "nom",
+  "ad",
+  "lg",
+  "geek",
+  "ind",
+  "gen",
+  "firm",
+  "info",
+  "biz",
 ]);
 const SHARED_HOSTING_SUFFIXES = new Set([
   "github.io",
@@ -214,6 +242,24 @@ const SHARED_HOSTING_SUFFIXES = new Set([
   "appspot.com",
   "blogspot.com",
   "s3.amazonaws.com",
+  "web.app",
+  "firebaseapp.com",
+  "onrender.com",
+  "fly.dev",
+  "surge.sh",
+  "glitch.me",
+  "repl.co",
+  "pythonanywhere.com",
+  "wordpress.com",
+  "wixsite.com",
+  "myshopify.com",
+  "azurestaticapps.net",
+  "run.app",
+  "ngrok.io",
+  "gitlab.io",
+  "bitbucket.io",
+  "netlify.com",
+  "web.core.windows.net",
 ]);
 function siteKey(host: string): string {
   const h = host.toLowerCase().replace(/\.$/, "");
@@ -397,7 +443,7 @@ export function wireSignalCapture(
       postData?: string;
       hasPostData?: boolean;
     };
-    redirectResponse?: { status: number; headers: Record<string, string> };
+    redirectResponse?: { status: number; headers?: Record<string, string> };
     redirectHasExtraInfo?: boolean;
   };
   type ResponseReceivedEvent = {
@@ -443,31 +489,116 @@ export function wireSignalCapture(
     if (!entry.requestPostData) entry.requestPostData = REQUEST_BODY_UNAVAILABLE;
   };
 
+  // The verifier reads `signalCounter` (not `counter`) so background polls
+  // and page-load chrome don't poison the "did this action cause something"
+  // signal. We approximate "action-driven" with two closed-set
+  // discriminators:
+  //   1. Non-GET method (real form submits/uploads/state-changes are
+  //      POST/PUT/PATCH/DELETE; GETs are page-load chrome and polls).
+  //   2. Same-origin as the page. Cross-origin POSTs are tracking-pixel
+  //      beacons (analytics, ad networks, bot-protection telemetry) that
+  //      fire on any click. Counting them poisons the verifier: a
+  //      submit-button click that fired only telemetry would be
+  //      indistinguishable from one that fired the real submit XHR, and
+  //      the cascade would silently declare victory while no actual
+  //      submission happened.
+  //
+  // The method discriminator replaces a prior URL-shape regex
+  // (POLLING_URL_PATTERNS) that misclassified jQuery-cache-busted
+  // page-load GETs as polls. See feedback_no_regex_open_sets — URL
+  // classification is an open-set problem; HTTP method and origin
+  // are closed-set discriminators.
+  //
+  // Filename indexing stays on `counter` so polls and cross-origin
+  // captures still get unique filenames on disk.
+  //
+  // Decided once per hop, when its response completes (a redirected hop at
+  // its redirect event, before its capture waits on extra-info), so the
+  // verifier sees the hop's signal as soon as the hop has happened.
+  const creditSignal = (req: InFlightRequest): boolean => {
+    if (req.actionSignal !== undefined) return req.actionSignal;
+    let sameSite = false;
+    try {
+      const pageHost = new URL(getCurrentPageOrigin()).hostname;
+      const reqHost = new URL(req.url).hostname;
+      // Same-site (registrable domain), not strict origin: a redirected
+      // POST hop may land on a sibling subdomain of the page.
+      sameSite = pageHost !== "" && sameSiteHost(reqHost, pageHost);
+    } catch {
+      // Malformed URL or empty page origin — treat as not same-site.
+    }
+    req.actionSignal = isHttpUrl(req.url) && req.method !== "GET" && sameSite;
+    if (req.actionSignal) signalCounter.n++;
+    return req.actionSignal;
+  };
+
+  // Per-requestId chain of detached redirect-hop finalizations; the final hop
+  // awaits it so captures/counter indices follow network order.
+  const HOP_EXTRA_GRACE_MS = 100;
+  const graceExpired = new Set<string>();
+  const hopChains = new Map<string, Promise<void>>();
+
   const onRequest = (params: RequestWillBeSentEvent): void => {
     const prior = inFlight.get(params.requestId);
     // A redirect reuses the requestId: finalize the prior hop as its own capture
     // (e.g. a POST answered 302 with a Location header) before it is replaced.
     if (prior && params.redirectResponse) {
       prior.responseStatus = params.redirectResponse.status;
-      prior.responseHeaders = params.redirectResponse.headers as Record<string, string>;
+      prior.responseHeaders = params.redirectResponse.headers ?? {};
+      creditSignal(prior);
       const hop = hopOf.get(params.requestId) ?? 0;
       hopOf.set(params.requestId, hop + 1);
       // CDP documents that a hop may have no extra-info event at all; the
       // browser says so via redirectHasExtraInfo. Skip that hop's slot so the
       // next hop's extra-info is not attributed to it.
       if (params.redirectHasExtraInfo === false) {
-        for (const seq of [respExtraSeq, reqExtraSeq]) {
-          seq.set(params.requestId, Math.max(seq.get(params.requestId) ?? 0, hop + 1));
+        // Response extra-info already buffered for this slot, though the hop
+        // has none, belongs to the next hop; its request extra-info too.
+        const rid = params.requestId;
+        const movedResp = (respExtraSeq.get(rid) ?? 0) === hop + 1;
+        const moveReq =
+          (reqExtraSeq.get(rid) ?? 0) === hop + 1 &&
+          (movedResp || (respExtraSeq.get(rid) ?? 0) <= hop);
+        const shift = (buf: Map<string, Record<string, string>>): void => {
+          const from = hopKey(rid, hop);
+          const moved = buf.get(from);
+          if (moved) {
+            buf.delete(from);
+            buf.set(hopKey(rid, hop + 1), moved);
+          }
+        };
+        if (movedResp) {
+          shift(extraResponseHeaders);
+          hopSignal(hopKey(rid, hop + 1)).release();
         }
+        if (moveReq) shift(extraRequestHeaders);
+        respExtraSeq.set(rid, Math.max(respExtraSeq.get(rid) ?? 0, hop + (movedResp ? 2 : 1)));
+        reqExtraSeq.set(rid, Math.max(reqExtraSeq.get(rid) ?? 0, hop + (moveReq ? 2 : 1)));
       }
+      // Wait unless the browser declared there is no extra-info for this hop.
       const expectExtra =
-        params.redirectHasExtraInfo === true && (respExtraSeq.get(params.requestId) ?? 0) <= hop;
-      void (async () => {
-        // The hop's response extra-info (Set-Cookie) may land after this event.
-        if (expectExtra) await waitForHopExtra(hopKey(params.requestId, hop));
-        foldResponseExtras(prior, params.requestId, hop);
-        await finalizeCapture(prior, params.requestId, false);
-      })().catch(() => {});
+        params.redirectHasExtraInfo !== false && (respExtraSeq.get(params.requestId) ?? 0) <= hop;
+      pendingHops.set(params.requestId, (pendingHops.get(params.requestId) ?? 0) + 1);
+      const hopTask = (hopChains.get(params.requestId) ?? Promise.resolve()).then(async () => {
+        try {
+          // The hop's response extra-info (Set-Cookie) may land after this event.
+          if (expectExtra && !graceExpired.has(params.requestId))
+            await waitForHopExtra(hopKey(params.requestId, hop));
+          foldResponseExtras(prior, params.requestId, hop);
+          await finalizeCapture(prior, params.requestId, false);
+        } finally {
+          const left = (pendingHops.get(params.requestId) ?? 1) - 1;
+          if (left > 0) pendingHops.set(params.requestId, left);
+          else {
+            pendingHops.delete(params.requestId);
+            if (finishedIds.delete(params.requestId)) dropRequestState(params.requestId);
+          }
+        }
+      });
+      hopChains.set(
+        params.requestId,
+        hopTask.catch(() => {})
+      );
     }
     const inline = params.request.postData;
     const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
@@ -526,6 +657,11 @@ export function wireSignalCapture(
   const respExtraSeq = new Map<string, number>();
   const reqExtraSeq = new Map<string, number>();
   const hopOf = new Map<string, number>();
+  // Redirect hops whose finalizer is still running, per requestId, and ids
+  // whose loadingFinished already fired: their state is dropped once the last
+  // pending hop finalizer completes, so it never loses a hop's buffers.
+  const pendingHops = new Map<string, number>();
+  const finishedIds = new Set<string>();
   const bufferExtra = (
     seq: Map<string, number>,
     buf: Map<string, Record<string, string>>,
@@ -537,23 +673,29 @@ export function wireSignalCapture(
     const key = hopKey(requestId, hop);
     buf.set(key, mergeResponseHeaders(buf.get(key) ?? {}, headers));
     if (seq === respExtraSeq) {
-      hopWaiters.get(key)?.();
+      hopSignal(key).release();
     }
   };
 
-  // Bounded wait for a redirect hop's response extra-info (arrival order vs the
-  // redirect's requestWillBeSent is not guaranteed).
-  const hopWaiters = new Map<string, () => void>();
-  const waitForHopExtra = (key: string, ms = 500): Promise<void> =>
-    new Promise<void>((resolve) => {
-      const done = (): void => {
-        clearTimeout(timer);
-        hopWaiters.delete(key);
-        resolve();
-      };
-      const timer = setTimeout(done, ms);
-      hopWaiters.set(key, done);
-    });
+  // Wait for a redirect hop's response extra-info (arrival order vs the
+  // redirect's requestWillBeSent is not guaranteed). Released by that hop's
+  // extra-info event, or at teardown so nothing waits forever.
+  // Created eagerly (synchronously) so an extra-info that lands before the hop
+  // finalizer starts waiting is not missed.
+  const hopWaiters = new Map<string, { promise: Promise<void>; release: () => void }>();
+  const hopSignal = (key: string): { promise: Promise<void>; release: () => void } => {
+    let w = hopWaiters.get(key);
+    if (!w) {
+      let release!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      w = { promise, release };
+      hopWaiters.set(key, w);
+    }
+    return w;
+  };
+  const waitForHopExtra = (key: string): Promise<void> => hopSignal(key).promise;
 
   const onResponseExtraInfo = (params: ResponseReceivedExtraInfoEvent): void => {
     bufferExtra(respExtraSeq, extraResponseHeaders, params.requestId, params.headers);
@@ -581,6 +723,12 @@ export function wireSignalCapture(
     reqExtraSeq.delete(requestId);
     hopOf.delete(requestId);
     const prefix = `${requestId}#`;
+    for (const k of [...hopWaiters.keys()]) {
+      if (k.startsWith(prefix)) {
+        hopWaiters.get(k)?.release();
+        hopWaiters.delete(k);
+      }
+    }
     for (const m of [extraResponseHeaders, extraRequestHeaders]) {
       for (const k of [...m.keys()]) if (k.startsWith(prefix)) m.delete(k);
     }
@@ -590,6 +738,7 @@ export function wireSignalCapture(
     const req = inFlight.get(params.requestId);
     if (!req) return;
     inFlight.delete(params.requestId);
+    const finalHop = hopOf.get(params.requestId) ?? 0;
     foldResponseExtras(req, params.requestId);
     // Final hop: also fold every leftover buffer for this id (in hop order).
     // Extra-info counts can disagree with real hops (several events per hop, or
@@ -598,7 +747,7 @@ export function wireSignalCapture(
       const pre = `${params.requestId}#`;
       let acc: Record<string, string> = {};
       for (const k of [...m.keys()]
-        .filter((x) => x.startsWith(pre))
+        .filter((x) => x.startsWith(pre) && Number(x.slice(pre.length)) >= finalHop)
         .sort((a, b) => Number(a.slice(pre.length)) - Number(b.slice(pre.length)))) {
         acc = mergeResponseHeaders(acc, m.get(k));
       }
@@ -607,7 +756,26 @@ export function wireSignalCapture(
     req.responseHeaders = mergeResponseHeaders(req.responseHeaders, leftover(extraResponseHeaders));
     req.requestHeaders = mergeResponseHeaders(req.requestHeaders, leftover(extraRequestHeaders));
     // Drain every remaining buffer for this id so nothing leaks per run.
-    dropRequestState(params.requestId);
+    // Hops below the final one that a pending redirect finalizer owns are kept
+    // until it completes.
+    if (pendingHops.has(params.requestId)) finishedIds.add(params.requestId);
+    else dropRequestState(params.requestId);
+    const chain = hopChains.get(params.requestId);
+    if (chain) {
+      // Once the request has finished, a hop's extra-info is only awaited for a
+      // short grace period; it is otherwise awaited until it arrives.
+      const grace = setTimeout(() => {
+        graceExpired.add(params.requestId);
+        for (const [k, w] of hopWaiters) if (k.startsWith(`${params.requestId}#`)) w.release();
+      }, HOP_EXTRA_GRACE_MS);
+      try {
+        await chain;
+      } finally {
+        clearTimeout(grace);
+        graceExpired.delete(params.requestId);
+      }
+      if (hopChains.get(params.requestId) === chain) hopChains.delete(params.requestId);
+    }
     await finalizeCapture(req, params.requestId, true);
   };
 
@@ -667,41 +835,7 @@ export function wireSignalCapture(
     }
 
     const idx = String(counter.n++).padStart(3, "0");
-    // The verifier reads `signalCounter` (not `counter`) so background polls
-    // and page-load chrome don't poison the "did this action cause something"
-    // signal. We approximate "action-driven" with two closed-set
-    // discriminators:
-    //   1. Non-GET method (real form submits/uploads/state-changes are
-    //      POST/PUT/PATCH/DELETE; GETs are page-load chrome and polls).
-    //   2. Same-origin as the page. Cross-origin POSTs are tracking-pixel
-    //      beacons (analytics, ad networks, bot-protection telemetry) that
-    //      fire on any click. Counting them poisons the verifier: a
-    //      submit-button click that fired only telemetry would be
-    //      indistinguishable from one that fired the real submit XHR, and
-    //      the cascade would silently declare victory while no actual
-    //      submission happened.
-    //
-    // The method discriminator replaces a prior URL-shape regex
-    // (POLLING_URL_PATTERNS) that misclassified jQuery-cache-busted
-    // page-load GETs as polls. See feedback_no_regex_open_sets — URL
-    // classification is an open-set problem; HTTP method and origin
-    // are closed-set discriminators.
-    //
-    // Filename indexing stays on `counter` so polls and cross-origin
-    // captures still get unique filenames on disk.
-    let sameOrigin = false;
-    try {
-      const pageHost = new URL(getCurrentPageOrigin()).hostname;
-      const reqHost = new URL(req.url).hostname;
-      // Same-site (registrable domain), not strict origin: a redirected
-      // POST hop may land on a sibling subdomain of the page.
-      sameOrigin = pageHost !== "" && sameSiteHost(reqHost, pageHost);
-    } catch {
-      // Malformed URL or empty page origin — treat as not same-site.
-    }
-    if (req.method !== "GET" && sameOrigin) {
-      signalCounter.n++;
-    }
+    const actionSignal = creditSignal(req);
     // Capture filename uses <counter>-<phase>-<unix-ms>-<short-hash> to
     // guarantee bounded length regardless of URL shape. Previously we used
     // the URL's path tail verbatim, which crashed the run with ENAMETOOLONG
@@ -756,7 +890,7 @@ export function wireSignalCapture(
     // RECENT_CAPTURES_WINDOW) doesn't get washed out by SPA chunk loads or GA
     // pings between meaningful mutations. Same discriminator signalCounter
     // uses for the per-step verifier.
-    if (capture.method !== "GET" && sameOrigin) {
+    if (actionSignal) {
       recentCaptureMeta.push({
         method: capture.method,
         status: capture.status,
@@ -785,6 +919,7 @@ export function wireSignalCapture(
   void Promise.resolve(session.send?.("Runtime.enable")).catch(() => {});
 
   return (): void => {
+    for (const w of [...hopWaiters.values()]) w.release();
     session.off("Network.requestWillBeSent", onRequest);
     session.off("Network.requestWillBeSentExtraInfo", onRequestExtraInfo);
     session.off("Network.responseReceived", onResponse);
@@ -1484,6 +1619,8 @@ type InFlightRequest = {
   bodyPending?: Promise<void>;
   responseStatus: number;
   responseHeaders: Record<string, string>;
+  /** Whether this hop counts toward `signalCounter`; decided once, when its response completes. */
+  actionSignal?: boolean;
 };
 
 /**
