@@ -3631,10 +3631,7 @@ async function main(): Promise<void> {
                     },
                     stepStartSnapshot: baselineText,
                     midFlowSubmit,
-                    io: {
-                      settle: settleWithPageQuiescence,
-                      snapshot: snapshotPage,
-                    },
+                    io: { settle: settleWithPageQuiescence, snapshot: snapshotPage },
                   }).catch(() => undefined);
             const trailingGraceVerdict =
               baselineText === undefined

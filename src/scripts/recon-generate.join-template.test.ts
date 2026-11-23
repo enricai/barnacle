@@ -3,6 +3,7 @@ import { RECON_FLOW_FILE_SCHEMA } from "@/scripts/recon-browser";
 import {
   emitJoinTemplateExpr,
   evalJoinTemplate,
+  joinTemplateFields,
   parseFoldReturnSpec,
   parseJoinTemplate,
 } from "@/scripts/recon-generate";
@@ -69,5 +70,19 @@ describe("foldReturn joinTemplate", () => {
       foldReturn: base,
     });
     expect(bad.success).toBe(false);
+  });
+
+  it("handles dotted paths, numbers, epoch dates and bad inputs", () => {
+    const tokens = parseJoinTemplate("{a.id}/{n}/{t|yyyy-MM-dd HH:mm:ss}")!;
+    expect(joinTemplateFields(tokens)).toEqual(["a.id", "n", "t"]);
+    expect(evalJoinTemplate(tokens, { a: { id: "X" }, n: 5, t: 0 })).toBe(
+      "X/5/1970-01-01 00:00:00"
+    );
+    expect(evalJoinTemplate(tokens, { a: { id: "X" }, n: 5, t: "nope" })).toBeUndefined();
+    expect(evalJoinTemplate(tokens, { a: { id: "X" }, n: {}, t: 0 })).toBeUndefined();
+    expect(parseJoinTemplate("a}{b}")).toBeNull();
+    expect(parseJoinTemplate("{}")).toBeNull();
+    expect(parseJoinTemplate("{a|yy|dd}")).toBeNull();
+    expect(parseFoldReturnSpec(flow({ ...base, joinTemplate: 5 }))).toBeNull();
   });
 });
