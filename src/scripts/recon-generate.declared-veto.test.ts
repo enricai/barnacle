@@ -1,3 +1,4 @@
+import { describe, expect, it } from "vitest";
 import { extractGraphQLActionSequence } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
