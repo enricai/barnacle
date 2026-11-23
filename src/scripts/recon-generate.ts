@@ -2036,9 +2036,13 @@ export function addClickUrlPathBindings(
   // A short all-digit segment (`/jobs/123/some-slug`) is a job id when a hyphenated slug
   // directly follows it; without that shape (`/checkout/create-order/123456`) the
   // length floor still applies so it cannot collide with arbitrary substrings.
+  // A single-word slug (`/jobs/123/nurse/login`) counts only when more path follows it.
+  const isSingleWordSlugAt = (i: number): boolean =>
+    /^[A-Za-z][A-Za-z0-9]*$/.test(segments[i] ?? "") && (segments[i + 1] ?? "") !== "";
   const isShortIdWithSlug = (seg: string, i: number): boolean =>
     /^\d{3,}$/.test(seg) &&
-    /^[A-Za-z0-9]+(?:-(?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(segments[i + 1] ?? "");
+    (/^[A-Za-z0-9]+(?:-(?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(segments[i + 1] ?? "") ||
+      isSingleWordSlugAt(i + 1));
   const isIdSegmentAt = (i: number): boolean => {
     const seg = segments[i];
     if (seg === undefined) return false;
@@ -2059,7 +2063,8 @@ export function addClickUrlPathBindings(
       ((isStateLikeSegment(seg) && seg.length >= MIN_STATE_VALUE_LENGTH) ||
         (/-/.test(seg) &&
           /^[A-Za-z0-9]+(?:-(?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(seg) &&
-          isIdSegmentAt(i - 1)));
+          isIdSegmentAt(i - 1)) ||
+        (isSingleWordSlugAt(i) && isShortIdWithSlug(segments[i - 1] ?? "", i - 1)));
     if ((!isIdSegmentAt(i) && !slugAfterId) || into.has(seg)) return;
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
@@ -2082,6 +2087,8 @@ export function bindMultipartSelectAnswers(
   const isUrlencoded = ctLower.includes("application/x-www-form-urlencoded");
   if (!ctLower.includes("multipart/") && !isUrlencoded) return body;
   const selects = new Map<string, Set<string>>();
+  for (const [name, values] of htmlSelectsForWrite.get(cap) ?? [])
+    selects.set(name, new Set(values));
   for (const p of prior) {
     for (const [name, values] of extractHtmlSelectOptions(p.capture.responseBody)) {
       const merged = selects.get(name) ?? new Set<string>();
@@ -6843,6 +6850,33 @@ export function* walkSetCookiePairs(
  */
 /** Exported for unit testing — lets tests exercise the produces[] walk (body
  * AND header/cookie origins) directly against synthetic Capture sequences. */
+/**
+ * `<select>` option ids rendered by HTML pages that are not themselves action steps
+ * (a plain GET form page), remembered per later write capture so answer binding and
+ * the frozen-answer checklist can see them even though the page is outside the action
+ * sequence. Populated by {@link indexStateValues}, which sees every capture.
+ */
+const htmlSelectsForWrite = new WeakMap<Capture, Map<string, Set<string>>>();
+
+function registerHtmlSelectsForLaterWrites(captures: readonly Capture[]): void {
+  const acc = new Map<string, Set<string>>();
+  for (const c of captures) {
+    if (c.method.toUpperCase() !== "GET") {
+      if (acc.size > 0) {
+        const copy = new Map<string, Set<string>>();
+        for (const [k, v] of acc) copy.set(k, new Set(v));
+        htmlSelectsForWrite.set(c, copy);
+      }
+      continue;
+    }
+    for (const [name, values] of extractHtmlSelectOptions(c.responseBody)) {
+      const merged = acc.get(name) ?? new Set<string>();
+      for (const v of values) merged.add(v);
+      acc.set(name, merged);
+    }
+  }
+}
+
 export function indexStateValues(
   captures: Capture[],
   shieldedUuids: Set<string> = new Set(),
@@ -6850,6 +6884,7 @@ export function indexStateValues(
   forceIncludeValues: ReadonlyMap<string, ReadonlySet<Capture>> = new Map()
 ): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
+  registerHtmlSelectsForLaterWrites(captures);
   // Computed structurally off the SAME captures being indexed (no
   // foldReturnSpec available at this layer) — a spec-declared fold's own
   // chain values reach here via the caller-supplied `forceIncludeValues`
@@ -16803,6 +16838,7 @@ export function detectContractGaps(
     const selects = new Set<string>();
     for (const s of actionSteps) {
       for (const name of extractHtmlSelectOptions(s.capture.responseBody).keys()) selects.add(name);
+      for (const name of htmlSelectsForWrite.get(s.capture)?.keys() ?? []) selects.add(name);
     }
     for (const s of actionSteps) {
       const raw = s.capture.requestPostData;
