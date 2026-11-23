@@ -231,3 +231,17 @@ describe("isMidFlowAdvanceCredited blocked-submit marker evidence", () => {
     );
   });
 });
+
+describe("isMidFlowAdvanceCredited caller wiring", () => {
+  it("both executeStepWithHealing call sites pass invalidMarkerDelta", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync("src/scraper/flow-runner.ts", "utf8");
+    const calls = src.split("isMidFlowAdvanceCredited({").slice(1);
+    expect(calls.length).toBe(2);
+    const bodies = calls.map((c) => c.slice(0, c.indexOf("});")));
+    expect(bodies[0]).toContain(
+      "invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount"
+    );
+    expect(bodies[1]).toContain("invalidMarkerDelta: invalidMarkerCount - preInvalidMarkerCount");
+  });
+});
