@@ -2,6 +2,11 @@ import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
 import { StepVerificationError } from "@/scraper/errors";
+import {
+  buildNavigateSettle,
+  createCaptureTracker,
+  NAVIGATE_SETTLE_QUIET_MS,
+} from "@/scraper/navigate";
 import { executeNavigateStep, GOTO_TIMEOUT_MS } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -107,7 +112,6 @@ describe("flow-runner/executeNavigateStep settle", () => {
   const settleOpts = { endpointRx: /\/graphql/, bodyRx: /SearchQuery/ };
 
   it("does not return until a body-matching capture plus quiet window; URL-only chrome capture does not satisfy", async () => {
-    const { createCaptureTracker, NAVIGATE_SETTLE_QUIET_MS } = await import("@/scraper/navigate");
     const tracker = createCaptureTracker();
     const { page } = fakePage({
       gotoImpl: async () => {
@@ -140,7 +144,6 @@ describe("flow-runner/executeNavigateStep settle", () => {
   });
 
   it("proceeds with a warning on timeout and does not wait without a settle hook", async () => {
-    const { createCaptureTracker } = await import("@/scraper/navigate");
     const tracker = createCaptureTracker();
     const { page } = fakePage({ gotoImpl: async () => undefined });
     const warn = vi.fn();
@@ -157,7 +160,6 @@ describe("flow-runner/executeNavigateStep settle", () => {
     });
     expect(outcome).toBe("completed");
     expect(warn).toHaveBeenCalled();
-    const { buildNavigateSettle } = await import("@/scraper/navigate");
     expect(buildNavigateSettle(tracker, null)).toBeUndefined();
   });
 });

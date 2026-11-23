@@ -62,10 +62,12 @@ export function createCaptureTracker(): CaptureTracker {
     },
     begin({ endpointRx, bodyRx }) {
       let matchedAt: number | null = null;
+      let wake: (() => void) | null = null;
       const listener = (url: string, body: string): void => {
         if (!endpointRx.test(url)) return;
         if (bodyRx !== null && !bodyRx.test(body)) return;
         matchedAt = Date.now();
+        wake?.();
       };
       waiters.add(listener);
       return {
@@ -79,7 +81,13 @@ export function createCaptureTracker(): CaptureTracker {
               if (matchedAt !== null && now - matchedAt >= quietMs) return "settled";
               if (now >= deadline) return "timeout";
               const next = matchedAt !== null ? matchedAt + quietMs : deadline;
-              await new Promise((r) => setTimeout(r, Math.max(5, Math.min(next, deadline) - now)));
+              await new Promise<void>((r) => {
+                const t = setTimeout(r, Math.max(5, Math.min(next, deadline) - now));
+                wake = () => {
+                  clearTimeout(t);
+                  r();
+                };
+              });
             }
           } finally {
             waiters.delete(listener);
