@@ -14554,7 +14554,7 @@ export interface FoldReturnSpec {
    * a join key nested under an object, not just a top-level property, can be
    * declared. */
   joinFields: string[];
-  /** Computed composite join key, e.g. `{shipCode}{startDate|yyMMdd}{packageCode}`:
+  /** Computed composite join key, e.g. `{fieldA}{fieldB|yyMMdd}{fieldC}`:
    * `{path}` reads a primary-row field (dot path), `{path|fmt}` formats it as a
    * date (`yyyy yy MM dd HH mm ss` tokens, UTC). Literal text is kept. When
    * present, a drill request value equal to the template's value on the

@@ -2687,8 +2687,8 @@ export function flowHasSubmitSemantics(params: {
   const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
   if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
   if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
+  if (params.readOnly === true) return false;
   if (!requireSubmitEndpointMatch) {
-    if (params.readOnly === true) return false;
     if (submitEndpointPattern !== null && params.recentCaptureMeta) {
       let re: RegExp | null = null;
       try {

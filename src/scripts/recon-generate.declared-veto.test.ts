@@ -24,13 +24,13 @@ describe("declared selection is honored before the zero-variance veto", () => {
   it("keeps declared repeated same-URL reads instead of selecting 0", () => {
     const same = {};
     const caps = [
-      read("2026-01-01T00:00:00.000Z", "cabinCategoriesAvailability", same),
-      read("2026-01-01T00:00:01.000Z", "cabinCategoriesAvailability", same),
-      read("2026-01-01T00:00:02.000Z", "cabinCategoriesAvailability", same),
+      read("2026-01-01T00:00:00.000Z", "listRoomOptions", same),
+      read("2026-01-01T00:00:01.000Z", "listRoomOptions", same),
+      read("2026-01-01T00:00:02.000Z", "listRoomOptions", same),
     ];
     const kept = extractGraphQLActionSequence(
       caps,
-      { endpoint: null, body: "allSailings|cabinCategoriesAvailability" },
+      { endpoint: null, body: "listTrips|listRoomOptions" },
       { endpointPattern: "/graphql", resultsPath: "data.items", joinFields: ["id"] }
     );
     expect(kept.length).toBe(3);

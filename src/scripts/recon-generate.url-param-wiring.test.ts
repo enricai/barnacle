@@ -33,12 +33,12 @@ const base = "https://x.example.com/find?";
 const steps = [
   {
     step: "a",
-    navigateTo: `${base}currencyCode=GBP&sailors=2`,
+    navigateTo: `${base}currencyCode=GBP&guests=2`,
     payloadField: "currencyCode",
   },
   {
     step: "b",
-    navigateTo: `${base}currencyCode=USD&sailors=3`,
+    navigateTo: `${base}currencyCode=USD&guests=3`,
     payloadField: "travelParty",
   },
 ];
@@ -57,10 +57,10 @@ describe("navigateTo URL param -> co-varying body variable", () => {
     const flow = [
       {
         step: "a",
-        navigateTo: `${base}sailors=2`,
+        navigateTo: `${base}guests=2`,
         payloadField: "travelParty",
       },
-      { step: "b", navigateTo: `${base}sailors=3` },
+      { step: "b", navigateTo: `${base}guests=3` },
     ];
     const m = correlateNavigateToParamsWithVariables(flow, c, c[0]!.variables);
     expect(m.get("travelParty")).toEqual(["input", "party"]);
