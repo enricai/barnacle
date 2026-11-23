@@ -316,6 +316,32 @@ describe("findFrozenRequestTokens", () => {
     ];
     expect(findFrozenRequestTokens(steps(caps.slice(1)), caps, `/step?s=${T}`)).toEqual([T]);
   });
+  it("flags a hidden-input token and captcha responses frozen in multipart text parts", () => {
+    const C = "03AFcWeA5xYz-captchaResponseTokenValue123";
+    const body = [
+      "--XB",
+      'Content-Disposition: form-data; name="csrf"',
+      "",
+      T,
+      "--XB",
+      'Content-Disposition: form-data; name="h-captcha-response"',
+      "",
+      C,
+      "--XB--",
+      "",
+    ].join("\r\n");
+    const post = buildCapture({
+      url: "https://shop.example.com/submit",
+      requestHeaders: { "content-type": "multipart/form-data; boundary=XB" },
+      requestPostData: body,
+      responseBody: { ok: true },
+      timestamp: "2024-01-01T00:00:01Z",
+    });
+    const caps = [page(`<input type="hidden" name="csrf" value="${T}">`), post];
+    const out = findFrozenRequestTokens(steps(caps.slice(1)), caps, `csrf ${T}`);
+    expect(out).toContain(T);
+    expect(out).toContain(C);
+  });
   it("flags an opaque query value seen on exactly one request and issued by nothing", () => {
     const caps = [write(`https://shop.example.com/step?s=${T}`, 1)];
     expect(findFrozenRequestTokens(steps(caps), caps, `/step?s=${T}`)).toEqual([T]);

@@ -90,6 +90,10 @@ export function extractHtmlIssuedTokens(body: unknown): HtmlIssuedToken[] {
     const h = attr(m[0], "href");
     if (h) fromUrl(h, "link");
   }
+  for (const m of body.matchAll(/<i?frame\b[^>]*>/gi)) {
+    const h = attr(m[0], "src");
+    if (h) fromUrl(h, "link");
+  }
   for (const m of body.matchAll(/<input\b[^>]*>/gi)) {
     if (attr(m[0], "type")?.toLowerCase() !== "hidden") continue;
     const name = attr(m[0], "name");

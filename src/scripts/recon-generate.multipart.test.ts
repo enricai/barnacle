@@ -75,3 +75,22 @@ describe("text-captured multipart replaces a pre-existing per-call content-type"
     expect(out).toContain(BOUNDARY);
   });
 });
+
+describe("multipart content-type derived from body when capture header is absent/non-matching", () => {
+  const data = `--${BOUNDARY}\r\nContent-Disposition: form-data; name="a"\r\n\r\nv\r\n--${BOUNDARY}--`;
+  const run = (headers: Record<string, string>) => {
+    const s = mk("x", data, "r0");
+    (s.capture as { requestHeaders: Record<string, string> }).requestHeaders = headers;
+    return emit([s]);
+  };
+  it("derives from body when header missing", () => {
+    const out = run({});
+    expect(out).toContain(`"Content-Type": \`multipart/form-data; boundary=${BOUNDARY}\``);
+  });
+  it("derives from body when header is non-matching", () => {
+    expect(run({ "content-type": "application/json" })).toContain("multipart/form-data; boundary=");
+  });
+  it("emits CRLF escaped so the literal keeps CRLF at runtime", () => {
+    expect(run({})).toContain("\\r\n");
+  });
+});

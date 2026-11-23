@@ -2033,22 +2033,40 @@ export function addClickUrlPathBindings(
     return into;
   }
   const segments = u.pathname.split("/");
-  const isIdSegment = (seg: string | undefined): boolean =>
-    seg !== undefined &&
-    isStateLikeSegment(seg) &&
-    seg.length >= MIN_STATE_VALUE_LENGTH &&
-    /\d/.test(seg);
+  // A short all-digit segment (`/jobs/123/some-slug`) is a job id when a hyphenated slug
+  // directly follows it; without that shape (`/checkout/create-order/123456`) the
+  // length floor still applies so it cannot collide with arbitrary substrings.
+  // A single-word slug (`/jobs/123/nurse/login`) counts only when more path follows it.
+  const isSingleWordSlugAt = (i: number): boolean =>
+    /^[A-Za-z][A-Za-z0-9]*$/.test(segments[i] ?? "") &&
+    ((segments[i + 1] ?? "") !== "" || (i === segments.length - 1 && u.search !== ""));
+  const isShortIdWithSlug = (seg: string, i: number): boolean =>
+    /^\d{3,}$/.test(seg) &&
+    (/^[A-Za-z0-9]+(?:[-_.+](?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(segments[i + 1] ?? "") ||
+      isSingleWordSlugAt(i + 1));
+  const isIdSegmentAt = (i: number): boolean => {
+    const seg = segments[i];
+    if (seg === undefined) return false;
+    return (
+      (isStateLikeSegment(seg) && seg.length >= MIN_STATE_VALUE_LENGTH && /\d/.test(seg)) ||
+      isShortIdWithSlug(seg, i)
+    );
+  };
   segments.forEach((seg, i) => {
     // Same collision floor as extractEntryUrlParams (a short value matches arbitrary
     // substrings of later bodies/URLs), and require a digit: a purely alphabetic
     // hyphenated segment (`create-order`) is an endpoint name, not a job identifier
     // — unless it directly follows an id, where it is that posting's slug
     // (`/jobs/<id>/<slug>`).
+    const afterId = i > 0 && isIdSegmentAt(i - 1);
     const slugAfterId =
-      isStateLikeSegment(seg) &&
-      seg.length >= MIN_STATE_VALUE_LENGTH &&
-      isIdSegment(segments[i - 1]);
-    if ((!isIdSegment(seg) && !slugAfterId) || into.has(seg)) return;
+      afterId &&
+      ((isStateLikeSegment(seg) && seg.length >= MIN_STATE_VALUE_LENGTH) ||
+        (/[-_.+]/.test(seg) &&
+          /^[A-Za-z0-9]+(?:[-_.+](?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(seg) &&
+          isIdSegmentAt(i - 1)) ||
+        (isSingleWordSlugAt(i) && isShortIdWithSlug(segments[i - 1] ?? "", i - 1)));
+    if ((!isIdSegmentAt(i) && !slugAfterId) || into.has(seg)) return;
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
   return into;
@@ -2066,8 +2084,12 @@ export function bindMultipartSelectAnswers(
   prior: readonly { capture: Capture }[]
 ): string {
   const ct = Object.entries(cap.requestHeaders).find(([k]) => k.toLowerCase() === "content-type");
-  if (!(ct?.[1] ?? "").toLowerCase().includes("multipart/")) return body;
+  const ctLower = (ct?.[1] ?? "").toLowerCase();
+  const isUrlencoded = ctLower.includes("application/x-www-form-urlencoded");
+  if (!ctLower.includes("multipart/") && !isUrlencoded) return body;
   const selects = new Map<string, Set<string>>();
+  for (const [name, values] of htmlSelectsForWrite.get(cap) ?? [])
+    selects.set(name, new Set(values));
   for (const p of prior) {
     for (const [name, values] of extractHtmlSelectOptions(p.capture.responseBody)) {
       const merged = selects.get(name) ?? new Set<string>();
@@ -2076,12 +2098,79 @@ export function bindMultipartSelectAnswers(
     }
   }
   if (selects.size === 0) return body;
+  if (isUrlencoded) {
+    const decode = (t: string): string => {
+      try {
+        return decodeURIComponent(t.replace(/\+/g, " "));
+      } catch {
+        return t;
+      }
+    };
+    return body
+      .split("&")
+      .map((pair) => {
+        const eq = pair.indexOf("=");
+        if (eq < 0) return pair;
+        const rawValue = pair.slice(eq + 1);
+        const name = decode(pair.slice(0, eq));
+        if (rawValue.includes("${") || !selects.get(name)?.has(decode(rawValue))) return pair;
+        return `${pair.slice(0, eq)}=\${encodeURIComponent(String(payload.Answers[${JSON.stringify(name)}]))}`;
+      })
+      .join("&");
+  }
   return body.replace(
     /(Content-Disposition: form-data; name="([^"]+)"\r?\n\r?\n)([^\r\n]*)(?=\r?\n--)/g,
     (whole, head: string, name: string, value: string) =>
       selects.get(name)?.has(value) && !value.includes("${")
         ? `${head}\${payload.Answers[${JSON.stringify(name)}]}`
         : whole
+  );
+}
+
+const UPLOAD_HANDLE_NAME_RE = /(?:_TEMP|resume|\bcv\b|_cv|cv_|upload|attachment|handle|file)/i;
+
+function findStringLeafPath(node: unknown, target: string, path: string[] = []): string[] | null {
+  if (typeof node === "string") return node === target ? path : null;
+  if (node === null || typeof node !== "object" || Array.isArray(node)) return null;
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    const hit = findStringLeafPath(v, target, [...path, k]);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * In a text-captured multipart body, rebinds each upload-handle text part
+ * (e.g. `resume_TEMP`) whose recorded value is returned by a prior multipart
+ * upload step's JSON response to that step's live response, so the replay
+ * threads the handle the freshly uploaded payload.Resume produced.
+ */
+export function bindMultipartUploadHandles(
+  body: string,
+  prior: readonly { capture: Capture; isMultipart: boolean; varName: string }[]
+): string {
+  const uploads = prior.filter((p) => p.isMultipart);
+  if (uploads.length === 0) return body;
+  return body.replace(
+    /(Content-Disposition: form-data; name="([^"]+)"\r?\n\r?\n)([^\r\n]*)(?=\r?\n--)/g,
+    (whole, head: string, name: string, value: string) => {
+      if (!UPLOAD_HANDLE_NAME_RE.test(name) || value.length < 12 || /[\s$]/.test(value))
+        return whole;
+      for (let k = uploads.length - 1; k >= 0; k--) {
+        const u = uploads[k]!;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(String(u.capture.responseBody ?? ""));
+        } catch {
+          continue;
+        }
+        const path = findStringLeafPath(parsed, value);
+        if (!path) continue;
+        const access = path.map((seg) => `[${JSON.stringify(seg)}]`).join("");
+        return `${head}\${(${u.varName} as Record<string, any>)${access}}`;
+      }
+      return whole;
+    }
   );
 }
 
@@ -3533,13 +3622,8 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
   }
-  for (const { value, element } of extractHtmlIssuedTokens(getCapture.responseBody)) {
-    if (
-      value.length <
-        (element === "path-segment" ? PATH_SEGMENT_MIN_LENGTH : ISSUED_TOKEN_MIN_LENGTH) ||
-      value.length > ISSUED_TOKEN_MAX_LENGTH
-    )
-      continue;
+  for (const { value } of extractHtmlIssuedTokens(getCapture.responseBody)) {
+    if (value.length < PATH_SEGMENT_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
     if (/\s/.test(value)) continue;
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
@@ -3547,7 +3631,7 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
   if (tokens.size === 0) return false;
   for (let j = index + 1; j < captures.length; j++) {
     const later = captures[j]!;
-    if (later.method === "GET" || later.status < 200 || later.status >= 300) continue;
+    if (later.method === "GET" || later.status < 200 || later.status >= 400) continue;
     const haystacks = [
       later.url,
       later.requestPostData ?? "",
@@ -6814,6 +6898,33 @@ export function* walkSetCookiePairs(
  */
 /** Exported for unit testing — lets tests exercise the produces[] walk (body
  * AND header/cookie origins) directly against synthetic Capture sequences. */
+/**
+ * `<select>` option ids rendered by HTML pages that are not themselves action steps
+ * (a plain GET form page), remembered per later write capture so answer binding and
+ * the frozen-answer checklist can see them even though the page is outside the action
+ * sequence. Populated by {@link indexStateValues}, which sees every capture.
+ */
+const htmlSelectsForWrite = new WeakMap<Capture, Map<string, Set<string>>>();
+
+function registerHtmlSelectsForLaterWrites(captures: readonly Capture[]): void {
+  const acc = new Map<string, Set<string>>();
+  for (const c of captures) {
+    if (c.method.toUpperCase() !== "GET") {
+      if (acc.size > 0) {
+        const copy = new Map<string, Set<string>>();
+        for (const [k, v] of acc) copy.set(k, new Set(v));
+        htmlSelectsForWrite.set(c, copy);
+      }
+      continue;
+    }
+    for (const [name, values] of extractHtmlSelectOptions(c.responseBody)) {
+      const merged = acc.get(name) ?? new Set<string>();
+      for (const v of values) merged.add(v);
+      acc.set(name, merged);
+    }
+  }
+}
+
 export function indexStateValues(
   captures: Capture[],
   shieldedUuids: Set<string> = new Set(),
@@ -6821,6 +6932,7 @@ export function indexStateValues(
   forceIncludeValues: ReadonlyMap<string, ReadonlySet<Capture>> = new Map()
 ): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
+  registerHtmlSelectsForLaterWrites(captures);
   // Computed structurally off the SAME captures being indexed (no
   // foldReturnSpec available at this layer) — a spec-declared fold's own
   // chain values reach here via the caller-supplied `forceIncludeValues`
@@ -6951,13 +7063,13 @@ export function indexStateValues(
     // markup parameters never enter the index.
     for (const t of extractHtmlIssuedTokens(c.responseBody)) {
       const v = t.value;
-      if (v.length < MIN_STATE_VALUE_LENGTH || v.length > MAX_STATE_VALUE_LENGTH) continue;
+      if (v.length < PATH_SEGMENT_MIN_LENGTH || v.length > MAX_STATE_VALUE_LENGTH) continue;
       if (/\s/.test(v) || PLACEHOLDER_STATE_VALUES.has(v) || shieldedUuids.has(v)) continue;
       if (index.has(v)) continue;
       let reused = false;
       for (let j = i + 1; j < captures.length && !reused; j++) {
         const later = captures[j]!;
-        if (later.status < 200 || later.status >= 300) continue;
+        if (later.status < 200 || later.status >= 400) continue;
         // A later GET re-sends a token only through its URL (no body).
         reused =
           later.method === "GET"
@@ -7911,7 +8023,12 @@ export function findFrozenRequestTokens(
         if (typeof value === "string") check(value, capture, false);
       }
     } catch {
-      for (const [, v] of new URLSearchParams(raw)) check(v, capture, false);
+      const parts = parseMultipartTextParts(raw);
+      if (parts.length > 0) {
+        for (const part of parts) check(part.value, capture, false);
+      } else {
+        for (const [, v] of new URLSearchParams(raw)) check(v, capture, false);
+      }
     }
   }
   return [...frozen];
@@ -8255,6 +8372,20 @@ function interpolateStateValues(
   const bindingByValue = new Map<string, string>();
   for (const [value, accessor] of payloadAccessorByValue) {
     bindingByValue.set(value, `\${${accessor}}`);
+  }
+  // Caller-owned values reach URLs / form-urlencoded bodies percent-encoded
+  // (`a@b.c` → `a%40b.c`); bind that recorded form too, re-encoding at runtime.
+  if (!isJsonBody) {
+    for (const [value, accessor] of payloadAccessorByValue) {
+      const encoded = encodeURIComponent(value);
+      if (
+        encoded !== value &&
+        !bindingByValue.has(encoded) &&
+        !payloadAccessorByValue.has(encoded)
+      ) {
+        bindingByValue.set(encoded, `\${encodeURIComponent(String(${accessor}))}`);
+      }
+    }
   }
   const restrictedValues = new Set<string>();
   const unconditionalValues = new Set<string>();
@@ -10758,6 +10889,10 @@ export function emitMultiStepExecuteHttp(
       bodyTemplate = bindMultipartSelectAnswers(bodyTemplate, cap, prior);
     }
 
+    if (bodyTemplate && cap.requestPostData !== REQUEST_BODY_UNAVAILABLE) {
+      bodyTemplate = bindMultipartUploadHandles(bodyTemplate, prior);
+    }
+
     const joinCarryingHeaderNames = joinCarryingHeaderNamesByStep.get(i);
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
@@ -10828,15 +10963,30 @@ export function emitMultiStepExecuteHttp(
     // A text-captured multipart body (requestPostData non-null) is sent through
     // httpClient as a string, so the captured multipart Content-Type (with the
     // boundary the body uses) must override the JSON baseline in BASE_HEADERS.
+    let multipartBodyCrlf = false;
     if (cap.requestPostData !== null && cap.requestPostData !== undefined) {
       const capturedCt = Object.entries(cap.requestHeaders).find(
         ([k]) => k.toLowerCase() === "content-type"
       )?.[1];
-      if (capturedCt?.toLowerCase().includes("multipart/")) {
+      // Header absent or non-multipart: derive type+boundary from the body's own
+      // first delimiter line so the JSON BASE_HEADERS type never wins.
+      const delim = /^(--[^\r\n]+)\r?\n/.exec(cap.requestPostData);
+      const bodyLooksMultipart =
+        delim !== null && /^Content-Disposition:\s*form-data/im.test(cap.requestPostData);
+      const capturedMultipart = capturedCt?.toLowerCase().includes("multipart/") === true;
+      const multipartCt = capturedMultipart
+        ? /boundary=/i.test(capturedCt!) || !bodyLooksMultipart
+          ? capturedCt
+          : `${capturedCt!.replace(/;\s*$/, "")}; boundary=${delim![1]!.slice(2)}`
+        : bodyLooksMultipart
+          ? `multipart/form-data; boundary=${delim![1]!.slice(2)}`
+          : undefined;
+      if (multipartCt !== undefined) {
+        multipartBodyCrlf = true;
         for (const k of Object.keys(perCallHeaders)) {
           if (k.toLowerCase() === "content-type") delete perCallHeaders[k];
         }
-        perCallHeaders["Content-Type"] = capturedCt.replace(/[`\\]|\$\{/g, (m) => `\\${m}`);
+        perCallHeaders["Content-Type"] = multipartCt.replace(/[`\\]|\$\{/g, (m) => `\\${m}`);
       }
     }
     const headersExpr = Object.keys(perCallHeaders).length
@@ -10844,7 +10994,11 @@ export function emitMultiStepExecuteHttp(
           .map(([k, v]) => `${JSON.stringify(k)}: \`${v}\``)
           .join(", ")} },`
       : "";
-    const bodyArg = bodyTemplate ? `body: \`${bodyTemplate}\`,` : "";
+    // A raw CR inside a JS template literal is normalized to LF at runtime, so
+    // a multipart body's CRLF delimiters must be emitted as the escape \\r.
+    const bodyArg = bodyTemplate
+      ? `body: \`${multipartBodyCrlf ? bodyTemplate.replace(/\r/g, "\\r") : bodyTemplate}\`,`
+      : "";
     // G2: each call gets its own schema, inferred from this step's captured
     // response — the client-level schema (z.unknown() for multi-step flows,
     // see emitContractTs) stays the plugin's caller-facing contract, not what
@@ -10873,7 +11027,7 @@ export function emitMultiStepExecuteHttp(
       : [r.url, r.headersExpr, r.bodyArg];
     for (const haystack of haystacks) {
       for (const match of haystack.matchAll(
-        /\$\{(?:encodeURIComponent\()*([A-Za-z_$][A-Za-z0-9_$]*)/g
+        /\$\{(?:encodeURIComponent\(|\()*([A-Za-z_$][A-Za-z0-9_$]*)/g
       )) {
         referencedNames.add(match[1]!);
       }
@@ -11813,8 +11967,9 @@ function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string
       fail,
     ];
   }
-  const tagPattern = p.element === "form-action" ? "<form\\b[^>]*>" : "<a\\b[^>]*>";
-  const attrName = p.element === "form-action" ? "action" : "href";
+  const tagPattern =
+    p.element === "form-action" ? "<form\\b[^>]*>" : "<(?:a|iframe|frame)\\b[^>]*>";
+  const attrName = p.element === "form-action" ? "action" : "(?:href|src)";
   return [
     `${indent}const ${p.name} = (() => {`,
     `${indent}  for (const tag of ${textVar}.match(/${tagPattern}/gi) ?? []) {`,
@@ -16700,6 +16855,8 @@ export interface ContractGaps {
   bodylessUploadSteps: number;
   /** Select answers the recording froze because nothing binds them to payload.Answers. */
   frozenScreeningAnswers: number;
+  /** Text multipart fields carrying a recorded server-side upload handle that stays frozen. */
+  frozenUploadHandles?: string[];
 }
 
 /** Derives {@link ContractGaps} from the compiled action sequence. `submitDeclared`
@@ -16726,20 +16883,59 @@ export function detectContractGaps(
     actionSteps.length > 0 &&
     !actionSteps.some((s) => isWrite(s.capture) && matchesSubmit(s.capture));
   let frozenScreeningAnswers = 0;
-  if (emittedBody !== undefined && !emittedBody.includes("payload.Answers[")) {
+  // A body binding answers by non-literal expression (`payload.Answers[key]`) is treated as
+  // binding them all; once any answer is bound by its literal name, each select is checked by name.
+  const perNameBinding = emittedBody !== undefined && /payload\.Answers\[["'`]/.test(emittedBody);
+  if (emittedBody !== undefined && (perNameBinding || !emittedBody.includes("payload.Answers["))) {
     const selects = new Set<string>();
     for (const s of actionSteps) {
       for (const name of extractHtmlSelectOptions(s.capture.responseBody).keys()) selects.add(name);
+      for (const name of htmlSelectsForWrite.get(s.capture)?.keys() ?? []) selects.add(name);
     }
     for (const s of actionSteps) {
       const raw = s.capture.requestPostData;
       if (typeof raw !== "string") continue;
+      const ctv = Object.entries(s.capture.requestHeaders ?? {}).find(
+        ([k]) => k.toLowerCase() === "content-type"
+      )?.[1];
+      const urlencoded = (ctv ?? "").toLowerCase().includes("application/x-www-form-urlencoded");
+      const fieldNames = new Set<string>();
+      if (urlencoded) {
+        for (const pair of raw.split("&")) {
+          const k = pair.split("=")[0] ?? "";
+          try {
+            fieldNames.add(decodeURIComponent(k.replace(/\+/g, " ")));
+          } catch {
+            fieldNames.add(k);
+          }
+        }
+      }
       for (const name of selects) {
-        if (raw.includes(`name="${name}"`)) frozenScreeningAnswers++;
+        if (emittedBody.includes(`payload.Answers[${JSON.stringify(name)}]`)) continue;
+        if (urlencoded ? fieldNames.has(name) : raw.includes(`name="${name}"`))
+          frozenScreeningAnswers++;
       }
     }
   }
-  return { captchaGatedSteps, truncatedSequence, bodylessUploadSteps, frozenScreeningAnswers };
+  const frozenUploadHandles: string[] = [];
+  const uploadNameRe = /(?:_TEMP|resume|\bcv\b|_cv|cv_|upload|attachment|handle|file)/i;
+  for (const s of actionSteps) {
+    const raw = s.capture.requestPostData;
+    if (typeof raw !== "string" || raw === REQUEST_BODY_UNAVAILABLE) continue;
+    for (const part of parseMultipartTextParts(raw)) {
+      const v = part.value;
+      if (!uploadNameRe.test(part.name) || v.length < 12 || /[\s$]/.test(v)) continue;
+      if (emittedBody !== undefined && !emittedBody.includes(v)) continue;
+      if (!frozenUploadHandles.includes(part.name)) frozenUploadHandles.push(part.name);
+    }
+  }
+  return {
+    captchaGatedSteps,
+    truncatedSequence,
+    bodylessUploadSteps,
+    frozenScreeningAnswers,
+    ...(frozenUploadHandles.length > 0 ? { frozenUploadHandles } : {}),
+  };
 }
 
 /** Checklist lines for each {@link ContractGaps} condition that holds. */
@@ -16760,6 +16956,10 @@ export function contractGapChecklistLines(gaps: ContractGaps): string[] {
   if (gaps.frozenScreeningAnswers > 0)
     lines.push(
       `${gaps.frozenScreeningAnswers} screening answer(s) are frozen at the recording's values — nothing binds them to payload.Answers; bind them or confirm they are constant`
+    );
+  if (gaps.frozenUploadHandles && gaps.frozenUploadHandles.length > 0)
+    lines.push(
+      `Upload handle field(s) ${gaps.frozenUploadHandles.join(", ")} are frozen at the recording's server-side handle — a replay reuses a stale file reference; upload payload.Resume and thread the returned handle`
     );
   return lines;
 }
