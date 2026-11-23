@@ -109,6 +109,22 @@ export interface SitePluginExtraRoute {
   handler(request: SitePluginExtraRouteRequest, context: SitePluginContext): Promise<unknown>;
 }
 
+
+/** Outcome of a failed attempt: `failed` is safe to retry; `unknown` means an irreversible step may have occurred. */
+export type IdempotencyFailureClass = 'failed' | 'unknown';
+
+/** Plugin-declared idempotency contract; see `SitePluginMeta.idempotency`. */
+export interface PluginIdempotency {
+  /** Body field names that together identify the logical operation. */
+  keyFields: string[];
+  /** Predicate over the result data; true means the operation succeeded. */
+  isSuccess?: (data: unknown) => boolean;
+  /** Maps a thrown error to `failed` (safe to retry) or `unknown` (may have taken effect). */
+  classifyFailure?: (error: unknown) => IdempotencyFailureClass;
+  /** Opt in to asynchronous execution (consumed by later work). */
+  async?: boolean;
+}
+
 /**
  * Static metadata that core reads at startup to register the plugin's Fastify
  * route. Separating metadata from `execute()` lets the loader validate config
@@ -152,6 +168,22 @@ export interface SitePluginMeta {
    * set to 1 so taskTimeoutMs is a real per-run cap, not one third of it.
    */
   maxAttempts?: number;
+  /**
+   * Optional idempotency contract. Declares which body fields identify one
+   * logical operation, when a result counts as success, and how a thrown
+   * error maps to an outcome. Absent means no idempotency semantics.
+   *
+   * @example
+   * // Made-up "acme-orders" plugin: an order is identified by its reference.
+   * idempotency: {
+   *   keyFields: ['orderRef'],
+   *   isSuccess: (data) => (data as { confirmed?: boolean }).confirmed === true,
+   *   classifyFailure: (err) =>
+   *     err instanceof Error && err.message.includes('after submit') ? 'unknown' : 'failed',
+   *   async: true,
+   * }
+   */
+  idempotency?: PluginIdempotency;
   /**
    * When true, the loader registers the route to accept `multipart/form-data`
    * via `@fastify/multipart` in `attachFieldsToBody: 'keyValues'` mode. Text
