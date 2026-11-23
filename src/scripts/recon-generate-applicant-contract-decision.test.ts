@@ -16,7 +16,11 @@ describe("contractUsesApplicantContactSchema (browser-only decision)", () => {
   });
   it("is true on explicit declaration, upload step, or resume vocabulary", () => {
     expect(
-      contractUsesApplicantContactSchema({ ...base, payloadFieldNames: plain, applicantContract: true })
+      contractUsesApplicantContactSchema({
+        ...base,
+        payloadFieldNames: plain,
+        applicantContract: true,
+      })
     ).toBe(true);
     expect(
       contractUsesApplicantContactSchema({
@@ -25,9 +29,9 @@ describe("contractUsesApplicantContactSchema (browser-only decision)", () => {
       })
     ).toBe(true);
     expect(contractUsesApplicantContactSchema({ ...base, hasMultipartStep: true })).toBe(true);
-    expect(
-      contractUsesApplicantContactSchema({ ...base, flowSteps: ["Attach your resume"] })
-    ).toBe(true);
+    expect(contractUsesApplicantContactSchema({ ...base, flowSteps: ["Attach your resume"] })).toBe(
+      true
+    );
   });
   it("explicit false overrides evidence", () => {
     expect(
