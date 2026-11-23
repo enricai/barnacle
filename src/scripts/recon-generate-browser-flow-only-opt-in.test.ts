@@ -145,11 +145,15 @@ describe("recon-generate CLI — flow-declared maxAttempts", () => {
     expect(contract).toMatch(/maxAttempts: 3,/);
   }, 60_000);
 
-  it("forces a single attempt for an irreversible browser-flow-only submit", () => {
+  it("defaults to a single attempt for an irreversible browser-flow-only submit", () => {
+    const contract = generate({ ...FLOW, browserFlowOnly: true })["contract.ts"] ?? "";
+    expect(contract).toMatch(/maxAttempts: 1,/);
+  }, 60_000);
+
+  it("honours an explicit maxAttempts on a browser-flow-only submit", () => {
     const contract =
       generate({ ...FLOW, browserFlowOnly: true, maxAttempts: 3 })["contract.ts"] ?? "";
-    expect(contract).toMatch(/maxAttempts: 1,/);
-    expect(contract).not.toMatch(/maxAttempts: 3/);
+    expect(contract).toMatch(/maxAttempts: 3,/);
   }, 60_000);
 
   it("emits no maxAttempts when none is declared", () => {
@@ -202,8 +206,13 @@ describe("recon-generate in-process — flow-declared maxAttempts", () => {
     expect(await generateInProcess({ ...FLOW, maxAttempts: 3 })).toMatch(/maxAttempts: 3,/);
   }, 60_000);
 
-  it("forces a single attempt for an irreversible browser-flow-only submit", async () => {
-    const contract = await generateInProcess({ ...FLOW, browserFlowOnly: true, maxAttempts: 3 });
+  it("defaults to a single attempt for an irreversible browser-flow-only submit", async () => {
+    const contract = await generateInProcess({ ...FLOW, browserFlowOnly: true });
     expect(contract).toMatch(/maxAttempts: 1,/);
+  }, 60_000);
+
+  it("honours an explicit maxAttempts on a browser-flow-only submit", async () => {
+    const contract = await generateInProcess({ ...FLOW, browserFlowOnly: true, maxAttempts: 3 });
+    expect(contract).toMatch(/maxAttempts: 3,/);
   }, 60_000);
 });

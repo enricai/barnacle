@@ -21704,13 +21704,13 @@ export async function main(): Promise<void> {
     );
 
     // Non-GET mutating submit on a browser-flow-only plugin cannot be replayed
-    // safely, so it forces a single attempt; otherwise the declaration stands.
+    // safely, so it defaults to a single attempt; an explicit declaration wins.
     const submitIsIrreversible =
       browserFlowOnly &&
       !isReadOnlyGetFlow &&
       winningCapture !== null &&
       winningCapture.method !== "GET";
-    const derivedMaxAttempts = submitIsIrreversible ? 1 : declaredMaxAttempts;
+    const derivedMaxAttempts = declaredMaxAttempts ?? (submitIsIrreversible ? 1 : null);
 
     if (emit === "config") {
       mkdirSync(outDir, { recursive: true });
