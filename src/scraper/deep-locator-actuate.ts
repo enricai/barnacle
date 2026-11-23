@@ -253,7 +253,11 @@ const LABEL_SAFE_SELECTOR_PART =
 
 function selectorExcludesLabels(selector: string): boolean {
   const parts = selector.split(",").map((p) => p.trim());
-  return parts.length > 0 && parts.every((p) => LABEL_SAFE_SELECTOR_PART.test(p));
+  // The subject of a complex selector is its last compound (after any combinator).
+  return (
+    parts.length > 0 &&
+    parts.every((p) => LABEL_SAFE_SELECTOR_PART.test(p.split(/\s*[>+~]\s*|\s+/).pop() ?? ""))
+  );
 }
 
 /**
