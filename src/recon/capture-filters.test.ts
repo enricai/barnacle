@@ -2016,8 +2016,9 @@ describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
     },
   ];
   it("is a beacon without the matcher, kept with it", () => {
-    expect(isZeroVarianceRepeatCapture(posts[0]!, all)).toBe(true);
-    expect(isZeroVarianceRepeatCapture(posts[0]!, all, (c) => /\/v1\/items$/.test(c.url))).toBe(
+    const first = posts[0] as (typeof posts)[number];
+    expect(isZeroVarianceRepeatCapture(first, all)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, all, (c) => /\/v1\/items$/.test(c.url))).toBe(
       false
     );
   });
