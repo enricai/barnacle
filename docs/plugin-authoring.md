@@ -232,6 +232,58 @@ Two cases core cannot see:
   don't log chosen values. Log `maskValueShape(value)` (`Aaa`, `99/99/9999`)
   when the format matters for debugging.
 
+## Idempotency and async mode (`meta.idempotency`)
+
+A plugin whose run has an irreversible effect (placing an order, submitting a
+form) can declare `meta.idempotency` so duplicate requests don't repeat it.
+Absent means no idempotency semantics. Example with a made-up `acme-orders`
+plugin:
+
+```ts
+idempotency: {
+  keyFields: ["orderRef"],
+  isSuccess: (data) => (data as { confirmed?: boolean }).confirmed === true,
+  classifyFailure: (err) =>
+    err instanceof Error && err.message.includes("after submit") ? "unknown" : "failed",
+  async: true,
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `keyFields` | Body field names that together identify one logical operation. The key is `[siteId, ...values]`. Strings are trimmed; numbers and booleans are stringified. If the list is empty or any field is missing/blank/non-scalar, no deduplication happens and the run executes normally. |
+| `isSuccess(data)` | Predicate over the result data. Only a successful result is recorded and replayed to later duplicates. Default: success unless `data.needsUserInfo === true`. |
+| `classifyFailure(err)` | Maps a thrown error to `"failed"` (safe to retry; nothing is recorded) or `"unknown"` (an irreversible step may have happened). Unclassified errors are treated as `failed`. |
+| `async` | Opt in to accept-then-poll (below). |
+
+### Unknown-outcome semantics
+
+When a run throws an error classified `"unknown"`, the outcome is recorded
+for the key. Until the record expires (default 6 hours), a repeat request with
+the same key is **not** re-run: it fails with `UNKNOWN_OUTCOME` (code `2009`,
+HTTP 409). The caller must verify the real outcome out of band before
+retrying. Concurrent duplicates in the same process share one in-flight run.
+
+### Async accept-then-poll
+
+With `async: true` — or per request with the header `x-barnacle-async: true` —
+`POST /v1/<siteId>/run` returns `202` immediately with
+`{ operationId, operationStatus: "pending", pollUrl }`. The operation id is
+derived from the key, so retrying the same request returns the same id rather
+than starting a second run. Poll `GET /v1/<siteId>/run/operations/:operationId`
+(authenticated). The `operationStatus` values are:
+
+- `pending` — still running.
+- `succeeded` — `result` holds the normal response body.
+- `failed` — safe to retry; `message` explains why.
+- `unknown-outcome` — verify out of band; `message` explains why. Also
+  reported when a restart interrupted a pending run.
+
+An unknown operation id is rejected as a field violation. When the request has
+no usable key (missing key fields), it falls back to the synchronous path.
+The durable store backing these records is configured in
+[configuration.md](configuration.md#idempotency-store).
+
 ## Static fixtures
 
 If Phase 3b (auxiliary fixture detection) found static JSON endpoints (markets,

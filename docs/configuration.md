@@ -79,6 +79,12 @@ Set `USE_BEDROCK=true` to route Stagehand's LLM calls through AWS Bedrock instea
 | `CACHE_TTL_MS` | `900000` (15 min) | LRU response cache TTL. Cached responses skip the target API entirely. |
 | `CACHE_MAX_ENTRIES` | `1000` | Maximum entries in the LRU cache. |
 
+### Idempotency store
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `IDEMPOTENCY_STORE_DIR` | unset | Directory for the durable idempotency store used by plugins that declare `meta.idempotency` (one JSON file per key). Unset falls back to an in-memory store: records are lost on restart, and an async operation still pending at restart is not recoverable. Set it to a persistent volume in production. Records expire after 6 hours. See [plugin-authoring.md](plugin-authoring.md#idempotency-and-async-mode-metaidempotency). |
+
 ### Rate limiting (inbound)
 
 These limit traffic *to* Barnacle's own API (outbound limits live in each plugin's `contract.ts`).
