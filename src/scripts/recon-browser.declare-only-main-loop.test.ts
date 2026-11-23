@@ -113,6 +113,19 @@ function makeFakePage(getUrl: () => string = (): string => "https://example.com"
       if (typeof expr === "string" && expr.includes("querySelector")) {
         return { matched: false, src: null };
       }
+      return null;
+    }),
+    frames: vi.fn().mockReturnValue([]),
+    getSessionForFrame: () => session,
+    mainFrameId: () => "main",
+    sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+  } as unknown as Page;
+  const stagehand = {
+    context: { awaitActivePage: async (): Promise<Page> => page },
+  } as unknown as Stagehand;
+  return { page, stagehand };
+}
+
 
 describe("recon-browser main() — declareOnly steps are recorded, never executed", () => {
   const ORIGINAL_ARGV = process.argv;
