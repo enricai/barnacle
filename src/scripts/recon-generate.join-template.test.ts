@@ -19,23 +19,20 @@ describe("foldReturn joinTemplate", () => {
         ship: "AB",
         start: "2025-03-07T00:00:00Z",
         pkg: "P1",
-      }),
+      })
     ).toBe("AB250307P1");
-    expect(
-      evalJoinTemplate(tokens, { ship: "CD", start: "2026-11-02", pkg: "P2" }),
-    ).toBe("CD261102P2");
+    expect(evalJoinTemplate(tokens, { ship: "CD", start: "2026-11-02", pkg: "P2" })).toBe(
+      "CD261102P2"
+    );
     expect(evalJoinTemplate(tokens, { ship: "CD", pkg: "P2" })).toBeUndefined();
   });
 
   it("emitted expression agrees with the evaluator", () => {
     const tokens = parseJoinTemplate("{ship}-{start|yyyyMMdd}")!;
-    const expr = emitJoinTemplateExpr(
-      tokens,
-      (f) => `item[${JSON.stringify(f)}]`,
-    );
+    const expr = emitJoinTemplateExpr(tokens, (f) => `item[${JSON.stringify(f)}]`);
     const run = new Function(
       "item",
-      `return ${expr.replace(/: (unknown|number \| undefined|string \| number)/g, "").replace(/ as string \| number/g, "")};`,
+      `return ${expr.replace(/: (unknown|number \| undefined|string \| number)/g, "").replace(/ as string \| number/g, "")};`
     );
     const item = { ship: "AB", start: "2025-03-07" };
     expect(run(item)).toBe(evalJoinTemplate(tokens, item));
@@ -49,19 +46,15 @@ describe("foldReturn joinTemplate", () => {
 
   it("parses joinTemplate and keeps joinFields-only flows unchanged", () => {
     const withT = parseFoldReturnSpec(
-      flow({ ...base, joinFields: ["ship"], joinTemplate: "{ship}{d|yyMMdd}" }),
+      flow({ ...base, joinFields: ["ship"], joinTemplate: "{ship}{d|yyMMdd}" })
     );
     expect(withT?.joinTemplate).toBe("{ship}{d|yyMMdd}");
-    const derived = parseFoldReturnSpec(
-      flow({ ...base, joinTemplate: "{ship}{d|yyMMdd}" }),
-    );
+    const derived = parseFoldReturnSpec(flow({ ...base, joinTemplate: "{ship}{d|yyMMdd}" }));
     expect(derived?.joinFields).toEqual(["ship", "d"]);
     const plain = parseFoldReturnSpec(flow({ ...base, joinFields: ["id"] }));
     expect(plain).toEqual({ ...base, joinFields: ["id"] });
     expect(
-      parseFoldReturnSpec(
-        flow({ ...base, joinFields: ["id"], joinTemplate: "{a" }),
-      ),
+      parseFoldReturnSpec(flow({ ...base, joinFields: ["id"], joinTemplate: "{a" }))
     ).toBeNull();
   });
 
