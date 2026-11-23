@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emitContractTs } from "@/scripts/recon-generate";
+import { emitConfigManifest, emitContractTs } from "@/scripts/recon-generate";
 
 const BASE_OPTS = {
   siteId: "test-site",
@@ -60,5 +60,27 @@ describe("emitContractTs — meta.redaction", () => {
     expect(emit({ extraPayloadFields: [{ name: "A", type: "string" }] })).not.toContain(
       "redaction:"
     );
+  });
+});
+
+describe("emitConfigManifest — spec.redaction", () => {
+  const spec = (extraPayloadFields: { name: string; type: "string"; sensitive?: boolean }[]) =>
+    JSON.parse(
+      emitConfigManifest({
+        siteId: "test-site",
+        baseUrl: "https://example.org",
+        flowSteps: ["Click the Apply button"],
+        extraPayloadFields,
+      })
+    ).spec;
+
+  it("emits wordKeys for sensitive declared fields", () => {
+    expect(spec([{ name: "Nick", type: "string", sensitive: true }]).redaction).toEqual({
+      wordKeys: ["Nick"],
+    });
+  });
+
+  it("omits redaction when nothing is sensitive", () => {
+    expect(spec([{ name: "A", type: "string" }])).not.toHaveProperty("redaction");
   });
 });
