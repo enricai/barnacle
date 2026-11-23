@@ -8,7 +8,10 @@ const mockRunHealingFlow = vi.hoisted(() =>
 );
 const mockGuardedExtract = vi.hoisted(() => vi.fn().mockResolvedValue({ confirmationId: "X" }));
 
-vi.mock("@/scraper/flow-runner", () => ({ runHealingFlow: mockRunHealingFlow }));
+vi.mock("@/scraper/flow-runner", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  runHealingFlow: mockRunHealingFlow,
+}));
 vi.mock("@/scraper/stagehand-guard", () => ({ guardedExtract: mockGuardedExtract }));
 vi.mock("@/lib/bedrock", () => ({ createBedrockModel: vi.fn(() => ({})) }));
 
