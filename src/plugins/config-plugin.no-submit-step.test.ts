@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildConfigPlugin } from "@/plugins/config-plugin";
-import { emitConfigPluginManifest } from "@/scripts/recon-generate";
+import { emitConfigManifest } from "@/scripts/recon-generate";
 
 const mockRunHealingFlow = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ submitVerified: true, submitStepSkipped: false, lastStepIndex: 1 })
@@ -70,7 +70,7 @@ describe("submission flow without a submitStep", () => {
 
   it("emitter marks submission flows", () => {
     const json = JSON.parse(
-      emitConfigPluginManifest({
+      emitConfigManifest({
         siteId: "acme-jobs",
         baseUrl: "https://a.example",
         flowSteps: ["click apply", "click next"],
