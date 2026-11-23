@@ -300,6 +300,8 @@ export const EXTRA_PAYLOAD_FIELD_SCHEMA = z
     type: z.enum(["string", "number", "boolean"]).default("string"),
     optional: z.boolean().optional(),
     sensitive: z.boolean().optional(),
+    /** How a sensitive value is matched in output: by digits (phone/ids) or as a word. Defaults to `word`. */
+    redactionKind: z.enum(["digit", "word"]).optional(),
   })
   .refine((f) => !f.sensitive || f.type === "string", {
     message: "a sensitive extraPayloadField must be string-typed",
@@ -307,6 +309,23 @@ export const EXTRA_PAYLOAD_FIELD_SCHEMA = z
   });
 
 export type ExtraPayloadField = z.infer<typeof EXTRA_PAYLOAD_FIELD_SCHEMA>;
+
+/**
+ * The `meta.redaction` policy for the sensitive declared fields, or null when
+ * none is sensitive (so a flow without them emits nothing). The key kind comes
+ * from the declared `redactionKind`, never from the field name.
+ */
+export function buildExtraFieldRedaction(
+  fields: readonly ExtraPayloadField[]
+): { wordKeys?: string[]; digitKeys?: string[] } | null {
+  const wordKeys = fields.filter((f) => f.sensitive && f.redactionKind !== "digit").map((f) => f.name);
+  const digitKeys = fields.filter((f) => f.sensitive && f.redactionKind === "digit").map((f) => f.name);
+  if (wordKeys.length === 0 && digitKeys.length === 0) return null;
+  return {
+    ...(wordKeys.length > 0 && { wordKeys }),
+    ...(digitKeys.length > 0 && { digitKeys }),
+  };
+}
 
 /**
  * Reads and validates `extraPayloadFields` from a recon flow file.

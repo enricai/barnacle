@@ -43,3 +43,22 @@ describe("emitContractTs — extraPayloadFields", () => {
     expect(emit({ extraPayloadFields: [] })).toBe(emit({}));
   });
 });
+
+describe("emitContractTs — meta.redaction", () => {
+  it("emits word/digit keys by declared kind", () => {
+    const c = emit({
+      extraPayloadFields: [
+        { name: "Nick", type: "string", sensitive: true },
+        { name: "Phone", type: "string", sensitive: true, redactionKind: "digit" },
+        { name: "Plain", type: "string" },
+      ],
+    });
+    expect(c).toContain('redaction: {"wordKeys":["Nick"],"digitKeys":["Phone"]},');
+  });
+
+  it("emits no redaction when nothing is sensitive", () => {
+    expect(emit({ extraPayloadFields: [{ name: "A", type: "string" }] })).not.toContain(
+      "redaction:"
+    );
+  });
+});
