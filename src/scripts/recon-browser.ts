@@ -820,6 +820,8 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * that genuinely rely on DOM-only verification.
      */
     requireSubmitEndpointMatch: z.boolean().optional(),
+    /** Flow only reads data (GraphQL query / GET): never infer submit semantics from submitEndpointPattern. */
+    readOnly: z.boolean().optional(),
     /**
      * URL path fragments that indicate a successful submit transition.
      * Surfaced to the Haiku verifySubmit judge as evidence — when the page
@@ -2640,6 +2642,7 @@ function parseCli(): {
   submitBodyPattern: string | null;
   submittedStateSelectors: string[];
   requireSubmitEndpointMatch: boolean;
+  readOnly: boolean;
   advanceTransitionBodyPattern: string | null;
   successUrlFragments: string[];
   successPageTitleHints: string[];
@@ -2774,6 +2777,7 @@ function parseCli(): {
       submitBodyPattern: null,
       submittedStateSelectors: [],
       requireSubmitEndpointMatch: false,
+      readOnly: false,
       advanceTransitionBodyPattern: null,
       successUrlFragments: [],
       successPageTitleHints: [],
@@ -2804,6 +2808,7 @@ function parseCli(): {
   const requireSubmitEndpointMatch = Array.isArray(parsed.data)
     ? false
     : (parsed.data.requireSubmitEndpointMatch ?? false);
+  const readOnly = Array.isArray(parsed.data) ? false : (parsed.data.readOnly ?? false);
   const advanceTransitionBodyPattern = Array.isArray(parsed.data)
     ? null
     : (parsed.data.advanceTransitionBodyPattern ?? null);
@@ -2862,6 +2867,7 @@ function parseCli(): {
     submitBodyPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    readOnly,
     advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
@@ -2963,6 +2969,7 @@ async function main(): Promise<void> {
     submitBodyPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    readOnly,
     advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
@@ -3290,6 +3297,8 @@ async function main(): Promise<void> {
           })),
           submitEndpointPattern,
           requireSubmitEndpointMatch,
+          readOnly,
+          recentCaptureMeta,
         });
         const midFlowSubmitShaped = isMidFlowSubmitShapedStep({
           step: step.instruction,
@@ -3364,6 +3373,8 @@ async function main(): Promise<void> {
                       })),
                       submitEndpointPattern,
                       requireSubmitEndpointMatch,
+                      readOnly,
+                      recentCaptureMeta,
                     }),
                     stepIndex: i,
                     totalSteps: () => plan.length,
@@ -3587,6 +3598,8 @@ async function main(): Promise<void> {
               })),
               submitEndpointPattern,
               requireSubmitEndpointMatch,
+              readOnly,
+              recentCaptureMeta,
             });
             // A dead session throws synchronously here too — fall back to ""
             // rather than let the trailing-grace check itself crash the run.
