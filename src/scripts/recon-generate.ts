@@ -17293,9 +17293,7 @@ export function isDeclaredPostSearchRepeat(
   // drill) makes this a multi-step chain, not a lone search.
   const hitSet = new Set(hits);
   if (
-    captures.some(
-      (c) => !hitSet.has(c) && c.method.toUpperCase() === "GET" && !isNoiseUrl(c.url)
-    )
+    captures.some((c) => !hitSet.has(c) && c.method.toUpperCase() === "GET" && !isNoiseUrl(c.url))
   )
     return false;
   if (new Set(hits.map((c) => `${c.method} ${endpointKey(c.url)}`)).size !== 1) return false;
@@ -21088,7 +21086,8 @@ export async function main(): Promise<void> {
               primaryHost
             )
           ),
-          submitPatterns.endpoint === null && submitPatterns.body === null
+          (submitPatterns.endpoint === null && submitPatterns.body === null) ||
+            flowSteps.some((st) => typeof st !== "string" && st.submitStep === true)
             ? null
             : compileSubmitMatcher(submitPatterns)
         );
