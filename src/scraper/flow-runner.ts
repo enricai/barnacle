@@ -10767,7 +10767,10 @@ async function tryPromptSelectorPrimitive(params: {
       // A layout-sized 0x0 opener passes the style-only rendered test; laid-out
       // geometry, when the DOM has any, singles out the visible trigger.
       const sized = outer.length > 1 ? outer.filter((c) => { const r = c.getBoundingClientRect(); return r.width > 0 && r.height > 0; }) : [];
-      const pick = sized.length === 1 ? sized : outer;
+      // Without layout geometry, an empty shell opener (no text of its own) is
+      // not the visible face: a single outer candidate showing text is.
+      const texted = outer.length > 1 && sized.length !== 1 ? outer.filter((c) => (c.textContent || "").trim() !== "") : [];
+      const pick = sized.length === 1 ? sized : texted.length === 1 ? texted : outer;
       if (pick.length !== 1) continue;
       const t = pick[0];
       if (hasOwnLabel(t) && norm(widgetLabel(t)) !== norm(labText)) continue;
