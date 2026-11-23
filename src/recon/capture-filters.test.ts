@@ -2006,10 +2006,19 @@ describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
   }));
   const all = [
     ...posts,
-    { method: "GET", url: "https://api.example-shop.test/zzz/qqq", requestPostData: null, status: 200, responseHeaders: { "content-type": "application/json" }, responseBody: { ok: true } },
+    {
+      method: "GET",
+      url: "https://api.example-shop.test/zzz/qqq",
+      requestPostData: null,
+      status: 200,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { ok: true },
+    },
   ];
   it("is a beacon without the matcher, kept with it", () => {
     expect(isZeroVarianceRepeatCapture(posts[0]!, all)).toBe(true);
-    expect(isZeroVarianceRepeatCapture(posts[0]!, all, (c) => /\/v1\/items$/.test(c.url))).toBe(false);
+    expect(isZeroVarianceRepeatCapture(posts[0]!, all, (c) => /\/v1\/items$/.test(c.url))).toBe(
+      false
+    );
   });
 });
