@@ -91,6 +91,21 @@ describe("recon-generate — submit-step verification", () => {
     expect(code).toContain("{ ...result, verified: true }");
   });
 
+  it("does not claim verified:true when a submission flow's last step declares non-submit and no step is a submitStep", () => {
+    const { code } = emitBrowserFlowTs({
+      ...submissionOpts,
+      flowSteps: [
+        "Click the First Name field and type John",
+        {
+          step: "Click the optional 'Continue' tab. Do NOT click any control that proceeds to checkout.",
+          optional: true,
+        },
+      ],
+    });
+    expect(code).not.toContain("verified: true");
+    expect(code).toContain("verified: false");
+  });
+
   it("validates a non-submission browser flow against the contract's ResponseSchema, not a placeholder", () => {
     const { code } = emitBrowserFlowTs({ ...submissionOpts, isSubmissionFlow: false });
 
