@@ -11757,7 +11757,8 @@ async function commitPromptOption(params: {
         const want = alnum(wantText);
         if (ctr && want) {
           for (const c of Array.from(ctr.querySelectorAll("input, textarea, select, [role='combobox']"))) {
-            const v = c.tagName === "SELECT" ? (c.selectedIndex >= 0 && c.options[c.selectedIndex] ? (c.options[c.selectedIndex].textContent || "").trim() || c.options[c.selectedIndex].getAttribute("value") || "" : "") : (c.value !== undefined && c.value !== "" ? c.value : c.textContent);
+            const so = c.tagName === "SELECT" ? (c.selectedOptions && c.selectedOptions[0]) || (c.selectedIndex >= 0 ? c.options[c.selectedIndex] : null) : null;
+            const v = c.tagName === "SELECT" ? (so ? ((so.textContent || "").trim() || so.getAttribute("value") || so.value || "") : "") : (c.value !== undefined && c.value !== "" ? c.value : c.textContent);
             if (alnum(v) === want) return { ok: true, id: c.id || "", stillInvalid: false };
           }
         }
@@ -11796,7 +11797,7 @@ async function commitPromptOption(params: {
             let pairedWithW = false;
             for (let sd = 0; sd < ${MAX_SELECTION_ANCESTOR_DEPTH} && snode && !pairedWithW; sd++) {
               const openersHere = snode.querySelectorAll
-                ? Array.from(snode.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== sel)
+                ? Array.from(snode.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== sel && (o === w || triggerReachable(o)))
                 : [];
               if (openersHere.length > 0) {
                 pairedWithW = openersHere.includes(w);
