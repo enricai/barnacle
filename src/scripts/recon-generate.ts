@@ -17595,7 +17595,7 @@ export function emitContractTsParts(opts: {
     payloadFieldNames,
     formBodyFieldNames: collectFormBodyFieldNames(actionSteps),
     applicantContract,
-    flowSteps,
+    flowSteps: contractFlowSteps,
     hasMultipartStep,
   });
   const isReservedByApplicantContactSchema = (name: string): boolean =>

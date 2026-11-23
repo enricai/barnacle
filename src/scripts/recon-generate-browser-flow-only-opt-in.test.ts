@@ -66,13 +66,14 @@ const FLOW = {
 };
 
 describe("browserFlowOnly opt-in — decision and readers", () => {
-  it("follows isSubmissionFlow && browserFlowOnly regardless of inputBody", () => {
+  it("with an explicit applicantContract, follows isSubmissionFlow && browserFlowOnly regardless of inputBody", () => {
     for (const inputBody of [undefined, null, {}, { vendorKey: "x" }]) {
       expect(
         contractUsesApplicantContactSchema({
           inputBody,
           isSubmissionFlow: true,
           browserFlowOnly: true,
+          applicantContract: true,
         })
       ).toBe(true);
       expect(
@@ -116,7 +117,7 @@ describe("browserFlowOnly opt-in — decision and readers", () => {
 
 describe("recon-generate CLI — browserFlowOnly flow-file opt-in", () => {
   it("emits ApplicantContactSchema, enters on payload.ClickUrl, and omits executeHttp", () => {
-    const files = generate({ ...FLOW, browserFlowOnly: true });
+    const files = generate({ ...FLOW, browserFlowOnly: true, applicantContract: true });
     const contract = files["contract.ts"] ?? "";
     expect(contract).toContain("ApplicantContactSchema.extend(");
     expect(contract).toContain("ClickUrl: z.string().min(1)");
