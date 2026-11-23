@@ -10682,6 +10682,12 @@ export function emitMultiStepExecuteHttp(
           else if (typeof value === "number" || typeof value === "boolean")
             joinValues.add(String(value));
         }
+        const templateTokens =
+          target.joinTemplate === undefined ? null : parseJoinTemplate(target.joinTemplate);
+        const composedKey = templateTokens
+          ? evalJoinTemplate(templateTokens, firstItem)
+          : undefined;
+        if (composedKey !== undefined) joinValues.add(composedKey);
         if (joinValues.size > 0) joinFieldValuesByStep.set(stepIndex, joinValues);
       }
     }
@@ -11465,8 +11471,21 @@ export function emitMultiStepExecuteHttp(
                   };
             })
             .filter(
-              (b): b is { value: string; replacement: string; isItemBound: boolean } => b !== null
+              (
+                b
+              ): b is {
+                value: string;
+                replacement: string;
+                isItemBound: boolean;
+              } => b !== null
             );
+          const templateBinding = joinTemplateValueBinding(
+            target,
+            firstItem,
+            itemVar,
+            scopedAccessor
+          );
+          if (templateBinding) valueBindings.push(templateBinding);
           // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
           // must never have a COINCIDENTAL threaded value spliced into it —
           // but the invariance verdict is per-capture, not per-field: a
@@ -12862,6 +12881,8 @@ export interface FoldPlan {
  * `drillArrayPath`. */
 export interface FoldTarget {
   joinFields: string[];
+  /** Declared computed composite key (see {@link FoldReturnSpec.joinTemplate}). */
+  joinTemplate?: string;
   drillStepIndex: number;
   drillArrayPath: string[];
   primaryMatchedItemIndex: number;
@@ -14467,6 +14488,12 @@ export interface FoldReturnSpec {
    * a join key nested under an object, not just a top-level property, can be
    * declared. */
   joinFields: string[];
+  /** Computed composite join key, e.g. `{shipCode}{startDate|yyMMdd}{packageCode}`:
+   * `{path}` reads a primary-row field (dot path), `{path|fmt}` formats it as a
+   * date (`yyyy yy MM dd HH mm ss` tokens, UTC). Literal text is kept. When
+   * present, a drill request value equal to the template's value on the
+   * captured primary row is emitted as that template evaluated per row. */
+  joinTemplate?: string;
   /** Binds a drill request's query params to fields on the CALLER's payload
    * instead of a primary-response field or a frozen literal — the only two
    * sources {@link findFrozenVaryingDrillParams} otherwise draws from. Keyed
@@ -14486,6 +14513,131 @@ export interface FoldReturnSpec {
   attachAs?: string;
   /** Name of the caller payload flag gating this entry (array form). */
   payloadFlag?: string;
+}
+
+/** One piece of a {@link FoldReturnSpec.joinTemplate}. */
+export type JoinTemplateToken =
+  | { kind: "literal"; text: string }
+  | { kind: "field"; field: string; format?: string };
+
+const JOIN_DATE_FORMAT_RE = /^(?:yyyy|yy|MM|dd|HH|mm|ss|[^A-Za-z])+$/;
+
+/** Parses `{a}{date|yyMMdd}{b}`; `null` for an unbalanced brace, empty
+ * placeholder, template with no placeholder, or an unsupported date format. */
+export function parseJoinTemplate(template: string): JoinTemplateToken[] | null {
+  const tokens: JoinTemplateToken[] = [];
+  let literal = "";
+  let i = 0;
+  while (i < template.length) {
+    const ch = template[i]!;
+    if (ch === "}") return null;
+    if (ch !== "{") {
+      literal += ch;
+      i++;
+      continue;
+    }
+    const close = template.indexOf("}", i);
+    if (close === -1) return null;
+    const inner = template.slice(i + 1, close);
+    const [field, format, ...rest] = inner.split("|");
+    if (rest.length > 0 || field === undefined || field.trim() === "") return null;
+    if (format !== undefined && !JOIN_DATE_FORMAT_RE.test(format)) return null;
+    if (literal !== "") tokens.push({ kind: "literal", text: literal });
+    literal = "";
+    tokens.push({
+      kind: "field",
+      field: field.trim(),
+      ...(format !== undefined ? { format } : {}),
+    });
+    i = close + 1;
+  }
+  if (literal !== "") tokens.push({ kind: "literal", text: literal });
+  return tokens.some((t) => t.kind === "field") ? tokens : null;
+}
+
+/** Distinct primary-row fields a template reads, in order. */
+export function joinTemplateFields(tokens: readonly JoinTemplateToken[]): string[] {
+  const out: string[] = [];
+  for (const t of tokens) if (t.kind === "field" && !out.includes(t.field)) out.push(t.field);
+  return out;
+}
+
+function formatJoinDate(value: unknown, format: string): string | null {
+  const raw = typeof value === "string" || typeof value === "number" ? value : null;
+  if (raw === null) return null;
+  const iso =
+    typeof raw === "string"
+      ? /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2}))?/.exec(raw)
+      : null;
+  let parts: number[];
+  if (iso) parts = [1, 2, 3, 4, 5, 6].map((n) => Number(iso[n] ?? 0));
+  else {
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return null;
+    parts = [
+      d.getUTCFullYear(),
+      d.getUTCMonth() + 1,
+      d.getUTCDate(),
+      d.getUTCHours(),
+      d.getUTCMinutes(),
+      d.getUTCSeconds(),
+    ];
+  }
+  const [y, mo, d, h, mi, s] = parts as [number, number, number, number, number, number];
+  const pad = (n: number, w = 2): string => String(n).padStart(w, "0");
+  return format.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (tok) =>
+    tok === "yyyy"
+      ? pad(y, 4)
+      : tok === "yy"
+        ? pad(y % 100)
+        : tok === "MM"
+          ? pad(mo)
+          : tok === "dd"
+            ? pad(d)
+            : tok === "HH"
+              ? pad(h)
+              : tok === "mm"
+                ? pad(mi)
+                : pad(s)
+  );
+}
+
+/** Evaluates a template against one primary row; `undefined` when any
+ * referenced field is missing or an unusable date. */
+export function evalJoinTemplate(
+  tokens: readonly JoinTemplateToken[],
+  item: unknown
+): string | undefined {
+  let out = "";
+  for (const t of tokens) {
+    if (t.kind === "literal") {
+      out += t.text;
+      continue;
+    }
+    const v = readValueAtPath(item, t.field.split("."));
+    if (t.format !== undefined) {
+      const f = formatJoinDate(v, t.format);
+      if (f === null) return undefined;
+      out += f;
+    } else if (typeof v === "string" && v.length > 0) out += v;
+    else if (typeof v === "number" || typeof v === "boolean") out += String(v);
+    else return undefined;
+  }
+  return out;
+}
+
+/** Emits a TS expression computing the template for `itemVar` at runtime —
+ * the emitted twin of {@link evalJoinTemplate}. `accessor` renders a field read. */
+export function emitJoinTemplateExpr(
+  tokens: readonly JoinTemplateToken[],
+  accessor: (field: string) => string
+): string {
+  const parts = tokens.map((t) => {
+    if (t.kind === "literal") return JSON.stringify(t.text);
+    if (t.format === undefined) return `String(${accessor(t.field)})`;
+    return `((v: unknown) => { const m = typeof v === "string" ? /^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2}):(\\d{2}))?/.exec(v) : null; const d = m ? null : new Date(v as string | number); const p = m ? [1, 2, 3, 4, 5, 6].map((n) => Number(m[n] ?? 0)) : d ? [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()] : []; const z = (n: number | undefined, w = 2) => String(n ?? 0).padStart(w, "0"); return ${JSON.stringify(t.format)}.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (k) => k === "yyyy" ? z(p[0], 4) : k === "yy" ? z((p[0] ?? 0) % 100) : k === "MM" ? z(p[1]) : k === "dd" ? z(p[2]) : k === "HH" ? z(p[3]) : k === "mm" ? z(p[4]) : z(p[5])); })(${accessor(t.field)})`;
+  });
+  return parts.join(" + ");
 }
 
 /**
@@ -14544,7 +14696,8 @@ function parseFoldReturnEntry(
     endpointPattern,
     resultsPath: declaredResultsPath,
     drillResultsPath,
-    joinFields,
+    joinFields: declaredJoinFields,
+    joinTemplate,
     drillParamBindings,
     attachAs,
     payloadFlag,
@@ -14553,10 +14706,22 @@ function parseFoldReturnEntry(
     resultsPath?: unknown;
     drillResultsPath?: unknown;
     joinFields?: unknown;
+    joinTemplate?: unknown;
     drillParamBindings?: unknown;
     attachAs?: unknown;
     payloadFlag?: unknown;
   };
+  const templateTokens =
+    joinTemplate === undefined
+      ? undefined
+      : typeof joinTemplate === "string"
+        ? parseJoinTemplate(joinTemplate)
+        : null;
+  if (templateTokens === null) return null;
+  const joinFields =
+    declaredJoinFields === undefined && templateTokens !== undefined
+      ? joinTemplateFields(templateTokens)
+      : declaredJoinFields;
   const resultsPath =
     declaredResultsPath === undefined ? inheritedResultsPath : declaredResultsPath;
   const optNonEmptyString = (v: unknown): boolean =>
@@ -14581,6 +14746,7 @@ function parseFoldReturnEntry(
     resultsPath,
     ...(drillResultsPath !== undefined ? { drillResultsPath: drillResultsPath as string } : {}),
     joinFields,
+    ...(joinTemplate !== undefined ? { joinTemplate: joinTemplate as string } : {}),
     ...(attachAs !== undefined ? { attachAs: attachAs as string } : {}),
     ...(payloadFlag !== undefined ? { payloadFlag: payloadFlag as string } : {}),
     ...(parsedDrillParamBindings ? { drillParamBindings: parsedDrillParamBindings } : {}),
@@ -14660,7 +14826,11 @@ function parseDrillParamBindings(raw: unknown): FoldReturnSpec["drillParamBindin
   const entries = Object.entries(raw as Record<string, unknown>);
   const parsed: Record<
     string,
-    { payloadField: string; type: "int" | "string" | "boolean"; default: string | number | boolean }
+    {
+      payloadField: string;
+      type: "int" | "string" | "boolean";
+      default: string | number | boolean;
+    }
   > = {};
   for (const [paramName, entry] of entries) {
     if (entry === null || typeof entry !== "object") return null;
@@ -15051,6 +15221,26 @@ function buildRequestValueIndex<T extends { capture: Capture }>(
   return index;
 }
 
+/** The value binding that swaps a drill request value equal to the captured
+ * row's composed {@link FoldReturnSpec.joinTemplate} for the template
+ * evaluated per row; `null` when the target declares no template. */
+function joinTemplateValueBinding(
+  target: Pick<FoldTarget, "joinTemplate">,
+  firstItem: unknown,
+  itemVar: string,
+  scopedAccessor: (varName: string, field: string) => string
+): { value: string; replacement: string; isItemBound: boolean } | null {
+  if (target.joinTemplate === undefined) return null;
+  const tokens = parseJoinTemplate(target.joinTemplate);
+  const value = tokens ? evalJoinTemplate(tokens, firstItem) : undefined;
+  if (!tokens || value === undefined) return null;
+  return {
+    value,
+    replacement: `\${${emitJoinTemplateExpr(tokens, (f) => scopedAccessor(itemVar, f))}}`,
+    isItemBound: true,
+  };
+}
+
 /** Every string/numeric/boolean {@link FoldReturnSpec.joinFields} value
  * present on any of `primaryItems`, stringified exactly as
  * {@link resolveSpecMatchedPrimaryItemIndex} compares them — the set of
@@ -15060,10 +15250,16 @@ function buildRequestValueIndex<T extends { capture: Capture }>(
  * considering every action index in range. */
 function collectPrimaryJoinValues(
   primaryItems: readonly Record<string, unknown>[],
-  joinFields: readonly string[]
+  joinFields: readonly string[],
+  joinTemplate?: string
 ): Set<string> {
   const values = new Set<string>();
+  const tokens = joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
   for (const item of primaryItems) {
+    if (tokens) {
+      const composed = evalJoinTemplate(tokens, item);
+      if (composed !== undefined) values.add(composed);
+    }
     for (const field of joinFields) {
       const value = readValueAtPath(item, field.split("."));
       if (typeof value === "string" && value.length > 0) values.add(value);
@@ -15385,7 +15581,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       primaryArrayPath
     );
     if (!primaryItems) continue;
-    const joinValues = collectPrimaryJoinValues(primaryItems, spec.joinFields);
+    const joinValues = collectPrimaryJoinValues(primaryItems, spec.joinFields, spec.joinTemplate);
     const candidateEntryIndicesDescending = collectCandidateEntryIndicesDescending(
       requestValueIndex,
       joinValues,
@@ -15532,6 +15728,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         targets: [
           {
             joinFields: spec.joinFields,
+            ...(spec.joinTemplate !== undefined ? { joinTemplate: spec.joinTemplate } : {}),
             drillStepIndex: entryIndex,
             drillArrayPath: drillArrayPath ?? [],
             primaryMatchedItemIndex,
@@ -16871,7 +17068,11 @@ export function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   foldMergeLines: string[];
   fetchCall:
     | { kind: "gql"; gqlOperationNameExpr: string; queryConstName: string }
-    | { kind: "rest"; endpointPath: string; getInputModel?: GetInputModel | null };
+    | {
+        kind: "rest";
+        endpointPath: string;
+        getInputModel?: GetInputModel | null;
+      };
   /** Consumer-declared domain facts (see {@link ReconValueConstraints}) — when
    * the detected pagination count-key field has a declared `max`, that real
    * API maximum is used as the `PAGE_SIZE` fallback instead of whatever page
@@ -18499,8 +18700,21 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                   };
             })
             .filter(
-              (b): b is { value: string; replacement: string; isItemBound: boolean } => b !== null
+              (
+                b
+              ): b is {
+                value: string;
+                replacement: string;
+                isItemBound: boolean;
+              } => b !== null
             );
+          const templateBinding = joinTemplateValueBinding(
+            target,
+            firstItem,
+            itemVar,
+            scopedAccessor
+          );
+          if (templateBinding) valueBindings.push(templateBinding);
           // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
           // must never have a COINCIDENTAL threaded value spliced into it —
           // see emitMultiStepExecuteHttp's identical `parameterize` guard
