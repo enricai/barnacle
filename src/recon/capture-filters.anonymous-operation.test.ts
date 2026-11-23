@@ -15,8 +15,7 @@ const cap = (query: string, variables: unknown, resp: unknown, op: string | null
   status: 200,
 });
 const ANON = "query ($input: ItemsInput!) { allItems(input: $input) { name region } }";
-const chrome = (i: number) =>
-  cap("query Nav { menu { id } }", {}, {}, "Nav");
+const chrome = () => cap("query Nav { menu { id } }", {}, {}, "Nav");
 
 describe("anonymous GraphQL identity", () => {
   it("derives root-field identity", () => {
@@ -27,17 +26,33 @@ describe("anonymous GraphQL identity", () => {
   });
   it("retains anonymous search among repeating chrome, drops chrome", () => {
     const search = [
-      cap(ANON, { input: { currencyCode: "USD", travelParty: 2 } }, { data: { allItems: [{ name: "a" }] } }),
-      cap(ANON, { input: { currencyCode: "GBP", travelParty: 2 } }, { data: { allItems: [{ name: "b" }] } }),
-      cap(ANON, { input: { currencyCode: "USD", travelParty: 3 } }, { data: { allItems: [{ name: "c" }] } }),
+      cap(
+        ANON,
+        { input: { currencyCode: "USD", travelParty: 2 } },
+        { data: { allItems: [{ name: "a" }] } }
+      ),
+      cap(
+        ANON,
+        { input: { currencyCode: "GBP", travelParty: 2 } },
+        { data: { allItems: [{ name: "b" }] } }
+      ),
+      cap(
+        ANON,
+        { input: { currencyCode: "USD", travelParty: 3 } },
+        { data: { allItems: [{ name: "c" }] } }
+      ),
     ];
-    const all = [chrome(0), chrome(1), chrome(2), chrome(3), ...search];
+    const all = [chrome(), chrome(), chrome(), chrome(), ...search];
     for (const s of search) expect(isZeroVarianceRepeatCapture(s, all)).toBe(false);
-    expect(isZeroVarianceRepeatCapture(all[0], all)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(all[0]!, all)).toBe(true);
   });
   it("retains a once-fired anonymous read", () => {
-    const one = cap(ANON, { input: { currencyCode: "USD" } }, { data: { allItems: [{ name: "a" }] } });
-    const all = [chrome(0), chrome(1), chrome(2), one];
+    const one = cap(
+      ANON,
+      { input: { currencyCode: "USD" } },
+      { data: { allItems: [{ name: "a" }] } }
+    );
+    const all = [chrome(), chrome(), chrome(), one];
     expect(isZeroVarianceRepeatCapture(one, all)).toBe(false);
   });
 });

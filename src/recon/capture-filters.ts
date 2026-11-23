@@ -1139,7 +1139,9 @@ export function parsedOperationName(query: string): string | null {
   if (signature) return signature[1] ?? null;
   // Anonymous document (`query ($v: T!) { field(...) }`, `mutation { field }`
   // or a bare `{ field }`): the identity is the first root field.
-  const anonymous = /^\s*(?:(?:query|mutation)\s*(?:\([^)]*\))?\s*)?\{\s*(?:\w+\s*:\s*)?(\w+)/.exec(doc);
+  const anonymous = /^\s*(?:(?:query|mutation)\s*(?:\([^)]*\))?\s*)?\{\s*(?:\w+\s*:\s*)?(\w+)/.exec(
+    doc
+  );
   return anonymous?.[1] ?? null;
 }
 
