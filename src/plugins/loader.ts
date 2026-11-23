@@ -818,6 +818,8 @@ function registerExtraRoutes(
 }
 
 /** Declaring idempotency means a blind whole-task retry is unsafe: default to 1 attempt. */
-function effectiveMaxAttempts(plugin: { meta: { maxAttempts?: number; idempotency?: unknown } }): number | undefined {
+function effectiveMaxAttempts(plugin: {
+  meta: { maxAttempts?: number; idempotency?: unknown };
+}): number | undefined {
   return plugin.meta.maxAttempts ?? (plugin.meta.idempotency ? 1 : undefined);
 }
