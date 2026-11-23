@@ -19,4 +19,21 @@ describe("deriveBaseUrl without a placeholder origin", () => {
       )
     ).toBe("https://api.shop-example.test");
   });
+
+  it("prefers the host of captures matching the declared submit pattern over raw host count", () => {
+    const c = (url: string, method = "POST"): Capture => ({ url, method }) as Capture;
+    const caps = [
+      c("https://www.shop-example.test/a", "GET"),
+      c("https://www.shop-example.test/b", "GET"),
+      c("https://www.shop-example.test/c", "GET"),
+      c("https://api.shop-example.test/search/preflight", "OPTIONS"),
+      c("https://api.shop-example.test/search"),
+    ];
+    expect(
+      deriveBaseUrl(caps, ["www.shop-example.test", "api.shop-example.test"], {
+        endpoint: "/search",
+        body: null,
+      } as never)
+    ).toBe("https://api.shop-example.test");
+  });
 });

@@ -1970,7 +1970,9 @@ export function deriveBaseUrl(
       `ownBackendHostnames matched no capture: declared [${ownBackendHostnames.join(", ")}], captured hosts [${captured}]`
     );
   }
-  return dominantHostOrigin(candidates);
+  const declaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
+  const submitCandidates = candidates.filter(declaredSubmit);
+  return dominantHostOrigin(submitCandidates.length > 0 ? submitCandidates : candidates);
 }
 
 function firstCaptureOrigin(captures: Capture[]): string {
