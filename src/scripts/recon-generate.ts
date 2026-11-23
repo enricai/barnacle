@@ -19191,6 +19191,12 @@ type FlowStepInput =
       optional?: boolean;
       upload?: boolean;
       submitStep?: boolean;
+      /**
+       * Recon recorded this step without executing it (recon-browser `declareOnly`).
+       * It is still emitted like any other step, honoring an explicit `submitStep`;
+       * nothing derived from execution (captures, targetId) may be assumed for it.
+       */
+      declareOnly?: boolean;
       payloadField?: string;
       payloadFieldNone?: boolean;
       emailStep?: boolean;
