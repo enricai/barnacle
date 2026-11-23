@@ -75,19 +75,19 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       headers: { "x-barnacle-async": "true" },
     });
     expect(res.statusCode).toBe(202);
-    const data = res.json().data;
+    const data = res.json();
     expect(data.operationStatus).toBe("pending");
     expect(data.pollUrl).toBe(`/v1/idem-site/run/operations/${data.operationId}`);
-    let body: { data: { operationStatus: string; result?: unknown } } | undefined;
+    let body: { operationStatus: string; result?: unknown } | undefined;
     for (let i = 0; i < 50; i++) {
       const poll = await app.inject({ method: "GET", url: data.pollUrl });
       expect(poll.statusCode).toBe(200);
       body = poll.json();
-      if (body?.data.operationStatus !== "pending") break;
+      if (body?.operationStatus !== "pending") break;
       await new Promise((r) => setTimeout(r, 10));
     }
-    expect(body?.data.operationStatus).toBe("succeeded");
-    expect(body?.data.result).toMatchObject({ ok: true });
+    expect(body?.operationStatus).toBe("succeeded");
+    expect(body?.result).toMatchObject({ ok: true });
     expect(executeHttp).toHaveBeenCalledTimes(1);
     await app.close();
   });

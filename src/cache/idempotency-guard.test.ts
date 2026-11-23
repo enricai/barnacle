@@ -171,7 +171,12 @@ describe("async operations (start/status)", () => {
   it("reports pending records with no live run as interrupted; start re-runs them", async () => {
     const store = createInMemoryIdempotencyStore();
     const g1 = createIdempotencyGuard({ store });
-    const id = (await g1.start("s", cfg, { id: "1" }, () => new Promise<string>(() => {}))) as string;
+    const id = (await g1.start(
+      "s",
+      cfg,
+      { id: "1" },
+      () => new Promise<string>(() => {})
+    )) as string;
     const g2 = createIdempotencyGuard({ store });
     expect((await g2.status("s", id))?.status).toBe("unknown-outcome");
     const ex = vi.fn().mockResolvedValue("ok");
