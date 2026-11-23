@@ -2139,3 +2139,30 @@ describe("isSubmitIntentStep", () => {
     expect(isSubmitIntentStep("")).toBe(false);
   });
 });
+
+describe("flow-runner/flowHasSubmitSemantics read-only", () => {
+  const base = {
+    steps: [{ submitStep: false }],
+    submitEndpointPattern: "/api/jobs",
+    requireSubmitEndpointMatch: false,
+  };
+  it("false when the matched capture is a GET query", () => {
+    expect(
+      flowHasSubmitSemantics({
+        ...base,
+        recentCaptureMeta: [{ method: "GET", url: "https://x.test/api/jobs?q=1" }],
+      })
+    ).toBe(false);
+  });
+  it("false when flow declares readOnly", () => {
+    expect(flowHasSubmitSemantics({ ...base, readOnly: true })).toBe(false);
+  });
+  it("still true for a POST match", () => {
+    expect(
+      flowHasSubmitSemantics({
+        ...base,
+        recentCaptureMeta: [{ method: "POST", url: "https://x.test/api/jobs" }],
+      })
+    ).toBe(true);
+  });
+});
