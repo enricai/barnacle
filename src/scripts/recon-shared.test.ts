@@ -243,3 +243,13 @@ describe("readSuccessUrlFragments", () => {
     expect(readSuccessUrlFragments(flowFile)).toEqual(["/applied"]);
   });
 });
+
+describe("compareCaptureFilenames", () => {
+  it("orders by numeric counter, not lexically", async () => {
+    const { compareCaptureFilenames } = await import("./recon-shared.js");
+    expect(["1177-a.json", "148-b.json"].sort(compareCaptureFilenames)).toEqual([
+      "148-b.json",
+      "1177-a.json",
+    ]);
+  });
+});

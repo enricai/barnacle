@@ -1745,6 +1745,24 @@ describe("resolveManifestActionSequence — authoritative submission selection",
     expect(resolved![0]!.capture).toBe(captures[1]);
   });
 
+  it("resolves by filename against numeric order when the recorded index is lexical", () => {
+    const dir = mkdtempSync(join(tmpdir(), "recon-manifest-"));
+    mkdirSync(join(dir, "graphql"));
+    for (const f of ["1177-z.json", "148-a.json", "149-b.json"])
+      writeFileSync(join(dir, "graphql", f), "{}");
+    // lexical order: 1177, 148, 149 -> recorded index 0 for 1177; numeric position is 2.
+    writeFileSync(
+      join(dir, "submit-manifest.json"),
+      JSON.stringify([{ index: 0, filename: "1177-z.json", url: `${BASE}/applySubmit` }])
+    );
+    const resolved = resolveManifestActionSequence(dir, [
+      capture(`${BASE}/widgets`),
+      capture(`${BASE}/widgets`),
+      capture(`${BASE}/applySubmit`),
+    ]);
+    expect(resolved!.map((a) => a.index)).toEqual([2]);
+  });
+
   it("returns null when a manifest url no longer matches its index (capture set drifted)", () => {
     const dir = mkdtempSync(join(tmpdir(), "recon-manifest-"));
     writeFileSync(
