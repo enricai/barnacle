@@ -1,3 +1,4 @@
+import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { emitBrowserFlowTs } from "@/scripts/recon-generate";
 
@@ -50,5 +51,15 @@ describe("emitBrowserFlowTs mixed handover", () => {
     expect(code).not.toContain("addCookies");
     expect(code).not.toContain("sessionCookies");
     expect(code).toContain("open the cart page");
+  });
+
+  it("emits code that parses as TypeScript, with and without handover", () => {
+    for (const code of [withTail.code, emit({ tailFromStep: 2 }).code, emit().code]) {
+      const out = ts.transpileModule(code, {
+        reportDiagnostics: true,
+        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+      });
+      expect(out.diagnostics ?? []).toEqual([]);
+    }
   });
 });
