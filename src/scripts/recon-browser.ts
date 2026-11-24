@@ -886,6 +886,14 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * a browser-flow-only plugin regardless of HTTP analysis.
      */
     browserFlowOnly: z.boolean().optional(),
+    /** Mixed flow: HTTP-replay the first `actions` steps; captures tail from `tailFromStep`. */
+    httpSteps: z
+      .object({
+        actions: z.number().int().min(1),
+        tailFromStep: z.number().int().min(0),
+        handoverUrl: z.string().optional(),
+      })
+      .optional(),
     /** Explicitly declares whether the flow is a job-application contract (overrides inference). */
     applicantContract: z.boolean().optional(),
     /**
