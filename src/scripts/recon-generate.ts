@@ -18227,7 +18227,7 @@ export function emitContractTsParts(opts: {
   } = opts;
   if (mixedHttpPrefix !== (mixedHandoverOpt !== undefined)) {
     throw new Error(
-      "emitContractTsParts: mixedHttpPrefix and mixedHandover must be set together (the browser flow's sessionCookies param depends on mixedHandover)",
+      "emitContractTsParts: mixedHttpPrefix and mixedHandover must be set together (the browser flow's sessionCookies param depends on mixedHandover)"
     );
   }
 

@@ -31,6 +31,7 @@ describe("emitContractTs mixed HTTP-prefix mode", () => {
     ...BASE,
     multiStepBody: PREFIX_BODY,
     mixedHttpPrefix: true,
+    mixedHandover: { tailFromStep: 0 },
   } as never);
 
   it("runs the prefix then hands the cookies to the browser flow, with no executeHttp", () => {
@@ -56,5 +57,20 @@ describe("emitContractTs mixed HTTP-prefix mode", () => {
     const plain = emitContractTs({ ...BASE, multiStepBody: PREFIX_BODY } as never);
     expect(plain).toContain("async executeHttp(");
     expect(plain).not.toContain("runHttpPrefix");
+  });
+});
+
+describe("emitContractTs mixed-mode guard", () => {
+  it("throws when mixedHttpPrefix and mixedHandover are not set together", () => {
+    expect(() =>
+      emitContractTs({ ...BASE, multiStepBody: PREFIX_BODY, mixedHttpPrefix: true } as never)
+    ).toThrow(/must be set together/);
+    expect(() =>
+      emitContractTs({
+        ...BASE,
+        multiStepBody: PREFIX_BODY,
+        mixedHandover: { tailFromStep: 0 },
+      } as never)
+    ).toThrow(/must be set together/);
   });
 });
