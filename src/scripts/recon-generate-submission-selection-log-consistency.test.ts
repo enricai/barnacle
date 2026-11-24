@@ -72,9 +72,24 @@ async function generate(manifestIdx: number[], pattern?: string): Promise<string
       { ok: true },
       '{"name":"Jane","email":"j@example.com"}'
     ),
-    cap("https://api.example-manifest.test/v1/collect-beacon", "POST", { ok: true }, '{"event":"view"}'),
-    cap("https://api.example-manifest.test/v1/applications/draft", "POST", { ok: true }, '{"step":1}'),
-    cap("https://api.example-manifest.test/v1/applications/review", "POST", { ok: true }, '{"step":2}'),
+    cap(
+      "https://api.example-manifest.test/v1/collect-beacon",
+      "POST",
+      { ok: true },
+      '{"event":"view"}'
+    ),
+    cap(
+      "https://api.example-manifest.test/v1/applications/draft",
+      "POST",
+      { ok: true },
+      '{"step":1}'
+    ),
+    cap(
+      "https://api.example-manifest.test/v1/applications/review",
+      "POST",
+      { ok: true },
+      '{"step":2}'
+    ),
   ];
   const names = captures.map((_, i) => `${String(i).padStart(3, "0")}-read.json`);
   for (const [i, c] of captures.entries()) {
@@ -125,7 +140,9 @@ describe("recon-generate: declared-pattern count log is consistent with the mani
     await generate([0, 1], "/v1/jobs/");
     const out = logged.join("\n");
     expect(out).toContain("submit-manifest");
-    expect(out).toMatch(/using declared submitEndpointPattern\/submitBodyPattern \(2 capture\(s\)\) although|disagrees/);
+    expect(out).toMatch(
+      /using declared submitEndpointPattern\/submitBodyPattern \(2 capture\(s\)\) although|disagrees/
+    );
     expect(out).not.toContain("(0 capture(s)) disagrees with the unfiltered heuristic");
     expect(out).not.toContain("(0 capture(s)) although the unfiltered heuristic");
   }, 120000);
