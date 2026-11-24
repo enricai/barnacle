@@ -989,6 +989,34 @@ export interface NavigateToFacetBinding {
 export type NavigateToFacetOrigin = "navigateTo" | "step";
 
 /**
+ * Hints for navigateTo hashes that name their own field (`#cruiseId=ABC`) on a
+ * step declaring no `payloadField`: the `key=` names the caller input, which
+ * {@link walkNavigateToFacets} (payloadField-driven) discards.
+ */
+export function extractHashNamedPayloadHints(
+  flowSteps: FlowStepInput[]
+): Array<{ field: string; value: string }> {
+  const hints: Array<{ field: string; value: string }> = [];
+  for (const step of flowSteps) {
+    if (typeof step === "string" || step.navigateTo === undefined || step.payloadField) continue;
+    const hashIndex = step.navigateTo.indexOf("#");
+    if (hashIndex === -1) continue;
+    for (const token of splitHashTokens(step.navigateTo.slice(hashIndex + 1))) {
+      const eq = token.indexOf("=");
+      if (eq <= 0 || eq === token.length - 1) continue;
+      let value = token.slice(eq + 1);
+      try {
+        value = decodeURIComponent(value);
+      } catch {
+        /* keep raw */
+      }
+      hints.push({ field: safeGetFieldIdentifier(token.slice(0, eq)), value });
+    }
+  }
+  return hints;
+}
+
+/**
  * Re-walks the flow for navigateTo+payloadField steps in isolation, in flow
  * order, independent of whether {@link harvestPersonaBindings} could anchor
  * each one's literal anywhere in the capture. `harvestPersonaBindings` only
@@ -22850,10 +22878,13 @@ export async function main(): Promise<void> {
           winningCapture,
           activeCaptures,
           [...browserFlow.payloadFieldNames, ...browserFlow.optionalPayloadFieldNames],
-          extractNavigateToFacetOrder(flowSteps, process.env).map((f) => ({
-            field: f.field,
-            value: f.value,
-          }))
+          [
+            ...extractNavigateToFacetOrder(flowSteps, process.env).map((f) => ({
+              field: f.field,
+              value: f.value,
+            })),
+            ...extractHashNamedPayloadHints(flowSteps),
+          ]
         )
       : null;
     if (getInputModel) {
