@@ -30,7 +30,7 @@ function generate(urls: string[]): string {
         buildCapture({
           url,
           requestPostData: null,
-          responseBody: { id: i + 1, name: "widget" },
+          responseBody: { id: i + 1, name: "widget", token: "tok-9f8e7d6c5b4a" },
           timestamp: `2024-02-0${i + 1}T00:00:00Z`,
           method: "GET",
         })
@@ -59,6 +59,9 @@ describe("recon-generate — manifest of 2xx GETs with differing path shapes", (
     const contract = generate([
       "https://api.example.com/items/1",
       "https://api.example.com/items/2/details",
+      "https://api.example.com/categories/books?page=2",
+      "https://api.example.com/search?q=widget",
+      "https://api.example.com/orders/tok-9f8e7d6c5b4a/lines",
     ]);
     expect(contract).toContain("async executeHttp(");
     expect(contract).not.toContain("JobTracking");
