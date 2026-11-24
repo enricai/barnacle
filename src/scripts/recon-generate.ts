@@ -3228,6 +3228,8 @@ export interface GetInputModel {
   pathVars: Array<{ field: string; segmentIndex: number; queryKey: string; suffix?: string }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
   pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+  /** Declared composite payload fields (`a_b`) whose parts bind separate path segments: `partField` (a pathVars field) takes part `index` of `field` when the caller supplies `field`. */
+  compositeParts?: Array<{ field: string; partField: string; index: number }>;
 }
 
 /** The model without the query keys `keys` (inputs another mechanism owns). */
@@ -3431,6 +3433,7 @@ export function deriveGetInputModel(
   const recordedQueryLists: Record<string, string[]> = {};
   const pathVars: GetInputModel["pathVars"] = [];
   const pathTwins: NonNullable<GetInputModel["pathTwins"]> = [];
+  const compositeParts: NonNullable<GetInputModel["compositeParts"]> = [];
   // One normalization for isDeclared and nameFor: the declared payload field a query key
   // binds to — the key itself, its identifier form, or its camelCase form (room_id -> roomId).
   const declaredFieldFor = (key: string): string | undefined => {
@@ -3534,6 +3537,7 @@ export function deriveGetInputModel(
         if (!m) continue;
         const partField = `${field}Part${k + 1}`;
         taken.add(partField);
+        compositeParts.push({ field, partField, index: k });
         boundSegments.set(m.i, partField);
         pathVars.push({
           field: partField,
@@ -3590,6 +3594,7 @@ export function deriveGetInputModel(
     recordedQueryLists,
     pathVars,
     pathTwins,
+    ...(compositeParts.length > 0 ? { compositeParts } : {}),
   };
 }
 
@@ -17437,8 +17442,15 @@ function buildGetRequestUrlExpr(
     const recordedBase = pv.suffix
       ? recordedVar.slice(0, recordedVar.length - pv.suffix.length)
       : recordedVar;
+    const comp = model.compositeParts?.find((c) => c.partField === pv.field);
+    const fromComposite = comp
+      ? `${fieldAccess(comp.field)} !== undefined ? String(${fieldAccess(comp.field)}).split(/[_-]/).filter((x) => x !== "")[${comp.index}] : undefined`
+      : null;
+    const supplied = fromComposite
+      ? `${fieldAccess(pv.field)} ?? (${fromComposite})`
+      : fieldAccess(pv.field);
     segments[pv.segmentIndex] =
-      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedBase)}))}${pv.suffix ?? ""}`;
+      `\${encodeURIComponent(String(${supplied} ?? ${JSON.stringify(recordedBase)}))}${pv.suffix ?? ""}`;
   }
   const pairs: string[] = [];
   for (const [k, v] of Object.entries(model.fixedParams)) {
@@ -18487,12 +18499,19 @@ export function emitContractTsParts(opts: {
     !gql && !multiStepBody && singlePrimaryFoldPlans.length === 0 && actionSteps.length === 1
       ? (actionSteps[0]!.capture ?? null)
       : null;
-  const getWinnerCapture = foldPrimaryCapture ?? loneGetCapture;
+  // A multi-action flow whose endpoint was only ever captured as GET is the same read.
+  const endpointCaptures = allCaptures.filter((c) => safeUrlPathname(c.url) === endpointPath);
+  const endpointOnlyGet =
+    !gql &&
+    !multiStepBody &&
+    endpointCaptures.length > 0 &&
+    endpointCaptures.every((c) => c.method === "GET")
+      ? (endpointCaptures.find((c) => c.status >= 200 && c.status < 300) ?? null)
+      : null;
+  const getWinnerCapture = foldPrimaryCapture ?? loneGetCapture ?? endpointOnlyGet;
   const derivedGetInputModel: GetInputModel | null =
     suppliedGetInputModel ??
-    (getWinnerCapture !== null &&
-    safeUrlPathname(getWinnerCapture.url) === endpointPath &&
-    getInputsAreUrlShaped(getWinnerCapture)
+    (getWinnerCapture !== null && safeUrlPathname(getWinnerCapture.url) === endpointPath
       ? deriveGetInputModel(
           getWinnerCapture,
           allCaptures.length > 0 ? allCaptures : actionSteps.map((s) => s.capture),
@@ -18907,7 +18926,11 @@ export function emitContractTsParts(opts: {
   // Read-only GET flow: the caller supplies the derived query/path fields
   // (no recorded `query`), so declare each as an optional string.
   if (getInputModel) {
-    for (const { field } of [...getInputModel.dynamicFields, ...getInputModel.pathVars]) {
+    for (const { field } of [
+      ...getInputModel.dynamicFields,
+      ...getInputModel.pathVars,
+      ...(getInputModel.compositeParts ?? []).map((c) => ({ field: c.field })),
+    ]) {
       if (extendFields.has(field)) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: z.string().optional(),`);
@@ -22364,6 +22387,10 @@ export async function main(): Promise<void> {
     const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
     const feedsDeclaredStep = (capture: Capture): boolean =>
       stepFeedsDeclaredSubmit(capture, compiledActionSteps, matchesDeclaredSubmit);
+    const feedsLaterStep = (capture: Capture): boolean =>
+      compiledActionSteps
+        .find((s) => s.capture === capture)
+        ?.consumers?.some((c) => c !== capture) ?? false;
     const isIncidentalReadFlowPost = (capture: Capture): boolean =>
       declaresSubmitPattern && !matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
     const actionSequenceIsReadSamples =
@@ -22382,7 +22409,9 @@ export async function main(): Promise<void> {
           (a.capture.method === "GET" &&
             a.capture.status >= 200 &&
             a.capture.status < 300 &&
-            !feedsDeclaredStep(a.capture))
+            !feedsDeclaredStep(a.capture) &&
+            // A GET whose response a later step re-sends is a link of a chain, not a sample.
+            !feedsLaterStep(a.capture))
       );
     const isReadOnlyGetFlow =
       !gql &&
