@@ -1294,14 +1294,11 @@ function isStructuredQueryWithRecordResponse(capture: {
   // A GraphQL operation document is not a REST filter query; its identity
   // is the operation, handled by the GraphQL paths.
   if (typeof (body as Record<string, unknown>).query === "string") return false;
-  const hasRecords = (v: unknown): boolean => {
-    if (typeof v !== "object" || v === null) return false;
-    if (Array.isArray(v)) {
-      return v.some((x) => typeof x === "object" && x !== null && !Array.isArray(x));
-    }
-    return Object.values(v).some((x) => hasRecords(x));
-  };
-  return hasRecords(capture.responseBody);
+  // The answer to a filter query is a collection or result envelope (records,
+  // id lists, counts) — any structured, non-empty JSON object/array.
+  const r = capture.responseBody;
+  if (typeof r !== "object" || r === null) return false;
+  return Array.isArray(r) ? r.length > 0 : Object.keys(r).length > 0;
 }
 
 export function isZeroVarianceRepeatCapture(
