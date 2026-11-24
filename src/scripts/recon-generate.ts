@@ -22078,8 +22078,21 @@ export async function main(): Promise<void> {
             submitPatterns,
             foldReturnSpec
           );
-    const patternUndercounts =
-      patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
+    // The submit-manifest is authoritative and later supplies the captures
+    // matching the declared pattern, so count those too: the declared pattern
+    // must never be reported as matching 0 when the manifest's captures match it.
+    const earlyManifest = resolveManifestActionSequence(runRoot, activeCaptures);
+    const matchesDeclaredSubmit = compileSubmitMatcher(submitPatterns);
+    const manifestPatternMatches =
+      earlyManifest === null ||
+      (submitPatterns.endpoint === null && submitPatterns.body === null)
+        ? 0
+        : earlyManifest.filter((a) => matchesDeclaredSubmit(a.capture)).length;
+    const declaredPatternCount = Math.max(
+      patternedHeuristicActionCaptures.length,
+      manifestPatternMatches
+    );
+    const patternUndercounts = declaredPatternCount < unfilteredHeuristicActionCaptures.length;
     if (patternUndercounts && requireSubmitEndpointMatch) {
       // Distinct wording from the non-required case below: this pattern is never
       // discarded, so a message that says "ignoring"/"undercount" would misstate
@@ -22087,11 +22100,11 @@ export async function main(): Promise<void> {
       // the flow author should know the declared pattern covers fewer activeCaptures
       // than the unfiltered heuristic sequence finds.
       logger.warn(
-        `submission selection: declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`
+        `submission selection: declared submitEndpointPattern/submitBodyPattern (${declaredPatternCount} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`
       );
     } else if (patternUndercounts) {
       logger.info(
-        `submission selection: using declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) although the unfiltered heuristic action sequence finds ${unfilteredHeuristicActionCaptures.length} capture(s); the unfiltered set would make the generator attempt an HTTP replay that aborts on frozen-varying fields`
+        `submission selection: using declared submitEndpointPattern/submitBodyPattern (${declaredPatternCount} capture(s)) although the unfiltered heuristic action sequence finds ${unfilteredHeuristicActionCaptures.length} capture(s); the unfiltered set would make the generator attempt an HTTP replay that aborts on frozen-varying fields`
       );
     }
     const heuristicActionCaptures = patternedHeuristicActionCaptures;
