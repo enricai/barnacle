@@ -2324,7 +2324,12 @@ export function deriveRequestHeaders(
     );
     for (const h of r.shapeRestoringHeaders ?? []) {
       const lower = h.toLowerCase();
-      if (IGNORE_REQUEST_HEADERS.has(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower) || isCredentialHeaderName(lower)) continue;
+      if (
+        IGNORE_REQUEST_HEADERS.has(lower) ||
+        CREDENTIAL_REQUEST_HEADERS.has(lower) ||
+        isCredentialHeaderName(lower)
+      )
+        continue;
       loadBearing.add(lower);
       loadBearingSources.set(lower, [...(loadBearingSources.get(lower) ?? []), ...own]);
       if (!counts.has(lower)) counts.set(lower, 0);
@@ -2335,7 +2340,12 @@ export function deriveRequestHeaders(
   const headerSources = relevantCaptures.length > 0 ? relevantCaptures : captures;
   for (const [lower, count] of counts) {
     if (count < relevantCaptures.length && !loadBearing.has(lower)) continue;
-    if (isVolatileHeaderName(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower) || isCredentialHeaderName(lower)) continue;
+    if (
+      isVolatileHeaderName(lower) ||
+      CREDENTIAL_REQUEST_HEADERS.has(lower) ||
+      isCredentialHeaderName(lower)
+    )
+      continue;
     if (Object.keys(baseline).some((k) => k.toLowerCase() === lower)) continue;
     for (const c of loadBearing.has(lower)
       ? (loadBearingSources.get(lower) ?? [])
@@ -21501,7 +21511,7 @@ export async function main(): Promise<void> {
         manifestLacksDeclaredFoldDrill);
     if (manifestActionCaptures !== null && manifestLacksDeclaredFoldDrill) {
       logger.info(
-        `submission selection: ignoring submit-manifest.json (${manifestActionCaptures.length} capture(s)) because it lacks the declared foldReturn drill-down (endpointPattern: ${foldReturnSpec?.endpointPattern}) the heuristic action sequence (${heuristicActionCaptures.length} capture(s)) contains`
+        `submission selection: ignoring submit-manifest.json (${resolvedManifestActionCaptures?.length ?? manifestActionCaptures.length} capture(s)) because it lacks the declared foldReturn drill-down (endpointPattern: ${foldReturnSpec?.endpointPattern}) the heuristic action sequence (${heuristicActionCaptures.length} capture(s)) contains`
       );
     } else if (manifestActionCaptures !== null && manifestUndercounts) {
       logger.info(
