@@ -82,7 +82,8 @@ describe("emitMultiStepExecuteHttp — HTTP prefix variant", () => {
     expect(body).toContain("const httpClient = createHttpClient(");
     expect(body).toContain("return { cookies: prefixCookies };");
     expect(body).not.toContain("return { data");
-    expect(body).toContain("r0.csrfToken");
+    expect(body).toContain("const csrfToken = (r0 as");
+    expect(body).toContain('"x-csrf-token": `${csrfToken}`');
     expect(body).not.toContain(CSRF);
   });
 
