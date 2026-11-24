@@ -99,3 +99,62 @@ describe("compileActionSteps produces for each origin kind", () => {
     expect(first?.consumers).toContain(caps[1]);
   });
 });
+
+describe("read-only GET classification inputs: incidental mint GET and beacon POST", () => {
+  const MINT_TOKEN = "mnt_Zk9qXv81T3mWb7LpR2dYc5Hn";
+  const BEACON_TOKEN = "bcn_Qq8wXv81T3mWb7LpR2dYc5Hn";
+  const isDeclaredRead = (c: { url: string }) => c.url.includes("/items/search");
+
+  function steps(readSendsMint: boolean) {
+    const mint = buildCapture({
+      url: "https://shop.example.test/session/token",
+      requestPostData: null,
+      method: "GET",
+      responseBody: { token: MINT_TOKEN },
+      timestamp: "2024-01-01T00:00:01Z",
+    });
+    const beacon = buildCapture({
+      url: "https://shop.example.test/analytics/beacon",
+      requestPostData: JSON.stringify({ t: MINT_TOKEN }),
+      responseBody: { seq: BEACON_TOKEN },
+      timestamp: "2024-01-01T00:00:02Z",
+    });
+    const events = buildCapture({
+      url: "https://shop.example.test/analytics/events",
+      requestPostData: JSON.stringify({ seq: BEACON_TOKEN }),
+      responseBody: { ok: true },
+      timestamp: "2024-01-01T00:00:03Z",
+    });
+    const read = buildCapture({
+      url: "https://shop.example.test/items/search?q=widgets",
+      requestPostData: null,
+      method: "GET",
+      requestHeaders: readSendsMint ? { "X-Token": MINT_TOKEN } : {},
+      responseBody: { items: [1, 2, 3] },
+      timestamp: "2024-01-01T00:00:04Z",
+    });
+    const caps = [mint, beacon, events, read];
+    const seq = extractActionSequence(caps);
+    const idx = new Set(seq.map((a) => a.index));
+    return {
+      mint,
+      beacon,
+      events,
+      read,
+      steps: compileActionSteps(seq, indexStateValues(caps, new Set(), idx)),
+    };
+  }
+
+  it("mint GET and beacon POST that feed only each other never feed the declared read", () => {
+    const f = steps(false);
+    for (const c of [f.mint, f.beacon, f.events]) {
+      expect(stepFeedsDeclaredSubmit(c, f.steps, isDeclaredRead)).toBe(false);
+    }
+    expect(stepFeedsDeclaredSubmit(f.mint, f.steps, (c) => c === f.events)).toBe(true);
+  });
+
+  it("a mint GET whose token the declared read re-sends stays a step", () => {
+    const f = steps(true);
+    expect(stepFeedsDeclaredSubmit(f.mint, f.steps, isDeclaredRead)).toBe(true);
+  });
+});
