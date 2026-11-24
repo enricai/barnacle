@@ -94,7 +94,7 @@ const nonStepsKeys = Object.keys(objectBranch.shape).filter((key) => key !== "st
  */
 function representativeValueFor(
   zodType: IntrospectableZodType
-): string | string[] | boolean | Record<string, unknown> {
+): string | string[] | boolean | number | Record<string, unknown> {
   const def = zodType.def;
   const unwrapped = def.type === "optional" && def.innerType ? def.innerType.def : def;
   switch (unwrapped.type) {
@@ -104,6 +104,8 @@ function representativeValueFor(
       return ["guard-representative-value"];
     case "boolean":
       return true;
+    case "number":
+      return 1;
     case "object": {
       const shape = unwrapped.shape ?? {};
       return Object.fromEntries(

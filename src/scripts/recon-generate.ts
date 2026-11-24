@@ -22453,7 +22453,11 @@ export async function main(): Promise<void> {
     if (isSubmissionFlow && preGaps.bodylessUploadSteps > 0)
       failClosedReasons.push("an upload step's request body was unavailable and cannot be bound");
     if (failClosedReasons.length > 0)
-      logger.warn(`WARN falling back to a browser-only plugin: ${failClosedReasons.join("; ")}`);
+      logger.warn(
+        httpStepsOpt === null
+          ? `WARN falling back to a browser-only plugin: ${failClosedReasons.join("; ")}`
+          : `WARN fail-closed conditions seen (checked against the declared HTTP prefix only): ${failClosedReasons.join("; ")}`
+      );
     // Mixed mode: the flow declared `httpSteps`. A declared prefix that cannot
     // be replayed over HTTP is an error, never a silent change of mode.
     const mixedMode = httpStepsOpt !== null;
@@ -22467,6 +22471,12 @@ export async function main(): Promise<void> {
         );
       if (actionSteps.slice(0, httpStepsOpt.actions).some((s) => s.isCrossDomain))
         problems.push("the HTTP prefix crosses hosts and cannot be replayed over plain HTTP");
+      if (
+        actionSteps
+          .slice(0, httpStepsOpt.actions)
+          .some((s) => s.isMultipart && s.capture.requestPostData === REQUEST_BODY_UNAVAILABLE)
+      )
+        problems.push("an upload step in the HTTP prefix has no capturable request body to bind");
       if (httpStepsOpt.tailFromStep > flowSteps.length)
         problems.push(
           `httpSteps.tailFromStep (${httpStepsOpt.tailFromStep}) exceeds the ${flowSteps.length} flow step(s)`
