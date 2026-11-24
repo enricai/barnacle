@@ -952,9 +952,8 @@ describe("dispatch — cache integration", () => {
 
   describe("with the real response cache", () => {
     beforeEach(async () => {
-      const real = await vi.importActual<typeof import("@/cache/response-cache")>(
-        "@/cache/response-cache"
-      );
+      const real =
+        await vi.importActual<typeof import("@/cache/response-cache")>("@/cache/response-cache");
       real.clearResponseCache();
       mockGetCachedResponse.mockImplementation(real.getCachedResponse);
       mockGetOrCreateInFlight.mockImplementation(real.getOrCreateInFlight);
