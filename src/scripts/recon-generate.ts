@@ -3197,7 +3197,7 @@ export interface GetInputModel {
   /** Recorded values (queryKey -> ordered values) of a repeated query key (`ids[]=1&ids[]=2`), replayed as one pair each when the payload omits the input. */
   recordedQueryLists?: Record<string, string[]>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
-  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string; suffix?: string }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
   pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
 }
@@ -3354,7 +3354,8 @@ function isEntityIdQueryKey(key: string): boolean {
 export function deriveGetInputModel(
   winner: Capture | null | undefined,
   captures: readonly Capture[],
-  declaredNames: Iterable<string> = []
+  declaredNames: Iterable<string> = [],
+  payloadHints: Iterable<{ field: string; value: string }> = []
 ): GetInputModel | null {
   if (winner?.method !== "GET") return null;
   let winnerUrl: URL;
@@ -3471,6 +3472,53 @@ export function deriveGetInputModel(
       fieldToQueryKey[field] = key;
       recordedQueryValues[key] = [...values][0] as string;
     }
+  }
+  // Declared payload-field hints (a navigateTo hash value): a segment equal to the value, or
+  // to one part of a composite `a_b` value, binds to that field even with a single capture.
+  for (const { field, value } of payloadHints) {
+    if (value === "") continue;
+    const matchSeg = (needle: string): { i: number; suffix: string } | null => {
+      for (let i = 1; i < segments.length; i++) {
+        if (boundSegments.has(i)) continue;
+        const seg = decode(segments[i] ?? "");
+        if (seg === needle) return { i, suffix: "" };
+        if (seg.startsWith(`${needle}.`)) return { i, suffix: seg.slice(needle.length) };
+      }
+      return null;
+    };
+    const whole = matchSeg(value);
+    if (whole) {
+      boundSegments.set(whole.i, field);
+      pathVars.push({
+        field,
+        segmentIndex: whole.i,
+        queryKey: "",
+        ...(whole.suffix ? { suffix: whole.suffix } : {}),
+      });
+      logger.info(`get path binding: segment ${whole.i} bound to payload field "${field}"`);
+      continue;
+    }
+    const parts = value.split(/[_-]/).filter((x) => x !== "");
+    let bound = 0;
+    if (parts.length > 1) {
+      for (const [k, part] of parts.entries()) {
+        const m = matchSeg(part);
+        if (!m) continue;
+        const partField = `${field}Part${k + 1}`;
+        taken.add(partField);
+        boundSegments.set(m.i, partField);
+        pathVars.push({
+          field: partField,
+          segmentIndex: m.i,
+          queryKey: "",
+          ...(m.suffix ? { suffix: m.suffix } : {}),
+        });
+        bound++;
+        logger.info(`get path binding: segment ${m.i} bound to part ${k + 1} of "${field}"`);
+      }
+    }
+    if (bound === 0)
+      logger.warn(`get path binding: could not bind payload field "${field}" to any path segment`);
   }
   // Path segments with no query twin that vary between captures or carry an entity id.
   // A value repeated in several segments is one caller input, not one per segment.
@@ -17357,8 +17405,12 @@ function buildGetRequestUrlExpr(
   };
   const segments = [...recordedSegments];
   for (const pv of model.pathVars) {
+    const recordedVar = recordedPathValue(pv.segmentIndex);
+    const recordedBase = pv.suffix
+      ? recordedVar.slice(0, recordedVar.length - pv.suffix.length)
+      : recordedVar;
     segments[pv.segmentIndex] =
-      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))}))}`;
+      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedBase)}))}${pv.suffix ?? ""}`;
   }
   const pairs: string[] = [];
   for (const [k, v] of Object.entries(model.fixedParams)) {
@@ -22789,7 +22841,12 @@ export async function main(): Promise<void> {
       ? deriveGetInputModel(winningCapture, activeCaptures, [
           ...browserFlow.payloadFieldNames,
           ...browserFlow.optionalPayloadFieldNames,
-        ])
+        ],
+        extractNavigateToFacetOrder(flowSteps, process.env).map((f) => ({
+          field: f.field,
+          value: f.value,
+        }))
+      )
       : null;
     if (getInputModel) {
       // Re-emit with the derived fields so the read fallback binds them to the
