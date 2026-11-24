@@ -30,8 +30,8 @@ describe("deriveGetInputModel — payload-hint path binding", () => {
     const w = capture(url);
     const m = deriveGetInputModel(w, [w], [], [{ field: "itemRef", value: "CD34_AB12" }]);
     expect(m?.pathVars).toEqual([
-      { field: "itemRefPart2", segmentIndex: 2, queryKey: "" },
       { field: "itemRefPart1", segmentIndex: 3, queryKey: "", suffix: ".data.json" },
+      { field: "itemRefPart2", segmentIndex: 2, queryKey: "" },
     ]);
     expect(warn).not.toHaveBeenCalled();
   });
