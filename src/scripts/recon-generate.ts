@@ -3866,7 +3866,8 @@ function issuesTokenReusedLater(
  * token (length band, no whitespace, not already part of the capture's own URL).
  */
 function isIssuedTokenLeaf(capture: Capture, value: string): boolean {
-  if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) return false;
+  if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH)
+    return false;
   if (/\s/.test(value)) return false;
   return !capture.url.includes(value);
 }
