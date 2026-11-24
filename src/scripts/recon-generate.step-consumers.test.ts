@@ -4,6 +4,7 @@ import {
   extractActionSequence,
   indexStateValues,
   stepFeedsDeclaredSubmit,
+  actionSequenceIsReadSamplesFor,
 } from "@/scripts/recon-generate";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -165,5 +166,26 @@ describe("read-only GET classification inputs: incidental mint GET and beacon PO
   it("a mint GET whose token the declared read re-sends stays a step", () => {
     const f = steps(true);
     expect(stepFeedsDeclaredSubmit(f.mint, f.steps, isDeclaredRead)).toBe(true);
+  });
+
+  const classify = (readSendsMint: boolean) => {
+    const f = steps(readSendsMint);
+    return actionSequenceIsReadSamplesFor({
+      compiledActionSteps: f.steps,
+      actionCaptures: f.steps.map((s) => ({ capture: s.capture })),
+      readSiblings: [f.read],
+      declaresSubmitPattern: true,
+      matchesDeclaredSubmit: isDeclaredRead,
+      isRecurringReadFlowBeacon: () => false,
+      isDeclaredDrillCapture: () => false,
+    });
+  };
+
+  it("incidental mint GET and beacon POST leave the sequence a read", () => {
+    expect(classify(false)).toBe(true);
+  });
+
+  it("a mint GET the declared read re-sends keeps it a multi-step flow", () => {
+    expect(classify(true)).toBe(false);
   });
 });
