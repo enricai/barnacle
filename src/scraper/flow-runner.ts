@@ -14848,8 +14848,9 @@ export async function executeStepWithHealing(params: {
     // re-rendered with errors) is not an advance; it needs a changed URL.
     if (!pageAdvanced && settled.url === stepStartSnapshot.url) return false;
     // Validation messages appearing over the same form (invalid markers grew,
-    // the text only grew) are a blocked submit, not a page advance. So is the
-    // very page an explicit judge rejection already read, whatever its length.
+    // the text only grew) are a blocked submit, not a page advance. So is a
+    // page that has not advanced past the one an explicit judge rejection read,
+    // whatever its length.
     if (stepStartInvalidMarkerCount !== null) {
       const markersNow = await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page)).catch(
         () => 0
@@ -14858,7 +14859,7 @@ export async function executeStepWithHealing(params: {
       const lenStart = /^(\d+):/.exec(stepStartSnapshot.visibleTextSignature ?? "");
       const textGrew = !!lenNow && !!lenStart && Number(lenNow[1]) > Number(lenStart[1]);
       const judgeRejectedThisPage =
-        judgeRejectedPage !== null && !hasVisibleTextChanged(judgeRejectedPage, settled);
+        judgeRejectedPage !== null && !hasSettledPageAdvanced(judgeRejectedPage, settled);
       if (markersNow > stepStartInvalidMarkerCount && (textGrew || judgeRejectedThisPage)) {
         return false;
       }
