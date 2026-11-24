@@ -65,13 +65,17 @@ import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-ru
 import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
+  buildExtraFieldRedaction,
   type Capture,
   CREDENTIAL_REQUEST_HEADERS,
+  type ExtraPayloadField,
   type RateLimitFinding,
   type ReplayResult,
   readApplicantContract,
   readBrowserFlowOnly,
   readCaptureDir,
+  readDeclaredMaxAttempts,
+  readExtraPayloadFields,
   readJsonDir,
   readOwnBackendHostnames,
   replayReachable,
@@ -7218,6 +7222,10 @@ interface ActionStep {
   isMultipart: boolean;
   /** True when the capture's host differs from the immediately-preceding action. */
   isCrossDomain: boolean;
+  /** Captures (other than this one) whose request re-sends a value this step
+   * produces. Lets callers decide whether the step feeds a particular later
+   * capture, transitively. */
+  consumers?: Capture[];
 }
 
 /** Matches strings that are valid JavaScript identifiers (start with letter/$/_,
@@ -7709,6 +7717,25 @@ function pathToVarName(path: string[]): string {
   return "value";
 }
 
+/** True only when a value the capture produces is re-sent, transitively through
+ * other steps, by a capture matching the declared submit pattern. */
+export function stepFeedsDeclaredSubmit(
+  capture: Capture,
+  steps: ActionStep[],
+  matchesDeclaredSubmit: (c: Capture) => boolean,
+  seen = new Set<Capture>()
+): boolean {
+  if (seen.has(capture)) return false;
+  seen.add(capture);
+  const step = steps.find((s) => s.capture === capture);
+  return (
+    step?.consumers?.some(
+      (c) =>
+        matchesDeclaredSubmit(c) || stepFeedsDeclaredSubmit(c, steps, matchesDeclaredSubmit, seen)
+    ) ?? false
+  );
+}
+
 /**
  * Walks the action sequence and decorates each step with: a unique response
  * var name, the state values its response produces (used by downstream steps),
@@ -7728,6 +7755,17 @@ export function compileActionSteps(
   // header downstream isn't a shape this models (see http-client.ts's `bind`,
   // which is single-target per binding).
   const usedValueTargetHeader = new Map<string, string>();
+  // Per used value: the captures whose request re-sends it.
+  const usedValueConsumers = new Map<string, Set<Capture>>();
+  const markUsed = (value: string, consumer: Capture): void => {
+    usedValues.add(value);
+    let set = usedValueConsumers.get(value);
+    if (!set) {
+      set = new Set();
+      usedValueConsumers.set(value, set);
+    }
+    set.add(consumer);
+  };
   // Pre-scan: collect all state values referenced by ANY action's URL/headers/body
   // so we only "produce" the values that are actually consumed downstream.
   for (const { capture } of actions) {
@@ -7741,7 +7779,7 @@ export function compileActionSteps(
       // unrelated opaque path segment) is not reuse and must not splice.
       if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture)) continue;
       if (resends(capture.url, sv.value)) {
-        usedValues.add(sv.value);
+        markUsed(sv.value, capture);
         continue;
       }
       // Body consumption is matched against JSON *values* only, never keys: a
@@ -7761,7 +7799,7 @@ export function compileActionSteps(
           typeof capture.requestPostData === "string" &&
           resends(capture.requestPostData, sv.value)
         )
-          usedValues.add(sv.value);
+          markUsed(sv.value, capture);
         continue;
       }
       // A produced value's SOURCE key name (the last segment of its response
@@ -7784,13 +7822,13 @@ export function compileActionSteps(
               keyNamesCorrelate(sourceKeyName, targetKey) &&
               [...leaves].some((leaf) => leaf.includes(sv.value))
           );
-      if (matches) usedValues.add(sv.value);
+      if (matches) markUsed(sv.value, capture);
     }
     for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
       for (const sv of stateIndex.values()) {
         if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture)) continue;
         if (!headerValue.includes(sv.value)) continue;
-        usedValues.add(sv.value);
+        markUsed(sv.value, capture);
         if (!usedValueTargetHeader.has(sv.value)) {
           usedValueTargetHeader.set(sv.value, headerName);
         }
@@ -7803,6 +7841,7 @@ export function compileActionSteps(
     const varName = `r${i}`;
     const produces: Produce[] = [];
     const seenNames = new Set<string>();
+    const producedValues = new Set<string>();
 
     // Header/cookie-origin produces — walked first so a value that appears in
     // BOTH a Set-Cookie and the JSON body (unlikely, but not ruled out) prefers
@@ -7825,6 +7864,7 @@ export function compileActionSteps(
           name = `${cookieName.replace(/[^A-Za-z0-9]/g, "")}Cookie${suffix}`;
         }
         seenNames.add(name);
+        producedValues.add(value);
         produces.push({
           kind: "header",
           name,
@@ -7859,6 +7899,7 @@ export function compileActionSteps(
         name = `${headerName.replace(/[^A-Za-z0-9]/g, "")}Header${suffix}`;
       }
       seenNames.add(name);
+      producedValues.add(headerValue);
       produces.push({
         kind: "header",
         name,
@@ -7889,6 +7930,7 @@ export function compileActionSteps(
             : typeof rawValue === "boolean"
               ? "boolean"
               : "string";
+        producedValues.add(value);
         produces.push({
           kind: "body",
           name,
@@ -7915,6 +7957,7 @@ export function compileActionSteps(
         name = `${base}${suffix}`;
       }
       seenNames.add(name);
+      producedValues.add(t.value);
       produces.push({
         kind: "html",
         name,
@@ -7948,7 +7991,18 @@ export function compileActionSteps(
     // Multipart steps are emitted through a path that cannot read the HTML
     // text, so an html produce there would be interpolated but never declared.
     const finalProduces = isMultipart ? produces.filter((q) => q.kind !== "html") : produces;
-    return { capture, varName, produces: finalProduces, isMultipart, isCrossDomain };
+    const consumers = new Set<Capture>();
+    for (const v of producedValues) {
+      for (const c of usedValueConsumers.get(v) ?? []) if (c !== capture) consumers.add(c);
+    }
+    return {
+      capture,
+      varName,
+      produces: finalProduces,
+      isMultipart,
+      isCrossDomain,
+      consumers: [...consumers],
+    };
   });
 }
 
@@ -17351,6 +17405,8 @@ export function emitContractTsParts(opts: {
    * a retry would try to re-register the same address. Emits
    * `meta.maxAttempts: 1`. */
   createsAccount?: boolean;
+  /** Resolved retry budget (see `resolveMaxAttempts`); folded with the recon-password signal. */
+  maxAttempts?: number | null;
   /** Multi-action flow whose last step is a submit — when combined with
    * `omitExecuteHttp`, `runHealingFlow`'s `submitStep` verification already
    * gates a successful return, so the response schema carries a real
@@ -17400,6 +17456,9 @@ export function emitContractTsParts(opts: {
    * declared field with no matching discovered field is a no-op — it has no
    * schema line to attach to. */
   valueConstraints?: ReconValueConstraints;
+  /** Flow-declared `extraPayloadFields`: emitted into the payload schema
+   * unless a capture already discovered the same name. */
+  extraPayloadFields?: readonly ExtraPayloadField[];
   /** PascalCase candidate-PII field names the browser flow splices as
    * `payload.<field>` (from resolveStepPayloadField). Each is added to the
    * payload schema so those references typecheck. Shares the accumulator with
@@ -17477,6 +17536,7 @@ export function emitContractTsParts(opts: {
     omitExecuteHttp = false,
     applicantContract,
     createsAccount = false,
+    maxAttempts: resolvedMaxAttempts = null,
     isSubmissionFlow = false,
     inputBody,
     hasMultipartStep = false,
@@ -17490,6 +17550,7 @@ export function emitContractTsParts(opts: {
     discoveredAdditionalBodyKeys,
     discoveredStructuredKeys,
     valueConstraints = EMPTY_VALUE_CONSTRAINTS,
+    extraPayloadFields = [],
     payloadFieldNames,
     optionalPayloadFieldNames = new Set<string>(),
     flowSteps: contractFlowSteps = [],
@@ -17603,6 +17664,12 @@ export function emitContractTsParts(opts: {
     flowSteps: contractFlowSteps,
     hasMultipartStep,
   });
+  const sensitivePolicy = buildSensitiveRedactionPolicy(
+    contractFlowSteps,
+    usesApplicantContactSchema
+  );
+  const sensitiveRedactionLiteral =
+    sensitivePolicy === undefined ? "" : `    redaction: ${JSON.stringify(sensitivePolicy)},\n`;
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
   // A resolved drill-down fold plan on the single-primary getGql/httpClient
@@ -18069,6 +18136,11 @@ export function emitContractTsParts(opts: {
       extendFields.set(field, `  ${key}: z.string().optional(),`);
     }
   }
+  // Flow-declared extra payload fields: declared type/optionality are
+  // authoritative and override a name discovered from captures (one entry per name).
+  for (const f of extraPayloadFields) {
+    extendFields.set(f.name, `  ${f.name}: z.${f.type}()${f.optional ? ".optional()" : ""},`);
+  }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
   // zod strips unknown keys, so without composing it every generated
@@ -18479,7 +18551,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // See emitMultiStepExecuteHttp's identical guard: the frozen-
           // varying-param safety net does not apply once the capture is
           // already proven request-invariant.
-          if (!isProvenInvariant) {
+          if (!isProvenInvariant && !omitExecuteHttp) {
             assertNoFrozenVaryingDrillParams(
               "emitContractTs",
               chainCapture,
@@ -18792,10 +18864,19 @@ ${executeHttpBody}
   // Derived here as well as from the caller's flag: a caller that hands over
   // flowSteps but not the browser-flow emitter's signal must not ship a
   // retry-enabled account-creating flow.
+  const accountSignal = createsAccount || contractFlowSteps.some(stepUsesReconPassword);
+  const contractMaxAttempts = resolveMaxAttempts({
+    createsAccount: accountSignal,
+    declared: resolvedMaxAttempts,
+  });
   const maxAttemptsLiteral =
-    createsAccount || contractFlowSteps.some(stepUsesReconPassword)
-      ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
-      : "";
+    contractMaxAttempts === null
+      ? ""
+      : `\n    // ${accountSignal ? "A retry would re-register the same account the first attempt created." : contractMaxAttempts === 1 ? "A retry could repeat an irreversible submission." : "Retry budget declared by the flow file."}\n    maxAttempts: ${contractMaxAttempts},`;
+  const extraRedaction = buildExtraFieldRedaction(extraPayloadFields);
+  const redactionLiteral = extraRedaction
+    ? `\n    redaction: ${JSON.stringify(extraRedaction)},`
+    : "";
   const pluginDocComment = omitExecuteHttp
     ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
@@ -18843,7 +18924,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     siteId: ${JSON.stringify(siteId)},${displayName !== undefined ? `\n    displayName: ${JSON.stringify(displayName)},` : ""}
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
-    defaultBaseUrl: ${JSON.stringify(baseUrl)},
+${sensitiveRedactionLiteral}    defaultBaseUrl: ${JSON.stringify(baseUrl)},
     ${
       payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep
         ? `// multipart is required whenever the flow itself uploads a file
@@ -18856,7 +18937,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // JSON-stringified encoding parseable.
     `
         : ""
-    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}${redactionLiteral}
   },
 ${executeHttpMethodBlock}
 ${executeDocComment}  async execute(
@@ -19277,14 +19358,44 @@ type FlowStepInput =
       optional?: boolean;
       upload?: boolean;
       submitStep?: boolean;
+      /**
+       * Recon recorded this step without executing it (recon-browser `declareOnly`).
+       * It is still emitted like any other step, honoring an explicit `submitStep`;
+       * nothing derived from execution (captures, targetId) may be assumed for it.
+       */
+      declareOnly?: boolean;
       payloadField?: string;
       payloadFieldNone?: boolean;
+      sensitive?: "digits" | "word";
       emailStep?: boolean;
       emailStepConfig?: EmailStepConfig;
       navigateTo?: string;
       /** Per-step cross-origin `<iframe>` selector; overrides the flow-level one. */
       frameSelector?: string;
     };
+
+/**
+ * Redaction policy derived only from steps tagged `sensitive`: the tagged step's
+ * explicit `payloadField` lands in `digitKeys` or `wordKeys` per the tag. Returns
+ * undefined when no step is tagged, so untagged flows emit nothing.
+ */
+export function buildSensitiveRedactionPolicy(
+  flowSteps: readonly FlowStepInput[],
+  canonicalise = false
+): { digitKeys?: string[]; wordKeys?: string[] } | undefined {
+  const digitKeys = new Set<string>();
+  const wordKeys = new Set<string>();
+  for (const step of flowSteps) {
+    if (typeof step === "string" || !step.sensitive || !step.payloadField) continue;
+    const key = canonicalise ? canonicalPayloadField(step.payloadField) : step.payloadField;
+    (step.sensitive === "digits" ? digitKeys : wordKeys).add(key);
+  }
+  if (digitKeys.size === 0 && wordKeys.size === 0) return undefined;
+  return {
+    ...(digitKeys.size > 0 && { digitKeys: [...digitKeys].sort() }),
+    ...(wordKeys.size > 0 && { wordKeys: [...wordKeys].sort() }),
+  };
+}
 
 /**
  * Escape a literal string segment so it is safe INSIDE a JS backtick template
@@ -19410,11 +19521,38 @@ function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "ar
 function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
   const last = flowSteps.at(-1);
   if (last === undefined) return false;
+  // A flow containing a declare-only step was never fully executed by recon, so
+  // its trailing step is not a recon-verified submit unless explicitly flagged.
+  const anyDeclareOnly = flowSteps.some((s) => typeof s !== "string" && s.declareOnly === true);
+  const anyExplicitSubmit = flowSteps.some((s) => typeof s !== "string" && s.submitStep === true);
+  if (anyDeclareOnly && !anyExplicitSubmit) return true;
   const isObj = typeof last !== "string";
+  // An explicit submitStep:false or a declare-only step (never executed by
+  // recon) is an author's statement that this step is not a verified submit.
+  if (
+    isObj &&
+    (last.submitStep === false || last.declareOnly === true) &&
+    last.submitStep !== true
+  ) {
+    return true;
+  }
   return isStepDeclaredNonSubmit({
     step: isObj ? last.step : last,
     submitStep: isObj ? last.submitStep === true : false,
   });
+}
+
+/**
+ * The generated plugin's retry budget, decided once for both emitters:
+ * an irreversibility signal forces 1, else the flow-declared value, else null
+ * (engine default).
+ */
+export function resolveMaxAttempts(o: {
+  createsAccount?: boolean;
+  declared?: number | null;
+}): number | null {
+  if (o.createsAccount) return 1;
+  return o.declared ?? null;
 }
 
 /**
@@ -19470,6 +19608,10 @@ export function emitConfigManifest(opts: {
   formBodyFieldNames?: ReadonlySet<string>;
   /** Read-only GET flow: no submission, so the request schema omits TrackingUrl (mirrors the .ts contract). */
   readOnlyGet?: boolean;
+  /** Flow-declared extra payload fields; sensitive ones emit `spec.redaction`. */
+  extraPayloadFields?: readonly ExtraPayloadField[];
+  /** Resolved retry budget (see `resolveMaxAttempts`). */
+  maxAttempts?: number | null;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -19600,6 +19742,7 @@ export function emitConfigManifest(opts: {
       requestProperties[name] = { type: jsonSchemaTypeOf(value) };
     }
   }
+  for (const f of opts.extraPayloadFields ?? []) requestProperties[f.name] = { type: f.type };
   const usesApplicantContactSchema = contractUsesApplicantContactSchema({
     inputBody,
     isSubmissionFlow,
@@ -19628,6 +19771,10 @@ export function emitConfigManifest(opts: {
   const contractCarriesResume = hasMultipartStep || usesApplicantContactSchema;
   const multipart = hasUploadStep && contractCarriesResume;
 
+  const sensitiveManifestPolicy = buildSensitiveRedactionPolicy(
+    flowSteps,
+    usesApplicantContactSchema
+  );
   const manifest = {
     apiVersion: CONFIG_PLUGIN_API_VERSION,
     kind: CONFIG_PLUGIN_KIND,
@@ -19636,14 +19783,24 @@ export function emitConfigManifest(opts: {
       defaultBaseUrl: baseUrl,
       ...(httpModulePath ? { httpModule: httpModulePath } : {}),
       ...(multipart ? { multipart: true } : {}),
-      ...(flowSteps.some(stepUsesReconPassword) ? { maxAttempts: 1 } : {}),
+      ...(() => {
+        const n = resolveMaxAttempts({
+          createsAccount: flowSteps.some(stepUsesReconPassword),
+          declared: opts.maxAttempts ?? null,
+        });
+        return n === null ? {} : { maxAttempts: n };
+      })(),
+      ...(buildExtraFieldRedaction(opts.extraPayloadFields ?? []) !== null
+        ? { redaction: buildExtraFieldRedaction(opts.extraPayloadFields ?? []) }
+        : {}),
       request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
         description: "TODO: declare the fields this site returns (recon leaves this empty).",
         properties: {},
       },
-      flow: { steps },
+      ...(sensitiveManifestPolicy !== undefined && { redaction: sensitiveManifestPolicy }),
+      flow: { steps, ...(isSubmissionFlow ? { submissionFlow: true } : {}) },
       extract: {
         instruction: `extract the confirmation id and status for ${siteId}`,
         schema: {
@@ -19936,10 +20093,15 @@ export function emitBrowserFlowTs(opts: {
     lastStepLiteral !== undefined &&
     !lastFlowStepDeclaresNonSubmit(flowSteps)
   ) {
-    stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
-      /submitStep: (true|false)(?= \},)/,
-      "submitStep: true"
-    );
+    // Flag sits before optional navigateTo/emailStep keys, so match it
+    // anywhere (last occurrence) rather than only directly before ` },`.
+    const flagIdx = lastStepLiteral.lastIndexOf("submitStep: ");
+    if (flagIdx >= 0) {
+      stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
+        /^([\s\S]*)submitStep: (true|false)/,
+        "$1submitStep: true"
+      );
+    }
   }
 
   // Per-step frameSelector: emit it on the step object so the runtime's
@@ -20017,7 +20179,8 @@ ${
     ? `
 const ${pascal}BrowserSchema = z.object({
   // runHealingFlow throws StepVerificationError on a failed submitStep, so
-  // reaching this point already proves the submission verified.
+  // reaching this point proves a submit verified only when the flow has a
+  // submitStep; the tail below decides verified from that, not from this field.
   verified: z.boolean(),
 });
 `
@@ -20064,32 +20227,44 @@ ${flowStepsBlock}
   // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
   // 2.4.3 / PR #944), and the caller-side safeParse defends against SDK
   // contract drift.${
-    isSubmissionFlow
+    isSubmissionFlow && !hasSubmitStep
       ? `
-  ${
-    hasSubmitStep
-      ? `// runHealingFlow above already verified the submit (submitStep:true), so the
-  // application is already committed at the ATS. A schema-validation or
-  // watchdog-timeout throw from this trailing confirmation extract must not
-  // propagate and trigger a duplicate re-dispatch — catch it, log it, and
-  // degrade to a not-confirmed result instead.`
-      : `// No step declares submitStep, so runHealingFlow verified no submission:
-  // never claim verified:true. The confirmation extract is best-effort only.`
-  }
+  // No step in this flow is a submitStep (the last step declares itself
+  // non-submit), so nothing here verified a submit: never report a verified result.
   try {
     const result = await guardedExtract(
       stagehand,
       "is a submission confirmation shown, and what is its reference number?",
       ${pascal}BrowserSchema
     );
-    return { ...result, verified: ${hasSubmitStep} } as unknown as ${pascal}Response;
+    return { ...result, verified: false } as unknown as ${pascal}Response;
+  } catch (error) {
+    logger.error(\`GuardedExtractError: confirmation extract failed: \${error}\`);
+    return { verified: false } as unknown as ${pascal}Response;
+  }
+}
+`
+      : isSubmissionFlow
+        ? `
+  // runHealingFlow above already verified the submit (submitStep:true), so the
+  // application is already committed at the ATS. A schema-validation or
+  // watchdog-timeout throw from this trailing confirmation extract must not
+  // propagate and trigger a duplicate re-dispatch — catch it, log it, and
+  // degrade to a not-confirmed result instead.
+  try {
+    const result = await guardedExtract(
+      stagehand,
+      "is a submission confirmation shown, and what is its reference number?",
+      ${pascal}BrowserSchema
+    );
+    return { ...result, verified: true } as unknown as ${pascal}Response;
   } catch (error) {
     logger.error(\`GuardedExtractError: post-submit confirmation extract failed on an already-verified submit, degrading to not-confirmed: \${error}\`);
     return { verified: false } as unknown as ${pascal}Response;
   }
 }
 `
-      : `
+        : `
   const result = await guardedExtract(
     stagehand,
     ${readOnlyGetFlow ? readOnlyGetExtractPromptExpr(getInputFields) : /* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ "`extract results matching query: ${payload.query}`"},
@@ -20786,6 +20961,7 @@ export async function main(): Promise<void> {
 
   const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
   const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
+  const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
@@ -21272,13 +21448,10 @@ export async function main(): Promise<void> {
     // step consumes (a one-off analytics or consent POST) is page chrome, not a
     // step. One whose response feeds a later request (a token mint) still is.
     const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
-    const feedsLaterStep = (capture: Capture): boolean =>
-      compiledActionSteps.some((s) => s.capture === capture && s.produces.length > 0);
+    const feedsDeclaredStep = (capture: Capture): boolean =>
+      stepFeedsDeclaredSubmit(capture, compiledActionSteps, matchesDeclaredSubmit);
     const isIncidentalReadFlowPost = (capture: Capture): boolean =>
-      declaresSubmitPattern &&
-      capture.method !== "GET" &&
-      !matchesDeclaredSubmit(capture) &&
-      !feedsLaterStep(capture);
+      declaresSubmitPattern && !matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
     const actionSequenceIsReadSamples =
       compiledActionSteps.length === 0 ||
       actionCaptures.every(
@@ -21652,6 +21825,15 @@ export async function main(): Promise<void> {
       `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
     );
 
+    // Non-GET mutating submit on a browser-flow-only plugin cannot be replayed
+    // safely, so it defaults to a single attempt; an explicit declaration wins.
+    const submitIsIrreversible =
+      browserFlowOnly &&
+      !isReadOnlyGetFlow &&
+      winningCapture !== null &&
+      winningCapture.method !== "GET";
+    const derivedMaxAttempts = declaredMaxAttempts ?? (submitIsIrreversible ? 1 : null);
+
     if (emit === "config") {
       mkdirSync(outDir, { recursive: true });
       writeFileSync(
@@ -21670,6 +21852,8 @@ export async function main(): Promise<void> {
           applicantContract,
           formBodyFieldNames,
           readOnlyGet: isReadOnlyGetFlow,
+          extraPayloadFields: readExtraPayloadFields(flowFile),
+          maxAttempts: derivedMaxAttempts,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
@@ -21784,6 +21968,7 @@ export async function main(): Promise<void> {
       omitExecuteHttp: browserFlowOnly,
       applicantContract,
       createsAccount: browserFlow.usesThrowawayPassword,
+      maxAttempts: derivedMaxAttempts,
       isSubmissionFlow,
       inputBody,
       hasMultipartStep,
@@ -21797,6 +21982,7 @@ export async function main(): Promise<void> {
       discoveredAdditionalBodyKeys,
       discoveredStructuredKeys,
       valueConstraints,
+      extraPayloadFields: readExtraPayloadFields(flowFile),
       payloadFieldNames: browserFlow.payloadFieldNames,
       optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
       headerBindings,

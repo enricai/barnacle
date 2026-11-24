@@ -62,6 +62,8 @@ const browserFallbackGateSchema = z.object({
 
 const flowSchema = z.object({
   steps: z.array(RECON_FLOW_STEP_SCHEMA).min(1),
+  /** Marks a submission flow; such a flow must carry a submitStep step to report success. */
+  submissionFlow: z.boolean().optional(),
   frameSelector: z.string().min(1).optional(),
   submitEndpointPattern: z.string().nullish(),
   submittedStateSelectors: z.array(z.string()).optional(),
@@ -379,6 +381,13 @@ export async function buildConfigPlugin(
       const allocatedInbox = hasEmailStep
         ? testmailInboxFromAddress(payload.Email as string)
         : null;
+
+      if (spec.flow.submissionFlow === true && !hasSubmitStep) {
+        throw new StepVerificationError(
+          `${metadata.siteId} config plugin: submission flow has no submitStep step — refusing to report success`,
+          "submit-skipped"
+        );
+      }
 
       const flowResult = await runHealingFlow({
         stagehand,

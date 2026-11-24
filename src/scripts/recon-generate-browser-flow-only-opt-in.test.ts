@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { contractUsesApplicantContactSchema } from "@/scripts/recon-generate";
+import { contractUsesApplicantContactSchema, main } from "@/scripts/recon-generate";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
 import { readBrowserFlowOnly } from "@/scripts/recon-shared";
 
@@ -137,5 +137,83 @@ describe("recon-generate CLI — browserFlowOnly flow-file opt-in", () => {
   it("keeps existing behaviour without the flag", () => {
     const contract = generate(FLOW)["contract.ts"] ?? "";
     expect(contract).toContain("async executeHttp(");
+  }, 60_000);
+});
+
+describe("recon-generate CLI — flow-declared maxAttempts", () => {
+  it("threads a declared maxAttempts into a replayable contract", () => {
+    const contract = generate({ ...FLOW, maxAttempts: 3 })["contract.ts"] ?? "";
+    expect(contract).toMatch(/maxAttempts: 3,/);
+  }, 60_000);
+
+  it("defaults to a single attempt for an irreversible browser-flow-only submit", () => {
+    const contract = generate({ ...FLOW, browserFlowOnly: true })["contract.ts"] ?? "";
+    expect(contract).toMatch(/maxAttempts: 1,/);
+  }, 60_000);
+
+  it("honours an explicit maxAttempts on a browser-flow-only submit", () => {
+    const contract =
+      generate({ ...FLOW, browserFlowOnly: true, maxAttempts: 3 })["contract.ts"] ?? "";
+    expect(contract).toMatch(/maxAttempts: 3,/);
+  }, 60_000);
+
+  it("emits no maxAttempts when none is declared", () => {
+    const contract = generate(FLOW)["contract.ts"] ?? "";
+    expect(contract).not.toContain("maxAttempts");
+  }, 60_000);
+});
+
+describe("recon-generate in-process — flow-declared maxAttempts", () => {
+  /** Runs main() in this process (so coverage sees it) and returns contract.ts. */
+  async function generateInProcess(flow: Record<string, unknown>): Promise<string> {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-bfo-inproc-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    buildWizardCheckoutCaptures().forEach((capture, index) => {
+      writeFileSync(
+        join(capturesDir, `${String(index).padStart(3, "0")}-checkout-action.json`),
+        JSON.stringify(capture)
+      );
+    });
+    const siteId = `bfo-inproc-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(join(siteOutDir, "recon-flow.json"), JSON.stringify(flow));
+    const savedArgv = process.argv;
+    process.argv = [
+      savedArgv[0] ?? "node",
+      GENERATE_SCRIPT,
+      "--site-id",
+      siteId,
+      "--run-dir",
+      runRoot,
+      "--emit",
+      "ts",
+      "--force",
+    ];
+    try {
+      await main();
+    } finally {
+      process.argv = savedArgv;
+    }
+    return readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+  }
+
+  it("threads a declared maxAttempts into a replayable contract", async () => {
+    expect(await generateInProcess({ ...FLOW, maxAttempts: 3 })).toMatch(/maxAttempts: 3,/);
+  }, 60_000);
+
+  it("defaults to a single attempt for an irreversible browser-flow-only submit", async () => {
+    const contract = await generateInProcess({ ...FLOW, browserFlowOnly: true });
+    expect(contract).toMatch(/maxAttempts: 1,/);
+  }, 60_000);
+
+  it("honours an explicit maxAttempts on a browser-flow-only submit", async () => {
+    const contract = await generateInProcess({ ...FLOW, browserFlowOnly: true, maxAttempts: 3 });
+    expect(contract).toMatch(/maxAttempts: 3,/);
   }, 60_000);
 });
