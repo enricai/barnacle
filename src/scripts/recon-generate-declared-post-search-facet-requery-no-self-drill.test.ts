@@ -11,8 +11,8 @@ const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 const HOST = "example.test";
-const SEARCH_URL = `https://${HOST}/caps/pricing/v1/cruises`;
-const DRILL_URL = `https://${HOST}/caps/pricing/v1/cruises/detail`;
+const SEARCH_URL = `https://${HOST}/caps/pricing/v1/voyages`;
+const DRILL_URL = `https://${HOST}/caps/pricing/v1/voyages/detail`;
 
 const BASE_BOOKING = {
   bookingAgency: { id: "AGENCY1" },
@@ -26,8 +26,8 @@ function searchBody(filters: Record<string, unknown>): string {
 }
 
 /** Two bodies differing in filter arrays; items carry the facet values ("I", "G", "C"). */
-const BODY_A = searchBody({ availabilities: ["Y", "G", "B"], cruiseType: "C", meta: "I" });
-const BODY_B = searchBody({ availabilities: ["B"], cruiseType: "C", meta: "B", trades: ["C"] });
+const BODY_A = searchBody({ availabilities: ["Y", "G", "B"], tripType: "C", meta: "I" });
+const BODY_B = searchBody({ availabilities: ["B"], tripType: "C", meta: "B", trades: ["C"] });
 
 function searchResponse(extra: string) {
   return {
@@ -65,7 +65,7 @@ const searches = () => [
 ];
 
 const isDeclaredSubmit = (c: { url: string }) =>
-  c.url.includes("/cruises") && !c.url.includes("detail");
+  c.url.includes("/voyages") && !c.url.includes("detail");
 
 function detect(
   steps: MulticallFixtureStep[],
@@ -140,9 +140,9 @@ describe("recon-generate CLI — declared submit pattern + foldReturn with a POS
   it("does not throw the frozen-varying error and emits the search once, plus the real drill", () => {
     const { result, output, contract } = runGenerate([...searches(), drill()], {
       steps: [{ step: "search sailings", submitStep: true }],
-      submitEndpointPattern: "pricing/v1/cruises$",
+      submitEndpointPattern: "pricing/v1/voyages$",
       foldReturn: {
-        endpointPattern: "cruises/detail",
+        endpointPattern: "voyages/detail",
         resultsPath: "sailings",
         drillResultsPath: "cabins",
         joinFields: ["voyageId"],
@@ -154,25 +154,25 @@ describe("recon-generate CLI — declared submit pattern + foldReturn with a POS
     // One search action (payload variants), one genuine different-endpoint drill.
     // The per-item fold loop drills the different endpoint, never the search itself.
     const loopBody = contract.slice(contract.indexOf("foldItems).map"));
-    expect(loopBody).toContain("pricing/v1/cruises/detail");
-    expect(loopBody).not.toMatch(/pricing\/v1\/cruises`/);
-    expect(contract).toContain("cruises/detail");
+    expect(loopBody).toContain("pricing/v1/voyages/detail");
+    expect(loopBody).not.toMatch(/pricing\/v1\/voyages`/);
+    expect(contract).toContain("voyages/detail");
     expect(contract).toContain("voyageId");
     // Search is one action with payload variants: the varying `filters` body field is
     // a single payload parameter (never frozen to a literal from one capture), and the
     // search URL is only ever called with the templated payload body.
     expect(contract).toContain("JSON.stringify(payload.filters)");
     expect(contract).not.toContain('"availabilities"');
-    expect(contract).not.toContain('"cruiseType"');
+    expect(contract).not.toContain('"tripType"');
     expect(contract.match(/^ {2}filters: z\.object\(/gm)).toHaveLength(1);
   }, 90_000);
 
   it("a declared self-fold on the search endpoint still resolves", () => {
     const { result, output, contract } = runGenerate(searches(), {
       steps: [{ step: "search sailings", submitStep: true }],
-      submitEndpointPattern: "pricing/v1/cruises",
+      submitEndpointPattern: "pricing/v1/voyages",
       foldReturn: {
-        endpointPattern: "pricing/v1/cruises",
+        endpointPattern: "pricing/v1/voyages",
         resultsPath: "sailings",
         joinFields: ["voyageId"],
       },
