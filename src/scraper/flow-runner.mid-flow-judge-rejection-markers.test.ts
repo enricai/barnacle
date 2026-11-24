@@ -3,7 +3,7 @@ import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
-import { executeStepWithHealing } from "@/scraper/flow-runner";
+import { executeStepWithHealing, isMidFlowAdvanceCredited } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
@@ -227,6 +227,22 @@ describe("judge-rejected mid-flow submit with non-Angular validation markers", (
   it("credits a rejected judge on a real network advance with no marker growth", async () => {
     const { outcome } = await run("none", { swapText: SWAP, judge: true, network: true });
     expect(outcome).toBe("completed");
+  });
+
+  it("network alone is the only credit when the page did not advance (isolates the network signal)", () => {
+    const base = {
+      midFlowSubmit: true,
+      signalAdvanced: true,
+      judgeUnavailable: false,
+      pageAdvanced: false,
+      invalidMarkerCount: 0,
+      invalidMarkerDelta: 0,
+    };
+    expect(isMidFlowAdvanceCredited({ ...base, networkAdvanced: false })).toBe(false);
+    expect(isMidFlowAdvanceCredited({ ...base, networkAdvanced: true })).toBe(true);
+    expect(
+      isMidFlowAdvanceCredited({ ...base, networkAdvanced: true, invalidMarkerDelta: 1 })
+    ).toBe(false);
   });
 
   it("does not credit a select popup that opens with the committed value unchanged", async () => {
