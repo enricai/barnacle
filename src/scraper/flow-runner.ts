@@ -2468,6 +2468,27 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
   return ADVANCE_STEP_PHRASES.some((p) => haystack.includes(p));
 }
 
+const ADVANCE_DESTINATION_RX =
+  /\b(?:advance|proceed|continue|move\s+on|go)\s+to\s+the\s+[\w' -]+?\s+(?:step|page|screen|stage)\b/i;
+const ADVANCE_CONTROL_RX =
+  /\b(?:click|press|tap)\b[^.]*?['"\u2018\u201c](?:save\s+(?:and|&)\s+)?(?:next|continue|proceed)['"\u2019\u201d]/i;
+
+/**
+ * Does the step's own wording say its click moves the wizard to another page?
+ * Wider than {@link isAdvanceStep}'s fixed phrase list, which only the
+ * transition-pattern gates key on: it also reads a click on a control named
+ * with an advance word, or an explicit "advance to the <name> step" goal, so
+ * every phrasing of the same intent is held to the same proof of advance.
+ */
+export function isAdvanceIntentStep(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  return (
+    isAdvanceStep(instruction) ||
+    ADVANCE_DESTINATION_RX.test(instruction) ||
+    ADVANCE_CONTROL_RX.test(instruction)
+  );
+}
+
 /**
  * Phrases (in the ORIGINAL flow instruction) that mark a step whose intent is to
  * SUBMIT a form — a final "Submit" click — as opposed to a field-answer
@@ -2604,7 +2625,9 @@ export function isGenuineFinalSubmit(params: {
  * Submit-shaped but NOT the flow's genuine final submit (a final slot without
  * submit semantics, e.g. after a replan trims the tail, is still mid-flow): a mid-flow advancing submit
  * (e.g. account creation) that can be credited on a demonstrable page advance
- * instead of needing the final submit's network/URL proof.
+ * instead of needing the final submit's network/URL proof. A step whose wording
+ * advances the wizard ("Next", "Continue") is the same transition and gets the
+ * same proof.
  */
 export function isMidFlowSubmitShapedStep(params: {
   step: string | null | undefined;
@@ -2614,7 +2637,11 @@ export function isMidFlowSubmitShapedStep(params: {
   elementSubmitShaped?: boolean;
 }): boolean {
   if (isGenuineFinalSubmit(params)) return false;
-  return isStepSubmitShaped(params) || params.elementSubmitShaped === true;
+  return (
+    isStepSubmitShaped(params) ||
+    isAdvanceIntentStep(params.step) ||
+    params.elementSubmitShaped === true
+  );
 }
 
 /**
@@ -3271,11 +3298,12 @@ export function isClickViewSwapVerified(params: {
   // is not a reveal; growth-based credits need the body to have grown, unless
   // it is a screen-swap-sized change.
   if (bytesDelta < 0 && -bytesDelta < VIEW_SWAP_MIN_BYTES) return false;
-  if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
-  // A small text-only reveal is what a blocked mid-flow submit's inline
-  // validation message produces too; without a settled page advance it is
-  // not evidence of an advance.
+  // A mid-flow submit or advance click is credited by the page advancing,
+  // whatever the byte magnitude: a popup opening or inline validation
+  // rendering grows the body as much as a step swap does, and neither moves
+  // the wizard.
   if (midFlowSubmit && !pageAdvanced) return false;
+  if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
 }
 
@@ -7303,7 +7331,13 @@ export function parseSelectStep(
   // Must look like a dropdown selection, not a radio/checkbox click. "select
   // or check" is allowed (some option lists render as either). A bare
   // "click the 'Yes' answer" is a radio and handled by the cascade.
-  const mentionsSelect = /\bselect(\s+or\s+check)?\b/.test(lower);
+  const chosenFrom = matchQuotedAfter(
+    instruction,
+    /\b(?:choose|pick)\s+(?:the\s+(?:option|answer)\s+)?(?=')/i
+  )?.phrase;
+  const choosesFromList =
+    chosenFrom !== undefined && /^\s+from\b/i.test(instruction.slice(chosenFrom.end));
+  const mentionsSelect = /\bselect(\s+or\s+check)?\b/.test(lower) || choosesFromList;
   if (!mentionsSelect) return null;
   // Catch-all steps ("for any remaining…") have no concrete single target.
   if (/\bany\s+remaining\b/.test(lower)) return null;
@@ -7314,10 +7348,9 @@ export function parseSelectStep(
   // quote — real flow phrasing like "select the option 'Job Boards'" or
   // "select the answer 'X'" otherwise fails to parse and the caller
   // silently no-ops before touching the DOM.
-  const selMatch = matchQuotedAfter(
-    instruction,
-    /\bselect(?:\s+or\s+check)?\s+(?:the\s+\S+\s+)?(?=')/i
-  )?.phrase;
+  const selMatch =
+    matchQuotedAfter(instruction, /\bselect(?:\s+or\s+check)?\s+(?:the\s+\S+\s+)?(?=')/i)?.phrase ??
+    (choosesFromList ? chosenFrom : undefined);
   if (!selMatch) return null;
   const option = selMatch.text.trim();
   // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
@@ -17966,7 +17999,10 @@ export async function executeStepWithHealing(params: {
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
-            ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
+            ((!inferredFinalSubmitStep &&
+              !submitStep &&
+              !retryResolvedElementIsSubmitShaped &&
+              !retryMidFlowSubmit) ||
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
