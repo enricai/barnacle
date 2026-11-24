@@ -1291,6 +1291,9 @@ function isStructuredQueryWithRecordResponse(capture: {
     return false;
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  // A GraphQL operation document is not a REST filter query; its identity
+  // is the operation, handled by the GraphQL paths.
+  if (typeof (body as Record<string, unknown>).query === "string") return false;
   const hasRecords = (v: unknown, depth: number): boolean => {
     if (depth > 3 || typeof v !== "object" || v === null) return false;
     if (Array.isArray(v)) {
