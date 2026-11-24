@@ -22349,8 +22349,12 @@ export async function main(): Promise<void> {
           isRecurringReadFlowBeacon(a.capture) ||
           isIncidentalReadFlowPost(a.capture) ||
           isDeclaredDrillCapture(a.capture) ||
-          // A successful GET is a read, never a submission, whatever its path shape.
-          (a.capture.method === "GET" && a.capture.status >= 200 && a.capture.status < 300)
+          // A successful GET is a read, never a submission, whatever its path shape —
+          // unless its response feeds a later declared step (a token mint stays a step).
+          (a.capture.method === "GET" &&
+            a.capture.status >= 200 &&
+            a.capture.status < 300 &&
+            !feedsDeclaredStep(a.capture))
       );
     const isReadOnlyGetFlow =
       !gql &&
