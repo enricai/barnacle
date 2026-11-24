@@ -1300,6 +1300,46 @@ export function isServerRenderedFormSubmit(capture: {
   );
 }
 
+/**
+ * True when `capture` is a structured query: a JSON object request body (filters),
+ * answered by a
+ * response carrying a non-empty array of record objects. A beacon's varying
+ * body/response is scalar telemetry; a re-issued search with different filter
+ * values is answered with a collection of records.
+ */
+function isStructuredQueryWithRecordResponse(capture: {
+  requestPostData: string | null;
+  responseBody?: unknown;
+}): boolean {
+  if (!capture.requestPostData) return false;
+  let body: unknown;
+  try {
+    body = JSON.parse(capture.requestPostData);
+  } catch {
+    return false;
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  // A GraphQL operation document is not a REST filter query; its identity
+  // is the operation, handled by the GraphQL paths.
+  if (typeof (body as Record<string, unknown>).query === "string") return false;
+  const hasRecords = (v: unknown): boolean => {
+    if (typeof v !== "object" || v === null) return false;
+    if (Array.isArray(v)) {
+      return v.some((x) => typeof x === "object" && x !== null && !Array.isArray(x));
+    }
+    return Object.values(v).some((x) => hasRecords(x));
+  };
+  if (hasRecords(capture.responseBody)) return true;
+  // A faceted filter body (nested filter values) answered by any non-empty
+  // structured envelope (id lists, counts) is likewise a search, not telemetry.
+  const faceted = Object.values(body as Record<string, unknown>).some(
+    (x) => typeof x === "object" && x !== null
+  );
+  const r = capture.responseBody;
+  if (!faceted || typeof r !== "object" || r === null) return false;
+  return Array.isArray(r) ? r.length > 0 : Object.keys(r).length > 0;
+}
+
 export function isZeroVarianceRepeatCapture(
   candidate: {
     method: string;
@@ -1322,7 +1362,8 @@ export function isZeroVarianceRepeatCapture(
     query?: string | null;
     status?: number;
     requestHeaders?: Record<string, string>;
-  }[]
+  }[],
+  isDeclaredSubmit?: (capture: { method: string; url: string }) => boolean
 ): boolean {
   let candidateUrl: URL;
   try {
@@ -1337,6 +1378,14 @@ export function isZeroVarianceRepeatCapture(
     captureEndpointIndexFor(allCaptures).byMethodEndpoint.get(
       `${candidate.method}::${candidateEndpoint}`
     ) ?? [];
+  // The flow's declared read-only submit endpoint re-issued with differing
+  // bodies is the flow's search action, never a beacon (any method).
+  if (
+    isDeclaredSubmit?.(candidate) &&
+    sameEndpoint.some((c) => c.requestPostData !== candidate.requestPostData)
+  ) {
+    return false;
+  }
   // A server-rendered form's redirect/HTML answer reads as "no response state"
   // below, but distinct bodies are distinct steps: never zero-variance.
   if (
@@ -1375,6 +1424,7 @@ export function isZeroVarianceRepeatCapture(
     if (hasResponseFullyExplainedByOwnRequestPerOccurrence(sameEndpoint)) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
     if (hasStableOperationIdentity(candidate, sameEndpoint)) return false;
+    if (isStructuredQueryWithRecordResponse(candidate)) return false;
     if (hasDistinctOperationIdentity(candidate, sameEndpoint)) return false;
     // Unlike the identical-request branch above (where a fixed/degenerate
     // request can never explain response variance, so the dense-repeat floor

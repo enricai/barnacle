@@ -1993,3 +1993,31 @@ describe("matchesAnyTelemetryPattern — bare word host labels", () => {
     expect(matchesAnyTelemetryPattern("https://example.com/a/pixels/1")).toBe(false);
   });
 });
+
+describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
+  const url = "https://api.example-shop.test/v1/items";
+  const posts = Array.from({ length: 14 }, (_, i) => ({
+    method: "POST",
+    url,
+    requestPostData: JSON.stringify({ q: `term${i}` }),
+    responseBody: { results: [`r${i}`, i * 7] },
+    status: 200,
+    responseHeaders: { "content-type": "application/json" },
+  }));
+  const all = [
+    ...posts,
+    {
+      method: "GET",
+      url: "https://api.example-shop.test/zzz/qqq",
+      requestPostData: null,
+      status: 200,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { ok: true },
+    },
+  ];
+  it("is a beacon without the matcher, kept with it", () => {
+    const first = posts[0] as (typeof posts)[number];
+    expect(isZeroVarianceRepeatCapture(first, all)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, all, (c) => /\/v1\/items$/.test(c.url))).toBe(false);
+  });
+});

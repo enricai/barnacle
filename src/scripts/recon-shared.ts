@@ -222,11 +222,31 @@ export interface RateLimitFinding {
   xRateLimitHeaders: Record<string, string>;
 }
 
+/** Leading numeric counter of a capture filename (`148-...` → 148), or null. */
+function captureCounter(filename: string): number | null {
+  const m = /^(\d+)/.exec(filename);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Orders capture filenames by their numeric counter prefix (so `148-` precedes
+ * `1177-`, which a lexical sort inverts once the counter outgrows its padding),
+ * falling back to lexical order for ties and counter-less names.
+ */
+export function compareCaptureFilenames(a: string, b: string): number {
+  const na = captureCounter(a);
+  const nb = captureCounter(b);
+  if (na !== null && nb !== null && na !== nb) return na - nb;
+  if (na !== null && nb === null) return -1;
+  if (na === null && nb !== null) return 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function readJsonDir<T>(dir: string, exclude: string[] = []): T[] {
   try {
     return readdirSync(dir)
       .filter((f) => isRawCaptureFilename(f) && !exclude.includes(f))
-      .sort()
+      .sort(compareCaptureFilenames)
       .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as T);
   } catch {
     return [];

@@ -540,8 +540,9 @@ interface SubmitManifestEntry {
  * fall through to generate's existing heuristic unchanged.
  *
  * Capture files are named `<NNN>-<phase>-...json` with a zero-padded index, so
- * lexicographic order == numeric order; `recon-generate`'s `readJsonDir` sorts
- * identically, making the recorded `index` a stable cross-tool key.
+ * lexicographic order == numeric order until the counter outgrows its padding;
+ * `recon-generate` orders numerically (`compareCaptureFilenames`) and resolves
+ * manifest entries by `filename`, using the recorded `index` only as fallback.
  */
 /** Structured result of writeSubmitManifest; "get-skipped" = only non-2xx GETs matched. */
 type SubmitManifestOutcome =

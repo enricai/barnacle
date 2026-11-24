@@ -37,6 +37,7 @@ import {
   isHtmlFormStep,
   isNavigatedSiblingHost,
   isNoiseUrl,
+  isRawCaptureFilename,
   isSamePathFamily,
   isSameSiteHost,
   isServerRenderedFormSubmit,
@@ -68,6 +69,7 @@ import {
   buildExtraFieldRedaction,
   type Capture,
   CREDENTIAL_REQUEST_HEADERS,
+  compareCaptureFilenames,
   type ExtraPayloadField,
   type RateLimitFinding,
   type ReplayResult,
@@ -2008,7 +2010,9 @@ export function deriveBaseUrl(
       `ownBackendHostnames matched no capture: declared [${ownBackendHostnames.join(", ")}], captured hosts [${captured}]`
     );
   }
-  return dominantHostOrigin(candidates);
+  const declaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
+  const submitCandidates = candidates.filter(declaredSubmit);
+  return dominantHostOrigin(submitCandidates.length > 0 ? submitCandidates : candidates);
 }
 
 function firstCaptureOrigin(captures: Capture[]): string {
@@ -2988,7 +2992,11 @@ export function selectPrimaryGraphQLOperation(
  * its requests, is not one. Always false for GET: a read is judged by its
  * response, not its recurrence.
  */
-function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
+function nonGetBeaconPredicate(
+  pool: Capture[],
+  submitPatterns: SubmitPatterns | null = null
+): (c: Capture) => boolean {
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   const occurrences = new Map<string, Capture[]>();
   for (const c of pool) {
     if (c.method === "GET") continue;
@@ -3007,7 +3015,7 @@ function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
   };
   return (c) => {
     if (c.method === "GET") return false;
-    if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool)) return true;
+    if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool, isDeclaredSubmit)) return true;
     const same = occurrences.get(`${c.method} ${endpointKey(c.url)}`) ?? [];
     // A server-rendered form submit whose body differs from another same-endpoint
     // capture is a distinct step, not a beacon.
@@ -3074,7 +3082,7 @@ export function firstEndpointCapture(
   // A non-GET only beats a read when it can be the flow's real endpoint
   // ({@link isRecurringNonGetBeacon}): "any non-GET wins" let a bot-manager's
   // recurring sensor POST outrank the GET search that produced the flow's data.
-  const isRecurringBeacon = nonGetBeaconPredicate(pool);
+  const isRecurringBeacon = nonGetBeaconPredicate(pool, submitPatterns);
   const nonGet = pool.find((c) => c.method !== "GET" && valid(c) && !isRecurringBeacon(c));
   if (nonGet) return nonGet;
   // Read-only REST flow: prefer a successful non-noise GET, richest query first
@@ -3088,6 +3096,83 @@ export function firstEndpointCapture(
   }
   if (best) return best;
   return pool.find(valid) ?? null;
+}
+
+interface PostBodyBinding {
+  field: string;
+  zod: string;
+}
+
+/**
+ * Body model for a declared read-only POST search whose captures re-issue the
+ * endpoint with different JSON bodies. Every leaf (scalar or array) whose
+ * value differs between captures becomes a defaulted payload field and the
+ * emitted request body is rebuilt around `payload.<field>`; invariant leaves
+ * stay literal. Returns null when no body varies or bodies are not JSON objects.
+ */
+function derivePostBodyModel(
+  captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
+  endpointPath: string
+): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
+  const bodies: Record<string, unknown>[] = [];
+  for (const c of captures) {
+    if (c.method !== undefined && c.method.toUpperCase() !== "POST") continue;
+    if (safeUrlPathname(c.url) !== endpointPath) continue;
+    try {
+      const parsed: unknown = JSON.parse(c.requestPostData ?? "");
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed))
+        bodies.push(parsed as Record<string, unknown>);
+    } catch {
+      // non-JSON body: not modelled
+    }
+  }
+  if (bodies.length < 2) return null;
+  const bindings: PostBodyBinding[] = [];
+  const used = new Set<string>();
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v);
+  const at = (b: unknown, path: string[]): unknown =>
+    path.reduce<unknown>((acc, k) => (isObj(acc) ? acc[k] : undefined), b);
+  const build = (path: string[]): string => {
+    const first = at(bodies[0], path);
+    const values = bodies.map((b) => at(b, path));
+    if (isObj(first) && values.every(isObj)) {
+      const keys = [...new Set(values.flatMap((v) => Object.keys(v as object)))];
+      return `{ ${keys.map((k) => `${JSON.stringify(k)}: ${build([...path, k])}`).join(", ")} }`;
+    }
+    const distinct = new Set(values.map((v) => JSON.stringify(v)));
+    if (distinct.size === 1) return JSON.stringify(first);
+    const base = path
+      .map((seg, i) => {
+        const w = seg
+          .replace(/[^A-Za-z0-9]+/g, " ")
+          .trim()
+          .split(" ")
+          .join("_");
+        return i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1);
+      })
+      .join("");
+    let field = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
+    for (let n = 2; used.has(field); n++) field = `${base}${n}`;
+    used.add(field);
+    const def = JSON.stringify(first ?? null);
+    const sample = Array.isArray(first) ? first[0] : first;
+    const elem =
+      typeof sample === "number"
+        ? "z.coerce.number()"
+        : typeof sample === "boolean"
+          ? "z.coerce.boolean()"
+          : "z.string()";
+    const zod = Array.isArray(first)
+      ? `z.array(${elem}).optional().default(${def})`
+      : first === null || first === undefined
+        ? "z.unknown().optional()"
+        : `${elem}.optional().default(${def})`;
+    bindings.push({ field, zod });
+    return `payload.${field}`;
+  };
+  const bodyExpr = build([]);
+  return bindings.length > 0 ? { bodyExpr, bindings } : null;
 }
 
 function safeUrlPathname(url: string): string {
@@ -3547,6 +3632,31 @@ function compileSubmitMatcher(patterns: SubmitPatterns | null): (capture: Captur
   const endpointRx = patterns.endpoint === null ? null : new RegExp(patterns.endpoint);
   const bodyRx = patterns.body === null ? null : new RegExp(patterns.body);
   return (capture: Capture): boolean => {
+    // A CORS preflight is never the declared submit; the runtime issues it itself.
+    if (capture.method?.toUpperCase() === "OPTIONS") return false;
+    if (endpointRx !== null && !endpointRx.test(capture.url)) return false;
+    if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? "")) return false;
+    return true;
+  };
+}
+
+/**
+ * Matcher for the flow's DECLARED submit endpoint/body (never true when none
+ * is declared, and never for OPTIONS preflights). Unlike
+ * {@link compileSubmitMatcher}, an absent declaration matches nothing, so it
+ * is safe to hand to {@link isZeroVarianceRepeatCapture} as its declared-submit
+ * exemption.
+ */
+function compileDeclaredSubmitMatcher(
+  patterns: SubmitPatterns | null
+): (capture: { method: string; url: string; requestPostData?: string | null }) => boolean {
+  if (patterns === null || (patterns.endpoint === null && patterns.body === null)) {
+    return () => false;
+  }
+  const endpointRx = patterns.endpoint === null ? null : new RegExp(patterns.endpoint);
+  const bodyRx = patterns.body === null ? null : new RegExp(patterns.body);
+  return (capture) => {
+    if (capture.method.toUpperCase() === "OPTIONS") return false;
     if (endpointRx !== null && !endpointRx.test(capture.url)) return false;
     if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? "")) return false;
     return true;
@@ -3607,7 +3717,10 @@ export function truncateActionSequenceAtSubmitPattern(
     if (matchesFoldReturn(sequence[i]!.capture)) lastFoldIndex = i;
   }
   if (lastSubmitIndex === -1) return [];
-  return sequence.slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1);
+  // Preflights are not emitted as steps (the runtime issues them itself).
+  return sequence
+    .slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1)
+    .filter((step) => step.capture.method?.toUpperCase() !== "OPTIONS");
 }
 
 /**
@@ -3635,11 +3748,26 @@ export function resolveManifestActionSequence(
     return null;
   }
   if (!Array.isArray(entries) || entries.length === 0) return null;
+  // The writer recorded `index` under lexical filename order, while `captures`
+  // is in numeric order; resolve by filename against the numeric ordering and
+  // use the recorded index only as a fallback.
+  let numericPosition: Map<string, number> | null = null;
+  try {
+    numericPosition = new Map(
+      readdirSync(join(runRoot, "graphql"))
+        .filter(isRawCaptureFilename)
+        .sort(compareCaptureFilenames)
+        .map((f, i) => [f, i])
+    );
+  } catch {
+    numericPosition = null;
+  }
   const resolved: ActionCapture[] = [];
   for (const entry of entries) {
-    const capture = captures[entry.index];
+    const index = numericPosition?.get(entry.filename) ?? entry.index;
+    const capture = captures[index];
     if (capture === undefined || capture.url !== entry.url) return null;
-    resolved.push({ capture, index: entry.index });
+    resolved.push({ capture, index });
   }
   return resolved;
 }
@@ -5028,7 +5156,10 @@ export function isRedundantSameEndpointGroup(
  * later page's item can never resolve a join match and falls through to a
  * hardcoded per-capture `httpClient` call instead of folding into the loop.
  */
-function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): ActionCapture[] {
+function collapseRedundantSameEndpointCaptures(
+  actions: ActionCapture[],
+  isDeclaredSubmit: ((c: Capture) => boolean) | null = null
+): ActionCapture[] {
   const positionsByGroup = new Map<string, number[]>();
   actions.forEach((a, i) => {
     const key = `${a.capture.method} ${endpointKey(a.capture.url)}`;
@@ -5042,6 +5173,19 @@ function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): Action
   for (const positions of positionsByGroup.values()) {
     if (positions.length < 2) continue;
     const group = positions.map((i) => actions[i]!);
+    // A declared submit endpoint re-queried with a differing non-pagination
+    // field (a filter) is the flow's own search, not a redundant re-poll.
+    if (isDeclaredSubmit !== null && group.every((a) => isDeclaredSubmit(a.capture))) {
+      const sets = group.map((a) => captureRequestFields(a.capture));
+      const keys = new Set(sets.flatMap((f) => Object.keys(f)));
+      const filterVaries = [...keys].some(
+        (k) =>
+          !CACHE_BUSTER_QUERY_KEYS.has(k) &&
+          !PAGINATION_FIELD_NAME_PATTERN.test(fieldKeyLeafName(k)) &&
+          new Set(sets.map((f) => JSON.stringify(f[k]))).size > 1
+      );
+      if (filterVaries) continue;
+    }
     if (!isRedundantSameEndpointGroup(group, actions)) continue;
     const merged = mergeCollapsedGroupItemsIntoRepresentative(group);
     if (merged !== null) mergedRepresentativeByPosition.set(positions[0]!, merged);
@@ -17761,13 +17905,49 @@ export function classifySubmissionFlow(o: {
   gql: boolean;
   actionCaptureMethods: Array<string | null | undefined>;
   graphqlActionSequenceHasMutation: boolean;
+  /** A declared submit endpoint re-queried with differing filter bodies. */
+  isDeclaredPostSearchRead?: boolean;
 }): boolean {
   if (o.noReplayableActionFlow) return true;
-  if (o.isReadOnlyGetFlow || o.actionStepCount <= 1) return false;
+  if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
     : // A read flow whose manifest holds only GET captures is not a submission.
-      o.actionCaptureMethods.some((m) => (m ?? "").toUpperCase() !== "GET");
+      // OPTIONS preflights are transport, never a submission signal.
+      o.actionCaptureMethods.some((m) => {
+        const u = (m ?? "").toUpperCase();
+        return u !== "GET" && u !== "OPTIONS";
+      });
+}
+
+/** True when the declared submit pattern's non-OPTIONS, non-noise captures are
+ * one endpoint re-queried with >= 2 distinct JSON bodies (filter variations)
+ * and none is a form/multipart body (a wizard step or upload). */
+export function isDeclaredPostSearchRepeat(
+  captures: Capture[],
+  matchesDeclaredSubmit: (c: Capture) => boolean
+): boolean {
+  const hits = captures.filter(
+    (c) =>
+      c.method !== "GET" &&
+      c.method.toUpperCase() !== "OPTIONS" &&
+      !isNoiseUrl(c.url) &&
+      matchesDeclaredSubmit(c)
+  );
+  if (hits.length < 2) return false;
+  if (new Set(hits.map((c) => `${c.method} ${endpointKey(c.url)}`)).size !== 1) return false;
+  const jsonBody = (c: Capture): boolean => {
+    const raw = c.requestPostData;
+    if (typeof raw !== "string") return false;
+    try {
+      const v = JSON.parse(raw);
+      return v !== null && typeof v === "object";
+    } catch {
+      return false;
+    }
+  };
+  if (!hits.every(jsonBody)) return false;
+  return new Set(hits.map((c) => c.requestPostData)).size >= 2;
 }
 
 /** Generates a complete contract.ts source string for a plugin — exported so
@@ -17820,6 +18000,8 @@ export function emitContractTsParts(opts: {
   endpointPath: string;
   /** Derived GET input model (read-only REST GET flows); null/absent otherwise. */
   getInputModel?: GetInputModel | null;
+  /** A declared read-only POST search: no submission step, so no tracking merge. */
+  readOnlyPostSearch?: boolean;
   /** operationName recorded on the primary-operation capture selected by
    * {@link selectPrimaryGraphQLOperation} — when set, replaces the
    * `${pascal}Search` placeholder in the single-endpoint getGql() call. */
@@ -17973,6 +18155,7 @@ export function emitContractTsParts(opts: {
     gqlQuery,
     endpointPath,
     getInputModel: suppliedGetInputModel = null,
+    readOnlyPostSearch = false,
     gqlOperationName,
     gqlVariables,
     allCaptures = [],
@@ -18188,9 +18371,13 @@ export function emitContractTsParts(opts: {
   // captured, it just isn't an application) gets a plain empty base instead
   // — extend() below still layers on every genuinely-discovered field from
   // the other sources unchanged.
+  const postBodyModel =
+    readOnlyPostSearch && !gql && !multiStepBody && !suppliedGetInputModel
+      ? derivePostBodyModel(allCaptures, endpointPath)
+      : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow) || derivedGetInputModel
+    : inputBody || (omitExecuteHttp && isSubmissionFlow) || derivedGetInputModel || postBodyModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -18592,6 +18779,13 @@ export function emitContractTsParts(opts: {
       extendFields.set(field, `  ${key}: z.string().optional(),`);
     }
   }
+  if (postBodyModel) {
+    for (const { field, zod } of postBodyModel.bindings) {
+      if (extendFields.has(field)) continue;
+      const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
+      extendFields.set(field, `  ${key}: ${zod},`);
+    }
+  }
   // Flow-declared extra payload fields: declared type/optionality are
   // authoritative and override a name discovered from captures (one entry per name).
   for (const f of extraPayloadFields) {
@@ -18608,7 +18802,8 @@ export function emitContractTsParts(opts: {
   const nonJobBrowserOnly =
     applicantContract === false ||
     (omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema);
-  const mergesTracking = !getInputModel && !isReadOnlyQueryFlow && !nonJobBrowserOnly;
+  const mergesTracking =
+    !getInputModel && !readOnlyPostSearch && !isReadOnlyQueryFlow && !nonJobBrowserOnly;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
@@ -19244,7 +19439,7 @@ ${dataFoldMergeBlock}    return { data };`
 ${dataFoldMergeBlock}    return { data };`
           : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
-      body: JSON.stringify({ query: payload.query }),
+      body: JSON.stringify(${postBodyModel ? postBodyModel.bodyExpr : "{ query: payload.query }"}),
     });
 ${dataFoldMergeBlock}    return { data };`;
 
@@ -21746,7 +21941,11 @@ export async function main(): Promise<void> {
               false,
               primaryHost
             )
-          )
+          ),
+          (submitPatterns.endpoint === null && submitPatterns.body === null) ||
+            flowSteps.some((st) => typeof st !== "string" && st.submitStep === true)
+            ? null
+            : compileSubmitMatcher(submitPatterns)
         );
     const patternedHeuristicActionCaptures =
       submitPatterns.endpoint === null && submitPatterns.body === null
@@ -21931,7 +22130,7 @@ export async function main(): Promise<void> {
     const readSiblings = readFlowWinner ? sameRouteGetSiblings(readFlowWinner, activeCaptures) : [];
     // Recurring beacons (a bot-manager's sensor POSTs) in the action sequence are
     // page chrome, not steps of the flow: they must not turn a read into a submission.
-    const isRecurringReadFlowBeacon = nonGetBeaconPredicate(activeCaptures);
+    const isRecurringReadFlowBeacon = nonGetBeaconPredicate(activeCaptures, submitPatterns);
     // A flow that declares its submit endpoint names the only non-GET that can
     // be its submission: a non-GET outside that pattern whose response no later
     // step consumes (a one-off analytics or consent POST) is page chrome, not a
@@ -21989,9 +22188,19 @@ export async function main(): Promise<void> {
     const actionSteps = isReadOnlyGetFlow && !readFlowHasDeclaredDrill ? [] : compiledActionSteps;
     const noReplayableActionFlow =
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
+    const isDeclaredPostSearchRead =
+      !gql &&
+      declaresSubmitPattern &&
+      // An explicit submitStep means the author declared a submission, not a read.
+      !flowSteps.some((st) => typeof st !== "string" && st.submitStep === true) &&
+      isDeclaredPostSearchRepeat(
+        actionCaptures.map((a) => a.capture),
+        matchesDeclaredSubmit
+      );
     const isSubmissionFlow = classifySubmissionFlow({
       noReplayableActionFlow,
       isReadOnlyGetFlow,
+      isDeclaredPostSearchRead,
       actionStepCount: actionSteps.length,
       gql: !!gql,
       actionCaptureMethods: actionCaptures.map((a) => a.capture.method),
@@ -22439,6 +22648,7 @@ export async function main(): Promise<void> {
       gqlQuery,
       endpointPath,
       getInputModel,
+      readOnlyPostSearch: isDeclaredPostSearchRead,
       gqlOperationName: primaryGraphQLOperation
         ? (primaryGraphQLOperation.capture.operationName ??
           parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
