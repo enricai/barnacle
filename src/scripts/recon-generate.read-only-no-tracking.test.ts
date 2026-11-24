@@ -29,7 +29,7 @@ describe("JobTrackingSchema merge", () => {
   });
 
   it("is kept for a submission flow", () => {
-    const source = emitContractTs({ ...base, isSubmissionFlow: true });
+    const source = emitContractTs({ ...base, isSubmissionFlow: true, applicantContract: true });
     expect(source).toContain(".merge(JobTrackingSchema)");
     expect(source).toContain("lib/job-tracking");
   });

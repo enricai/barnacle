@@ -876,6 +876,8 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * a browser-flow-only plugin regardless of HTTP analysis.
      */
     browserFlowOnly: z.boolean().optional(),
+    /** Explicitly declares whether the flow is a job-application contract (overrides inference). */
+    applicantContract: z.boolean().optional(),
     /**
      * Declares the submission cannot be safely repeated; implies maxAttempts 1
      * (the numeric budget is {@link RECON_FLOW_RETRY_BUDGET_SCHEMA}).
