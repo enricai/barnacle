@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  actionSequenceIsReadSamplesFor,
   compileActionSteps,
   extractActionSequence,
   indexStateValues,
   stepFeedsDeclaredSubmit,
-  actionSequenceIsReadSamplesFor,
 } from "@/scripts/recon-generate";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
