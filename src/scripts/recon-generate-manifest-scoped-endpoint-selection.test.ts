@@ -49,7 +49,9 @@ describe("recon-generate: endpoint is chosen from submit-manifest captures", () 
       ),
     ];
     const names = captures.map((_, i) => `${String(i).padStart(3, "0")}-read.json`);
-    captures.forEach((c, i) => writeFileSync(join(dir, names[i] as string), JSON.stringify(c)));
+    for (const [i, c] of captures.entries()) {
+      writeFileSync(join(dir, names[i] as string), JSON.stringify(c));
+    }
     writeFileSync(
       join(runRoot, "submit-manifest.json"),
       JSON.stringify([0, 1].map((i) => ({ index: i, filename: names[i], url: captures[i]?.url })))
