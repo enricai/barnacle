@@ -18059,6 +18059,10 @@ export function emitContractTsParts(opts: {
    * cookies to `run<Pascal>BrowserFlow`. Distinct from `omitExecuteHttp`: the
    * HTTP client, limiter and BASE_HEADERS are still emitted for the prefix. */
   mixedHttpPrefix?: boolean;
+  /** Must be set exactly when `mixedHttpPrefix` is: the browser flow emitted
+   * with the same `mixedHandover` takes the `sessionCookies` argument that
+   * `execute()` passes. A mismatch would generate a mistyped call. */
+  mixedHandover?: { tailFromStep: number; handoverUrl?: string };
   /** Explicit `applicantContract` flow declaration; wins over inferred evidence. */
   applicantContract?: boolean;
   /** The flow registers an account (its steps splice `${RECON_PASSWORD}`), so
@@ -18196,6 +18200,7 @@ export function emitContractTsParts(opts: {
     multiStepBody,
     omitExecuteHttp = false,
     mixedHttpPrefix = false,
+    mixedHandover: mixedHandoverOpt,
     applicantContract,
     createsAccount = false,
     maxAttempts: resolvedMaxAttempts = null,
@@ -18220,6 +18225,11 @@ export function emitContractTsParts(opts: {
     unpopulatedDeclaredVariables = [],
     fallbackGateSpec = {},
   } = opts;
+  if (mixedHttpPrefix !== (mixedHandoverOpt !== undefined)) {
+    throw new Error(
+      "emitContractTsParts: mixedHttpPrefix and mixedHandover must be set together (the browser flow's sessionCookies param depends on mixedHandover)",
+    );
+  }
 
   const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
   /** Single source of truth for every GraphQL-emission decision below
