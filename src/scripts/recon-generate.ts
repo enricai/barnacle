@@ -19542,7 +19542,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
 ${dataFoldMergeBlock}    return { data };`
         : getInputModel
-          ? `    const data = await httpClient(\`${buildGetRequestUrlExpr(endpointPath, getInputModel)}\`, {
+          ? `${
+              getInputModel.dynamicFields.length === 0 && getInputModel.pathVars.length === 0
+                ? "    // REVIEW: no caller inputs could be inferred for this captured GET; it replays the recorded URL as-is.\n"
+                : ""
+            }    const data = await httpClient(\`${buildGetRequestUrlExpr(endpointPath, getInputModel)}\`, {
       method: "GET",
     });
 ${dataFoldMergeBlock}    return { data };`
