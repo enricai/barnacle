@@ -142,10 +142,19 @@ export function cacheStats(): {
  * request is served the same 500 from memory, turning a transient upstream
  * quirk into a sticky outage. The write stays where it is (moving it would
  * break the in-flight coalescing contract below); the error path invalidates
- * instead.
+ * instead. Results that declare themselves incomplete (`data.truncated === true`)
+ * are never written in the first place (see `getOrCreateInFlight`).
  */
 export function invalidateResponse(key: string): void {
   cache.delete(key);
+}
+
+/**
+ * The completeness signal site plugins put on their result: `data.truncated`
+ * is true when a deadline, refusal or page failure cut the answer short.
+ */
+function isPartial(value: object): boolean {
+  return (value as { data?: { truncated?: unknown } } | null)?.data?.truncated === true;
 }
 
 /**
@@ -153,7 +162,9 @@ export function invalidateResponse(key: string): void {
  * cache miss. The first caller kicks off the origin call and all
  * concurrent callers await the same promise. On resolve, the value is
  * written to the LRU cache so subsequent (non-racing) reads hit
- * normally.
+ * normally. A value that declares itself incomplete
+ * (`data.truncated === true`) is returned to all awaiters but never
+ * written, so a later identical request reaches the producer again.
  *
  * Callers still do the `getCachedResponse` check first — this helper
  * is only invoked on a miss. Rejection propagates to every awaiter so
@@ -171,7 +182,9 @@ export async function getOrCreateInFlight<T extends object>(
   // yield before the `inFlight.set` below, defeating coalescing.
   const promise = producer()
     .then((value) => {
-      cache.set(key, value);
+      // A result that declares itself partial must not be stored as the
+      // complete answer; it is still returned to every coalesced awaiter.
+      if (!isPartial(value)) cache.set(key, value);
       return value;
     })
     .finally(() => {

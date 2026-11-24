@@ -950,6 +950,35 @@ describe("dispatch — cache integration", () => {
     expect(mockRecordHotPathLatency).toHaveBeenCalledWith("http-site", expect.any(Number));
   });
 
+  describe("with the real response cache", () => {
+    beforeEach(async () => {
+      const real =
+        await vi.importActual<typeof import("@/cache/response-cache")>("@/cache/response-cache");
+      real.clearResponseCache();
+      mockGetCachedResponse.mockImplementation(real.getCachedResponse);
+      mockGetOrCreateInFlight.mockImplementation(real.getOrCreateInFlight);
+    });
+
+    it("re-invokes executeHttp for an identical request after a truncated result", async () => {
+      mockHttpExecute.mockResolvedValue({ data: { items: [1], truncated: true } });
+      const body = { q: "example.test" };
+      const first = await dispatch(httpPlugin, body, stubContext);
+      const second = await dispatch(httpPlugin, body, stubContext);
+      expect(first.data).toEqual({ items: [1], truncated: true });
+      expect(second.data).toEqual({ items: [1], truncated: true });
+      expect(mockHttpExecute).toHaveBeenCalledTimes(2);
+    });
+
+    it("serves a repeat identical request from cache after a complete result", async () => {
+      mockHttpExecute.mockResolvedValue({ data: { items: [1, 2] } });
+      const body = { q: "example.test" };
+      await dispatch(httpPlugin, body, stubContext);
+      const second = await dispatch(httpPlugin, body, stubContext);
+      expect(second.data).toEqual({ items: [1, 2] });
+      expect(mockHttpExecute).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("falls back to browser path when getOrCreateInFlight throws HttpSchemaError", async () => {
     mockGetOrCreateInFlight.mockRejectedValueOnce(new HttpSchemaError("drift"));
     await dispatch(httpPlugin, {}, stubContext);

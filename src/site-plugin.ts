@@ -316,7 +316,14 @@ export interface SitePluginContext {
  * re-running the browser flow.
  */
 export interface SitePluginResult<TData = Record<string, unknown>> {
-  /** Merged verbatim into the response envelope by core. */
+  /**
+   * Merged verbatim into the response envelope by core.
+   *
+   * Completeness contract: a result whose `data.truncated === true` declares
+   * itself partial. The engine honors this: such a result is returned to the
+   * caller but never written to the response cache, so it is not served for
+   * the full TTL as if it were the complete answer.
+   */
   data: TData;
   /**
    * Written to the `submission-envelope` telemetry record by core. If absent, core
