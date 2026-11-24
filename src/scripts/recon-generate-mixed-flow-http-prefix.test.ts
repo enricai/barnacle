@@ -1,4 +1,8 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import { buildStep, type MulticallFixtureStep } from "@/scripts/recon-generate-multicall-fixture";
@@ -91,6 +95,35 @@ describe("emitMultiStepExecuteHttp — HTTP prefix variant", () => {
   it("emits a body that parses without syntax errors", () => {
     const src = `async function run() {\n${emit(3)}\n}`;
     expect(() => stripTypeScriptTypes(src)).not.toThrow();
+  });
+
+  it("emits a body with no semantic type errors", () => {
+    const src = [
+      "declare function createHttpClient(...a: any[]): any;",
+      "declare const process: any;",
+      "declare const URL: any;",
+      "declare const JSON: any;",
+      "declare const Object: any;",
+      "async function run(this: any) {",
+      emit(3),
+      "}",
+    ].join("\n");
+    const dir = mkdtempSync(join(tmpdir(), "prefix-tc-"));
+    writeFileSync(join(dir, "x.ts"), src);
+    let out = "";
+    try {
+      execFileSync(
+        join(process.cwd(), "node_modules/.bin/tsc"),
+        ["--ignoreConfig", "--noEmit", "--strict", "--noLib", "--types", "", join(dir, "x.ts")],
+        { encoding: "utf8" }
+      );
+    } catch (e) {
+      out = (e as { stdout?: string }).stdout ?? String(e);
+    }
+    // Ignore errors caused only by the minimal ambient environment (no lib).
+    const ignored = /TS(2552|2304|2318|2580|2584|2339|7006|2503|2693|2792)/;
+    const real = out.split("\n").filter((l) => /error TS/.test(l) && !ignored.test(l));
+    expect(real).toEqual([]);
   });
 
   it("leaves default full-flow emission unchanged", () => {
