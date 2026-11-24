@@ -158,6 +158,13 @@ describe("recon-generate CLI — declared submit pattern + foldReturn with a POS
     expect(loopBody).not.toMatch(/pricing\/v1\/cruises`/);
     expect(contract).toContain("cruises/detail");
     expect(contract).toContain("voyageId");
+    // Search is one action with payload variants: the varying `filters` body field is
+    // a single payload parameter (never frozen to a literal from one capture), and the
+    // search URL is only ever called with the templated payload body.
+    expect(contract).toContain("JSON.stringify(payload.filters)");
+    expect(contract).not.toContain('"availabilities"');
+    expect(contract).not.toContain('"cruiseType"');
+    expect(contract.match(/^ {2}filters: z\.object\(/gm)).toHaveLength(1);
   }, 90_000);
 
   it("a declared self-fold on the search endpoint still resolves", () => {
