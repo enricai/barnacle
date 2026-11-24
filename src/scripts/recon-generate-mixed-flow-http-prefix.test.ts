@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from "node:module";
 import { describe, expect, it } from "vitest";
 import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import { buildStep, type MulticallFixtureStep } from "@/scripts/recon-generate-multicall-fixture";
@@ -85,6 +86,11 @@ describe("emitMultiStepExecuteHttp — HTTP prefix variant", () => {
     expect(body).toContain("const csrfToken = (r0 as");
     expect(body).toContain('"x-csrf-token": `${csrfToken}`');
     expect(body).not.toContain(CSRF);
+  });
+
+  it("emits a body that parses without syntax errors", () => {
+    const src = `async function run() {\n${emit(3)}\n}`;
+    expect(() => stripTypeScriptTypes(src)).not.toThrow();
   });
 
   it("leaves default full-flow emission unchanged", () => {
