@@ -989,6 +989,34 @@ export interface NavigateToFacetBinding {
 export type NavigateToFacetOrigin = "navigateTo" | "step";
 
 /**
+ * Hints for navigateTo hashes that name their own field (`#widgetId=ABC`) on a
+ * step declaring no `payloadField`: the `key=` names the caller input, which
+ * {@link walkNavigateToFacets} (payloadField-driven) discards.
+ */
+export function extractHashNamedPayloadHints(
+  flowSteps: FlowStepInput[]
+): Array<{ field: string; value: string }> {
+  const hints: Array<{ field: string; value: string }> = [];
+  for (const step of flowSteps) {
+    if (typeof step === "string" || step.navigateTo === undefined || step.payloadField) continue;
+    const hashIndex = step.navigateTo.indexOf("#");
+    if (hashIndex === -1) continue;
+    for (const token of splitHashTokens(step.navigateTo.slice(hashIndex + 1))) {
+      const eq = token.indexOf("=");
+      if (eq <= 0 || eq === token.length - 1) continue;
+      let value = token.slice(eq + 1);
+      try {
+        value = decodeURIComponent(value);
+      } catch {
+        /* keep raw */
+      }
+      hints.push({ field: safeGetFieldIdentifier(token.slice(0, eq)), value });
+    }
+  }
+  return hints;
+}
+
+/**
  * Re-walks the flow for navigateTo+payloadField steps in isolation, in flow
  * order, independent of whether {@link harvestPersonaBindings} could anchor
  * each one's literal anywhere in the capture. `harvestPersonaBindings` only
@@ -3197,9 +3225,11 @@ export interface GetInputModel {
   /** Recorded values (queryKey -> ordered values) of a repeated query key (`ids[]=1&ids[]=2`), replayed as one pair each when the payload omits the input. */
   recordedQueryLists?: Record<string, string[]>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
-  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string; suffix?: string }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
   pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+  /** Declared composite payload fields (`a_b`) whose parts bind separate path segments: `partField` (a pathVars field) takes part `index` of `field` when the caller supplies `field`. */
+  compositeParts?: Array<{ field: string; partField: string; index: number }>;
 }
 
 /** The model without the query keys `keys` (inputs another mechanism owns). */
@@ -3354,7 +3384,8 @@ function isEntityIdQueryKey(key: string): boolean {
 export function deriveGetInputModel(
   winner: Capture | null | undefined,
   captures: readonly Capture[],
-  declaredNames: Iterable<string> = []
+  declaredNames: Iterable<string> = [],
+  payloadHints: Iterable<{ field: string; value: string }> = []
 ): GetInputModel | null {
   if (winner?.method !== "GET") return null;
   let winnerUrl: URL;
@@ -3402,6 +3433,7 @@ export function deriveGetInputModel(
   const recordedQueryLists: Record<string, string[]> = {};
   const pathVars: GetInputModel["pathVars"] = [];
   const pathTwins: NonNullable<GetInputModel["pathTwins"]> = [];
+  const compositeParts: NonNullable<GetInputModel["compositeParts"]> = [];
   // One normalization for isDeclared and nameFor: the declared payload field a query key
   // binds to — the key itself, its identifier form, or its camelCase form (room_id -> roomId).
   const declaredFieldFor = (key: string): string | undefined => {
@@ -3472,6 +3504,54 @@ export function deriveGetInputModel(
       recordedQueryValues[key] = [...values][0] as string;
     }
   }
+  // Declared payload-field hints (a navigateTo hash value): a segment equal to the value, or
+  // to one part of a composite `a_b` value, binds to that field even with a single capture.
+  for (const { field, value } of payloadHints) {
+    if (value === "") continue;
+    const matchSeg = (needle: string): { i: number; suffix: string } | null => {
+      for (let i = 1; i < segments.length; i++) {
+        if (boundSegments.has(i)) continue;
+        const seg = decode(segments[i] ?? "");
+        if (seg === needle) return { i, suffix: "" };
+        if (seg.startsWith(`${needle}.`)) return { i, suffix: seg.slice(needle.length) };
+      }
+      return null;
+    };
+    const whole = matchSeg(value);
+    if (whole) {
+      boundSegments.set(whole.i, field);
+      pathVars.push({
+        field,
+        segmentIndex: whole.i,
+        queryKey: "",
+        ...(whole.suffix ? { suffix: whole.suffix } : {}),
+      });
+      logger.info(`get path binding: segment ${whole.i} bound to payload field "${field}"`);
+      continue;
+    }
+    const parts = value.split(/[_-]/).filter((x) => x !== "");
+    let bound = 0;
+    if (parts.length > 1) {
+      for (const [k, part] of parts.entries()) {
+        const m = matchSeg(part);
+        if (!m) continue;
+        const partField = `${field}Part${k + 1}`;
+        taken.add(partField);
+        compositeParts.push({ field, partField, index: k });
+        boundSegments.set(m.i, partField);
+        pathVars.push({
+          field: partField,
+          segmentIndex: m.i,
+          queryKey: "",
+          ...(m.suffix ? { suffix: m.suffix } : {}),
+        });
+        bound++;
+        logger.info(`get path binding: segment ${m.i} bound to part ${k + 1} of "${field}"`);
+      }
+    }
+    if (bound === 0)
+      logger.warn(`get path binding: could not bind payload field "${field}" to any path segment`);
+  }
   // Path segments with no query twin that vary between captures or carry an entity id.
   // A value repeated in several segments is one caller input, not one per segment.
   const fieldByValue = new Map<string, string>();
@@ -3514,6 +3594,7 @@ export function deriveGetInputModel(
     recordedQueryLists,
     pathVars,
     pathTwins,
+    ...(compositeParts.length > 0 ? { compositeParts } : {}),
   };
 }
 
@@ -17357,8 +17438,19 @@ function buildGetRequestUrlExpr(
   };
   const segments = [...recordedSegments];
   for (const pv of model.pathVars) {
+    const recordedVar = recordedPathValue(pv.segmentIndex);
+    const recordedBase = pv.suffix
+      ? recordedVar.slice(0, recordedVar.length - pv.suffix.length)
+      : recordedVar;
+    const comp = model.compositeParts?.find((c) => c.partField === pv.field);
+    const fromComposite = comp
+      ? `${fieldAccess(comp.field)} !== undefined ? String(${fieldAccess(comp.field)}).split(/[_-]/).filter((x) => x !== "")[${comp.index}] : undefined`
+      : null;
+    const supplied = fromComposite
+      ? `${fieldAccess(pv.field)} ?? (${fromComposite})`
+      : fieldAccess(pv.field);
     segments[pv.segmentIndex] =
-      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))}))}`;
+      `\${encodeURIComponent(String(${supplied} ?? ${JSON.stringify(recordedBase)}))}${pv.suffix ?? ""}`;
   }
   const pairs: string[] = [];
   for (const [k, v] of Object.entries(model.fixedParams)) {
@@ -18401,13 +18493,27 @@ export function emitContractTsParts(opts: {
     gql || multiStepBody || singlePrimaryFoldPlans.length === 0
       ? null
       : (actionSteps[singlePrimaryFoldPlans[0]!.primaryStepIndex]?.capture ?? null);
+  // Any other single-endpoint URL-shaped GET winner (a lone GET action step)
+  // is the same read: it must not fall back to a POST `{ query }` body.
+  const loneGetCapture =
+    !gql && !multiStepBody && singlePrimaryFoldPlans.length === 0 && actionSteps.length === 1
+      ? (actionSteps[0]!.capture ?? null)
+      : null;
+  // A multi-action flow whose endpoint was only ever captured as GET is the same read.
+  const endpointCaptures = allCaptures.filter((c) => safeUrlPathname(c.url) === endpointPath);
+  const endpointOnlyGet =
+    !gql &&
+    !multiStepBody &&
+    endpointCaptures.length > 0 &&
+    endpointCaptures.every((c) => c.method === "GET")
+      ? (endpointCaptures.find((c) => c.status >= 200 && c.status < 300) ?? null)
+      : null;
+  const getWinnerCapture = foldPrimaryCapture ?? loneGetCapture ?? endpointOnlyGet;
   const derivedGetInputModel: GetInputModel | null =
     suppliedGetInputModel ??
-    (foldPrimaryCapture !== null &&
-    safeUrlPathname(foldPrimaryCapture.url) === endpointPath &&
-    getInputsAreUrlShaped(foldPrimaryCapture)
+    (getWinnerCapture !== null && safeUrlPathname(getWinnerCapture.url) === endpointPath
       ? deriveGetInputModel(
-          foldPrimaryCapture,
+          getWinnerCapture,
           allCaptures.length > 0 ? allCaptures : actionSteps.map((s) => s.capture),
           [...(payloadFieldNames ?? []), ...optionalPayloadFieldNames]
         )
@@ -18820,7 +18926,11 @@ export function emitContractTsParts(opts: {
   // Read-only GET flow: the caller supplies the derived query/path fields
   // (no recorded `query`), so declare each as an optional string.
   if (getInputModel) {
-    for (const { field } of [...getInputModel.dynamicFields, ...getInputModel.pathVars]) {
+    for (const { field } of [
+      ...getInputModel.dynamicFields,
+      ...getInputModel.pathVars,
+      ...(getInputModel.compositeParts ?? []).map((c) => ({ field: c.field })),
+    ]) {
       if (extendFields.has(field)) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: z.string().optional(),`);
@@ -19483,7 +19593,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
 ${dataFoldMergeBlock}    return { data };`
         : getInputModel
-          ? `    const data = await httpClient(\`${buildGetRequestUrlExpr(endpointPath, getInputModel)}\`, {
+          ? `${
+              getInputModel.dynamicFields.length === 0 && getInputModel.pathVars.length === 0
+                ? "    // REVIEW: no caller inputs could be inferred for this captured GET; it replays the recorded URL as-is.\n"
+                : ""
+            }    const data = await httpClient(\`${buildGetRequestUrlExpr(endpointPath, getInputModel)}\`, {
       method: "GET",
     });
 ${dataFoldMergeBlock}    return { data };`
@@ -21915,7 +22029,7 @@ export async function main(): Promise<void> {
     // flow's primary endpoint while another capture carries the declared
     // results array (a drill POST would otherwise outrank the GET search).
     const isDeclaredDrillCapture = compileDeclaredDrillMatcher(foldReturnSpec);
-    const primaryPoolCaptures = ((): Capture[] => {
+    const basePoolCaptures = ((): Capture[] => {
       if (foldReturnSpec === null) return activeCaptures;
       const holdsResults = compileFoldReturnResultsMatcher(foldReturnSpec);
       const declaresSubmit = submitPatterns.endpoint !== null || submitPatterns.body !== null;
@@ -21927,6 +22041,25 @@ export async function main(): Promise<void> {
       return nonDrill.some((c) => c.status >= 200 && c.status < 300 && holdsResults(c))
         ? nonDrill
         : activeCaptures;
+    })();
+    // The authoritative submit-manifest names the captures recon-browser
+    // recorded for this flow; a lone host-wide beacon outside it must not win
+    // endpoint selection. Fall back to the full pool when the manifest holds
+    // no endpoint candidate.
+    const primaryPoolCaptures = ((): Capture[] => {
+      const manifestPool = resolveManifestActionSequence(runRoot, activeCaptures);
+      if (manifestPool === null) return basePoolCaptures;
+      const inManifest = new Set<Capture>(manifestPool.map((a) => a.capture));
+      const scoped = basePoolCaptures.filter((c) => inManifest.has(c));
+      if (scoped.length === 0) return basePoolCaptures;
+      const candidate = firstEndpointCapture(
+        scoped,
+        ownBackendHostnames,
+        fallbackDomain,
+        submitPatterns,
+        primaryHost
+      );
+      return candidate ? scoped : basePoolCaptures;
     })();
     const endpointPath =
       primaryGraphQLOperation?.endpointPath ??
@@ -22059,8 +22192,20 @@ export async function main(): Promise<void> {
             submitPatterns,
             foldReturnSpec
           );
-    const patternUndercounts =
-      patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
+    // The submit-manifest is authoritative and later supplies the captures
+    // matching the declared pattern, so count those too: the declared pattern
+    // must never be reported as matching 0 when the manifest's captures match it.
+    const earlyManifest = resolveManifestActionSequence(runRoot, activeCaptures);
+    const earlyMatchesSubmit = compileSubmitMatcher(submitPatterns);
+    const manifestPatternMatches =
+      earlyManifest === null || (submitPatterns.endpoint === null && submitPatterns.body === null)
+        ? 0
+        : earlyManifest.filter((a) => earlyMatchesSubmit(a.capture)).length;
+    const declaredPatternCount = Math.max(
+      patternedHeuristicActionCaptures.length,
+      manifestPatternMatches
+    );
+    const patternUndercounts = declaredPatternCount < unfilteredHeuristicActionCaptures.length;
     if (patternUndercounts && requireSubmitEndpointMatch) {
       // Distinct wording from the non-required case below: this pattern is never
       // discarded, so a message that says "ignoring"/"undercount" would misstate
@@ -22068,11 +22213,11 @@ export async function main(): Promise<void> {
       // the flow author should know the declared pattern covers fewer activeCaptures
       // than the unfiltered heuristic sequence finds.
       logger.warn(
-        `submission selection: declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`
+        `submission selection: declared submitEndpointPattern/submitBodyPattern (${declaredPatternCount} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`
       );
     } else if (patternUndercounts) {
       logger.info(
-        `submission selection: using declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) although the unfiltered heuristic action sequence finds ${unfilteredHeuristicActionCaptures.length} capture(s); the unfiltered set would make the generator attempt an HTTP replay that aborts on frozen-varying fields`
+        `submission selection: using declared submitEndpointPattern/submitBodyPattern (${declaredPatternCount} capture(s)) although the unfiltered heuristic action sequence finds ${unfilteredHeuristicActionCaptures.length} capture(s); the unfiltered set would make the generator attempt an HTTP replay that aborts on frozen-varying fields`
       );
     }
     const heuristicActionCaptures = patternedHeuristicActionCaptures;
@@ -22242,6 +22387,10 @@ export async function main(): Promise<void> {
     const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
     const feedsDeclaredStep = (capture: Capture): boolean =>
       stepFeedsDeclaredSubmit(capture, compiledActionSteps, matchesDeclaredSubmit);
+    const feedsLaterStep = (capture: Capture): boolean =>
+      compiledActionSteps
+        .find((s) => s.capture === capture)
+        ?.consumers?.some((c) => c !== capture) ?? false;
     const isIncidentalReadFlowPost = (capture: Capture): boolean =>
       declaresSubmitPattern && !matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
     const actionSequenceIsReadSamples =
@@ -22254,7 +22403,15 @@ export async function main(): Promise<void> {
           ) ||
           isRecurringReadFlowBeacon(a.capture) ||
           isIncidentalReadFlowPost(a.capture) ||
-          isDeclaredDrillCapture(a.capture)
+          isDeclaredDrillCapture(a.capture) ||
+          // A successful GET is a read, never a submission, whatever its path shape —
+          // unless its response feeds a later declared step (a token mint stays a step).
+          (a.capture.method === "GET" &&
+            a.capture.status >= 200 &&
+            a.capture.status < 300 &&
+            !feedsDeclaredStep(a.capture) &&
+            // A GET whose response a later step re-sends is a link of a chain, not a sample.
+            !feedsLaterStep(a.capture))
       );
     const isReadOnlyGetFlow =
       !gql &&
@@ -22746,10 +22903,18 @@ export async function main(): Promise<void> {
     };
     let browserFlow = emitBrowserFlowTs(browserFlowOpts);
     const getInputModel = isReadOnlyGetFlow
-      ? deriveGetInputModel(winningCapture, activeCaptures, [
-          ...browserFlow.payloadFieldNames,
-          ...browserFlow.optionalPayloadFieldNames,
-        ])
+      ? deriveGetInputModel(
+          winningCapture,
+          activeCaptures,
+          [...browserFlow.payloadFieldNames, ...browserFlow.optionalPayloadFieldNames],
+          [
+            ...extractNavigateToFacetOrder(flowSteps, process.env).map((f) => ({
+              field: f.field,
+              value: f.value,
+            })),
+            ...extractHashNamedPayloadHints(flowSteps),
+          ]
+        )
       : null;
     if (getInputModel) {
       // Re-emit with the derived fields so the read fallback binds them to the
