@@ -18052,6 +18052,17 @@ export function emitContractTsParts(opts: {
    * ships browser-only with the standard candidate payload schema — rather
    * than emitting a fabricated single-call HTTP stub. */
   omitExecuteHttp?: boolean;
+  /** Mixed mode: `multiStepBody` is the HTTP-prefix body (see
+   * {@link emitMultiStepExecuteHttp}'s `httpPrefixCount`, which returns the
+   * session cookies). The plugin has no standalone `executeHttp` — its final
+   * step cannot be HTTP — and `execute()` runs the prefix, then hands the
+   * cookies to `run<Pascal>BrowserFlow`. Distinct from `omitExecuteHttp`: the
+   * HTTP client, limiter and BASE_HEADERS are still emitted for the prefix. */
+  mixedHttpPrefix?: boolean;
+  /** Must be set exactly when `mixedHttpPrefix` is: the browser flow emitted
+   * with the same `mixedHandover` takes the `sessionCookies` argument that
+   * `execute()` passes. A mismatch would generate a mistyped call. */
+  mixedHandover?: { tailFromStep: number; handoverUrl?: string };
   /** Explicit `applicantContract` flow declaration; wins over inferred evidence. */
   applicantContract?: boolean;
   /** The flow registers an account (its steps splice `${RECON_PASSWORD}`), so
@@ -18188,6 +18199,8 @@ export function emitContractTsParts(opts: {
     auxFiles,
     multiStepBody,
     omitExecuteHttp = false,
+    mixedHttpPrefix = false,
+    mixedHandover: mixedHandoverOpt,
     applicantContract,
     createsAccount = false,
     maxAttempts: resolvedMaxAttempts = null,
@@ -18212,6 +18225,11 @@ export function emitContractTsParts(opts: {
     unpopulatedDeclaredVariables = [],
     fallbackGateSpec = {},
   } = opts;
+  if (mixedHttpPrefix !== (mixedHandoverOpt !== undefined)) {
+    throw new Error(
+      "emitContractTsParts: mixedHttpPrefix and mixedHandover must be set together (the browser flow's sessionCookies param depends on mixedHandover)"
+    );
+  }
 
   const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
   /** Single source of truth for every GraphQL-emission decision below
@@ -18274,10 +18292,12 @@ export function emitContractTsParts(opts: {
     singleEntityVerdict(null, isGqlEmission, responseBodySamples.length, null) ||
     (singleEntityEvidence ??
       singleEntityVerdictFromCaptures(isGqlEmission, responseBodySamples, allCaptures));
+  // Both browser-only and mixed plugins return the browser flow's result.
+  const browserReturns = omitExecuteHttp || mixedHttpPrefix;
   const responseSchemaExpr =
-    omitExecuteHttp && isSubmissionFlow
+    browserReturns && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
-      : omitExecuteHttp
+      : browserReturns
         ? `z.unknown()`
         : inferZodSchemaFromSamples(responseBodySamples, 0, "", {
             conditionalFieldNames,
@@ -18403,7 +18423,7 @@ export function emitContractTsParts(opts: {
       : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow) || derivedGetInputModel || postBodyModel
+    : inputBody || (browserReturns && isSubmissionFlow) || derivedGetInputModel || postBodyModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -18827,7 +18847,7 @@ export function emitContractTsParts(opts: {
   // applicant decision) has no job tracking click to carry.
   const nonJobBrowserOnly =
     applicantContract === false ||
-    (omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema);
+    (browserReturns && isSubmissionFlow === true && !usesApplicantContactSchema);
   const mergesTracking =
     !getInputModel && !readOnlyPostSearch && !isReadOnlyQueryFlow && !nonJobBrowserOnly;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
@@ -18899,19 +18919,22 @@ export function emitContractTsParts(opts: {
   // `noUnusedVariables`.
   const clientImport = omitExecuteHttp
     ? ""
-    : isGqlEmission
-      ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";${needsFoldHttpClient ? `\nimport { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";` : ""}`
-      : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
+    : mixedHttpPrefix
+      ? `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`
+      : isGqlEmission
+        ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";${needsFoldHttpClient ? `\nimport { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";` : ""}`
+        : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
 
   const queryConst =
-    !omitExecuteHttp && isGqlEmission
+    !omitExecuteHttp && !mixedHttpPrefix && isGqlEmission
       ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${escapeForTemplateLiteral(gqlQuery!.trim())}\`;\n`
       : "";
 
-  const gqlCacheBlock = omitExecuteHttp
-    ? ""
-    : isGqlEmission
-      ? `
+  const gqlCacheBlock =
+    omitExecuteHttp || mixedHttpPrefix
+      ? ""
+      : isGqlEmission
+        ? `
 type GqlFn = (operationName: string, query: string, variables: Record<string, unknown>) => Promise<${pascal}Response>;
 
 const gqlCache = new Map<string, GqlFn>();
@@ -18939,7 +18962,7 @@ const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, 
 `
     : ""
 }`
-      : `
+        : `
 const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
 `;
 
@@ -19533,9 +19556,10 @@ ${headersLiteral},
 ${rateLimitComment}
 const limiter = new Bottleneck({ minTime: ${minTime} });
 `;
-  const executeHttpMethodBlock = omitExecuteHttp
-    ? ""
-    : `
+  const executeHttpMethodBlock =
+    omitExecuteHttp || mixedHttpPrefix
+      ? ""
+      : `
   /** Hot path: direct HTTP — no browser, no LLM tokens. */
   async executeHttp(
     ${executeHttpBody.includes("payload.") ? "payload" : "_payload"}: ${pascal}Payload,
@@ -19544,6 +19568,17 @@ const limiter = new Bottleneck({ minTime: ${minTime} });
 ${executeHttpBody}
   },
 `;
+  const httpPrefixBlock = mixedHttpPrefix
+    ? `
+/** HTTP prefix: replays the leading steps over plain HTTP and returns the session cookies they set. */
+async function runHttpPrefix(
+  ${executeHttpBody.includes("payload.") ? "payload" : "_payload"}: ${pascal}Payload,
+  ${executeHttpBody.includes("context.") ? "context" : "_context"}: SitePluginContext
+): Promise<{ cookies: Record<string, string> }> {
+${executeHttpBody}
+}
+`
+    : "";
   const executeEntryUrlExpr = usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl";
   const executeUsesContext = executeEntryUrlExpr.includes("context.");
   const executeContextParam = executeUsesContext
@@ -19551,13 +19586,18 @@ ${executeHttpBody}
     : omitExecuteHttp
       ? ""
       : `,\n    _context: SitePluginContext`;
+  const executeContextArg = mixedHttpPrefix
+    ? `,\n    context: SitePluginContext`
+    : executeContextParam;
   const sitePluginImports =
     executeUsesContext || !omitExecuteHttp
       ? "SitePlugin, SitePluginContext, SitePluginResult"
       : "SitePlugin, SitePluginResult";
   const executeDocComment = omitExecuteHttp
     ? ""
-    : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
+    : mixedHttpPrefix
+      ? `  /** Mixed mode: HTTP prefix first, then the session cookies are handed to the browser for the remaining steps. */\n`
+      : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
   // Derived here as well as from the caller's flag: a caller that hands over
   // flowSteps but not the browser-flow emitter's signal must not ship a
   // retry-enabled account-creating flow.
@@ -19574,14 +19614,20 @@ ${executeHttpBody}
   const redactionLiteral = extraRedaction
     ? `\n    redaction: ${JSON.stringify(extraRedaction)},`
     : "";
-  const pluginDocComment = omitExecuteHttp
+  const pluginDocComment = mixedHttpPrefix
     ? `/**
+ * Plugin for ${siteId}. Mixed mode: the leading steps replay over plain HTTP,
+ * then the session cookies are handed to a browser session that runs only the
+ * steps HTTP cannot replay.
+ */`
+    : omitExecuteHttp
+      ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
  * sequence could not be synthesized into a trustworthy direct-HTTP hot path
  * (see recon-generate's review checklist, logged to stdout at generation
  * time), so this always runs via Stagehand.
  */`
-    : `/**
+      : `/**
  * Plugin for ${siteId}. Tries the direct-HTTP hot path first; falls back to
  * Stagehand automatically on schema drift or bot challenge.
  */`;
@@ -19614,7 +19660,7 @@ ${optionDecls}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
-${internalRequestReferenceBlock}${queryConst}${gqlCacheBlock}${fixtureComments}
+${internalRequestReferenceBlock}${queryConst}${gqlCacheBlock}${httpPrefixBlock}${fixtureComments}
 ${pluginDocComment}
 export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
   meta: {
@@ -19639,9 +19685,9 @@ ${sensitiveRedactionLiteral}    defaultBaseUrl: ${JSON.stringify(baseUrl)},
 ${executeHttpMethodBlock}
 ${executeDocComment}  async execute(
     payload: ${pascal}Payload,
-    session: BrowserSession${executeContextParam}
-  ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, payload, session.sessionProxy ?? null);
+    session: BrowserSession${executeContextArg}
+  ): Promise<SitePluginResult<${pascal}Response>> {${mixedHttpPrefix ? "\n    const { cookies } = await runHttpPrefix(payload, context);" : ""}
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, payload, session.sessionProxy ?? null${mixedHttpPrefix ? ", cookies" : ""});
     return { data: raw as ${pascal}Response };
   },
 };
