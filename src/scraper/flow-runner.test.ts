@@ -2139,3 +2139,22 @@ describe("isSubmitIntentStep", () => {
     expect(isSubmitIntentStep("")).toBe(false);
   });
 });
+
+describe("flow-runner/flowHasSubmitSemantics read-only", () => {
+  const base = {
+    steps: [{ submitStep: false }],
+    submitEndpointPattern: "/api/jobs",
+    requireSubmitEndpointMatch: false,
+  };
+  it("false when flow declares readOnly", () => {
+    expect(flowHasSubmitSemantics({ ...base, readOnly: true })).toBe(false);
+  });
+  it("readOnly wins even when requireSubmitEndpointMatch is true", () => {
+    expect(
+      flowHasSubmitSemantics({ ...base, requireSubmitEndpointMatch: true, readOnly: true })
+    ).toBe(false);
+  });
+  it("pattern alone still implies submit semantics", () => {
+    expect(flowHasSubmitSemantics(base)).toBe(true);
+  });
+});

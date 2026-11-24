@@ -39,9 +39,14 @@ describe("probeStepBeforeAttempts optional click-shaped step", () => {
     );
   });
 
-  it("optional click step, 0 focused / N unfocused -> absent, no unfocused observe", async () => {
+  it("optional click step, 0 focused / N unfocused -> present via unfocused fallback", async () => {
+    expect(await run("Click the 'Dismiss' button", true)).toBe("present");
+    expect(guardedObserve).toHaveBeenCalledTimes(2);
+  });
+
+  it("optional click step, 0 focused / 0 unfocused -> absent", async () => {
+    guardedObserve.mockImplementation(async () => []);
     expect(await run("Click the 'Dismiss' button", true)).toBe("absent");
-    expect(guardedObserve).toHaveBeenCalledTimes(1);
   });
 
   it("required click step keeps treat-as-present", async () => {

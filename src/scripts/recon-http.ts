@@ -49,6 +49,7 @@ import {
   noiseReason,
   registrableDomain,
 } from "@/recon/capture-filters";
+import { locateHtmlBearerToken } from "@/recon/html-state-producers";
 import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
@@ -487,7 +488,7 @@ async function findShapeRestoringHeaders(
 export async function replayCapture(
   filename: string,
   capture: Capture,
-  opts: { methods?: Set<string> | null } = {}
+  opts: { methods?: Set<string> | null; htmlDocuments?: ReadonlyArray<unknown> } = {}
 ): Promise<ReplayResult | null> {
   if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) {
     logger.warn(`skip ${capture.method} ${capture.url}: request body unavailable at capture time`);
@@ -528,8 +529,51 @@ export async function replayCapture(
       statusOk &&
       (bodyTypeDiffers(capture.responseBody, replayBody) ||
         responseShapeDiffers(capture.responseBody, replayBody));
-    const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, headers);
-    const omittedAsCaptured = omittedHeaders(capture.requestHeaders, headers, true);
+    // On a 401, replay once more with the captured authorization (only for
+    // replay-safe requests) to separate needs-token from needs-browser.
+    let authReplay: ReplayResult["authReplay"];
+    const authName = Object.keys(capture.requestHeaders ?? {}).find(
+      (k) => k.toLowerCase() === "authorization"
+    );
+    let sentHeaders = headers;
+    if (
+      response.status === 401 &&
+      authName !== undefined &&
+      isSafeToReplay({
+        method: capture.method,
+        query: capture.query ?? null,
+        operationName: capture.operationName,
+      })
+    ) {
+      const authValue = capture.requestHeaders[authName] as string;
+      const authHeaders = { ...headers, [authName]: authValue };
+      try {
+        const retry = await sendReplay(capture, authHeaders, requestBody);
+        const replayable = retry.response.status >= 200 && retry.response.status < 300;
+        sentHeaders = authHeaders;
+        const bearer = /^bearer\s+(.+)$/i.exec(authValue.trim())?.[1];
+        const loc =
+          replayable && bearer && opts.htmlDocuments
+            ? locateHtmlBearerToken(opts.htmlDocuments, { value: bearer })
+            : null;
+        authReplay = {
+          status: retry.response.status,
+          tokenReplayable: replayable,
+          tokenSource: loc
+            ? { document: loc.document, source: loc.source, ...(loc.row ? { row: loc.row } : {}) }
+            : null,
+        };
+        logger.info(
+          `[${capture.method}] ${capture.url} 401 → ${retry.response.status} with captured authorization (${replayable ? "token-replayable" : "needs-browser"})`
+        );
+      } catch (err) {
+        logger.warn(
+          `auth re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`
+        );
+      }
+    }
+    const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, sentHeaders);
+    const omittedAsCaptured = omittedHeaders(capture.requestHeaders, sentHeaders, true);
     // A replay passes only when its response matches the capture's shape; a 2xx
     // with a different shape may mean a request header it omitted is load-bearing,
     // and re-replaying with each one added back proves which (if any).
@@ -587,6 +631,7 @@ export async function replayCapture(
       shapeDiffers,
       omittedCaptureHeaders,
       shapeRestoringHeaders,
+      ...(authReplay ? { authReplay } : {}),
       error: shapeDiffers ? shapeMessage : null,
     };
   } catch (err) {
@@ -927,7 +972,10 @@ export function selectRateLimitTargets(
     }
   }
   for (const replay of replays) {
-    if (!replayReachable(replay)) continue;
+    // A 401 replay that succeeded once re-sent with the captured authorization
+    // is reachable via replayed auth; its probe must carry that header.
+    const viaAuth = !replayReachable(replay) && replay.authReplay?.tokenReplayable === true;
+    if (!replayReachable(replay) && !viaAuth) continue;
     if (!isReplayResultSafe(replay)) continue;
     if (isNoiseUrl(replay.url)) {
       skipped++;
@@ -973,7 +1021,11 @@ export function selectRateLimitTargets(
         const provenEntries = (replay.shapeRestoringHeaders ?? [])
           .filter((h) => captured[h] !== undefined)
           .map((h) => [h, captured[h]!] as const);
-        const proven = provenEntries.length > 0 ? Object.fromEntries(provenEntries) : undefined;
+        const authEntries = viaAuth
+          ? Object.entries(captured).filter(([k]) => k.toLowerCase() === "authorization")
+          : [];
+        const merged = Object.fromEntries([...provenEntries, ...authEntries]);
+        const proven = Object.keys(merged).length > 0 ? merged : undefined;
         collected.set(`${endpointKey}${u.search}`, {
           method: replay.method,
           body: replay.requestBody,
@@ -1131,9 +1183,12 @@ async function main(): Promise<void> {
   );
   for (const sk of skipped) logger.info(`skipped ${sk.url}: ${sk.reason}`);
 
+  const htmlDocuments = all
+    .map((c) => c.capture.responseBody)
+    .filter((b): b is string => typeof b === "string");
   const replays: ReplayResult[] = [];
   for (const { filename, capture } of probeworthy) {
-    const result = await replayCapture(filename, capture, { methods });
+    const result = await replayCapture(filename, capture, { methods, htmlDocuments });
     if (result === null) continue;
     replays.push(result);
     writeFileSync(join(runDir.replaysDir, filename), JSON.stringify(result, null, 2));

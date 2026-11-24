@@ -18,6 +18,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
+import type { NavigateSettle } from "@/scraper/navigate";
 import { SHADOW_XPATH_ALL_RESOLVER_SRC, SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
 import { fetchFollowingRedirectsPreservingMethod } from "./redirect-follow";
 
@@ -2659,6 +2660,19 @@ export function shouldCaptureSelectionState(params: {
   return !(submitStep || isAdvanceStep(step));
 }
 
+const DATA_ENTRY_WORDING =
+  /\b(fill|type|enter|input|select|choose|upload|answer|tick|toggle|pick|attach|paste|write|check|set|accept|agree)\b/i;
+
+/** True when an instruction is present and reads as navigate/click/read only. */
+function isReadingOnlyInstruction(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  return (
+    !DATA_ENTRY_WORDING.test(instruction) &&
+    !isAdvanceStep(instruction) &&
+    classifyStepSubmitIntent(instruction) !== "submit"
+  );
+}
+
 /**
  * Whether the flow's FINAL step carries submit semantics. A read-only flow
  * (no step flagged `submitStep: true`, no `submitEndpointPattern`, no
@@ -2677,11 +2691,18 @@ export function flowHasSubmitSemantics(params: {
   steps: Array<{ submitStep: boolean; instruction?: string | null }>;
   submitEndpointPattern: string | null;
   requireSubmitEndpointMatch: boolean;
+  /** Flow declares itself read-only: the pattern alone never implies a submit. */
+  readOnly?: boolean;
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
   const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
   if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
   if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
+  if (params.readOnly === true) return false;
+  // A flow whose every step is worded as plain navigation/reading (no data
+  // entry, advance, or submit wording) supplies nothing to submit, so the
+  // endpoint pattern alone must not make its final step a submission.
+  if (steps.length > 0 && steps.every((s) => isReadingOnlyInstruction(s.instruction))) return false;
   // An earlier step whose own wording declares submit already owns the role;
   // the fallback is only for a self-heal-appended final step.
   const earlierStepOwnsSubmit = steps
@@ -13234,10 +13255,9 @@ export async function probeStepBeforeAttempts(params: {
    */
   reresolveFrameTarget?: () => Promise<FrameTarget | undefined>;
   /**
-   * When true and the step is click-shaped (not a fill/select/prompt-selector
-   * step), a zero-candidate focused probe is final: the unfocused-observe
-   * "treat as present" fallback is skipped so the optional step skips instead
-   * of running the cascade and replans. Required steps keep today's behavior.
+   * Marks the step optional. A zero-candidate focused probe now takes the same
+   * unfocused-observe fallback as required steps (focused observe can
+   * under-return); the step is "absent" (skipped) only when both are empty.
    */
   optional?: boolean;
   /**
@@ -13257,7 +13277,6 @@ export async function probeStepBeforeAttempts(params: {
     captureFn,
     frameTarget,
     reresolveFrameTarget,
-    optional,
     onFocusedCandidates,
   } = params;
   try {
@@ -13269,12 +13288,6 @@ export async function probeStepBeforeAttempts(params: {
       frameTarget
     );
     onFocusedCandidates?.(candidates);
-    if (candidates.length === 0 && optional && parsePromptSelectorStep(step) === null) {
-      logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)}: optional click-shaped step, focused probe found 0 candidates — treating as absent (skip, no cascade)`
-      );
-      return "absent";
-    }
     if (candidates.length === 0) {
       // Focused observe under-returns on some controlled-component forms:
       // Stagehand's instruction-scoped observe can resolve zero candidates for a
@@ -18701,8 +18714,11 @@ export async function executeNavigateStep(params: {
   logger: Logger;
   waitUntil?: "load" | "domcontentloaded" | "networkidle";
   timeoutMs?: number;
+  /** Optional: wait after goto for the declared data call (see navigate.ts). Absent = no wait. */
+  settle?: NavigateSettle;
 }): Promise<"completed" | "skipped"> {
-  const { page, url, optional, logger: log, waitUntil, timeoutMs } = params;
+  const { page, url, optional, logger: log, waitUntil, timeoutMs, settle } = params;
+  const settleWait = settle?.();
   try {
     await page.goto(url, {
       waitUntil: waitUntil ?? "domcontentloaded",
@@ -18719,6 +18735,14 @@ export async function executeNavigateStep(params: {
     );
   }
   await waitForSpaReady(page, log);
+  if (settleWait !== undefined) {
+    const result = await settleWait.wait();
+    if (result === "timeout") {
+      log.warn(
+        `navigate step: no capture matching the declared data call after goto ${url}; proceeding`
+      );
+    }
+  }
   return "completed";
 }
 
@@ -18756,6 +18780,8 @@ export interface RunHealingFlowDeps {
   submitEndpointPattern?: string | null;
   submittedStateSelectors?: string[];
   requireSubmitEndpointMatch?: boolean;
+  /** Flow declares itself read-only: the endpoint pattern never implies a submission. */
+  readOnly?: boolean;
   advanceTransitionBodyPattern?: string | null;
   successUrlFragments?: string[];
   successPageTitleHints?: string[];
@@ -18869,11 +18895,16 @@ async function runHealingFlowScoped(
   // Listeners on earlier pages stay wired (a prior tab can still emit) and all stop on exit.
   const stopFns: (() => void)[] = [wireCapture(page)];
 
-  const flowHasSubmitSemanticsFlag = flowHasSubmitSemantics({
-    steps,
-    submitEndpointPattern: deps.submitEndpointPattern ?? null,
-    requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
-  });
+  // Re-derived before each step: captures accumulate as the flow runs, so a
+  // GET-only endpoint match is only visible after earlier steps have fired.
+  const computeSubmitSemantics = (): boolean =>
+    flowHasSubmitSemantics({
+      steps,
+      submitEndpointPattern: deps.submitEndpointPattern ?? null,
+      requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
+      readOnly: deps.readOnly ?? false,
+    });
+  let flowHasSubmitSemanticsFlag = computeSubmitSemantics();
 
   if (
     shouldWarnMissingAdvancePattern(
@@ -18914,6 +18945,7 @@ async function runHealingFlowScoped(
         );
       }
       lastStepIndex = i;
+      flowHasSubmitSemanticsFlag = computeSubmitSemantics();
       // A cross-origin hop (redirect, new tab, navigateTo) lands on a SPA the initial
       // readiness gate never covered; wait for hydration before the step probes a shell.
       const currentOrigin = liveOriginOf(activePage);

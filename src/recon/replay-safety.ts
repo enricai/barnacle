@@ -46,10 +46,10 @@ export function isGraphqlQueryDocument(doc: string): boolean {
 export function unsafeReplayReason(c: ReplayCandidate): string | null {
   const method = (c.method || "GET").toUpperCase();
   if (SAFE_METHODS.has(method)) return null;
-  if (method === "POST" && c.operationName && c.query) {
+  if (method === "POST" && c.query) {
     return isGraphqlQueryDocument(c.query)
       ? null
-      : `unsafe GraphQL operation (mutation/subscription) "${c.operationName}"`;
+      : `unsafe GraphQL operation (mutation/subscription) "${c.operationName ?? "anonymous"}"`;
   }
   return `unsafe method ${method}`;
 }

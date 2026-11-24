@@ -34,3 +34,78 @@ export async function navigateActivePage(
   collector?.endStep("success");
   return page;
 }
+
+/** Max wait for the declared data call after a navigateTo goto; override via env. */
+export const NAVIGATE_SETTLE_TIMEOUT_MS = Number(process.env.NAVIGATE_SETTLE_TIMEOUT_MS) || 15_000;
+/** Quiet window after the matching capture with no further matching capture. */
+export const NAVIGATE_SETTLE_QUIET_MS = Number(process.env.NAVIGATE_SETTLE_QUIET_MS) || 1_000;
+
+/** Tracks completed captures (URL + request body) so a navigate step can settle on one. */
+export interface CaptureTracker {
+  observe(url: string, body: string | null | undefined): void;
+  /** Starts a settle window; only captures observed after this call count. */
+  begin(matcher: { endpointRx: RegExp; bodyRx: RegExp | null }): NavigateSettleWait;
+}
+
+export interface NavigateSettleWait {
+  wait(opts?: { timeoutMs?: number; quietMs?: number }): Promise<"settled" | "timeout">;
+}
+
+/** Hook accepted by executeNavigateStep: called before goto, returns a waiter. */
+export type NavigateSettle = () => NavigateSettleWait;
+
+export function createCaptureTracker(): CaptureTracker {
+  const waiters = new Set<(url: string, body: string) => void>();
+  return {
+    observe(url, body) {
+      for (const w of [...waiters]) w(url, body ?? "");
+    },
+    begin({ endpointRx, bodyRx }) {
+      let matchedAt: number | null = null;
+      let wake: (() => void) | null = null;
+      const listener = (url: string, body: string): void => {
+        if (!endpointRx.test(url)) return;
+        if (bodyRx !== null && !bodyRx.test(body)) return;
+        matchedAt = Date.now();
+        wake?.();
+      };
+      waiters.add(listener);
+      return {
+        async wait(opts) {
+          const timeoutMs = opts?.timeoutMs ?? NAVIGATE_SETTLE_TIMEOUT_MS;
+          const quietMs = opts?.quietMs ?? NAVIGATE_SETTLE_QUIET_MS;
+          const deadline = Date.now() + timeoutMs;
+          try {
+            for (;;) {
+              const now = Date.now();
+              if (matchedAt !== null && now - matchedAt >= quietMs) return "settled";
+              if (now >= deadline) return "timeout";
+              const next = matchedAt !== null ? matchedAt + quietMs : deadline;
+              await new Promise<void>((r) => {
+                const t = setTimeout(r, Math.max(5, Math.min(next, deadline) - now));
+                wake = () => {
+                  clearTimeout(t);
+                  r();
+                };
+              });
+            }
+          } finally {
+            waiters.delete(listener);
+          }
+        },
+      };
+    },
+  };
+}
+
+/** Builds a settle hook from declared patterns; undefined when no endpoint pattern (no wait). */
+export function buildNavigateSettle(
+  tracker: CaptureTracker,
+  endpointPattern: string | null | undefined,
+  bodyPattern?: string | null
+): NavigateSettle | undefined {
+  if (endpointPattern == null) return undefined;
+  const endpointRx = new RegExp(endpointPattern);
+  const bodyRx = bodyPattern != null ? new RegExp(bodyPattern) : null;
+  return () => tracker.begin({ endpointRx, bodyRx });
+}

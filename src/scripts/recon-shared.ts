@@ -203,6 +203,14 @@ export interface ReplayResult {
    * capture's response shape. Empty when re-sending them does not restore it.
    */
   shapeRestoringHeaders?: string[];
+  /** On a 401: the outcome of re-replaying with the captured authorization header. */
+  authReplay?: {
+    status: number;
+    /** True when the authorization-carrying retry returned 2xx (needs-token, not needs-browser). */
+    tokenReplayable: boolean;
+    /** Which captured HTML document carries the bearer value, when found. */
+    tokenSource: { document: number; source: "rsc-row" | "html"; row?: string } | null;
+  };
 }
 
 export interface RateLimitFinding {
