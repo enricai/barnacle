@@ -24,6 +24,30 @@ describe("response-cache", () => {
     expect(getCachedResponse("/v1/trunc", { a: 1 }).value).toBeUndefined();
   });
 
+  it("caches a complete result while not caching a truncated one", async () => {
+    const isCacheable = (v: { data: { truncated?: boolean } }) => v.data.truncated !== true;
+    const full = getCachedResponse("/v1/full", { a: 1 });
+    await getOrCreateInFlight(full.key, async () => ({ data: {} }), isCacheable);
+    expect(getCachedResponse("/v1/full", { a: 1 }).value).toEqual({ data: {} });
+    const part = getCachedResponse("/v1/part", { a: 1 });
+    await getOrCreateInFlight(part.key, async () => ({ data: { truncated: true } }), isCacheable);
+    expect(getCachedResponse("/v1/part", { a: 1 }).value).toBeUndefined();
+  });
+
+  it("coalesces concurrent callers on a truncated result with one producer call", async () => {
+    const { key } = getCachedResponse("/v1/coalesce", { a: 1 });
+    const producer = vi.fn(async () => ({ data: { truncated: true } }));
+    const notTruncated = (v: { data: { truncated?: boolean } }) => v.data.truncated !== true;
+    const [r1, r2] = await Promise.all([
+      getOrCreateInFlight(key, producer, notTruncated),
+      getOrCreateInFlight(key, producer, notTruncated),
+    ]);
+    expect(producer).toHaveBeenCalledTimes(1);
+    expect(r1.data.truncated).toBe(true);
+    expect(r2.data.truncated).toBe(true);
+    expect(getCachedResponse("/v1/coalesce", { a: 1 }).value).toBeUndefined();
+  });
+
   it("stores and retrieves by endpoint+payload", async () => {
     const { key, value } = getCachedResponse("/v1/test", { a: 1, b: 2 });
     expect(value).toBeUndefined();
