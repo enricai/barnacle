@@ -10563,8 +10563,15 @@ export function emitMultiStepExecuteHttp(
   flowSteps: FlowStepInput[] = [],
   vocabulary: ReconVocabulary | undefined = undefined,
   /** Explicit `applicantContract` flow declaration; see {@link contractUsesApplicantContactSchema}. */
-  applicantContract: boolean | undefined = undefined
+  applicantContract: boolean | undefined = undefined,
+  /**
+   * HTTP-prefix mode: render only the first N action steps and return the
+   * session cookies they established instead of a parsed response. `undefined`
+   * (default) leaves full-flow output byte-identical.
+   */
+  httpPrefixCount: number | undefined = undefined
 ): string {
+  if (httpPrefixCount !== undefined) actions = actions.slice(0, httpPrefixCount);
   interface Rendered {
     url: string;
     method: string;
@@ -10855,7 +10862,8 @@ export function emitMultiStepExecuteHttp(
   // (fold plans depend only on `actions`/`foldReturnSpec`, not on Pass 1's
   // render), so Pass 1's header collection below knows which non-auth header
   // names are actually load-bearing for a resolved fold.
-  const earlyFoldPlans = resolveFoldPlan(actions, foldReturnSpec);
+  const earlyFoldPlans =
+    httpPrefixCount !== undefined ? [] : resolveFoldPlan(actions, foldReturnSpec);
   const joinCarryingHeaderNamesByStep = new Map<number, Set<string>>();
   // A fold target's join value is the PRIMARY ITEM's own field, threaded into
   // the drill step's request text-literally by the fold-loop's own
@@ -11384,7 +11392,8 @@ export function emitMultiStepExecuteHttp(
   // whichever call selectReturnAction would otherwise pick — is what
   // `return { data }` must reference when any plan resolves.
   const foldPlans = earlyFoldPlans;
-  const returnAction = foldPlans.length > 0 ? null : selectReturnAction(actions);
+  const returnAction =
+    foldPlans.length > 0 || httpPrefixCount !== undefined ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
   for (const plan of foldPlans) referencedNames.add(actions[plan.primaryStepIndex]!.varName);
 
@@ -11393,6 +11402,21 @@ export function emitMultiStepExecuteHttp(
   // is still needed when at least one of its produces[] entries IS
   // referenced — the produces line dereferences it.
   const lines: string[] = [];
+  if (httpPrefixCount !== undefined) {
+    // Shadow the module-level client with a prefix-local one that carries the
+    // prefix's own `bind` entries and records every cookie a response sets.
+    lines.push(
+      `    const prefixCookies: Record<string, string> = {};`,
+      `    const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(collectHeaderBindings(actions as ActionStep[]))}, onResponse: ({ headers }) => {`,
+      `      for (const entry of headers.getSetCookie()) {`,
+      `        const pair = entry.split(";")[0] ?? "";`,
+      `        const eq = pair.indexOf("=");`,
+      `        if (eq > 0) prefixCookies[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();`,
+      `      }`,
+      `    } });`,
+      ""
+    );
+  }
   // Mint the threaded transaction id ONCE and reuse across every step — the
   // `${txnId}` references emitted into the bodies above all resolve to this
   // single call-time UUID, matching how the site mints one per application.
@@ -12210,7 +12234,9 @@ export function emitMultiStepExecuteHttp(
   // no ancestry TS can see, so a plain `as` needs the `as unknown as` detour.
   const castToResponseType = (expr: string): string =>
     pascalName ? `${expr} as unknown as ${pascalName}Response` : expr;
-  if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
+  if (httpPrefixCount !== undefined) {
+    lines.push(`    return { cookies: prefixCookies };`);
+  } else if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
     lines.push(
       `    return { data: ${castToResponseType(`mergeFoldedPrimaryBodies(${uniquePrimaryVarNames.join(", ")})`)} };`
     );
