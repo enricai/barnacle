@@ -2693,12 +2693,19 @@ export function flowHasSubmitSemantics(params: {
   requireSubmitEndpointMatch: boolean;
   /** Flow declares itself read-only: the pattern alone never implies a submit. */
   readOnly?: boolean;
+  /**
+   * The capture matched by the declared endpoint/body pattern is a read (GraphQL
+   * query document or GET/HEAD). A read never implies a submit; `undefined`/false
+   * (unknown or mutation) keeps the inference unchanged. Explicit `submitStep` wins.
+   */
+  declaredCallIsRead?: boolean;
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
   const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
   if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
   if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
   if (params.readOnly === true) return false;
+  if (params.declaredCallIsRead === true) return false;
   // A flow whose every step is worded as plain navigation/reading (no data
   // entry, advance, or submit wording) supplies nothing to submit, so the
   // endpoint pattern alone must not make its final step a submission.
