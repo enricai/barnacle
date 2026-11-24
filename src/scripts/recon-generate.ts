@@ -21915,7 +21915,7 @@ export async function main(): Promise<void> {
     // flow's primary endpoint while another capture carries the declared
     // results array (a drill POST would otherwise outrank the GET search).
     const isDeclaredDrillCapture = compileDeclaredDrillMatcher(foldReturnSpec);
-    const primaryPoolCaptures = ((): Capture[] => {
+    const basePoolCaptures = ((): Capture[] => {
       if (foldReturnSpec === null) return activeCaptures;
       const holdsResults = compileFoldReturnResultsMatcher(foldReturnSpec);
       const declaresSubmit = submitPatterns.endpoint !== null || submitPatterns.body !== null;
@@ -21927,6 +21927,25 @@ export async function main(): Promise<void> {
       return nonDrill.some((c) => c.status >= 200 && c.status < 300 && holdsResults(c))
         ? nonDrill
         : activeCaptures;
+    })();
+    // The authoritative submit-manifest names the captures recon-browser
+    // recorded for this flow; a lone host-wide beacon outside it must not win
+    // endpoint selection. Fall back to the full pool when the manifest holds
+    // no endpoint candidate.
+    const primaryPoolCaptures = ((): Capture[] => {
+      const manifestPool = resolveManifestActionSequence(runRoot, activeCaptures);
+      if (manifestPool === null) return basePoolCaptures;
+      const inManifest = new Set<Capture>(manifestPool.map((a) => a.capture));
+      const scoped = basePoolCaptures.filter((c) => inManifest.has(c));
+      if (scoped.length === 0) return basePoolCaptures;
+      const candidate = firstEndpointCapture(
+        scoped,
+        ownBackendHostnames,
+        fallbackDomain,
+        submitPatterns,
+        primaryHost
+      );
+      return candidate ? scoped : basePoolCaptures;
     })();
     const endpointPath =
       primaryGraphQLOperation?.endpointPath ??
