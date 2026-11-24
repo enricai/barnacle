@@ -80,4 +80,12 @@ describe("recon-http 401 auth replay", () => {
     expect(r?.authReplay).toBeUndefined();
     expect(r?.omittedCaptureHeaders).toContain("authorization");
   });
+
+  it("first attempt omits authorization; replayable without HTML leaves tokenSource null", async () => {
+    const seen = stub(true);
+    const r = await replayCapture("a.json", cap("GET"));
+    expect(seen[0]!.authorization).toBeUndefined();
+    expect(seen[1]!.authorization).toBe(`Bearer ${JWT}`);
+    expect(r?.authReplay).toMatchObject({ status: 200, tokenReplayable: true, tokenSource: null });
+  });
 });
