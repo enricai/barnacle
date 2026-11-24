@@ -3002,6 +3002,31 @@ export function isMidFlowAdvanceCredited(params: {
 }
 
 /**
+ * Whether an already-credited click goes before the outcome judge: an explicit
+ * submit step or a genuine transition (real network advance, URL change), or a
+ * mid-flow submit whose only credit is the site's own client-side advance signal
+ * (`signalAdvanced`, the same one {@link isMidFlowAdvanceCredited} takes). That
+ * signal is weaker than the judge, so the judge must see it; otherwise a blocked
+ * submit's validation render, credited with no network or URL change, never
+ * meets the rejection and marker veto in {@link isMidFlowAdvanceCredited}. A
+ * selection-state toggle credit on a non-submit step stays outside the judge.
+ */
+export function hasJudgedTransitionSignal(params: {
+  submitStep: boolean;
+  networkAdvanced: boolean;
+  urlChanged: boolean;
+  midFlowSubmit: boolean;
+  signalAdvanced: boolean;
+}): boolean {
+  return (
+    params.submitStep ||
+    params.networkAdvanced ||
+    params.urlChanged ||
+    (params.midFlowSubmit && params.signalAdvanced)
+  );
+}
+
+/**
  * The single "content left the page" judgement shared by
  * {@link isClickViewSwapVerified} (verdict credit) and
  * {@link describeAttemptEffectSignals} (failure-reason diagnostic). Removal is
@@ -17338,8 +17363,15 @@ export async function executeStepWithHealing(params: {
     // flow-runner.final-step-toggle-not-submit-shaped-acceptance.test.ts).
     // Forcing that toggle through the submit judge (which requires a DOM/
     // URL/title post-submit signal it will never produce) false-negatives
-    // an already-genuine credit.
-    const hasSubmitTransitionSignal = submitStep || networkIsRealAdvance || urlChanged;
+    // an already-genuine credit. A mid-flow submit credited only on its
+    // view-swap signal is judged too (see hasJudgedTransitionSignal).
+    const hasSubmitTransitionSignal = hasJudgedTransitionSignal({
+      submitStep,
+      networkAdvanced: networkIsRealAdvance,
+      urlChanged,
+      midFlowSubmit,
+      signalAdvanced: clickViewSwapVerified,
+    });
     if (
       verified &&
       (requireSubmitEndpoint || resolvedElementIsSubmitShaped) &&
@@ -17440,9 +17472,7 @@ export async function executeStepWithHealing(params: {
         networkAdvanced: networkIsRealAdvance,
         pageAdvanced: settledPageAdvanced,
         invalidMarkerCount,
-        // Markers that rendered after the settled read still count as growth.
-        invalidMarkerDelta:
-          Math.max(postInvalidMarkerCount, invalidMarkerCount) - preInvalidMarkerCount,
+        invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
         logger.info(
@@ -18107,9 +18137,15 @@ export async function executeStepWithHealing(params: {
           // came only from the element-scoped `retrySelectionStateChanged`
           // signal is the same ordinary-toggle shape, not a real submit —
           // don't force it through a judge that requires evidence it can
-          // never produce.
-          const retryHasSubmitTransitionSignal =
-            submitStep || retryNetworkIsRealAdvance || retryUrlChanged;
+          // never produce. A mid-flow submit credited only on its own settled
+          // advance is judged too (see hasJudgedTransitionSignal).
+          const retryHasSubmitTransitionSignal = hasJudgedTransitionSignal({
+            submitStep,
+            networkAdvanced: retryNetworkIsRealAdvance,
+            urlChanged: retryUrlChanged,
+            midFlowSubmit: retryMidFlowSubmit,
+            signalAdvanced: retryVerdict === "effective" && retryPageAdvanced,
+          });
           // `retryClickUsedXpathTailRetarget` folds in the "wrong element"
           // shape from recon-trusted-click-throw-fallback-hits-wrong-
           // element-credited-as-success.md: even when the tail-resolved

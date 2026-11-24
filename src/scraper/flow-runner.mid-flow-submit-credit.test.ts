@@ -239,8 +239,9 @@ describe("isMidFlowAdvanceCredited caller wiring", () => {
     const calls = src.split("isMidFlowAdvanceCredited({").slice(1);
     expect(calls.length).toBe(2);
     const bodies = calls.map((c) => c.slice(0, c.indexOf("});")));
-    expect(bodies[0]).toContain("Math.max(postInvalidMarkerCount, invalidMarkerCount)");
-    expect(bodies[0]).toContain("- preInvalidMarkerCount");
+    expect(bodies[0]).toContain(
+      "invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount"
+    );
     expect(bodies[1]).toContain("invalidMarkerDelta: invalidMarkerCount - preInvalidMarkerCount");
   });
 });
