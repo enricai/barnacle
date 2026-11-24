@@ -13,6 +13,17 @@ describe("response-cache", () => {
     clearResponseCache();
   });
 
+  it("does not cache a value the isCacheable predicate rejects", async () => {
+    const { key } = getCachedResponse("/v1/trunc", { a: 1 });
+    const r = await getOrCreateInFlight(
+      key,
+      async () => ({ data: { truncated: true } }),
+      (v) => (v.data as { truncated?: boolean }).truncated !== true
+    );
+    expect(r.data.truncated).toBe(true);
+    expect(getCachedResponse("/v1/trunc", { a: 1 }).value).toBeUndefined();
+  });
+
   it("stores and retrieves by endpoint+payload", async () => {
     const { key, value } = getCachedResponse("/v1/test", { a: 1, b: 2 });
     expect(value).toBeUndefined();
