@@ -150,13 +150,21 @@ export function invalidateResponse(key: string): void {
 }
 
 /**
+ * The completeness signal site plugins put on their result: `data.truncated`
+ * is true when a deadline, refusal or page failure cut the answer short.
+ */
+function isPartial(value: object): boolean {
+  return (value as { data?: { truncated?: unknown } } | null)?.data?.truncated === true;
+}
+
+/**
  * Runs `producer` once per key even when multiple callers race on a
  * cache miss. The first caller kicks off the origin call and all
  * concurrent callers await the same promise. On resolve, the value is
  * written to the LRU cache so subsequent (non-racing) reads hit
- * normally. An optional `isCacheable` predicate is evaluated after the
- * producer settles; when it returns false the value is returned to all
- * awaiters but not cached (default: always cache).
+ * normally. A value that declares itself incomplete
+ * (`data.truncated === true`) is returned to all awaiters but never
+ * written, so a later identical request reaches the producer again.
  *
  * Callers still do the `getCachedResponse` check first — this helper
  * is only invoked on a miss. Rejection propagates to every awaiter so
@@ -164,8 +172,7 @@ export function invalidateResponse(key: string): void {
  */
 export async function getOrCreateInFlight<T extends object>(
   key: string,
-  producer: () => Promise<T>,
-  isCacheable: (value: T) => boolean = () => true
+  producer: () => Promise<T>
 ): Promise<T> {
   const existing = inFlight.get(key);
   if (existing) return existing as Promise<T>;
@@ -177,7 +184,7 @@ export async function getOrCreateInFlight<T extends object>(
     .then((value) => {
       // A result that declares itself partial must not be stored as the
       // complete answer; it is still returned to every coalesced awaiter.
-      if (isCacheable(value)) cache.set(key, value);
+      if (!isPartial(value)) cache.set(key, value);
       return value;
     })
     .finally(() => {

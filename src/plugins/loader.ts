@@ -218,9 +218,7 @@ async function runPluginPipeline<TResult>(
     const t0 = Date.now();
     const fresh = await getOrCreateInFlight(
       key,
-      () => plugin.executeHttp?.(payload, context) as Promise<SitePluginResult<TResult>>,
-      // A result declaring itself partial must not be cached as complete.
-      (result) => (result?.data as { truncated?: unknown } | undefined)?.truncated !== true
+      () => plugin.executeHttp?.(payload, context) as Promise<SitePluginResult<TResult>>
     );
     recordHotPathLatency(plugin.meta.siteId, Date.now() - t0);
     recordHotPathSuccess(plugin.meta.siteId);
