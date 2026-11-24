@@ -36,9 +36,17 @@ describe("browser declared-call tracker", () => {
   it("tracks matched capture kind", () => {
     const t = createDeclaredCallTracker("/graphql", null);
     expect(t.isRead()).toBeUndefined();
-    t.observe({ method: "POST", url: "https://x.io/graphql", requestPostData: '{"query":"{ a }"}' });
+    t.observe({
+      method: "POST",
+      url: "https://x.io/graphql",
+      requestPostData: '{"query":"{ a }"}',
+    });
     expect(t.isRead()).toBe(true);
-    t.observe({ method: "POST", url: "https://x.io/graphql", requestPostData: '{"query":"mutation { m }"}' });
+    t.observe({
+      method: "POST",
+      url: "https://x.io/graphql",
+      requestPostData: '{"query":"mutation { m }"}',
+    });
     expect(t.isRead()).toBe(false);
   });
 });

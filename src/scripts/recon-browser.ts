@@ -88,7 +88,11 @@ import {
 } from "@/lib/telemetry/telemetry-paths";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
 import { isGraphqlQueryDocument } from "@/recon/replay-safety";
-import { isQualifyingSubmitCapture, isSuccessStatus, matchesSubmitPattern } from "@/recon/submit-match";
+import {
+  isQualifyingSubmitCapture,
+  isSuccessStatus,
+  matchesSubmitPattern,
+} from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
@@ -3259,7 +3263,10 @@ async function main(): Promise<void> {
         }
       };
       const captureTracker = createCaptureTracker();
-      const declaredCallTracker = createDeclaredCallTracker(submitEndpointPattern, submitBodyPattern);
+      const declaredCallTracker = createDeclaredCallTracker(
+        submitEndpointPattern,
+        submitBodyPattern
+      );
       const capture = createCaptureRebinder(page, (target) =>
         wireNetworkCapture(
           target,

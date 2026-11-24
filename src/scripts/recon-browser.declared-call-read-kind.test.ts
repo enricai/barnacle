@@ -8,12 +8,16 @@ const gate = (read: boolean | undefined) =>
     steps,
     submitEndpointPattern: "/graphql",
     declaredCallIsRead: read,
-  } as Parameters<typeof flowHasSubmitSemantics>[0]);
+  } as unknown as Parameters<typeof flowHasSubmitSemantics>[0]);
 
 describe("browser main-loop declared-call read kind (final click)", () => {
   it("query-document POST capture: final click skips the submit judge", () => {
     const t = createDeclaredCallTracker("/graphql", null);
-    t.observe({ method: "POST", url: "https://x.test/graphql", requestPostData: JSON.stringify({ query: "query Q { a }" }) });
+    t.observe({
+      method: "POST",
+      url: "https://x.test/graphql",
+      requestPostData: JSON.stringify({ query: "query Q { a }" }),
+    });
     expect(t.isRead()).toBe(true);
     expect(gate(t.isRead())).toBe(false);
   });
@@ -25,7 +29,11 @@ describe("browser main-loop declared-call read kind (final click)", () => {
   });
   it("mutation POST capture is still judged", () => {
     const t = createDeclaredCallTracker("/graphql", null);
-    t.observe({ method: "POST", url: "https://x.test/graphql", requestPostData: JSON.stringify({ query: "mutation M { b }" }) });
+    t.observe({
+      method: "POST",
+      url: "https://x.test/graphql",
+      requestPostData: JSON.stringify({ query: "mutation M { b }" }),
+    });
     expect(t.isRead()).toBe(false);
     expect(gate(t.isRead())).toBe(gate(undefined));
   });
