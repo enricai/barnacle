@@ -1,4 +1,4 @@
-import * as ts from "typescript";
+import { stripTypeScriptTypes } from "node:module";
 import { describe, expect, it } from "vitest";
 import { emitBrowserFlowTs } from "@/scripts/recon-generate";
 
@@ -55,11 +55,7 @@ describe("emitBrowserFlowTs mixed handover", () => {
 
   it("emits code that parses as TypeScript, with and without handover", () => {
     for (const code of [withTail.code, emit({ tailFromStep: 2 }).code, emit().code]) {
-      const out = ts.transpileModule(code, {
-        reportDiagnostics: true,
-        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-      });
-      expect(out.diagnostics ?? []).toEqual([]);
+      expect(() => stripTypeScriptTypes(code)).not.toThrow();
     }
   });
 });
