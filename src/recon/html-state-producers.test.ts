@@ -65,7 +65,9 @@ describe("HTML bearer token locator", () => {
 
 describe("emitBearerBootstrapSource", () => {
   it("emits no literal and extracts exact-length claim-selected token", async () => {
-    const { emitBearerBootstrapSource, selectionClaims } = await import("./html-state-producers.js");
+    const { emitBearerBootstrapSource, selectionClaims } = await import(
+      "./html-state-producers.js"
+    );
     const src = emitBearerBootstrapSource({
       documentUrl: "https://x.test/",
       claims: selectionClaims({ typ: "clientToken", exp: 1 }),
