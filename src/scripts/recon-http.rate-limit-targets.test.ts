@@ -60,3 +60,46 @@ describe("selectRateLimitTargets — declared submit endpoint via replayed auth"
     expect(selectRateLimitTargets([r], ["example.com"]).targets.size).toBe(0);
   });
 });
+
+describe("selectRateLimitTargets — declared body on a multiplexed endpoint", () => {
+  const url = "https://api.example.com/graphql";
+  const chrome = () => replay(url, { method: "POST", requestBody: '{"operationName":"Chrome"}' });
+  const declared = () =>
+    replay(url, {
+      method: "POST",
+      requestBody: '{"operationName":"Search"}',
+      sourceCapture: "001-capture.json",
+      replayStatus: 401,
+      success: false,
+      authReplay: { status: 200, tokenReplayable: true, tokenSource: null },
+    });
+  const caps = (r: ReplayResult) =>
+    r.sourceCapture === "001-capture.json" ? { authorization: "Bearer t" } : undefined;
+
+  it("picks the replay matching the body pattern over capture order", () => {
+    const { targets } = selectRateLimitTargets(
+      [chrome(), declared()],
+      ["example.com"],
+      null,
+      ["/graphql"],
+      "/graphql",
+      caps,
+      "Search"
+    );
+    expect([...targets.values()]).toEqual([
+      { method: "POST", body: '{"operationName":"Search"}', headers: { authorization: "Bearer t" } },
+    ]);
+  });
+
+  it("keeps first-replay selection without a body pattern", () => {
+    const { targets } = selectRateLimitTargets(
+      [chrome(), declared()],
+      ["example.com"],
+      null,
+      ["/graphql"],
+      "/graphql",
+      caps
+    );
+    expect([...targets.values()][0]?.body).toBe('{"operationName":"Chrome"}');
+  });
+});

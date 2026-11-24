@@ -59,6 +59,7 @@ import {
   type ReplayResult,
   readDeclaredEndpointPatterns,
   readOwnBackendHostnames,
+  readSubmitBodyPattern,
   readSubmitEndpointPattern,
   replayPassed,
   replayReachable,
@@ -952,7 +953,8 @@ export function selectRateLimitTargets(
   fallbackHost: string | null = null,
   declaredEndpointPatterns: readonly string[] = [],
   submitEndpointPattern?: string,
-  captureHeadersFor?: (replay: ReplayResult) => Record<string, string> | undefined
+  captureHeadersFor?: (replay: ReplayResult) => Record<string, string> | undefined,
+  submitBodyPattern?: string
 ): {
   targets: Map<string, { method: string; body: string | null; headers?: Record<string, string> }>;
   skipped: number;
@@ -961,7 +963,16 @@ export function selectRateLimitTargets(
     string,
     { method: string; body: string | null; tier: number; headers?: Record<string, string> }
   >();
-  const seenEndpoints = new Set<string>();
+  // endpointKey -> { collected key, match score } of the replay chosen so far.
+  const seenEndpoints = new Map<string, { key: string; score: number }>();
+  let bodyRx: RegExp | null = null;
+  if (submitBodyPattern) {
+    try {
+      bodyRx = new RegExp(submitBodyPattern);
+    } catch {
+      bodyRx = null;
+    }
+  }
   let skipped = 0;
   const patterns: RegExp[] = [];
   for (const p of declaredEndpointPatterns) {
@@ -996,8 +1007,20 @@ export function selectRateLimitTargets(
       // often gates the response, so probing the bare path measures a
       // different request than the one recorded.
       const endpointKey = `${u.origin}${u.pathname}`;
-      if (!seenEndpoints.has(endpointKey)) {
-        seenEndpoints.add(endpointKey);
+      // A replay whose URL and body match the declared endpoint/body patterns
+      // outranks capture order on a multiplexed endpoint.
+      const declaredUrlMatch = patterns.some((rx) => rx.test(replay.url));
+      const score =
+        bodyRx !== null &&
+        declaredUrlMatch &&
+        typeof replay.requestBody === "string" &&
+        bodyRx.test(replay.requestBody)
+          ? 1
+          : 0;
+      const prior = seenEndpoints.get(endpointKey);
+      if (prior === undefined || score > prior.score) {
+        if (prior !== undefined) collected.delete(prior.key);
+        seenEndpoints.set(endpointKey, { key: `${endpointKey}${u.search}`, score });
         const ct = Object.entries(replay.replayHeaders ?? {}).find(
           ([k]) => k.toLowerCase() === "content-type"
         )?.[1];
@@ -1240,7 +1263,8 @@ async function main(): Promise<void> {
     fallbackHost,
     flowFile ? readDeclaredEndpointPatterns(flowFile) : [],
     flowFile ? readSubmitEndpointPattern(flowFile) : undefined,
-    (r) => probeworthy.find((p) => p.filename === r.sourceCapture)?.capture.requestHeaders
+    (r) => probeworthy.find((p) => p.filename === r.sourceCapture)?.capture.requestHeaders,
+    flowFile ? readSubmitBodyPattern(flowFile) : undefined
   );
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +
