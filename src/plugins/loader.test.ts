@@ -730,6 +730,23 @@ describe("dispatch — executeHttp hot-path branches", () => {
     );
   });
 
+  it("defaults maxAttempts to 1 for an idempotency-declaring plugin without maxAttempts", async () => {
+    const onRetry = vi.fn();
+    const declaring = {
+      ...httpPlugin,
+      meta: { ...httpPlugin.meta, siteId: "idem-default-site", idempotency: {} },
+      executeHttp: undefined,
+      onRetry,
+    } as unknown as SitePlugin<unknown, unknown>;
+    await dispatch(declaring, {}, stubContext);
+    expect(mockRunWithSession).toHaveBeenCalledWith(
+      expect.any(Function),
+      { onRetry, maxAttempts: 1 },
+      undefined,
+      { advancedStealth: undefined }
+    );
+  });
+
   it("forwards Browserbase session params from plugin metadata", async () => {
     const pluginWithBrowserbaseParams: SitePlugin<unknown, unknown> = {
       ...httpPlugin,

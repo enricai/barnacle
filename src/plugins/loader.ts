@@ -7,6 +7,11 @@ import { z } from "zod/v4";
 
 import { FieldViolationError, toApiError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
+import {
+  createIdempotencyGuard,
+  defaultIsSuccess,
+  type IdempotencyGuard,
+} from "@/cache/idempotency-guard";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
 import {
@@ -53,6 +58,7 @@ import {
 import { runWithSession } from "@/scraper/pool";
 import type { BrowserSession } from "@/scraper/session";
 import type {
+  PluginIdempotency,
   SitePlugin,
   SitePluginContext,
   SitePluginExtraRoute,
@@ -99,7 +105,10 @@ export function buildPluginContext(input: BuildPluginContextInput): SitePluginCo
     config: cfg,
     requestId,
     metricsCollector: new MetricsCollector(),
-    recordBeaconOutcome: createBeaconOutcomeRecorder({ requestId, siteId: plugin.meta.siteId }),
+    recordBeaconOutcome: createBeaconOutcomeRecorder({
+      requestId,
+      siteId: plugin.meta.siteId,
+    }),
     telemetry: new RunTelemetry(),
   };
 }
@@ -182,7 +191,7 @@ async function runPluginPipeline<TResult>(
     return (await runWithSession(
       (session) =>
         withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
-      { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
+      { onRetry: plugin.onRetry, maxAttempts: effectiveMaxAttempts(plugin) },
       plugin.meta.taskTimeoutMs,
       {
         advancedStealth: plugin.meta.advancedStealth,
@@ -209,8 +218,7 @@ async function runPluginPipeline<TResult>(
     const t0 = Date.now();
     const fresh = await getOrCreateInFlight(
       key,
-      // biome-ignore lint/style/noNonNullAssertion: guarded by !plugin.executeHttp above
-      () => plugin.executeHttp!(payload, context) as Promise<SitePluginResult<TResult>>
+      () => plugin.executeHttp?.(payload, context) as Promise<SitePluginResult<TResult>>
     );
     recordHotPathLatency(plugin.meta.siteId, Date.now() - t0);
     recordHotPathSuccess(plugin.meta.siteId);
@@ -237,7 +245,7 @@ async function runPluginPipeline<TResult>(
       return (await runWithSession(
         (session) =>
           withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
-        { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
+        { onRetry: plugin.onRetry, maxAttempts: effectiveMaxAttempts(plugin) },
         plugin.meta.browserFallbackTaskTimeoutMs ?? plugin.meta.taskTimeoutMs,
         {
           advancedStealth: plugin.meta.advancedStealth,
@@ -382,7 +390,12 @@ function mergeJoinKeys(
  */
 function toEnvelopeSession(
   session: ReturnType<SitePluginContext["telemetry"]["snapshot"]>["session"]
-): { id: string; provider: string; ip: string | null; ipCapturedAt: string | null } | null {
+): {
+  id: string;
+  provider: string;
+  ip: string | null;
+  ipCapturedAt: string | null;
+} | null {
   if (!session) return null;
   return {
     id: session.sessionId,
@@ -421,7 +434,10 @@ export async function dispatch<TResult>(
   plugin: SitePlugin<unknown, unknown>,
   payload: unknown,
   context: SitePluginContext,
-  options: { forceFallback?: boolean; onCacheMiss?: (key: string) => void } = {}
+  options: {
+    forceFallback?: boolean;
+    onCacheMiss?: (key: string) => void;
+  } = {}
 ): Promise<SitePluginResult<TResult>> {
   const startedAt = Date.now();
   const hasHttpPath = !!plugin.executeHttp && !options.forceFallback;
@@ -501,7 +517,10 @@ export async function dispatch<TResult>(
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     const errorType = classifyDispatchError(err);
-    const failureTags: FailureDispatchTags = { ...ddTags, error_type: errorType };
+    const failureTags: FailureDispatchTags = {
+      ...ddTags,
+      error_type: errorType,
+    };
 
     recordDdFailure(failureTags);
     recordDdDuration(ddTags, durationMs);
@@ -527,6 +546,7 @@ export async function dispatch<TResult>(
     const apiErr = toApiError(err);
     if (apiErr) {
       (apiErr as unknown as { metrics: DispatchMetrics }).metrics = metrics;
+      (apiErr as unknown as { originalError: unknown }).originalError = err;
       throw apiErr;
     }
     (err as unknown as { metrics: DispatchMetrics }).metrics = metrics;
@@ -559,6 +579,12 @@ const ResponseEnvelopeSchema = z.object({
   }),
   metrics: DispatchMetricsSchema.optional(),
 });
+
+const AcceptedResponseSchema = ResponseEnvelopeSchema.extend({
+  operationId: z.string(),
+  operationStatus: z.literal("pending"),
+  pollUrl: z.string(),
+}).passthrough();
 
 function buildEnvelopedResponseSchema(pluginSchema: z.ZodType): z.ZodType {
   if (pluginSchema instanceof z.ZodObject) {
@@ -598,11 +624,14 @@ export async function registerRoutes(
         onRequest: [app.authenticate],
         schema: {
           body: plugin.meta.bodySchema,
-          response: { 200: buildEnvelopedResponseSchema(plugin.meta.responseSchema) },
+          response: {
+            200: buildEnvelopedResponseSchema(plugin.meta.responseSchema),
+            ...(plugin.meta.idempotency ? { 202: AcceptedResponseSchema } : {}),
+          },
           ...(plugin.meta.multipart === true ? { consumes: ["multipart/form-data"] } : {}),
         },
       },
-      async (request) => {
+      async (request, reply) => {
         const forceFallback = request.headers["x-barnacle-execution"] === "browser";
         const context = buildPluginContext({
           plugin,
@@ -610,7 +639,28 @@ export async function registerRoutes(
           requestId: request.id,
           logger: extendLogger(request.log as unknown as pino.Logger),
         });
-        const result = await dispatch(plugin, request.body, context, {
+        const declared = plugin.meta.idempotency;
+        if (
+          declared &&
+          (declared.async === true || request.headers["x-barnacle-async"] === "true")
+        ) {
+          idempotencyGuard ??= createIdempotencyGuard();
+          const operationId = await idempotencyGuard.start(
+            plugin.meta.siteId,
+            dataPredicate(declared),
+            request.body,
+            () => dispatch(plugin, request.body, context, { forceFallback })
+          );
+          if (operationId !== null) {
+            reply.code(202);
+            return successEnvelope({
+              operationId,
+              operationStatus: "pending" as const,
+              pollUrl: `${routePath}/operations/${operationId}`,
+            });
+          }
+        }
+        const result = await dispatchWithIdempotency(plugin, request.body, context, {
           forceFallback,
           // Recorded so the error handler can evict this entry if the response
           // fails schema serialization on the way out — otherwise the 500 it
@@ -626,10 +676,69 @@ export async function registerRoutes(
       }
     );
 
+    if (plugin.meta.idempotency) {
+      app.get(
+        `${routePath}/operations/:operationId`,
+        { onRequest: [app.authenticate] },
+        async (request) => {
+          const { operationId } = request.params as { operationId: string };
+          idempotencyGuard ??= createIdempotencyGuard();
+          const st = await idempotencyGuard.status(plugin.meta.siteId, operationId);
+          if (!st)
+            throw new FieldViolationError(`unknown operation ${JSON.stringify(operationId)}`);
+          if (st.status === "succeeded") {
+            const result = st.value as { data: unknown; metrics?: unknown };
+            return successEnvelope({
+              operationId,
+              operationStatus: "succeeded" as const,
+              result: {
+                ...(result.data as object),
+                ...(result.metrics ? { metrics: result.metrics } : {}),
+              },
+            });
+          }
+          return successEnvelope({
+            operationId,
+            operationStatus: st.status,
+            ...("message" in st ? { message: st.message } : {}),
+          });
+        }
+      );
+    }
+
     logger.info(`${plugin.meta.siteId} → ${routePath} (loaded)`);
   }
 
   registerExtraRoutes(app, cfg, plugins);
+}
+
+let idempotencyGuard: IdempotencyGuard | undefined;
+
+/**
+ * dispatch() results are `{data, metrics}`; the plugin-declared `isSuccess`
+ * is a predicate over the result data, so apply it to `.data`.
+ */
+function dataPredicate(declared: PluginIdempotency): PluginIdempotency {
+  const isSuccess = declared.isSuccess ?? defaultIsSuccess;
+  return { ...declared, isSuccess: (r) => isSuccess((r as { data?: unknown } | null)?.data) };
+}
+
+/**
+ * dispatch() wrapped in the duplicate-submission guard when the plugin
+ * declares `meta.idempotency`; otherwise exactly dispatch().
+ */
+async function dispatchWithIdempotency(
+  plugin: SitePlugin<unknown, unknown>,
+  body: unknown,
+  context: SitePluginContext,
+  options: Parameters<typeof dispatch>[3]
+): Promise<Awaited<ReturnType<typeof dispatch>>> {
+  const declared = plugin.meta.idempotency;
+  if (!declared) return dispatch(plugin, body, context, options);
+  idempotencyGuard ??= createIdempotencyGuard();
+  return idempotencyGuard.run(plugin.meta.siteId, dataPredicate(declared), body, () =>
+    dispatch(plugin, body, context, options)
+  );
 }
 
 /**
@@ -727,7 +836,7 @@ function registerExtraRoutes(
         if (route.dispatch === true) {
           // dispatch() owns redaction registration, tracking, timeout, fallback
           // and the submission envelope; shape the reply exactly as /run does.
-          const result = await dispatch(plugin, body, context, {
+          const result = await dispatchWithIdempotency(plugin, body, context, {
             forceFallback: request.headers["x-barnacle-execution"] === "browser",
           });
           return successEnvelope({
@@ -794,4 +903,11 @@ function registerExtraRoutes(
       `${entry.path} → [${[...entry.owners.keys()].join(", ")}] via ${entry.method} (loaded)`
     );
   }
+}
+
+/** Declaring idempotency means a blind whole-task retry is unsafe: default to 1 attempt. */
+function effectiveMaxAttempts(plugin: {
+  meta: { maxAttempts?: number; idempotency?: unknown };
+}): number | undefined {
+  return plugin.meta.maxAttempts ?? (plugin.meta.idempotency ? 1 : undefined);
 }

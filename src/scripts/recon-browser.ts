@@ -155,7 +155,7 @@ import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { createCaptureRebinder } from "@/scripts/recon-capture-rebind";
-import { resolveReconRunDir } from "@/scripts/recon-shared";
+import { EXTRA_PAYLOAD_FIELD_SCHEMA, resolveReconRunDir } from "@/scripts/recon-shared";
 import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
 import { allocateTestmailInbox, type TestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
@@ -780,9 +780,33 @@ const RECON_FOLD_RETURN_ENTRY_SCHEMA = z
     message: "foldReturn entry needs joinFields or joinTemplate",
   });
 
+/**
+ * Declared retry budget for the generated plugin: `maxAttempts`, a positive
+ * integer that `recon:generate` emits as `meta.maxAttempts` (when combined
+ * with `irreversible`, the smaller wins). recon-browser itself never consumes
+ * it — `recon:generate` reads it from the flow file (`readDeclaredMaxAttempts`)
+ * and replan write-back carries it through `extractUnmanagedFlowFileKeys` — so
+ * the flow-file object branch validates it as a check over the loose object
+ * ({@link flowFileObjectSchema}) rather than declaring it as a typed shape key.
+ */
+export const RECON_FLOW_RETRY_BUDGET_SCHEMA = z.object({
+  maxAttempts: z.int().positive().optional(),
+});
+
+/** The flow file's object form: the declared keys, plus the retry budget checked on the raw object. */
+function flowFileObjectSchema<Shape extends z.core.$ZodLooseShape>(shape: Shape) {
+  return z.looseObject(shape).superRefine((flow, ctx) => {
+    const budget = RECON_FLOW_RETRY_BUDGET_SCHEMA.safeParse(flow);
+    if (budget.success) return;
+    for (const issue of budget.error.issues) {
+      ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
+    }
+  });
+}
+
 export const RECON_FLOW_FILE_SCHEMA = z.union([
   RECON_FLOW_SCHEMA,
-  z.object({
+  flowFileObjectSchema({
     steps: RECON_FLOW_SCHEMA,
     /**
      * The flow author's real, human-readable name for the site plugin,
@@ -854,11 +878,18 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * "<tenant>.<ats>.com"].
      */
     ownBackendHostnames: z.array(z.string().min(1)).optional(),
+    /** Extra payload fields the generator emits; see `EXTRA_PAYLOAD_FIELD_SCHEMA`. */
+    extraPayloadFields: z.array(EXTRA_PAYLOAD_FIELD_SCHEMA).optional(),
     /**
      * Declares the ATS cannot be replayed as raw HTTP, so the generator emits
      * a browser-flow-only plugin regardless of HTTP analysis.
      */
     browserFlowOnly: z.boolean().optional(),
+    /**
+     * Declares the submission cannot be safely repeated; implies maxAttempts 1
+     * (the numeric budget is {@link RECON_FLOW_RETRY_BUDGET_SCHEMA}).
+     */
+    irreversible: z.boolean().optional(),
     /**
      * Optional site-specific class-name prefixes that wrap form/error
      * state. The Haiku invalid-fields judge uses these as additional
@@ -968,6 +999,11 @@ interface NormalizedStep {
   // executeNavigateStep (a direct page.goto) instead of the self-heal cascade.
   // Optional for the same reason as submitStep — absence is treated as false.
   navigateTo?: string;
+  // See RECON_FLOW_STEP_SCHEMA: recorded into the persisted flow but never
+  // executed, verified, or replanned at record time. Absence = false.
+  declareOnly?: boolean;
+  // See RECON_FLOW_STEP_SCHEMA: tags the payload field as sensitive for redaction.
+  sensitive?: "digits" | "word";
 }
 
 /**
@@ -1004,6 +1040,8 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           // Preserve a persisted replan marker across runs; absence = authored.
           origin: s.origin ?? "original",
           navigateTo: s.navigateTo,
+          declareOnly: s.declareOnly,
+          sensitive: s.sensitive,
         }
   );
 }
@@ -1051,6 +1089,8 @@ function denormalizeStep(step: NormalizedStep):
       frameSelector?: string;
       origin?: "replan";
       navigateTo?: string;
+      declareOnly?: true;
+      sensitive?: "digits" | "word";
     } {
   const hasSplicerHint = step.payloadField !== undefined || step.payloadFieldNone === true;
   // targetId, a "replan" origin, and navigateTo are load-bearing identity that
@@ -1062,6 +1102,8 @@ function denormalizeStep(step: NormalizedStep):
     step.targetId !== undefined ||
     step.origin === "replan" ||
     step.navigateTo !== undefined ||
+    step.declareOnly === true ||
+    step.sensitive !== undefined ||
     step.frameSelector !== undefined;
   if (
     !step.optional &&
@@ -1088,6 +1130,8 @@ function denormalizeStep(step: NormalizedStep):
     frameSelector?: string;
     origin?: "replan";
     navigateTo?: string;
+    declareOnly?: true;
+    sensitive?: "digits" | "word";
   } = {
     step: step.instruction,
   };
@@ -1103,6 +1147,8 @@ function denormalizeStep(step: NormalizedStep):
   if (step.frameSelector !== undefined) out.frameSelector = step.frameSelector;
   if (step.origin === "replan") out.origin = "replan";
   if (step.navigateTo !== undefined) out.navigateTo = step.navigateTo;
+  if (step.declareOnly === true) out.declareOnly = true;
+  if (step.sensitive !== undefined) out.sensitive = step.sensitive;
   return out;
 }
 
@@ -3208,6 +3254,15 @@ async function main(): Promise<void> {
 
       for (let i = 0; i < plan.length; i++) {
         const step = plan[i]!;
+        if (step.declareOnly === true) {
+          // Declare-only: persisted with the flow but never dispatched to any
+          // executor, submit verification, or replan at record time.
+          logger.info(
+            `${formatStepPrefix(i, () => plan.length)}: declareOnly — recorded without executing: ${step.instruction}`
+          );
+          completedSteps.push(step.instruction);
+          continue;
+        }
         // Liveness gate: a closed/crashed Stagehand session makes `page.url()`
         // throw synchronously. Every downstream observe/act probe treats that
         // throw as "no candidates" and, for an optional step, silently skips

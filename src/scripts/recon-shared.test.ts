@@ -243,3 +243,32 @@ describe("readSuccessUrlFragments", () => {
     expect(readSuccessUrlFragments(flowFile)).toEqual(["/applied"]);
   });
 });
+
+describe("readDeclaredMaxAttempts", () => {
+  it("resolves irreversible/maxAttempts declarations", async () => {
+    const { readDeclaredMaxAttempts } = await loadResolver();
+    tmpDir = mkdtempSync(join(tmpdir(), "attempts-"));
+    const f = (c: string) => {
+      const p = join(tmpDir as string, `${Math.random()}.json`);
+      writeFileSync(p, c);
+      return p;
+    };
+    expect(readDeclaredMaxAttempts(f('{"irreversible":true}'))).toBe(1);
+    expect(readDeclaredMaxAttempts(f('{"irreversible":true,"maxAttempts":3}'))).toBe(1);
+    expect(readDeclaredMaxAttempts(f('{"maxAttempts":3}'))).toBe(3);
+    expect(readDeclaredMaxAttempts(f('{"irreversible":false,"maxAttempts":2}'))).toBe(2);
+    for (const bad of [
+      "[]",
+      "{}",
+      "null",
+      "not json",
+      '{"maxAttempts":0}',
+      '{"maxAttempts":-1}',
+      '{"maxAttempts":1.5}',
+      '{"maxAttempts":"2"}',
+      '{"irreversible":"true"}',
+    ])
+      expect(readDeclaredMaxAttempts(f(bad)), bad).toBeNull();
+    expect(readDeclaredMaxAttempts(join(tmpDir, "missing.json"))).toBeNull();
+  });
+});
