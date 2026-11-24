@@ -54,7 +54,10 @@ describe("read flow: GET mint consumed by the declared GET read", () => {
   });
 
   it("keeps a mint whose token is re-sent in the declared read's header", () => {
-    const mint = cap("/csrf", 1, { resp: { token: TOKEN }, respHeaders: { "x-csrf-token": TOKEN } });
+    const mint = cap("/csrf", 1, {
+      resp: { token: TOKEN },
+      respHeaders: { "x-csrf-token": TOKEN },
+    });
     const read = cap("/rows", 2, { headers: { "x-csrf-token": TOKEN } });
     const r = run([mint, read]);
     expect(kept(r, mint)).toBe(true);
