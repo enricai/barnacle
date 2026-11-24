@@ -2660,6 +2660,19 @@ export function shouldCaptureSelectionState(params: {
   return !(submitStep || isAdvanceStep(step));
 }
 
+const DATA_ENTRY_WORDING =
+  /\b(fill|type|enter|input|select|choose|upload|answer|tick|toggle|pick|attach|paste|write|check|set|accept|agree)\b/i;
+
+/** True when an instruction is present and reads as navigate/click/read only. */
+function isReadingOnlyInstruction(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  return (
+    !DATA_ENTRY_WORDING.test(instruction) &&
+    !isAdvanceStep(instruction) &&
+    classifyStepSubmitIntent(instruction) !== "submit"
+  );
+}
+
 /**
  * Whether the flow's FINAL step carries submit semantics. A read-only flow
  * (no step flagged `submitStep: true`, no `submitEndpointPattern`, no
@@ -2686,6 +2699,10 @@ export function flowHasSubmitSemantics(params: {
   if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
   if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
   if (params.readOnly === true) return false;
+  // A flow whose every step is worded as plain navigation/reading (no data
+  // entry, advance, or submit wording) supplies nothing to submit, so the
+  // endpoint pattern alone must not make its final step a submission.
+  if (steps.length > 0 && steps.every((s) => isReadingOnlyInstruction(s.instruction))) return false;
   // An earlier step whose own wording declares submit already owns the role;
   // the fallback is only for a self-heal-appended final step.
   const earlierStepOwnsSubmit = steps

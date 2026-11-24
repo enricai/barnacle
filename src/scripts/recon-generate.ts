@@ -2324,7 +2324,7 @@ export function deriveRequestHeaders(
     );
     for (const h of r.shapeRestoringHeaders ?? []) {
       const lower = h.toLowerCase();
-      if (IGNORE_REQUEST_HEADERS.has(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower)) continue;
+      if (IGNORE_REQUEST_HEADERS.has(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower) || isCredentialHeaderName(lower)) continue;
       loadBearing.add(lower);
       loadBearingSources.set(lower, [...(loadBearingSources.get(lower) ?? []), ...own]);
       if (!counts.has(lower)) counts.set(lower, 0);
@@ -2335,7 +2335,7 @@ export function deriveRequestHeaders(
   const headerSources = relevantCaptures.length > 0 ? relevantCaptures : captures;
   for (const [lower, count] of counts) {
     if (count < relevantCaptures.length && !loadBearing.has(lower)) continue;
-    if (isVolatileHeaderName(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower)) continue;
+    if (isVolatileHeaderName(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower) || isCredentialHeaderName(lower)) continue;
     if (Object.keys(baseline).some((k) => k.toLowerCase() === lower)) continue;
     for (const c of loadBearing.has(lower)
       ? (loadBearingSources.get(lower) ?? [])
@@ -13341,12 +13341,13 @@ export function findFrozenVaryingDrillParams(
   })();
   if (parsedBody !== undefined) {
     // Same-operation GraphQL captures are one request issued with different
-    // inputs (payload variants), never a fold drill — only a DIFFERENT
-    // operation on the endpoint can be a drill whose params freeze.
+    // inputs (payload variants), never a fold drill; a DIFFERENT operation is
+    // a different request whose body (query text) trivially differs, so it is
+    // no evidence of a frozen value either.
     const isGraphql = capture.query != null || capture.operationName != null;
     const ownIdentity = operationGroupKey(capture);
     const otherBodies = sameEndpointCaptures
-      .filter((c) => !isGraphql || operationGroupKey(c) !== ownIdentity)
+      .filter((c) => !isGraphql || operationGroupKey(c) === ownIdentity)
       .map((c) => {
         try {
           return typeof c.requestPostData === "string" && c.requestPostData.length > 0
@@ -13366,6 +13367,9 @@ export function findFrozenVaryingDrillParams(
       const stringValue = String(value);
       if (!isFrozenLiteral(stringValue)) continue;
       const fieldPath = path.join(".");
+      // A GraphQL `variables.*` value differing across same-operation captures
+      // is payload-variant evidence (a caller-supplied field), not a freeze.
+      if (isGraphql && path[0] === "variables") continue;
       const differing = otherBodies
         .map((otherBody) => readComparableBodyLeaf(parsedBody, otherBody, path))
         .find((v) => v !== undefined && String(v) !== stringValue);
