@@ -3831,7 +3831,11 @@ function resends(haystack: string, value: string): boolean {
  * Admitting it lets `indexStateValues`/`compileActionSteps` thread the value.
  * A GET that issues nothing later reused stays dropped.
  */
-function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
+function issuesTokenReusedLater(
+  captures: Capture[],
+  index: number,
+  isDeclaredRead: (capture: Capture) => boolean = () => false
+): boolean {
   const getCapture = captures[index]!;
   if (getCapture.responseBody === undefined || getCapture.responseBody === null) return false;
   const tokens = new Set<string>();
@@ -3851,7 +3855,9 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
   if (tokens.size === 0) return false;
   for (let j = index + 1; j < captures.length; j++) {
     const later = captures[j]!;
-    if (later.method === "GET" || later.status < 200 || later.status >= 400) continue;
+    if (later.status < 200 || later.status >= 400) continue;
+    // A later GET only counts when it is the flow's declared read.
+    if (later.method === "GET" && !isDeclaredRead(later)) continue;
     const haystacks = [
       later.url,
       later.requestPostData ?? "",
@@ -4006,7 +4012,11 @@ export function extractActionSequence(
         !matchesFoldReturn(capture) &&
         !matchesDeclaredSubmitEndpoint(capture) &&
         !matchesDeclaredSubmitBody(capture) &&
-        !issuesTokenReusedLater(captures, index)
+        !issuesTokenReusedLater(
+          captures,
+          index,
+          (c) => matchesDeclaredSubmitEndpoint(c) || matchesDeclaredSubmitBody(c)
+        )
       )
         return false;
       if ((capture.status < 200 || capture.status >= 300) && !isServerRenderedFormSubmit(capture))
