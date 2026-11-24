@@ -27,12 +27,7 @@ describe("readHttpSteps", () => {
     });
   });
   it("is null for absent and legacy array; throws on invalid shapes", () => {
-    for (const b of [
-      "[]",
-      "null",
-      "{}",
-    ])
-      expect(readHttpSteps(flow(b))).toBeNull();
+    for (const b of ["[]", "null", "{}"]) expect(readHttpSteps(flow(b))).toBeNull();
     for (const b of [
       '{"httpSteps":"x"}',
       '{"httpSteps":null}',
