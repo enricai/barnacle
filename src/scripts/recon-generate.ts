@@ -14745,7 +14745,9 @@ export type SelfEndpointDrillPolicy = boolean | ((capture: Capture) => boolean);
 let ambientDeclaredSubmitMatcher: (capture: Capture) => boolean = () => false;
 
 /** No foldReturn: forbid all; foldReturn + declared submit: forbid submit variants. */
-function selfEndpointDrillPolicyFor(foldReturnSpec: FoldReturnSpec | null): SelfEndpointDrillPolicy {
+function selfEndpointDrillPolicyFor(
+  foldReturnSpec: FoldReturnSpec | null
+): SelfEndpointDrillPolicy {
   return foldReturnSpec === null ? false : ambientDeclaredSubmitMatcher;
 }
 
