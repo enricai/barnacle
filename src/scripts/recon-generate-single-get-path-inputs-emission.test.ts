@@ -49,7 +49,7 @@ function generate(url: string): string {
     { cwd: REPO_ROOT, encoding: "utf8" }
   );
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-  const c = readFileSync(join(siteOutDir, "contract.ts"), "utf8"); writeFileSync(`/tmp/out-${dirs.length}.ts`, c); return c;
+  return readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 }
 
 describe("recon-generate — single GET winner emission", () => {
