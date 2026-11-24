@@ -142,7 +142,8 @@ export function cacheStats(): {
  * request is served the same 500 from memory, turning a transient upstream
  * quirk into a sticky outage. The write stays where it is (moving it would
  * break the in-flight coalescing contract below); the error path invalidates
- * instead.
+ * instead. Results that declare themselves incomplete (`data.truncated === true`)
+ * are never written in the first place (see `getOrCreateInFlight`).
  */
 export function invalidateResponse(key: string): void {
   cache.delete(key);
@@ -153,7 +154,9 @@ export function invalidateResponse(key: string): void {
  * cache miss. The first caller kicks off the origin call and all
  * concurrent callers await the same promise. On resolve, the value is
  * written to the LRU cache so subsequent (non-racing) reads hit
- * normally.
+ * normally. An optional `isCacheable` predicate is evaluated after the
+ * producer settles; when it returns false the value is returned to all
+ * awaiters but not cached (default: always cache).
  *
  * Callers still do the `getCachedResponse` check first — this helper
  * is only invoked on a miss. Rejection propagates to every awaiter so
@@ -161,7 +164,8 @@ export function invalidateResponse(key: string): void {
  */
 export async function getOrCreateInFlight<T extends object>(
   key: string,
-  producer: () => Promise<T>
+  producer: () => Promise<T>,
+  isCacheable: (value: T) => boolean = () => true
 ): Promise<T> {
   const existing = inFlight.get(key);
   if (existing) return existing as Promise<T>;
@@ -171,7 +175,9 @@ export async function getOrCreateInFlight<T extends object>(
   // yield before the `inFlight.set` below, defeating coalescing.
   const promise = producer()
     .then((value) => {
-      cache.set(key, value);
+      // A result that declares itself partial must not be stored as the
+      // complete answer; it is still returned to every coalesced awaiter.
+      if (isCacheable(value)) cache.set(key, value);
       return value;
     })
     .finally(() => {
