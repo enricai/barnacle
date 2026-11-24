@@ -8047,6 +8047,45 @@ function pathToVarName(path: string[]): string {
   return "value";
 }
 
+export function actionSequenceIsReadSamplesFor(o: {
+  compiledActionSteps: ReturnType<typeof compileActionSteps>;
+  actionCaptures: { capture: Capture }[];
+  readSiblings: Capture[];
+  declaresSubmitPattern: boolean;
+  matchesDeclaredSubmit: (c: Capture) => boolean;
+  isRecurringReadFlowBeacon: (c: Capture) => boolean;
+  isDeclaredDrillCapture: (c: Capture) => boolean;
+}): boolean {
+  const { compiledActionSteps } = o;
+  const feedsDeclaredStep = (capture: Capture): boolean =>
+    stepFeedsDeclaredSubmit(capture, compiledActionSteps, o.matchesDeclaredSubmit);
+  const feedsLaterStep = (capture: Capture): boolean =>
+    compiledActionSteps.find((s) => s.capture === capture)?.consumers?.some((c) => c !== capture) ??
+    false;
+  const isIncidentalReadFlowPost = (capture: Capture): boolean =>
+    o.declaresSubmitPattern && !o.matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
+  return (
+    compiledActionSteps.length === 0 ||
+    o.actionCaptures.every(
+      (a) =>
+        o.readSiblings.some(
+          (r) => r === a.capture || (r.url === a.capture.url && r.timestamp === a.capture.timestamp)
+        ) ||
+        o.isRecurringReadFlowBeacon(a.capture) ||
+        isIncidentalReadFlowPost(a.capture) ||
+        o.isDeclaredDrillCapture(a.capture) ||
+        // A successful GET is a read, never a submission, whatever its path shape —
+        // unless its response feeds a later declared step (a token mint stays a step).
+        (a.capture.method === "GET" &&
+          a.capture.status >= 200 &&
+          a.capture.status < 300 &&
+          !feedsDeclaredStep(a.capture) &&
+          // A GET whose response a later step re-sends is a link of a chain, not a sample.
+          !feedsLaterStep(a.capture))
+    )
+  );
+}
+
 /** True only when a value the capture produces is re-sent, transitively through
  * other steps, by a capture matching the declared submit pattern. */
 export function stepFeedsDeclaredSubmit(
@@ -22385,34 +22424,15 @@ export async function main(): Promise<void> {
     // step consumes (a one-off analytics or consent POST) is page chrome, not a
     // step. One whose response feeds a later request (a token mint) still is.
     const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
-    const feedsDeclaredStep = (capture: Capture): boolean =>
-      stepFeedsDeclaredSubmit(capture, compiledActionSteps, matchesDeclaredSubmit);
-    const feedsLaterStep = (capture: Capture): boolean =>
-      compiledActionSteps
-        .find((s) => s.capture === capture)
-        ?.consumers?.some((c) => c !== capture) ?? false;
-    const isIncidentalReadFlowPost = (capture: Capture): boolean =>
-      declaresSubmitPattern && !matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
-    const actionSequenceIsReadSamples =
-      compiledActionSteps.length === 0 ||
-      actionCaptures.every(
-        (a) =>
-          readSiblings.some(
-            (r) =>
-              r === a.capture || (r.url === a.capture.url && r.timestamp === a.capture.timestamp)
-          ) ||
-          isRecurringReadFlowBeacon(a.capture) ||
-          isIncidentalReadFlowPost(a.capture) ||
-          isDeclaredDrillCapture(a.capture) ||
-          // A successful GET is a read, never a submission, whatever its path shape —
-          // unless its response feeds a later declared step (a token mint stays a step).
-          (a.capture.method === "GET" &&
-            a.capture.status >= 200 &&
-            a.capture.status < 300 &&
-            !feedsDeclaredStep(a.capture) &&
-            // A GET whose response a later step re-sends is a link of a chain, not a sample.
-            !feedsLaterStep(a.capture))
-      );
+    const actionSequenceIsReadSamples = actionSequenceIsReadSamplesFor({
+      compiledActionSteps,
+      actionCaptures,
+      readSiblings,
+      declaresSubmitPattern,
+      matchesDeclaredSubmit,
+      isRecurringReadFlowBeacon,
+      isDeclaredDrillCapture,
+    });
     const isReadOnlyGetFlow =
       !gql &&
       actionSequenceIsReadSamples &&

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  actionSequenceIsReadSamplesFor,
   compileActionSteps,
   extractActionSequence,
   indexStateValues,
@@ -86,7 +87,11 @@ describe("compileActionSteps produces for each origin kind", () => {
       buildCapture({
         url: `https://a.example.com/go?csrf=${T3}`,
         requestPostData: `raw=${T1}&t=${T2}`,
-        requestHeaders: { "Content-Type": "text/plain", "X-Price": T2, "X-Sid": T1 },
+        requestHeaders: {
+          "Content-Type": "text/plain",
+          "X-Price": T2,
+          "X-Sid": T1,
+        },
         responseBody: { ok: true },
         timestamp: "2024-01-01T00:00:01Z",
       }),
@@ -97,5 +102,90 @@ describe("compileActionSteps produces for each origin kind", () => {
     expect(kinds.filter((k) => k === "header").length).toBeGreaterThanOrEqual(2);
     expect(kinds).toContain("html");
     expect(first?.consumers).toContain(caps[1]);
+  });
+});
+
+describe("read-only GET classification inputs: incidental mint GET and beacon POST", () => {
+  // A GET mint hands its token over as a cookie (GET bodies only index UUIDs).
+  const MINT_TOKEN = "Zk9qXv81T3mWb7LpR2dYc5Hn";
+  const BEACON_TOKEN = "bcn_Qq8wXv81T3mWb7LpR2dYc5Hn";
+  const isDeclaredRead = (c: { url: string }) => c.url.includes("/items/search");
+
+  function steps(readSendsMint: boolean) {
+    const mint = buildCapture({
+      url: "https://shop.example.test/session/token",
+      requestPostData: null,
+      method: "GET",
+      responseBody: {},
+      responseHeaders: { "set-cookie": `sid=${MINT_TOKEN}; Path=/` },
+      timestamp: "2024-01-01T00:00:01Z",
+    });
+    const beacon = buildCapture({
+      url: "https://shop.example.test/analytics/beacon",
+      requestPostData: JSON.stringify({ b: 1 }),
+      requestHeaders: { Cookie: `sid=${MINT_TOKEN}` },
+      responseBody: { seq: BEACON_TOKEN },
+      timestamp: "2024-01-01T00:00:02Z",
+    });
+    const events = buildCapture({
+      url: "https://shop.example.test/analytics/events",
+      requestPostData: JSON.stringify({ seq: BEACON_TOKEN }),
+      responseBody: { ok: true },
+      timestamp: "2024-01-01T00:00:03Z",
+    });
+    const read = buildCapture({
+      url: "https://shop.example.test/items/search?q=widgets",
+      requestPostData: null,
+      method: "GET",
+      requestHeaders: readSendsMint
+        ? { Cookie: `sid=${MINT_TOKEN}` }
+        : { Accept: "application/json" },
+      responseBody: { items: [1, 2, 3] },
+      timestamp: "2024-01-01T00:00:04Z",
+    });
+    const caps = [mint, beacon, events, read];
+    const seq = caps.map((capture, index) => ({ capture, index }));
+    const idx = new Set(seq.map((a) => a.index));
+    return {
+      mint,
+      beacon,
+      events,
+      read,
+      steps: compileActionSteps(seq, indexStateValues(caps, new Set(), idx)),
+    };
+  }
+
+  it("mint GET and beacon POST that feed only each other never feed the declared read", () => {
+    const f = steps(false);
+    for (const c of [f.mint, f.beacon, f.events]) {
+      expect(stepFeedsDeclaredSubmit(c, f.steps, isDeclaredRead)).toBe(false);
+    }
+    expect(stepFeedsDeclaredSubmit(f.mint, f.steps, (c) => c === f.events)).toBe(true);
+  });
+
+  it("a mint GET whose token the declared read re-sends stays a step", () => {
+    const f = steps(true);
+    expect(stepFeedsDeclaredSubmit(f.mint, f.steps, isDeclaredRead)).toBe(true);
+  });
+
+  const classify = (readSendsMint: boolean) => {
+    const f = steps(readSendsMint);
+    return actionSequenceIsReadSamplesFor({
+      compiledActionSteps: f.steps,
+      actionCaptures: f.steps.map((s) => ({ capture: s.capture })),
+      readSiblings: [f.read],
+      declaresSubmitPattern: true,
+      matchesDeclaredSubmit: isDeclaredRead,
+      isRecurringReadFlowBeacon: () => false,
+      isDeclaredDrillCapture: () => false,
+    });
+  };
+
+  it("incidental mint GET and beacon POST leave the sequence a read", () => {
+    expect(classify(false)).toBe(true);
+  });
+
+  it("a mint GET the declared read re-sends keeps it a multi-step flow", () => {
+    expect(classify(true)).toBe(false);
   });
 });
