@@ -1273,8 +1273,8 @@ export function isServerRenderedFormSubmit(capture: {
 }
 
 /**
- * True when `capture` is a structured query: a JSON object request body with
- * at least one nested object/array value (facet filters), answered by a
+ * True when `capture` is a structured query: a JSON object request body (filters),
+ * answered by a
  * response carrying a non-empty array of record objects. A beacon's varying
  * body/response is scalar telemetry; a re-issued search with different filter
  * values is answered with a collection of records.
@@ -1291,8 +1291,6 @@ function isStructuredQueryWithRecordResponse(capture: {
     return false;
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
-  const hasNested = Object.values(body).some((v) => typeof v === "object" && v !== null);
-  if (!hasNested) return false;
   const hasRecords = (v: unknown, depth: number): boolean => {
     if (depth > 3 || typeof v !== "object" || v === null) return false;
     if (Array.isArray(v)) {
