@@ -22285,7 +22285,9 @@ export async function main(): Promise<void> {
           ) ||
           isRecurringReadFlowBeacon(a.capture) ||
           isIncidentalReadFlowPost(a.capture) ||
-          isDeclaredDrillCapture(a.capture)
+          isDeclaredDrillCapture(a.capture) ||
+          // A successful GET is a read, never a submission, whatever its path shape.
+          (a.capture.method === "GET" && a.capture.status >= 200 && a.capture.status < 300)
       );
     const isReadOnlyGetFlow =
       !gql &&
