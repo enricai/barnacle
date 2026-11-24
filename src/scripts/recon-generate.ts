@@ -14548,7 +14548,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
   globallyConsumedIndices: ReadonlySet<number>,
   requestStringValueIndex: ReadonlyMap<string, number[]>,
   // See detectDrillDownFoldPlan's identical parameter.
-  allowSelfEndpointDrill = true
+  selfEndpointDrill: SelfEndpointDrillPolicy = true
 ): PrimaryScanGroup[] {
   scanPrimaryCandidateGroupsCallCount++;
   const primary = actions[primaryIndex]!;
@@ -14602,8 +14602,14 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // operation. Same-operation identity (operationGroupKey) is what makes a
       // capture a payload variant of the primary: it differs only in
       // variables, is evidence for payload fields, and is never a drill.
+      // A flow that declares a foldReturn AND a submit pattern keeps its real
+      // drills, but a same-endpoint candidate that is itself a declared-submit
+      // capture is a payload variant of the search, never a per-item drill.
+      const selfDrillForbidden =
+        selfEndpointDrill === false ||
+        (typeof selfEndpointDrill === "function" && selfEndpointDrill(drill.capture));
       if (
-        !allowSelfEndpointDrill &&
+        selfDrillForbidden &&
         endpointKey(drill.capture.url) === primaryEndpointKey &&
         (!isGraphQLCapture(primary.capture) ||
           operationGroupKey(drill.capture) === operationGroupKey(primary.capture))
@@ -14730,6 +14736,21 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
   return groups;
 }
 
+/**
+ * Whether a same-endpoint capture may become a per-item drill: `true` allows
+ * it, `false` forbids it, a matcher forbids only declared-submit captures.
+ */
+export type SelfEndpointDrillPolicy = boolean | ((capture: Capture) => boolean);
+
+let ambientDeclaredSubmitMatcher: (capture: Capture) => boolean = () => false;
+
+/** No foldReturn: forbid all; foldReturn + declared submit: forbid submit variants. */
+function selfEndpointDrillPolicyFor(
+  foldReturnSpec: FoldReturnSpec | null
+): SelfEndpointDrillPolicy {
+  return foldReturnSpec === null ? false : ambientDeclaredSubmitMatcher;
+}
+
 export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   actions: readonly T[],
   // When set (see computeEmittedPrimaryAnchor), constrains the outer loop's
@@ -14744,14 +14765,16 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
    * per-item drill target.
    *
    * `true` (the default) preserves the existing structural search for every
-   * caller. Pass `false` when the flow declared NO `foldReturn`: there is then
+   * caller. A function is the flow's declared-submit matcher: a same-endpoint
+   * candidate it accepts is a payload variant of the search and is skipped,
+   * other same-endpoint candidates stay eligible. Pass `false` when the flow declared NO `foldReturn`: there is then
    * no author intent to fold anything, so a same-endpoint "drill" can only be
    * a re-query of the search under a different facet — never a real per-item
    * drill-down. Inventing one from that pairing is what makes
    * `assertNoFrozenVaryingDrillParams` throw on a read-only GET search whose
    * flow deliberately varies its facets.
    */
-  allowSelfEndpointDrill = true
+  selfEndpointDrill: SelfEndpointDrillPolicy = true
 ): FoldPlan[] {
   const plans: FoldPlan[] = [];
   // Spans every primary candidate, not just the current one's own drill
@@ -14782,7 +14805,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       index,
       globallyConsumedIndices,
       requestStringValueIndex,
-      allowSelfEndpointDrill
+      selfEndpointDrill
     );
     scanCache.set(index, result);
     scanCacheVersion.set(index, consumedVersion);
@@ -16716,7 +16739,11 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null
 ): Map<string, Set<Capture>> {
-  const structuralPlans = detectDrillDownFoldPlan(actions, null, foldReturnSpec !== null);
+  const structuralPlans = detectDrillDownFoldPlan(
+    actions,
+    null,
+    selfEndpointDrillPolicyFor(foldReturnSpec)
+  );
   const specPlan = foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec);
   const plans = structuralPlans.length > 0 ? structuralPlans : specPlan === null ? [] : [specPlan];
   const consumersByValue = new Map<string, Set<Capture>>();
@@ -16840,7 +16867,7 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   const structuralPlans = detectDrillDownFoldPlan(
     actions,
     primaryIdentityAnchor,
-    foldReturnSpec !== null
+    selfEndpointDrillPolicyFor(foldReturnSpec)
   );
   const plans =
     structuralPlans.length > 0
@@ -21859,6 +21886,7 @@ export async function main(): Promise<void> {
     endpoint: submitEndpointPattern,
     body: submitBodyPattern,
   };
+  ambientDeclaredSubmitMatcher = compileDeclaredSubmitMatcher(submitPatterns);
 
   // Resolved once and threaded down, never captured into a module const: a
   // module-level const would freeze at import time, so an env var set after
