@@ -46,7 +46,11 @@ describe("generated token bootstrap", () => {
       requestHeaders: {},
       responseBody: `<script>self.__n.push([1,${JSON.stringify(`5:T${Buffer.byteLength(want).toString(16)},${want}`)}])</script>`,
     };
-    const api = { url: "https://a.test/api", requestHeaders: { Authorization: `Bearer ${want}` }, responseBody: null };
+    const api = {
+      url: "https://a.test/api",
+      requestHeaders: { Authorization: `Bearer ${want}` },
+      responseBody: null,
+    };
     const caps = [cap, api] as never;
     const located = [{ authReplay: { tokenSource: { document: 0, source: "rsc-row" } } }] as never;
     expect(deriveRuntimeTokenSource(caps, [] as never)).toBeNull();

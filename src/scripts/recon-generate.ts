@@ -55,9 +55,9 @@ import {
   extractHtmlSelectOptions,
   type HtmlTokenElement,
   isStateLikeSegment,
+  locateHtmlBearerToken,
   PATH_SEGMENT_MIN_LENGTH,
 } from "@/recon/html-state-producers";
-import { locateHtmlBearerToken } from "@/recon/html-state-producers";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
 import { loadReconValueConstraints, VALUE_CONSTRAINTS_NONE } from "@/recon/load-value-constraints";
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
@@ -5768,7 +5768,9 @@ export function deriveRuntimeTokenSource(
   if (!replays.some((r) => r.authReplay?.tokenSource)) return null;
   const docs = captures.map((c) => (typeof c.responseBody === "string" ? c.responseBody : null));
   for (const c of captures) {
-    const name = Object.keys(c.requestHeaders ?? {}).find((k) => k.toLowerCase() === "authorization");
+    const name = Object.keys(c.requestHeaders ?? {}).find(
+      (k) => k.toLowerCase() === "authorization"
+    );
     const bearer = name ? /^bearer\s+(.+)$/i.exec(c.requestHeaders[name]!.trim())?.[1] : undefined;
     if (!bearer) continue;
     const loc = locateHtmlBearerToken(docs, { value: bearer });
@@ -5831,7 +5833,9 @@ export function emitBearerBootstrapLines(src: RuntimeTokenSource): string[] {
         return token;
       }
       throw new Error("bearer token not found in document (HTTP " + res.status + "); claim-selected extraction failed");
-    };`.split("\n").concat([""]);
+    };`
+    .split("\n")
+    .concat([""]);
 }
 
 /**
@@ -11607,10 +11611,7 @@ export function emitMultiStepExecuteHttp(
     lines.push(`    const txnId = crypto.randomUUID();`);
     lines.push("");
   }
-  if (
-    runtimeTokenSource &&
-    rendered.some((r) => r.headersExpr.includes("await mintBearer("))
-  ) {
+  if (runtimeTokenSource && rendered.some((r) => r.headersExpr.includes("await mintBearer("))) {
     lines.push(...emitBearerBootstrapLines(runtimeTokenSource));
   }
   // Mint each correlation/conversation-id-shaped header ONCE, same rationale
