@@ -794,13 +794,36 @@ export const RECON_FLOW_RETRY_BUDGET_SCHEMA = z.object({
   maxAttempts: z.int().positive().optional(),
 });
 
-/** The flow file's object form: the declared keys, plus the retry budget checked on the raw object. */
+/**
+ * Mixed-flow declaration: HTTP-replay the first `actions` steps; captures tail
+ * from `tailFromStep`. Like the retry budget, recon-browser never consumes it —
+ * `recon:generate` reads it (`readHttpSteps`) and replan write-back carries it
+ * through `extractUnmanagedFlowFileKeys` — so the flow-file object branch
+ * validates it as a check over the loose object ({@link flowFileObjectSchema})
+ * rather than declaring it as a typed shape key.
+ */
+export const RECON_FLOW_HTTP_STEPS_SCHEMA = z.object({
+  httpSteps: z
+    .object({
+      actions: z.int().min(1),
+      tailFromStep: z.int().min(0),
+      handoverUrl: z.string().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * The flow file's object form: the declared keys, plus the retry budget and the
+ * mixed-flow `httpSteps` declaration checked on the raw object.
+ */
 function flowFileObjectSchema<Shape extends z.core.$ZodLooseShape>(shape: Shape) {
   return z.looseObject(shape).superRefine((flow, ctx) => {
-    const budget = RECON_FLOW_RETRY_BUDGET_SCHEMA.safeParse(flow);
-    if (budget.success) return;
-    for (const issue of budget.error.issues) {
-      ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
+    for (const schema of [RECON_FLOW_RETRY_BUDGET_SCHEMA, RECON_FLOW_HTTP_STEPS_SCHEMA]) {
+      const result = schema.safeParse(flow);
+      if (result.success) continue;
+      for (const issue of result.error.issues) {
+        ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
+      }
     }
   });
 }
@@ -886,14 +909,6 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * a browser-flow-only plugin regardless of HTTP analysis.
      */
     browserFlowOnly: z.boolean().optional(),
-    /** Mixed flow: HTTP-replay the first `actions` steps; captures tail from `tailFromStep`. */
-    httpSteps: z
-      .object({
-        actions: z.number().int().min(1),
-        tailFromStep: z.number().int().min(0),
-        handoverUrl: z.string().optional(),
-      })
-      .optional(),
     /** Explicitly declares whether the flow is a job-application contract (overrides inference). */
     applicantContract: z.boolean().optional(),
     /**
