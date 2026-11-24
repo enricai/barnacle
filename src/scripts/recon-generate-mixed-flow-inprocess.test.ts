@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { main } from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
-import { main } from "@/scripts/recon-generate";
 
 const STEPS = [
   { step: "open the checkout page" },
@@ -24,27 +24,18 @@ afterEach(() => {
   workDir = siteOutDir = null;
 });
 
-async function run(
-  httpSteps: Record<string, unknown>,
-  emit = "ts",
-): Promise<string> {
+async function run(httpSteps: Record<string, unknown>, emit = "ts"): Promise<string> {
   workDir = mkdtempSync(join(tmpdir(), "barnacle-mixed-inproc-"));
   const runRoot = join(workDir, "run");
   const capturesDir = join(runRoot, "graphql");
   mkdirSync(capturesDir, { recursive: true });
   mkdirSync(join(runRoot, "replays"), { recursive: true });
   mkdirSync(join(runRoot, "aux"), { recursive: true });
-  writeFileSync(
-    join(runRoot, "replays", "rate-limit.json"),
-    JSON.stringify([]),
-  );
+  writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
   buildWizardCheckoutCaptures().forEach((capture, index) => {
     writeFileSync(
-      join(
-        capturesDir,
-        `${String(index).padStart(3, "0")}-checkout-action.json`,
-      ),
-      JSON.stringify(capture),
+      join(capturesDir, `${String(index).padStart(3, "0")}-checkout-action.json`),
+      JSON.stringify(capture)
     );
   });
   const siteId = `mixed-inproc-test${process.pid}`;
@@ -56,7 +47,7 @@ async function run(
       steps: STEPS,
       submitEndpointPattern: "/place-order",
       httpSteps,
-    }),
+    })
   );
   process.chdir(RECON_GENERATE_CWD);
   vi.spyOn(process, "argv", "get").mockReturnValue([
@@ -81,19 +72,17 @@ async function run(
 describe("recon-generate main() — mixed flow validation (in-process)", () => {
   it("rejects a prefix exceeding the captured actions", async () => {
     expect(await run({ actions: 99, tailFromStep: 1 })).toContain(
-      "httpSteps declared but the mixed flow cannot be generated",
+      "httpSteps declared but the mixed flow cannot be generated"
     );
   }, 60_000);
 
   it("rejects a tailFromStep beyond the flow steps", async () => {
     expect(await run({ actions: 2, tailFromStep: 99 })).toContain(
-      "httpSteps.tailFromStep (99) exceeds",
+      "httpSteps.tailFromStep (99) exceeds"
     );
   }, 60_000);
 
   it("rejects a config-manifest emit", async () => {
-    expect(await run({ actions: 2, tailFromStep: 1 }, "config")).toContain(
-      "--emit ts",
-    );
+    expect(await run({ actions: 2, tailFromStep: 1 }, "config")).toContain("--emit ts");
   }, 60_000);
 });
