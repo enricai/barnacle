@@ -78,6 +78,7 @@ import {
   readCaptureDir,
   readDeclaredMaxAttempts,
   readExtraPayloadFields,
+  readHttpSteps,
   readJsonDir,
   readOwnBackendHostnames,
   replayReachable,
@@ -10563,8 +10564,15 @@ export function emitMultiStepExecuteHttp(
   flowSteps: FlowStepInput[] = [],
   vocabulary: ReconVocabulary | undefined = undefined,
   /** Explicit `applicantContract` flow declaration; see {@link contractUsesApplicantContactSchema}. */
-  applicantContract: boolean | undefined = undefined
+  applicantContract: boolean | undefined = undefined,
+  /**
+   * HTTP-prefix mode: render only the first N action steps and return the
+   * session cookies they established instead of a parsed response. `undefined`
+   * (default) leaves full-flow output byte-identical.
+   */
+  httpPrefixCount: number | undefined = undefined
 ): string {
+  if (httpPrefixCount !== undefined) actions = actions.slice(0, httpPrefixCount);
   interface Rendered {
     url: string;
     method: string;
@@ -10855,7 +10863,8 @@ export function emitMultiStepExecuteHttp(
   // (fold plans depend only on `actions`/`foldReturnSpec`, not on Pass 1's
   // render), so Pass 1's header collection below knows which non-auth header
   // names are actually load-bearing for a resolved fold.
-  const earlyFoldPlans = resolveFoldPlan(actions, foldReturnSpec);
+  const earlyFoldPlans =
+    httpPrefixCount !== undefined ? [] : resolveFoldPlan(actions, foldReturnSpec);
   const joinCarryingHeaderNamesByStep = new Map<number, Set<string>>();
   // A fold target's join value is the PRIMARY ITEM's own field, threaded into
   // the drill step's request text-literally by the fold-loop's own
@@ -11384,7 +11393,8 @@ export function emitMultiStepExecuteHttp(
   // whichever call selectReturnAction would otherwise pick — is what
   // `return { data }` must reference when any plan resolves.
   const foldPlans = earlyFoldPlans;
-  const returnAction = foldPlans.length > 0 ? null : selectReturnAction(actions);
+  const returnAction =
+    foldPlans.length > 0 || httpPrefixCount !== undefined ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
   for (const plan of foldPlans) referencedNames.add(actions[plan.primaryStepIndex]!.varName);
 
@@ -11393,6 +11403,21 @@ export function emitMultiStepExecuteHttp(
   // is still needed when at least one of its produces[] entries IS
   // referenced — the produces line dereferences it.
   const lines: string[] = [];
+  if (httpPrefixCount !== undefined) {
+    // Shadow the module-level client with a prefix-local one that carries the
+    // prefix's own `bind` entries and records every cookie a response sets.
+    lines.push(
+      `    const prefixCookies: Record<string, string> = {};`,
+      `    const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(collectHeaderBindings(actions as ActionStep[]))}, onResponse: ({ headers }) => {`,
+      `      for (const entry of headers.getSetCookie()) {`,
+      `        const pair = entry.split(";")[0] ?? "";`,
+      `        const eq = pair.indexOf("=");`,
+      `        if (eq > 0) prefixCookies[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();`,
+      `      }`,
+      `    } });`,
+      ""
+    );
+  }
   // Mint the threaded transaction id ONCE and reuse across every step — the
   // `${txnId}` references emitted into the bodies above all resolve to this
   // single call-time UUID, matching how the site mints one per application.
@@ -12210,7 +12235,9 @@ export function emitMultiStepExecuteHttp(
   // no ancestry TS can see, so a plain `as` needs the `as unknown as` detour.
   const castToResponseType = (expr: string): string =>
     pascalName ? `${expr} as unknown as ${pascalName}Response` : expr;
-  if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
+  if (httpPrefixCount !== undefined) {
+    lines.push(`    return { cookies: prefixCookies };`);
+  } else if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
     lines.push(
       `    return { data: ${castToResponseType(`mergeFoldedPrimaryBodies(${uniquePrimaryVarNames.join(", ")})`)} };`
     );
@@ -18026,6 +18053,17 @@ export function emitContractTsParts(opts: {
    * ships browser-only with the standard candidate payload schema — rather
    * than emitting a fabricated single-call HTTP stub. */
   omitExecuteHttp?: boolean;
+  /** Mixed mode: `multiStepBody` is the HTTP-prefix body (see
+   * {@link emitMultiStepExecuteHttp}'s `httpPrefixCount`, which returns the
+   * session cookies). The plugin has no standalone `executeHttp` — its final
+   * step cannot be HTTP — and `execute()` runs the prefix, then hands the
+   * cookies to `run<Pascal>BrowserFlow`. Distinct from `omitExecuteHttp`: the
+   * HTTP client, limiter and BASE_HEADERS are still emitted for the prefix. */
+  mixedHttpPrefix?: boolean;
+  /** Must be set exactly when `mixedHttpPrefix` is: the browser flow emitted
+   * with the same `mixedHandover` takes the `sessionCookies` argument that
+   * `execute()` passes. A mismatch would generate a mistyped call. */
+  mixedHandover?: { tailFromStep: number; handoverUrl?: string };
   /** Explicit `applicantContract` flow declaration; wins over inferred evidence. */
   applicantContract?: boolean;
   /** The flow registers an account (its steps splice `${RECON_PASSWORD}`), so
@@ -18162,6 +18200,8 @@ export function emitContractTsParts(opts: {
     auxFiles,
     multiStepBody,
     omitExecuteHttp = false,
+    mixedHttpPrefix = false,
+    mixedHandover: mixedHandoverOpt,
     applicantContract,
     createsAccount = false,
     maxAttempts: resolvedMaxAttempts = null,
@@ -18186,6 +18226,11 @@ export function emitContractTsParts(opts: {
     unpopulatedDeclaredVariables = [],
     fallbackGateSpec = {},
   } = opts;
+  if (mixedHttpPrefix !== (mixedHandoverOpt !== undefined)) {
+    throw new Error(
+      "emitContractTsParts: mixedHttpPrefix and mixedHandover must be set together (the browser flow's sessionCookies param depends on mixedHandover)"
+    );
+  }
 
   const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
   /** Single source of truth for every GraphQL-emission decision below
@@ -18248,10 +18293,12 @@ export function emitContractTsParts(opts: {
     singleEntityVerdict(null, isGqlEmission, responseBodySamples.length, null) ||
     (singleEntityEvidence ??
       singleEntityVerdictFromCaptures(isGqlEmission, responseBodySamples, allCaptures));
+  // Both browser-only and mixed plugins return the browser flow's result.
+  const browserReturns = omitExecuteHttp || mixedHttpPrefix;
   const responseSchemaExpr =
-    omitExecuteHttp && isSubmissionFlow
+    browserReturns && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
-      : omitExecuteHttp
+      : browserReturns
         ? `z.unknown()`
         : inferZodSchemaFromSamples(responseBodySamples, 0, "", {
             conditionalFieldNames,
@@ -18377,7 +18424,7 @@ export function emitContractTsParts(opts: {
       : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow) || derivedGetInputModel || postBodyModel
+    : inputBody || (browserReturns && isSubmissionFlow) || derivedGetInputModel || postBodyModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -18801,7 +18848,7 @@ export function emitContractTsParts(opts: {
   // applicant decision) has no job tracking click to carry.
   const nonJobBrowserOnly =
     applicantContract === false ||
-    (omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema);
+    (browserReturns && isSubmissionFlow === true && !usesApplicantContactSchema);
   const mergesTracking =
     !getInputModel && !readOnlyPostSearch && !isReadOnlyQueryFlow && !nonJobBrowserOnly;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
@@ -18873,19 +18920,22 @@ export function emitContractTsParts(opts: {
   // `noUnusedVariables`.
   const clientImport = omitExecuteHttp
     ? ""
-    : isGqlEmission
-      ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";${needsFoldHttpClient ? `\nimport { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";` : ""}`
-      : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
+    : mixedHttpPrefix
+      ? `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`
+      : isGqlEmission
+        ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";${needsFoldHttpClient ? `\nimport { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";` : ""}`
+        : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
 
   const queryConst =
-    !omitExecuteHttp && isGqlEmission
+    !omitExecuteHttp && !mixedHttpPrefix && isGqlEmission
       ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${escapeForTemplateLiteral(gqlQuery!.trim())}\`;\n`
       : "";
 
-  const gqlCacheBlock = omitExecuteHttp
-    ? ""
-    : isGqlEmission
-      ? `
+  const gqlCacheBlock =
+    omitExecuteHttp || mixedHttpPrefix
+      ? ""
+      : isGqlEmission
+        ? `
 type GqlFn = (operationName: string, query: string, variables: Record<string, unknown>) => Promise<${pascal}Response>;
 
 const gqlCache = new Map<string, GqlFn>();
@@ -18913,7 +18963,7 @@ const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, 
 `
     : ""
 }`
-      : `
+        : `
 const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
 `;
 
@@ -19507,9 +19557,10 @@ ${headersLiteral},
 ${rateLimitComment}
 const limiter = new Bottleneck({ minTime: ${minTime} });
 `;
-  const executeHttpMethodBlock = omitExecuteHttp
-    ? ""
-    : `
+  const executeHttpMethodBlock =
+    omitExecuteHttp || mixedHttpPrefix
+      ? ""
+      : `
   /** Hot path: direct HTTP — no browser, no LLM tokens. */
   async executeHttp(
     ${executeHttpBody.includes("payload.") ? "payload" : "_payload"}: ${pascal}Payload,
@@ -19518,6 +19569,17 @@ const limiter = new Bottleneck({ minTime: ${minTime} });
 ${executeHttpBody}
   },
 `;
+  const httpPrefixBlock = mixedHttpPrefix
+    ? `
+/** HTTP prefix: replays the leading steps over plain HTTP and returns the session cookies they set. */
+async function runHttpPrefix(
+  ${executeHttpBody.includes("payload.") ? "payload" : "_payload"}: ${pascal}Payload,
+  ${executeHttpBody.includes("context.") ? "context" : "_context"}: SitePluginContext
+): Promise<{ cookies: Record<string, string> }> {
+${executeHttpBody}
+}
+`
+    : "";
   const executeEntryUrlExpr = usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl";
   const executeUsesContext = executeEntryUrlExpr.includes("context.");
   const executeContextParam = executeUsesContext
@@ -19525,13 +19587,18 @@ ${executeHttpBody}
     : omitExecuteHttp
       ? ""
       : `,\n    _context: SitePluginContext`;
+  const executeContextArg = mixedHttpPrefix
+    ? `,\n    context: SitePluginContext`
+    : executeContextParam;
   const sitePluginImports =
     executeUsesContext || !omitExecuteHttp
       ? "SitePlugin, SitePluginContext, SitePluginResult"
       : "SitePlugin, SitePluginResult";
   const executeDocComment = omitExecuteHttp
     ? ""
-    : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
+    : mixedHttpPrefix
+      ? `  /** Mixed mode: HTTP prefix first, then the session cookies are handed to the browser for the remaining steps. */\n`
+      : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
   // Derived here as well as from the caller's flag: a caller that hands over
   // flowSteps but not the browser-flow emitter's signal must not ship a
   // retry-enabled account-creating flow.
@@ -19548,14 +19615,20 @@ ${executeHttpBody}
   const redactionLiteral = extraRedaction
     ? `\n    redaction: ${JSON.stringify(extraRedaction)},`
     : "";
-  const pluginDocComment = omitExecuteHttp
+  const pluginDocComment = mixedHttpPrefix
     ? `/**
+ * Plugin for ${siteId}. Mixed mode: the leading steps replay over plain HTTP,
+ * then the session cookies are handed to a browser session that runs only the
+ * steps HTTP cannot replay.
+ */`
+    : omitExecuteHttp
+      ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
  * sequence could not be synthesized into a trustworthy direct-HTTP hot path
  * (see recon-generate's review checklist, logged to stdout at generation
  * time), so this always runs via Stagehand.
  */`
-    : `/**
+      : `/**
  * Plugin for ${siteId}. Tries the direct-HTTP hot path first; falls back to
  * Stagehand automatically on schema drift or bot challenge.
  */`;
@@ -19588,7 +19661,7 @@ ${optionDecls}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
-${internalRequestReferenceBlock}${queryConst}${gqlCacheBlock}${fixtureComments}
+${internalRequestReferenceBlock}${queryConst}${gqlCacheBlock}${httpPrefixBlock}${fixtureComments}
 ${pluginDocComment}
 export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
   meta: {
@@ -19613,9 +19686,9 @@ ${sensitiveRedactionLiteral}    defaultBaseUrl: ${JSON.stringify(baseUrl)},
 ${executeHttpMethodBlock}
 ${executeDocComment}  async execute(
     payload: ${pascal}Payload,
-    session: BrowserSession${executeContextParam}
-  ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, payload, session.sessionProxy ?? null);
+    session: BrowserSession${executeContextArg}
+  ): Promise<SitePluginResult<${pascal}Response>> {${mixedHttpPrefix ? "\n    const { cookies } = await runHttpPrefix(payload, context);" : ""}
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, payload, session.sessionProxy ?? null${mixedHttpPrefix ? ", cookies" : ""});
     return { data: raw as ${pascal}Response };
   },
 };
@@ -20620,6 +20693,11 @@ export function emitBrowserFlowTs(opts: {
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
+  /** Mixed mode: the leading steps were replayed over HTTP. The emitted flow
+   * takes the session cookies as an extra argument, hands them to the browser
+   * context, navigates to `handoverUrl` (default: the entry URL) and runs only
+   * `flowSteps` from `tailFromStep` onward. */
+  mixedHandover?: { tailFromStep: number; handoverUrl?: string };
 }): {
   code: string;
   payloadFieldNames: Set<string>;
@@ -20629,7 +20707,7 @@ export function emitBrowserFlowTs(opts: {
   const {
     siteId,
     pascal,
-    flowSteps,
+    flowSteps: allFlowSteps,
     isSubmissionFlow,
     hasMultipartStep = false,
     browserFlowOnly = false,
@@ -20642,7 +20720,10 @@ export function emitBrowserFlowTs(opts: {
     readOnlyGetFlow = false,
     getInputFields = [],
     env = process.env,
+    mixedHandover,
   } = opts;
+  const flowSteps =
+    mixedHandover !== undefined ? allFlowSteps.slice(mixedHandover.tailFromStep) : allFlowSteps;
 
   const canonicalise = contractUsesApplicantContactSchema({
     inputBody,
@@ -20650,9 +20731,9 @@ export function emitBrowserFlowTs(opts: {
     browserFlowOnly,
     formBodyFieldNames,
     applicantContract,
-    flowSteps,
+    flowSteps: allFlowSteps,
     hasMultipartStep,
-    payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
+    payloadFieldNames: computeFlowPayloadFieldNames(allFlowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
   // A read-only GET flow's declared facets are URL filters: an absent one
@@ -20671,7 +20752,7 @@ export function emitBrowserFlowTs(opts: {
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
   const contractCarriesResume = hasMultipartStep || canonicalise;
   const knownFieldValues = buildKnownFieldValues(
-    flowSteps,
+    allFlowSteps,
     vocabulary ?? EMPTY_VOCABULARY,
     env,
     canonicalise
@@ -20818,6 +20899,28 @@ export function emitBrowserFlowTs(opts: {
         ? `null /* TODO: this flow uploads, but the contract has no Resume multipart\n    fields yet. Add Resume/ResumeFilename/ResumeContentType to the payload\n    schema (set meta.multipart:true) and build the fixture from payload here. */`
         : "null";
 
+  const originExpr =
+    mixedHandover?.handoverUrl !== undefined
+      ? JSON.stringify(mixedHandover.handoverUrl)
+      : isSubmissionFlow
+        ? "entryUrl"
+        : "baseUrl";
+  // Cookies from the HTTP prefix are set on the site origin before the first
+  // navigation, so the browser session opens already holding the HTTP session.
+  const handoverBlock =
+    mixedHandover !== undefined
+      ? `
+  // Mixed mode: the leading steps ran over HTTP; hand their session cookies to
+  // the browser context so the tail continues the same server-side session.
+  await stagehand.context.addCookies(
+    Object.entries(sessionCookies).map(([name, value]) => ({
+      name,
+      value,
+      url: new URL(${originExpr}).origin,
+    }))
+  );`
+      : "";
+
   const code = `/**
  * Generated by recon-generate.ts — Stagehand browser fallback for ${siteId}.
  * Core invokes this automatically when executeHttp throws HttpSchemaError or
@@ -20866,11 +20969,11 @@ export async function run${pascal}BrowserFlow(
   stagehand: Stagehand,
   ${isSubmissionFlow ? "entryUrl" : "baseUrl"}: string,
   payload: ${pascal}Payload,
-  sessionProxy: SessionProxyTuple | null
-): Promise<${pascal}Response> {
+  sessionProxy: SessionProxyTuple | null${mixedHandover !== undefined ? ",\n  sessionCookies: Record<string, string>" : ""}
+): Promise<${pascal}Response> {${handoverBlock}
   const page = await stagehand.context.awaitActivePage();
 
-  await page.goto(${isSubmissionFlow ? "entryUrl" : "baseUrl"}, { waitUntil: "domcontentloaded" });
+  await page.goto(${mixedHandover?.handoverUrl !== undefined ? JSON.stringify(mixedHandover.handoverUrl) : isSubmissionFlow ? "entryUrl" : "baseUrl"}, { waitUntil: "domcontentloaded" });
   // domcontentloaded fires before a bot-managed/CDN-fronted SPA hydrates; wait for
   // the real DOM so the first steps don't probe an empty shell page and skip.
   await waitForSpaReady(page, logger);
@@ -20951,7 +21054,7 @@ ${flowStepsBlock}
   // answer) is emitted literally by design and is not a leak.
   assertNoLeakedPersonaConstant(
     code,
-    buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env, canonicalise, false),
+    buildKnownFieldValues(allFlowSteps, vocabulary ?? EMPTY_VOCABULARY, env, canonicalise, false),
     flowSteps
   );
   return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
@@ -21631,6 +21734,7 @@ export async function main(): Promise<void> {
   })();
 
   const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
+  const httpStepsOpt = existsSync(flowFile) ? readHttpSteps(flowFile) : null;
   const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
   const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
 
@@ -22349,9 +22453,46 @@ export async function main(): Promise<void> {
     if (isSubmissionFlow && preGaps.bodylessUploadSteps > 0)
       failClosedReasons.push("an upload step's request body was unavailable and cannot be bound");
     if (failClosedReasons.length > 0)
-      logger.warn(`WARN falling back to a browser-only plugin: ${failClosedReasons.join("; ")}`);
+      logger.warn(
+        httpStepsOpt === null
+          ? `WARN falling back to a browser-only plugin: ${failClosedReasons.join("; ")}`
+          : `WARN fail-closed conditions seen (checked against the declared HTTP prefix only): ${failClosedReasons.join("; ")}`
+      );
+    // Mixed mode: the flow declared `httpSteps`. A declared prefix that cannot
+    // be replayed over HTTP is an error, never a silent change of mode.
+    const mixedMode = httpStepsOpt !== null;
+    if (httpStepsOpt !== null) {
+      const problems: string[] = [];
+      if (!isSubmissionFlow) problems.push("the flow is not a multi-action submission flow");
+      if (noReplayableActionFlow) problems.push("no replayable action sequence was captured");
+      if (httpStepsOpt.actions > actionSteps.length)
+        problems.push(
+          `httpSteps.actions (${httpStepsOpt.actions}) exceeds the ${actionSteps.length} captured action step(s)`
+        );
+      if (actionSteps.slice(0, httpStepsOpt.actions).some((s) => s.isCrossDomain))
+        problems.push("the HTTP prefix crosses hosts and cannot be replayed over plain HTTP");
+      if (
+        actionSteps
+          .slice(0, httpStepsOpt.actions)
+          .some((s) => s.isMultipart && s.capture.requestPostData === REQUEST_BODY_UNAVAILABLE)
+      )
+        problems.push("an upload step in the HTTP prefix has no capturable request body to bind");
+      if (httpStepsOpt.tailFromStep > flowSteps.length)
+        problems.push(
+          `httpSteps.tailFromStep (${httpStepsOpt.tailFromStep}) exceeds the ${flowSteps.length} flow step(s)`
+        );
+      if (emit === "config")
+        problems.push(
+          "a mixed flow needs a generated plugin (--emit ts); the config manifest cannot hand cookies to the browser"
+        );
+      if (problems.length > 0)
+        throw new Error(
+          `httpSteps declared but the mixed flow cannot be generated: ${problems.join("; ")}`
+        );
+    }
     const mustBeBrowserFlowOnly =
       isSubmissionFlow &&
+      !mixedMode &&
       (browserFlowOnlyOptIn ||
         noReplayableActionFlow ||
         actionSteps.some((s) => s.isCrossDomain) ||
@@ -22405,7 +22546,8 @@ export async function main(): Promise<void> {
             pascal,
             flowSteps,
             vocabulary,
-            applicantContract
+            applicantContract,
+            httpStepsOpt?.actions
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
@@ -22415,11 +22557,15 @@ export async function main(): Promise<void> {
       synthesizedMultiStepBody === undefined
         ? []
         : findFrozenRequestTokens(
-            actionSteps,
+            httpStepsOpt === null ? actionSteps : actionSteps.slice(0, httpStepsOpt.actions),
             activeCaptures,
             synthesizedMultiStepBody,
             shieldedUuids
           );
+    if (untracedTokens.length > 0 && mixedMode)
+      throw new Error(
+        `httpSteps declared but ${untracedTokens.length} per-request token(s) in the HTTP prefix could not be traced to a producer step; the prefix cannot be replayed over HTTP`
+      );
     if (untracedTokens.length > 0) {
       for (const restore of collectorRestores) restore();
       logger.warn(
@@ -22520,13 +22666,13 @@ export async function main(): Promise<void> {
     }
 
     logger.info(
-      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+      `generating plugin for ${siteId} (${gql ? "GraphQL" : httpStepsOpt !== null ? `mixed flow, ${httpStepsOpt.actions} HTTP-replayed action step(s), browser tail from flow step ${httpStepsOpt.tailFromStep}` : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
     );
 
     // Non-GET mutating submit on a browser-flow-only plugin cannot be replayed
     // safely, so it defaults to a single attempt; an explicit declaration wins.
     const submitIsIrreversible =
-      browserFlowOnly &&
+      (browserFlowOnly || mixedMode) &&
       !isReadOnlyGetFlow &&
       winningCapture !== null &&
       winningCapture.method !== "GET";
@@ -22572,6 +22718,15 @@ export async function main(): Promise<void> {
     // Emit the browser flow first so the SAME payloadFieldNames set that drives
     // its `payload.<field>` splices also extends the contract's payload schema —
     // the two artifacts can't drift because one accumulator feeds both.
+    const mixedHandoverOpt =
+      httpStepsOpt === null
+        ? undefined
+        : {
+            tailFromStep: httpStepsOpt.tailFromStep,
+            ...(httpStepsOpt.handoverUrl !== undefined
+              ? { handoverUrl: httpStepsOpt.handoverUrl }
+              : {}),
+          };
     const browserFlowOpts = {
       siteId,
       pascal,
@@ -22585,6 +22740,7 @@ export async function main(): Promise<void> {
       formBodyFieldNames,
       vocabulary,
       frameSelector,
+      mixedHandover: mixedHandoverOpt,
       readOnlyGetFlow: isReadOnlyGetFlow,
       getInputFields: undefined as readonly string[] | undefined,
     };
@@ -22665,6 +22821,8 @@ export async function main(): Promise<void> {
       auxFiles,
       multiStepBody,
       omitExecuteHttp: browserFlowOnly,
+      mixedHttpPrefix: mixedMode,
+      mixedHandover: mixedHandoverOpt,
       applicantContract,
       createsAccount: browserFlow.usesThrowawayPassword,
       maxAttempts: derivedMaxAttempts,

@@ -260,3 +260,38 @@ Caveat: identity data (name, email, phone) embedded in an upload fixture such as
 be parsed by the target after upload and override values already typed into form fields. If the
 form's phone differs from the allocated one after the upload step, make the fixture carry the
 same allocated identity, or fill the field after the upload.
+
+## Mixed flows (`httpSteps`)
+
+Some checkouts are plain HTTP until one step that needs a real browser (for example a card form whose
+tokenizer script refuses a bare request). Declare a mixed flow in the `--flow-file` to have
+`recon-generate` replay the leading captures over HTTP, hand the session cookies to the browser, and run
+only the remaining steps in the browser.
+
+```json
+{
+  "httpSteps": {
+    "actions": 4,
+    "tailFromStep": 5,
+    "handoverUrl": "https://shop.example.test/order/edit"
+  },
+  "steps": ["..."]
+}
+```
+
+- `actions` (integer ≥ 1): how many of the captured action requests, from the start, are replayed over
+  HTTP via the generated `executeHttp`. Choose the longest prefix that works without a browser: token GETs,
+  cart/order POSTs and field PUTs. Stop before the first request that needs browser-only code.
+- `tailFromStep` (integer ≥ 0): index into the flow's steps of the first step the browser still runs. Steps
+  before it are covered by the HTTP prefix; use the step that opens the browser-only form (the card, Pay).
+- `handoverUrl` (optional): page the browser opens after the cookies are set. Defaults to the flow's entry URL.
+
+Hand-over: the session cookies collected during the HTTP prefix are added to the browser context on the
+site origin, then the generated flow navigates to `handoverUrl` and runs only the tail steps. Navigation
+uses `waitUntil: "domcontentloaded"`, because `load` can time out on pages with third-party widgets.
+
+Limits: generation fails loudly (never silently switching mode) when `actions` exceeds the captured
+action steps, `tailFromStep` exceeds the flow steps, the HTTP prefix crosses hosts, a per-request token
+in the prefix cannot be traced to a producing step, or `--emit config` is used (a manifest cannot hand
+cookies to the browser). `httpSteps` cannot be combined with `browserFlowOnly: true`. Run with
+`--emit ts`.
