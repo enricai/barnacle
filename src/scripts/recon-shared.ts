@@ -456,8 +456,8 @@ export interface HttpStepsOption {
 
 /**
  * Reads the top-level `httpSteps` option out of a recon flow file. Null when
- * absent, legacy bare-array, or invalid in shape. Throws on an unreadable or
- * malformed file, and when combined with `browserFlowOnly: true`.
+ * absent or legacy bare-array. Throws on an unreadable or
+ * malformed file, an invalid declaration, and when combined with `browserFlowOnly: true`.
  */
 export function readHttpSteps(flowFile: string): HttpStepsOption | null {
   const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
@@ -466,12 +466,18 @@ export function readHttpSteps(flowFile: string): HttpStepsOption | null {
     httpSteps?: unknown;
     browserFlowOnly?: unknown;
   };
-  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  if (v === undefined) return null;
+  const bad = (): never => {
+    throw new Error(
+      "Flow file httpSteps is invalid: expected {actions: integer>=1, tailFromStep: integer>=0, handoverUrl?: string}"
+    );
+  };
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return bad();
   const { actions, tailFromStep, handoverUrl } = v as Record<string, unknown>;
-  if (typeof actions !== "number" || !Number.isInteger(actions) || actions < 1) return null;
+  if (typeof actions !== "number" || !Number.isInteger(actions) || actions < 1) return bad();
   if (typeof tailFromStep !== "number" || !Number.isInteger(tailFromStep) || tailFromStep < 0)
-    return null;
-  if (handoverUrl !== undefined && typeof handoverUrl !== "string") return null;
+    return bad();
+  if (handoverUrl !== undefined && typeof handoverUrl !== "string") return bad();
   if (browserFlowOnly === true) {
     throw new Error(
       "Flow file declares both httpSteps and browserFlowOnly:true; they are mutually exclusive"

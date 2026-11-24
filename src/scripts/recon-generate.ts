@@ -22662,7 +22662,7 @@ export async function main(): Promise<void> {
     // Non-GET mutating submit on a browser-flow-only plugin cannot be replayed
     // safely, so it defaults to a single attempt; an explicit declaration wins.
     const submitIsIrreversible =
-      browserFlowOnly &&
+      (browserFlowOnly || mixedMode) &&
       !isReadOnlyGetFlow &&
       winningCapture !== null &&
       winningCapture.method !== "GET";

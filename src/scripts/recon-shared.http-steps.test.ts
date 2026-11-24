@@ -26,12 +26,16 @@ describe("readHttpSteps", () => {
       tailFromStep: 3,
     });
   });
-  it("is null for absent, legacy array, and invalid shapes", () => {
+  it("is null for absent and legacy array; throws on invalid shapes", () => {
     for (const b of [
       "[]",
       "null",
       "{}",
+    ])
+      expect(readHttpSteps(flow(b))).toBeNull();
+    for (const b of [
       '{"httpSteps":"x"}',
+      '{"httpSteps":null}',
       '{"httpSteps":[]}',
       '{"httpSteps":{"actions":0,"tailFromStep":0}}',
       '{"httpSteps":{"actions":1.5,"tailFromStep":0}}',
@@ -39,7 +43,7 @@ describe("readHttpSteps", () => {
       '{"httpSteps":{"actions":1}}',
       '{"httpSteps":{"actions":1,"tailFromStep":0,"handoverUrl":3}}',
     ])
-      expect(readHttpSteps(flow(b))).toBeNull();
+      expect(() => readHttpSteps(flow(b))).toThrow(/httpSteps is invalid/);
   });
   it("throws with browserFlowOnly:true", () => {
     expect(() =>
