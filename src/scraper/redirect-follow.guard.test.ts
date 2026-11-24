@@ -19,6 +19,10 @@ const ALLOWLIST: Record<string, string> = {
     "body-less, header-less GET probe with no credential in a header; default redirects leak no header",
   "src/testmail/client.ts":
     "body-less, header-less GET whose apikey is in the URL query string, not a header; default redirects leak no header",
+  "src/scripts/recon-generate.ts":
+    "emits generated-plugin source whose token bootstrap is a body-less, header-less GET of a public document; default redirects leak no header",
+  "src/recon/html-state-producers.ts":
+    "emits generated-plugin source whose token bootstrap is a body-less, header-less GET of a public document; default redirects leak no header",
   "src/lib/http.ts":
     "installs the global undici dispatcher (connect timeout only); not a request site and no redirect policy",
   "src/lib/telemetry/s3-sink.ts":
