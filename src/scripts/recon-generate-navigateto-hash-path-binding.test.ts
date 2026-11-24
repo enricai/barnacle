@@ -45,6 +45,8 @@ describe("deriveGetInputModel — payload-hint path binding", () => {
   it("logs when a hash value matches no segment", () => {
     const w = capture(url);
     deriveGetInputModel(w, [w], [], [{ field: "itemRef", value: "ZZ99_YY88" }]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not bind payload field "itemRef"'));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not bind payload field "itemRef"')
+    );
   });
 });

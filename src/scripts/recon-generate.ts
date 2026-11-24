@@ -22838,15 +22838,15 @@ export async function main(): Promise<void> {
     };
     let browserFlow = emitBrowserFlowTs(browserFlowOpts);
     const getInputModel = isReadOnlyGetFlow
-      ? deriveGetInputModel(winningCapture, activeCaptures, [
-          ...browserFlow.payloadFieldNames,
-          ...browserFlow.optionalPayloadFieldNames,
-        ],
-        extractNavigateToFacetOrder(flowSteps, process.env).map((f) => ({
-          field: f.field,
-          value: f.value,
-        }))
-      )
+      ? deriveGetInputModel(
+          winningCapture,
+          activeCaptures,
+          [...browserFlow.payloadFieldNames, ...browserFlow.optionalPayloadFieldNames],
+          extractNavigateToFacetOrder(flowSteps, process.env).map((f) => ({
+            field: f.field,
+            value: f.value,
+          }))
+        )
       : null;
     if (getInputModel) {
       // Re-emit with the derived fields so the read fallback binds them to the
