@@ -22082,12 +22082,11 @@ export async function main(): Promise<void> {
     // matching the declared pattern, so count those too: the declared pattern
     // must never be reported as matching 0 when the manifest's captures match it.
     const earlyManifest = resolveManifestActionSequence(runRoot, activeCaptures);
-    const matchesDeclaredSubmit = compileSubmitMatcher(submitPatterns);
+    const earlyMatchesSubmit = compileSubmitMatcher(submitPatterns);
     const manifestPatternMatches =
-      earlyManifest === null ||
-      (submitPatterns.endpoint === null && submitPatterns.body === null)
+      earlyManifest === null || (submitPatterns.endpoint === null && submitPatterns.body === null)
         ? 0
-        : earlyManifest.filter((a) => matchesDeclaredSubmit(a.capture)).length;
+        : earlyManifest.filter((a) => earlyMatchesSubmit(a.capture)).length;
     const declaredPatternCount = Math.max(
       patternedHeuristicActionCaptures.length,
       manifestPatternMatches

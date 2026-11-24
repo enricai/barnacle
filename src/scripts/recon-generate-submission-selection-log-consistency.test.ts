@@ -5,6 +5,28 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { main } from "@/scripts/recon-generate";
 
+const logged = vi.hoisted(() => [] as string[]);
+vi.mock("@/lib/logging", async (orig) => {
+  const mod = await orig<typeof import("@/lib/logging")>();
+  const wrap = (l: Record<string, unknown>) =>
+    new Proxy(l, {
+      get(t, k) {
+        const v = t[k as string];
+        if (k === "warn" || k === "info")
+          return (...a: unknown[]) => {
+            logged.push(a.map(String).join(" "));
+            return (v as (...x: unknown[]) => unknown)(...a);
+          };
+        return v;
+      },
+    });
+  return {
+    ...mod,
+    getScriptLogger: (...a: Parameters<typeof mod.getScriptLogger>) =>
+      wrap(mod.getScriptLogger(...a) as never),
+  };
+});
+
 const REPO_ROOT = join(__dirname, "..", "..");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
@@ -96,18 +118,10 @@ async function generate(manifestIdx: number[], pattern?: string): Promise<string
 
 describe("recon-generate: declared-pattern count log is consistent with the manifest", () => {
   it("does not claim 0 captures when the manifest's captures match the declared pattern", async () => {
-    let out = "";
-    const spies = [process.stdout, process.stderr].map((st) =>
-      vi.spyOn(st, "write").mockImplementation(((c: unknown) => {
-        out += String(c);
-        return true;
-      }) as never)
-    );
-    try {
-      await generate([0, 1], "/v1/jobs/");
-    } finally {
-      for (const sp of spies) sp.mockRestore();
-    }
+    logged.length = 0;
+    await generate([0, 1], "/v1/jobs/");
+    const out = logged.join("\n");
+    expect(out).toContain("submit-manifest");
     expect(out).not.toContain("(0 capture(s)) disagrees with the unfiltered heuristic");
     expect(out).not.toContain("(0 capture(s)) although the unfiltered heuristic");
   }, 120000);
