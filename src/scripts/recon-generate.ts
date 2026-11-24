@@ -18401,13 +18401,20 @@ export function emitContractTsParts(opts: {
     gql || multiStepBody || singlePrimaryFoldPlans.length === 0
       ? null
       : (actionSteps[singlePrimaryFoldPlans[0]!.primaryStepIndex]?.capture ?? null);
+  // Any other single-endpoint URL-shaped GET winner (a lone GET action step)
+  // is the same read: it must not fall back to a POST `{ query }` body.
+  const loneGetCapture =
+    !gql && !multiStepBody && singlePrimaryFoldPlans.length === 0 && actionSteps.length === 1
+      ? (actionSteps[0]!.capture ?? null)
+      : null;
+  const getWinnerCapture = foldPrimaryCapture ?? loneGetCapture;
   const derivedGetInputModel: GetInputModel | null =
     suppliedGetInputModel ??
-    (foldPrimaryCapture !== null &&
-    safeUrlPathname(foldPrimaryCapture.url) === endpointPath &&
-    getInputsAreUrlShaped(foldPrimaryCapture)
+    (getWinnerCapture !== null &&
+    safeUrlPathname(getWinnerCapture.url) === endpointPath &&
+    getInputsAreUrlShaped(getWinnerCapture)
       ? deriveGetInputModel(
-          foldPrimaryCapture,
+          getWinnerCapture,
           allCaptures.length > 0 ? allCaptures : actionSteps.map((s) => s.capture),
           [...(payloadFieldNames ?? []), ...optionalPayloadFieldNames]
         )
