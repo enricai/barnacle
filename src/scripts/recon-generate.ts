@@ -78,6 +78,7 @@ import {
   readCaptureDir,
   readDeclaredMaxAttempts,
   readExtraPayloadFields,
+  readHttpSteps,
   readJsonDir,
   readOwnBackendHostnames,
   replayReachable,
@@ -21733,6 +21734,7 @@ export async function main(): Promise<void> {
   })();
 
   const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
+  const httpStepsOpt = existsSync(flowFile) ? readHttpSteps(flowFile) : null;
   const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
   const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
 
@@ -22452,8 +22454,35 @@ export async function main(): Promise<void> {
       failClosedReasons.push("an upload step's request body was unavailable and cannot be bound");
     if (failClosedReasons.length > 0)
       logger.warn(`WARN falling back to a browser-only plugin: ${failClosedReasons.join("; ")}`);
+    // Mixed mode: the flow declared `httpSteps`. A declared prefix that cannot
+    // be replayed over HTTP is an error, never a silent change of mode.
+    const mixedMode = httpStepsOpt !== null;
+    if (httpStepsOpt !== null) {
+      const problems: string[] = [];
+      if (!isSubmissionFlow) problems.push("the flow is not a multi-action submission flow");
+      if (noReplayableActionFlow) problems.push("no replayable action sequence was captured");
+      if (httpStepsOpt.actions > actionSteps.length)
+        problems.push(
+          `httpSteps.actions (${httpStepsOpt.actions}) exceeds the ${actionSteps.length} captured action step(s)`
+        );
+      if (actionSteps.slice(0, httpStepsOpt.actions).some((s) => s.isCrossDomain))
+        problems.push("the HTTP prefix crosses hosts and cannot be replayed over plain HTTP");
+      if (httpStepsOpt.tailFromStep > flowSteps.length)
+        problems.push(
+          `httpSteps.tailFromStep (${httpStepsOpt.tailFromStep}) exceeds the ${flowSteps.length} flow step(s)`
+        );
+      if (emit === "config")
+        problems.push(
+          "a mixed flow needs a generated plugin (--emit ts); the config manifest cannot hand cookies to the browser"
+        );
+      if (problems.length > 0)
+        throw new Error(
+          `httpSteps declared but the mixed flow cannot be generated: ${problems.join("; ")}`
+        );
+    }
     const mustBeBrowserFlowOnly =
       isSubmissionFlow &&
+      !mixedMode &&
       (browserFlowOnlyOptIn ||
         noReplayableActionFlow ||
         actionSteps.some((s) => s.isCrossDomain) ||
@@ -22507,7 +22536,8 @@ export async function main(): Promise<void> {
             pascal,
             flowSteps,
             vocabulary,
-            applicantContract
+            applicantContract,
+            httpStepsOpt?.actions
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
@@ -22517,11 +22547,15 @@ export async function main(): Promise<void> {
       synthesizedMultiStepBody === undefined
         ? []
         : findFrozenRequestTokens(
-            actionSteps,
+            httpStepsOpt === null ? actionSteps : actionSteps.slice(0, httpStepsOpt.actions),
             activeCaptures,
             synthesizedMultiStepBody,
             shieldedUuids
           );
+    if (untracedTokens.length > 0 && mixedMode)
+      throw new Error(
+        `httpSteps declared but ${untracedTokens.length} per-request token(s) in the HTTP prefix could not be traced to a producer step; the prefix cannot be replayed over HTTP`
+      );
     if (untracedTokens.length > 0) {
       for (const restore of collectorRestores) restore();
       logger.warn(
@@ -22622,7 +22656,7 @@ export async function main(): Promise<void> {
     }
 
     logger.info(
-      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+      `generating plugin for ${siteId} (${gql ? "GraphQL" : httpStepsOpt !== null ? `mixed flow, ${httpStepsOpt.actions} HTTP-replayed action step(s), browser tail from flow step ${httpStepsOpt.tailFromStep}` : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
     );
 
     // Non-GET mutating submit on a browser-flow-only plugin cannot be replayed
@@ -22674,6 +22708,15 @@ export async function main(): Promise<void> {
     // Emit the browser flow first so the SAME payloadFieldNames set that drives
     // its `payload.<field>` splices also extends the contract's payload schema —
     // the two artifacts can't drift because one accumulator feeds both.
+    const mixedHandoverOpt =
+      httpStepsOpt === null
+        ? undefined
+        : {
+            tailFromStep: httpStepsOpt.tailFromStep,
+            ...(httpStepsOpt.handoverUrl !== undefined
+              ? { handoverUrl: httpStepsOpt.handoverUrl }
+              : {}),
+          };
     const browserFlowOpts = {
       siteId,
       pascal,
@@ -22687,6 +22730,7 @@ export async function main(): Promise<void> {
       formBodyFieldNames,
       vocabulary,
       frameSelector,
+      mixedHandover: mixedHandoverOpt,
       readOnlyGetFlow: isReadOnlyGetFlow,
       getInputFields: undefined as readonly string[] | undefined,
     };
@@ -22767,6 +22811,8 @@ export async function main(): Promise<void> {
       auxFiles,
       multiStepBody,
       omitExecuteHttp: browserFlowOnly,
+      mixedHttpPrefix: mixedMode,
+      mixedHandover: mixedHandoverOpt,
       applicantContract,
       createsAccount: browserFlow.usesThrowawayPassword,
       maxAttempts: derivedMaxAttempts,
