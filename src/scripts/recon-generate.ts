@@ -3834,7 +3834,7 @@ function resends(haystack: string, value: string): boolean {
 function issuesTokenReusedLater(
   captures: Capture[],
   index: number,
-  isDeclaredRead: (capture: Capture) => boolean = () => false
+  isDeclaredRead: (capture: Capture) => boolean
 ): boolean {
   const getCapture = captures[index]!;
   if (getCapture.responseBody === undefined || getCapture.responseBody === null) return false;
