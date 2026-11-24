@@ -3174,6 +3174,8 @@ export function isClickViewSwapVerified(params: {
    * text swap is not a page advance.
    */
   blockedSubmitShape?: boolean;
+  /** A select step whose target field's committed value did not change: a popup opening is not a selection. */
+  selectValueUnchanged?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -3195,7 +3197,9 @@ export function isClickViewSwapVerified(params: {
     contentRemoved = false,
     resolvedElementNamesStepTarget = true,
     blockedSubmitShape = false,
+    selectValueUnchanged = false,
   } = params;
+  if (selectValueUnchanged) return false;
   // A click on a control unrelated to the step's quoted target is not the
   // step's success, whatever the DOM did afterwards.
   if (!resolvedElementNamesStepTarget) return false;
@@ -17108,6 +17112,8 @@ export async function executeStepWithHealing(params: {
       actSucceeded: record.actResultSuccess === true,
       contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
       resolvedElementNamesStepTarget: resolvedTargetNamesStep,
+      selectValueUnchanged:
+        parseSelectStep(step) !== null && post.formValueSignature === pre.formValueSignature,
       // A shrunk page is a new page; an equal-length or grown one with grown
       // markers is the same form showing validation.
       blockedSubmitShape:
