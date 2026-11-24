@@ -35,7 +35,10 @@ const logger = {
   debug() {},
 } as unknown as Logger;
 
-function buildWorld(marker: Marker, opts: { swapText: string; network?: boolean; popup?: boolean }) {
+function buildWorld(
+  marker: Marker,
+  opts: { swapText: string; network?: boolean; popup?: boolean }
+) {
   const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
   const window = new Window({ url: URL });
   const document = window.document;
