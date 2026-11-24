@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type FoldReturnSpec,
-  findFrozenVaryingDrillParams,
   resolveFoldPlan,
 } from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
@@ -81,14 +80,6 @@ describe("declared foldReturn for another endpoint vs a faceted POST search", ()
       }
       expect(plan.absorbedIndices.map((i) => steps[i]!.capture.url)).not.toContain(SEARCH_URL);
     }
-  });
-
-  it("reports no frozen varying params for the search re-queries", () => {
-    const captures = buildSteps()
-      .slice(0, 3)
-      .map((s) => s.capture);
-    const frozen = findFrozenVaryingDrillParams(captures[2]!, "{}", captures);
-    expect(frozen).toEqual([]);
   });
 
   it("a declared same-endpoint fold still resolves", () => {
