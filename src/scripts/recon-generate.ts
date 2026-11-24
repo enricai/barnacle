@@ -5833,6 +5833,16 @@ export function emitBearerBootstrapLines(src: RuntimeTokenSource): string[] {
         return token;
       }
       throw new Error("bearer token not found in document (HTTP " + res.status + "); claim-selected extraction failed");
+    };
+    const withBearerRetry = async <T>(run: () => Promise<T>): Promise<T> => {
+      try {
+        return await run();
+      } catch (err) {
+        const status = (err as { status?: number; statusCode?: number }).status ?? (err as { statusCode?: number }).statusCode;
+        if (status !== 401 && !/\\b401\\b/.test(String((err as Error)?.message ?? err))) throw err;
+        await mintBearer(true);
+        return run();
+      }
     };`
     .split("\n")
     .concat([""]);
@@ -12361,10 +12371,13 @@ export function emitMultiStepExecuteHttp(
       const urlPath = cap.url.split("/").slice(3).join("/").split("?")[0] ?? "";
       const guardLines = emitErrorSignalGuards(step.varName, urlPath, errorSignals);
       const needsBinding = bindResponse || guardLines.length > 0;
+      const retrying = r.headersExpr.includes("await mintBearer(");
+      const retryOpen = retrying ? "withBearerRetry(() => " : "";
+      const retryClose = retrying ? ")" : "";
       if (needsBinding) {
-        lines.push(`    const ${step.varName} = (await httpClient(\`${r.url}\`, {`);
+        lines.push(`    const ${step.varName} = (await ${retryOpen}httpClient(\`${r.url}\`, {`);
       } else {
-        lines.push(`    await httpClient(\`${r.url}\`, {`);
+        lines.push(`    await ${retryOpen}httpClient(\`${r.url}\`, {`);
       }
       lines.push(`      method: ${JSON.stringify(r.method)},`);
       const joined = [r.headersExpr, r.bodyArg].filter((s) => s !== "").join(" ");
@@ -12373,9 +12386,9 @@ export function emitMultiStepExecuteHttp(
       }
       lines.push(`      schema: ${r.schemaExpr},`);
       if (needsBinding) {
-        lines.push(`    })) as Record<string, unknown>;`);
+        lines.push(`    })${retryClose}) as Record<string, unknown>;`);
       } else {
-        lines.push(`    });`);
+        lines.push(`    })${retryClose};`);
       }
       if (guardLines.length > 0) {
         lines.push(`    if (typeof ${step.varName} === "object" && ${step.varName} !== null) {`);
