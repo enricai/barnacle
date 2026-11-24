@@ -20,15 +20,27 @@
  *   src/sites/<siteId>/recon-flow.json — plain-English flow steps
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { resolveCanonicalAtsFieldName } from "@/lib/ats-field-vocabulary";
 import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
 import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
-import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
-import { findCaptchaResponseFields, parseMultipartTextParts } from "@/recon/captcha-detect";
+import {
+  CONFIG_PLUGIN_API_VERSION,
+  CONFIG_PLUGIN_KIND,
+} from "@/plugins/plugin-manifest-envelope";
+import {
+  findCaptchaResponseFields,
+  parseMultipartTextParts,
+} from "@/recon/captcha-detect";
 import {
   extractNavigatedHostnames,
   hasNoBusinessRelevantResponseState,
@@ -57,12 +69,24 @@ import {
   isStateLikeSegment,
   PATH_SEGMENT_MIN_LENGTH,
 } from "@/recon/html-state-producers";
-import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
-import { loadReconValueConstraints, VALUE_CONSTRAINTS_NONE } from "@/recon/load-value-constraints";
+import {
+  FORM_SCHEMA_NONE,
+  loadReconFormSchema,
+} from "@/recon/load-form-schema";
+import {
+  loadReconValueConstraints,
+  VALUE_CONSTRAINTS_NONE,
+} from "@/recon/load-value-constraints";
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
-import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/value-constraints";
+import {
+  EMPTY_VALUE_CONSTRAINTS,
+  type ReconValueConstraints,
+} from "@/recon/value-constraints";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
-import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-runner";
+import {
+  type EmailStepConfig,
+  isStepDeclaredNonSubmit,
+} from "@/scraper/flow-runner";
 import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
@@ -148,8 +172,9 @@ function namesAWidgetLabel(instruction: string, span: QuotedSpan): boolean {
   const after = instruction.slice(span.end);
   return (
     /^\s*(?:prompt\s+selector|selector|dropdown|drop-down|multiselect|typeahead|field|question|list|menu|widget)\b/i.test(
-      after
-    ) || /\b(?:for|from)(?:\s+the)?(?:\s+(?:question|answer))?\s*$/i.test(before)
+      after,
+    ) ||
+    /\b(?:for|from)(?:\s+the)?(?:\s+(?:question|answer))?\s*$/i.test(before)
   );
 }
 
@@ -165,7 +190,7 @@ function namesAWidgetLabel(instruction: string, span: QuotedSpan): boolean {
 function pickValueSpan(
   instruction: string,
   spans: readonly QuotedSpan[],
-  knownValue?: string | null
+  knownValue?: string | null,
 ): QuotedSpan {
   // Identity match: when the recon-typed value is known, the span carrying it IS the value.
   if (knownValue) {
@@ -174,8 +199,12 @@ function pickValueSpan(
     if (hit) return hit;
   }
   const verb = /\b(select|choose|pick)\b/i.exec(instruction);
-  const afterVerb = verb ? spans.filter((span) => span.start >= verb.index + verb[0].length) : [];
-  const answer = afterVerb.find((span) => !namesAWidgetLabel(instruction, span)) ?? afterVerb[0];
+  const afterVerb = verb
+    ? spans.filter((span) => span.start >= verb.index + verb[0].length)
+    : [];
+  const answer =
+    afterVerb.find((span) => !namesAWidgetLabel(instruction, span)) ??
+    afterVerb[0];
   if (answer) return answer;
   // Click grammar: the clicked option is named first; later spans describe
   // the effect ("... so the 'B' panel expands"), never the value.
@@ -205,7 +234,7 @@ function pickValueSpan(
  */
 function locateSpliceSite(
   instruction: string,
-  knownValue?: string | null
+  knownValue?: string | null,
 ): { before: string; matched: string; after: string } | null {
   const envToken = RESERVED_ENV_TOKEN.exec(instruction);
   if (envToken) {
@@ -234,7 +263,7 @@ function locateSpliceSite(
  */
 function namesAControl(instruction: string): boolean {
   return findInstructionSpans(instruction).some((span) =>
-    /^\s*(button|link|tab)\b/i.test(instruction.slice(span.end))
+    /^\s*(button|link|tab)\b/i.test(instruction.slice(span.end)),
   );
 }
 
@@ -287,9 +316,11 @@ function camelFromPascal(pascal: string): string {
 /** Generated outputs already present in `outDir` (conflicts without --force). */
 export function findExistingGeneratedPaths(
   outDir: string,
-  exists: (path: string) => boolean = existsSync
+  exists: (path: string) => boolean = existsSync,
 ): string[] {
-  return ["contract.ts", "index.ts", "flows"].map((n) => `${outDir}/${n}`).filter((p) => exists(p));
+  return ["contract.ts", "index.ts", "flows"]
+    .map((n) => `${outDir}/${n}`)
+    .filter((p) => exists(p));
 }
 
 /**
@@ -323,25 +354,29 @@ export function resolveStepPayloadField(
   forceNone?: boolean,
   vocabulary: ReconVocabulary = EMPTY_VOCABULARY,
   knownFieldValues: ReadonlyMap<string, string> = EMPTY_KNOWN_FIELD_VALUES,
-  canonicalise = false
+  canonicalise = false,
 ): string | null {
   if (forceNone) return null;
-  if (explicit) return canonicalise ? canonicalPayloadField(explicit) : explicit;
+  if (explicit)
+    return canonicalise ? canonicalPayloadField(explicit) : explicit;
   // A control's own name (a button/link/tab label) is never a fill/select VALUE,
   // even when it happens to contain a word a vocabulary row also matches.
   if (namesAControl(instruction)) return null;
   // A quoted literal or a reserved ${RECON_*} env token IS the recon constant
   // this step would replace, so it is spliceable on its own.
   const hasQuotedConstant =
-    findInstructionSpans(instruction).length > 0 || RESERVED_ENV_TOKEN.test(instruction);
+    findInstructionSpans(instruction).length > 0 ||
+    RESERVED_ENV_TOKEN.test(instruction);
   // A dropdown step carries no constant to replace, so a label match alone can't
   // tell "select the test candidate's state" (the caller's data) from "select the
   // neighborhood from the Country dropdown" (a facet that merely says Country).
   // Requiring the subject is what keeps this from mis-firing off-domain.
   const isDropdownStep =
-    /\bdropdown\b/i.test(instruction) || /\bselect\b[^.]*\bfrom\b/i.test(instruction);
+    /\bdropdown\b/i.test(instruction) ||
+    /\bselect\b[^.]*\bfrom\b/i.test(instruction);
   const hasSpliceable =
-    hasQuotedConstant || (isDropdownStep && vocabulary.subject.test(instruction));
+    hasQuotedConstant ||
+    (isDropdownStep && vocabulary.subject.test(instruction));
   if (!hasSpliceable) return null;
   if (vocabulary.exclusions.some((rx) => rx.test(instruction))) return null;
   // A Select/Choose/Pick step names an ANSWER, not a Fill step's self-evident
@@ -376,7 +411,7 @@ export function resolveStepPayloadField(
 function labelMatchText(instruction: string): string {
   return instruction.replace(
     /(?<![\p{L}\p{N}])['"\u2018\u2019\u201C\u201D]|['"\u2018\u2019\u201C\u201D](?![\p{L}\p{N}])/gu,
-    ""
+    "",
   );
 }
 
@@ -390,7 +425,10 @@ const CODE_STYLE_TAIL =
  * code"): a different control than the field the label's leading word names.
  * "Zip Code" / "Postal Code" are the field's own name, not a code-style variant.
  */
-function namesACodeStyleControl(labelText: string, labelMatch: RegExpExecArray): boolean {
+function namesACodeStyleControl(
+  labelText: string,
+  labelMatch: RegExpExecArray,
+): boolean {
   const end = labelMatch.index + labelMatch[0].length;
   if (!CODE_STYLE_TAIL.test(labelText.slice(end))) return false;
   return !/\b(?:zip|postal|post)\s*$/i.test(labelText.slice(0, end));
@@ -408,9 +446,15 @@ const DIAL_CODE_ANSWER = /^\+\d{1,4}$|\(\s*\+\d{1,4}\s*\)\s*$/;
  * `Phone`. Names the base schema has no equivalent for pass through.
  */
 export function canonicalPayloadField(field: string): string {
-  if (applicantContactFieldNames.has(field) || baseContractFieldNames.has(field)) return field;
+  if (
+    applicantContactFieldNames.has(field) ||
+    baseContractFieldNames.has(field)
+  )
+    return field;
   const canonical = resolveCanonicalAtsFieldName(field);
-  return canonical !== null && applicantContactFieldNames.has(canonical) ? canonical : field;
+  return canonical !== null && applicantContactFieldNames.has(canonical)
+    ? canonical
+    : field;
 }
 
 /**
@@ -426,7 +470,7 @@ function fieldForFillStep(
   vocabulary: ReconVocabulary,
   knownFieldValues?: ReadonlyMap<string, string>,
   canonicalise = false,
-  labelFallback = true
+  labelFallback = true,
 ): string | null {
   const isObj = typeof step !== "string";
   const instruction = isObj ? step.step : step;
@@ -436,14 +480,16 @@ function fieldForFillStep(
     isObj ? step.payloadFieldNone : undefined,
     vocabulary,
     knownFieldValues,
-    canonicalise
+    canonicalise,
   );
   if (vocabField !== null) return vocabField;
   if (!labelFallback) return null;
   if (isObj && step.payloadFieldNone) return null;
   if (vocabulary.exclusions.some((rx) => rx.test(instruction))) return null;
   const labelField = deriveFillLabelField(instruction);
-  return canonicalise && labelField !== null ? canonicalPayloadField(labelField) : labelField;
+  return canonicalise && labelField !== null
+    ? canonicalPayloadField(labelField)
+    : labelField;
 }
 
 /**
@@ -452,24 +498,33 @@ function fieldForFillStep(
  * explicit field, no vocabulary row) and the label is phrased as a question.
  * Such answers ('75000' salary) are not persona constants.
  */
-function isOperationalFill(step: FlowStepInput, vocabulary: ReconVocabulary): boolean {
+function isOperationalFill(
+  step: FlowStepInput,
+  vocabulary: ReconVocabulary,
+): boolean {
   if (typeof step !== "string") {
     if (step.payloadFieldNone) return true;
     if (step.payloadField) return false;
   }
   const instruction = typeof step === "string" ? step : step.step;
   if (matchesVocabularyRow(instruction, vocabulary)) return false;
-  const label = /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
-    instruction
-  )?.[1];
+  const label =
+    /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
+      instruction,
+    )?.[1];
   if (label === undefined) return false;
   return (
     /\?/.test(label) ||
-    /^\W*(?:what|how|why|when|where|which|who|do|does|are|is|will|would|can|please)\b/i.test(label)
+    /^\W*(?:what|how|why|when|where|which|who|do|does|are|is|will|would|can|please)\b/i.test(
+      label,
+    )
   );
 }
 
-function matchesVocabularyRow(instruction: string, vocabulary: ReconVocabulary): boolean {
+function matchesVocabularyRow(
+  instruction: string,
+  vocabulary: ReconVocabulary,
+): boolean {
   const labelText = labelMatchText(instruction);
   return vocabulary.table.some(([rx]) => {
     const match = rx.exec(labelText);
@@ -485,7 +540,7 @@ function matchesVocabularyRow(instruction: string, vocabulary: ReconVocabulary):
 export function warnUnmatchedFillSteps(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary,
-  warn: (msg: string) => void
+  warn: (msg: string) => void,
 ): void {
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
@@ -494,7 +549,7 @@ export function warnUnmatchedFillSteps(
     if (isObj && (step.payloadField || step.payloadFieldNone)) continue;
     if (matchesVocabularyRow(instruction, vocabulary)) continue;
     warn(
-      `recon-generate: fill step matches no vocabulary row; its value is not bound to a payload field via the vocabulary: ${JSON.stringify(instruction)}`
+      `recon-generate: fill step matches no vocabulary row; its value is not bound to a payload field via the vocabulary: ${JSON.stringify(instruction)}`,
     );
   }
 }
@@ -513,14 +568,20 @@ export function buildKnownFieldValues(
   vocabulary: ReconVocabulary,
   env: NodeJS.ProcessEnv,
   canonicalise = false,
-  labelFallback = true
+  labelFallback = true,
 ): Map<string, string> {
   const known = new Map<string, string>();
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
     if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
-    const field = fieldForFillStep(step, vocabulary, undefined, canonicalise, labelFallback);
+    const field = fieldForFillStep(
+      step,
+      vocabulary,
+      undefined,
+      canonicalise,
+      labelFallback,
+    );
     if (field === null) continue;
     if (isOperationalFill(step, vocabulary)) continue;
     const value = extractStepPersonaValue(instruction, env);
@@ -556,11 +617,14 @@ export function buildKnownFieldValues(
  */
 export function extractStepPersonaValue(
   instruction: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
 ): string | null {
   const emailToken = `$${"{RECON_EMAIL}"}`;
   const reconEmail = env.RECON_EMAIL;
-  if (reconEmail && (instruction.includes(emailToken) || instruction.includes(reconEmail))) {
+  if (
+    reconEmail &&
+    (instruction.includes(emailToken) || instruction.includes(reconEmail))
+  ) {
     return reconEmail;
   }
   // Resolve any other `${UPPER_SNAKE}` env token the same way recon-browser's
@@ -593,7 +657,7 @@ export function extractStepPersonaValue(
  */
 export function extractNavigateToHashFragmentValue(
   url: string,
-  previousHash?: string
+  previousHash?: string,
 ): string | null {
   const hashIndex = url.indexOf("#");
   if (hashIndex === -1) return null;
@@ -604,12 +668,16 @@ export function extractNavigateToHashFragmentValue(
     // separator. The facet's actual VALUE is the last token that is new
     // relative to the previous hash, with any "key=" prefix removed.
     const previousTokens = new Set(splitHashTokens(previousHash));
-    const added = splitHashTokens(hash).filter((token) => !previousTokens.has(token));
+    const added = splitHashTokens(hash).filter(
+      (token) => !previousTokens.has(token),
+    );
     const delta = added[added.length - 1];
     if (delta !== undefined) return stripHashKeyPrefix(delta);
   }
   const tokens = splitHashTokens(hash);
-  return tokens.length > 0 ? stripHashKeyPrefix(tokens[tokens.length - 1]!) : null;
+  return tokens.length > 0
+    ? stripHashKeyPrefix(tokens[tokens.length - 1]!)
+    : null;
 }
 
 /**
@@ -621,7 +689,7 @@ export function extractNavigateToHashFragmentValue(
  */
 function walkNavigateToFacets(
   flowSteps: FlowStepInput[],
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
 ): WalkedNavigateToFacet[] {
   const facets: WalkedNavigateToFacet[] = [];
   let baselineHash: string | undefined;
@@ -643,15 +711,22 @@ function walkNavigateToFacets(
       continue;
     }
     const hashIndex = step.navigateTo.indexOf("#");
-    const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
+    const currentHash =
+      hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
     const currentQuery = parseUrlQueryParams(step.navigateTo);
     if (step.payloadField) {
-      const hashValue = extractNavigateToHashFragmentValue(step.navigateTo, baselineHash);
+      const hashValue = extractNavigateToHashFragmentValue(
+        step.navigateTo,
+        baselineHash,
+      );
       // A hashless URL carries its facet in the query string: the one param
       // whose value changed since the previous navigation. Several changed
       // params are ambiguous, so none is taken (the facet stays unwired).
-      const changed = [...currentQuery].filter(([key, v]) => baselineQuery.get(key) !== v);
-      const queryValue = hashValue === null && changed.length === 1 ? changed[0]![1] : "";
+      const changed = [...currentQuery].filter(
+        ([key, v]) => baselineQuery.get(key) !== v,
+      );
+      const queryValue =
+        hashValue === null && changed.length === 1 ? changed[0]![1] : "";
       facets.push({
         value: hashValue ?? (queryValue.length > 0 ? queryValue : null),
         field: step.payloadField,
@@ -694,17 +769,23 @@ function deriveFacetKind(field: string): string {
     .toLowerCase();
 }
 
-function uniqueLiterals(primary: string | null, others: readonly string[]): string[] {
-  return [...new Set([...(primary === null ? [] : [primary]), ...others])].filter(
-    (literal) => literal.length > 0
-  );
+function uniqueLiterals(
+  primary: string | null,
+  others: readonly string[],
+): string[] {
+  return [
+    ...new Set([...(primary === null ? [] : [primary]), ...others]),
+  ].filter((literal) => literal.length > 0);
 }
 
-function collectStepFacetLiterals(instruction: string, env: NodeJS.ProcessEnv): string[] {
+function collectStepFacetLiterals(
+  instruction: string,
+  env: NodeJS.ProcessEnv,
+): string[] {
   const primary = extractStepPersonaValue(instruction, env);
   return uniqueLiterals(
     primary,
-    findInstructionSpans(instruction).map((span) => span.text)
+    findInstructionSpans(instruction).map((span) => span.text),
   );
 }
 
@@ -774,17 +855,27 @@ const STEP_KIND_LEADING_STOP_WORDS = new Set([
  * destination 'Lisbon'"), for a step whose field name and trailing phrase
  * name nothing the page's own vocabulary uses.
  */
-function collectLeadingStepKindHints(instruction: string, spanStart: number): string[] {
-  const words = (instruction.slice(0, spanStart).match(/[A-Za-z][A-Za-z0-9_-]*/g) ?? []).map(
-    (word) => word.toLowerCase()
-  );
+function collectLeadingStepKindHints(
+  instruction: string,
+  spanStart: number,
+): string[] {
+  const words = (
+    instruction.slice(0, spanStart).match(/[A-Za-z][A-Za-z0-9_-]*/g) ?? []
+  ).map((word) => word.toLowerCase());
   const isKindWord = (word: string | undefined): word is string =>
     word !== undefined && !STEP_KIND_LEADING_STOP_WORDS.has(word);
   const containerNamed = words.flatMap((word, index) =>
-    STEP_KIND_CONTAINER_WORDS.has(word) && isKindWord(words[index - 1]) ? [words[index - 1]!] : []
+    STEP_KIND_CONTAINER_WORDS.has(word) && isKindWord(words[index - 1])
+      ? [words[index - 1]!]
+      : [],
   );
   const directlyBefore = words[words.length - 1];
-  return [...new Set([...containerNamed, ...(isKindWord(directlyBefore) ? [directlyBefore] : [])])];
+  return [
+    ...new Set([
+      ...containerNamed,
+      ...(isKindWord(directlyBefore) ? [directlyBefore] : []),
+    ]),
+  ];
 }
 
 /**
@@ -794,9 +885,14 @@ function collectLeadingStepKindHints(instruction: string, spanStart: number): st
  * the page's vocabulary can still own the element of that kind. Reads only the
  * generic instruction grammar, no site vocabulary.
  */
-function collectStepFacetKindHints(instruction: string, env: NodeJS.ProcessEnv): string[] {
+function collectStepFacetKindHints(
+  instruction: string,
+  env: NodeJS.ProcessEnv,
+): string[] {
   const value = extractStepPersonaValue(instruction, env);
-  const span = findInstructionSpans(instruction).find((candidate) => candidate.text === value);
+  const span = findInstructionSpans(instruction).find(
+    (candidate) => candidate.text === value,
+  );
   if (span === undefined) return [];
   const phrase = instruction
     .slice(span.end)
@@ -805,19 +901,32 @@ function collectStepFacetKindHints(instruction: string, env: NodeJS.ProcessEnv):
     .split(/\s+/)
     .map((word) => word.replace(/^['"]+|['"]+$/g, ""))
     .filter((word) => /^[A-Za-z][A-Za-z0-9_-]*$/.test(word));
-  const kindWords = words.filter((word) => !STEP_KIND_STOP_WORDS.has(word.toLowerCase()));
-  const trailing = [...(kindWords.length > 1 ? [kindWords.join(" ")] : []), ...kindWords];
-  return [...new Set([...trailing, ...collectLeadingStepKindHints(instruction, span.start)])];
+  const kindWords = words.filter(
+    (word) => !STEP_KIND_STOP_WORDS.has(word.toLowerCase()),
+  );
+  const trailing = [
+    ...(kindWords.length > 1 ? [kindWords.join(" ")] : []),
+    ...kindWords,
+  ];
+  return [
+    ...new Set([
+      ...trailing,
+      ...collectLeadingStepKindHints(instruction, span.start),
+    ]),
+  ];
 }
 
-function collectHashFacetLiterals(url: string, previousHash: string | undefined): string[] {
+function collectHashFacetLiterals(
+  url: string,
+  previousHash: string | undefined,
+): string[] {
   const primary = extractNavigateToHashFragmentValue(url, previousHash);
   const hashIndex = url.indexOf("#");
   const rawTokens =
     hashIndex === -1 || previousHash === undefined
       ? []
       : splitHashTokens(url.slice(hashIndex + 1)).filter(
-          (token) => !splitHashTokens(previousHash).includes(token)
+          (token) => !splitHashTokens(previousHash).includes(token),
         );
   return uniqueLiterals(primary, rawTokens);
 }
@@ -826,19 +935,30 @@ function collectHashFacetLiterals(url: string, previousHash: string | undefined)
  * Element kinds a hash facet's own tokens name: the key of a `key=value` pair,
  * the path segment ahead of the value, and the `<kind>_` prefix of a slug.
  */
-function collectHashFacetKindHints(url: string, previousHash: string | undefined): string[] {
+function collectHashFacetKindHints(
+  url: string,
+  previousHash: string | undefined,
+): string[] {
   const hashIndex = url.indexOf("#");
   if (hashIndex === -1) return [];
-  const previousTokens = new Set(previousHash === undefined ? [] : splitHashTokens(previousHash));
+  const previousTokens = new Set(
+    previousHash === undefined ? [] : splitHashTokens(previousHash),
+  );
   const tokens = splitHashTokens(url.slice(hashIndex + 1));
   const fresh = tokens.filter((token) => !previousTokens.has(token));
   const valueToken = fresh[fresh.length - 1] ?? tokens[tokens.length - 1];
   if (valueToken === undefined) return [];
   const value = stripHashKeyPrefix(valueToken);
-  const keyOfPair = valueToken.includes("=") ? valueToken.slice(0, valueToken.indexOf("=")) : "";
+  const keyOfPair = valueToken.includes("=")
+    ? valueToken.slice(0, valueToken.indexOf("="))
+    : "";
   const ahead = tokens[tokens.indexOf(valueToken) - 1] ?? "";
-  const slugPrefix = value.includes("_") ? value.slice(0, value.indexOf("_")) : "";
-  return [keyOfPair, ahead, slugPrefix].filter((hint) => /^[A-Za-z][A-Za-z0-9 _-]*$/.test(hint));
+  const slugPrefix = value.includes("_")
+    ? value.slice(0, value.indexOf("_"))
+    : "";
+  return [keyOfPair, ahead, slugPrefix].filter((hint) =>
+    /^[A-Za-z][A-Za-z0-9 _-]*$/.test(hint),
+  );
 }
 
 function splitHashTokens(hash: string): string[] {
@@ -873,18 +993,21 @@ function stripHashKeyPrefix(token: string): string {
 export function deriveFillLabelField(instruction: string): string | null {
   if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) return null;
   if (findInstructionSpans(instruction).length === 0) return null;
-  const label = /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
-    instruction
-  )?.[1];
+  const label =
+    /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
+      instruction,
+    )?.[1];
   if (label === undefined) return null;
-  return resolveCanonicalAtsFieldName(label) ?? fieldNameToPascalCase(label, null);
+  return (
+    resolveCanonicalAtsFieldName(label) ?? fieldNameToPascalCase(label, null)
+  );
 }
 
 /** Overlay persona values persisted by recon-browser (`persona-env.json`) under
  * `env`; real env values keep precedence. */
 export function withPersistedPersonaEnv(
   runRoot: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   const file = join(runRoot, "persona-env.json");
   if (!existsSync(file)) return env;
@@ -892,8 +1015,10 @@ export function withPersistedPersonaEnv(
     const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
     if (parsed === null || typeof parsed !== "object") return env;
     const merged: NodeJS.ProcessEnv = {};
-    for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") merged[k] = v;
-    for (const [k, v] of Object.entries(env)) if (v !== undefined && v !== "") merged[k] = v;
+    for (const [k, v] of Object.entries(parsed))
+      if (typeof v === "string") merged[k] = v;
+    for (const [k, v] of Object.entries(env))
+      if (v !== undefined && v !== "") merged[k] = v;
     return merged;
   } catch {
     return env;
@@ -905,9 +1030,13 @@ export function harvestRunPersonaBindings(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary,
   runRoot: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
 ): Map<string, string> {
-  return harvestPersonaBindings(flowSteps, vocabulary, withPersistedPersonaEnv(runRoot, env));
+  return harvestPersonaBindings(
+    flowSteps,
+    vocabulary,
+    withPersistedPersonaEnv(runRoot, env),
+  );
 }
 
 /**
@@ -926,7 +1055,7 @@ export function harvestRunPersonaBindings(
 export function harvestPersonaBindings(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
 ): Map<string, string> {
   const bindings = new Map<string, string>();
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
@@ -1004,7 +1133,7 @@ export type NavigateToFacetOrigin = "navigateTo" | "step";
  */
 export function extractNavigateToFacetOrder(
   flowSteps: FlowStepInput[],
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
 ): NavigateToFacetBinding[] {
   return walkNavigateToFacets(flowSteps, env)
     .filter((facet) => facet.origin === "navigateTo" || facet.value !== null)
@@ -1035,7 +1164,7 @@ export function extractNavigateToFacetOrder(
  */
 export function resolveCompositePersonaFields(
   instruction: string,
-  knownFieldValues: ReadonlyMap<string, string>
+  knownFieldValues: ReadonlyMap<string, string>,
 ): { fieldA: string; fieldB: string } | null {
   const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
@@ -1058,7 +1187,9 @@ export function resolveCompositePersonaFields(
  * miss (single OR composite) is caught regardless of which matching path
  * should have handled it.
  */
-function allPersonaLiterals(knownFieldValues: ReadonlyMap<string, string>): string[] {
+function allPersonaLiterals(
+  knownFieldValues: ReadonlyMap<string, string>,
+): string[] {
   const entries = [...knownFieldValues.entries()];
   const literals = entries.map(([, value]) => value);
   for (const [fieldA, valueA] of entries) {
@@ -1083,7 +1214,7 @@ function allPersonaLiterals(knownFieldValues: ReadonlyMap<string, string>): stri
 export function assertNoLeakedPersonaConstant(
   code: string,
   knownFieldValues: ReadonlyMap<string, string>,
-  flowSteps: FlowStepInput[] = []
+  flowSteps: FlowStepInput[] = [],
 ): void {
   for (const value of allPersonaLiterals(knownFieldValues)) {
     if (code.includes(`'${value}'`)) {
@@ -1091,7 +1222,7 @@ export function assertNoLeakedPersonaConstant(
         .map((st) => (typeof st === "string" ? st : st.step))
         .find((text) => text.includes(value));
       throw new Error(
-        `recon-generate: persona constant '${value}' survived emission${step === undefined ? "" : ` (step: ${JSON.stringify(step)})`} — a flow step failed to splice its known field value to payload.<field>`
+        `recon-generate: persona constant '${value}' survived emission${step === undefined ? "" : ` (step: ${JSON.stringify(step)})`} — a flow step failed to splice its known field value to payload.<field>`,
       );
     }
   }
@@ -1133,7 +1264,10 @@ interface InferOpts {
    * because two different sibling breakdown fields can each independently
    * satisfy the sum relation for the same aggregate -- every confirmed
    * derivation is described, not just the last one found. */
-  aggregateUnitBasisFindingsByPath?: ReadonlyMap<string, readonly AggregateUnitBasisFinding[]>;
+  aggregateUnitBasisFindingsByPath?: ReadonlyMap<
+    string,
+    readonly AggregateUnitBasisFinding[]
+  >;
   /** Every sample came from ONE entity (e.g. a single product page of a
    * catalog), so a scalar leaf reached without crossing an array boundary is
    * present and non-null there only by accident of which entity was captured;
@@ -1161,9 +1295,12 @@ interface InferOpts {
  * every nesting depth and sibling object shape it appears in within the same
  * query.
  */
-export function collectConditionalGraphQLFieldNames(query: string): ReadonlySet<string> {
+export function collectConditionalGraphQLFieldNames(
+  query: string,
+): ReadonlySet<string> {
   const names = new Set<string>();
-  const pattern = /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^()]*\))?\s*@(?:include|skip)\s*\(/g;
+  const pattern =
+    /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^()]*\))?\s*@(?:include|skip)\s*\(/g;
   for (const match of query.matchAll(pattern)) {
     const fieldName = match[1];
     if (fieldName) names.add(fieldName);
@@ -1189,7 +1326,7 @@ export function inferZodSchemaFromSamples(
   depth = 0,
   indent = "",
   opts: InferOpts = {},
-  path: readonly string[] = []
+  path: readonly string[] = [],
 ): string {
   const maxDepth = opts.maxDepth ?? DEFAULT_MAX_INFER_DEPTH;
   if (depth > maxDepth) return "z.unknown()";
@@ -1203,14 +1340,16 @@ export function inferZodSchemaFromSamples(
   // stay permissive rather than pinning a z.null() the endpoint will violate.
   if (nonNull.length === 0) return "z.unknown()";
 
-  const wrap = (expr: string): string => (nullable ? `${expr}.nullable()` : expr);
+  const wrap = (expr: string): string =>
+    nullable ? `${expr}.nullable()` : expr;
   // Observed value under single-entity evidence: invariance
   // across entities is unproven, so always nullable.
   const wrapScalar = (expr: string): string =>
     nullable || opts.singleEntityEvidence ? `${expr}.nullable()` : expr;
   // Containers: the root response is never made nullable by evidence alone
   // (consumers dereference it); only nested containers get the leniency.
-  const wrapContainer = (expr: string): string => (depth === 0 ? wrap(expr) : wrapScalar(expr));
+  const wrapContainer = (expr: string): string =>
+    depth === 0 ? wrap(expr) : wrapScalar(expr);
 
   const kindOf = (v: unknown): string =>
     Array.isArray(v) ? "array" : v === null ? "null" : typeof v;
@@ -1224,12 +1363,16 @@ export function inferZodSchemaFromSamples(
 
   if (kind === "string") return wrapScalar("z.string()");
   if (kind === "number")
-    return wrapScalar(opts.multipartCoerce ? "z.coerce.number()" : "z.number()");
+    return wrapScalar(
+      opts.multipartCoerce ? "z.coerce.number()" : "z.number()",
+    );
   if (kind === "boolean") {
     // multipart/form-data encodes booleans as "true"/"false". The contract
     // emitter imports the shared multipartBoolean() helper from @/lib/zod-multipart
     // when any field needs this coercion; we call it here to keep field declarations short.
-    return wrapScalar(opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()");
+    return wrapScalar(
+      opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()",
+    );
   }
 
   if (kind === "array") {
@@ -1240,16 +1383,17 @@ export function inferZodSchemaFromSamples(
     // Within-response element variance is not cross-entity variance, so the
     // single-entity flag is kept for elements.
     return wrapContainer(
-      `z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`
+      `z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`,
     );
   }
 
   if (kind === "object") {
     const objects = nonNull as Record<string, unknown>[];
     const keys = [...new Set(objects.flatMap((o) => Object.keys(o)))].filter(
-      (k) => !(opts.looseServerResponse && k === "__typename")
+      (k) => !(opts.looseServerResponse && k === "__typename"),
     );
-    if (keys.length === 0) return wrapContainer("z.record(z.string(), z.unknown())");
+    if (keys.length === 0)
+      return wrapContainer("z.record(z.string(), z.unknown())");
     const inner = `${indent}  `;
     // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
     // the generated file on first lint:fix.
@@ -1257,7 +1401,13 @@ export function inferZodSchemaFromSamples(
       .map((k) => {
         const fieldPath = [...path, k];
         const valuesForKey = objects.filter((o) => k in o).map((o) => o[k]);
-        const expr = inferZodSchemaFromSamples(valuesForKey, depth + 1, inner, opts, fieldPath);
+        const expr = inferZodSchemaFromSamples(
+          valuesForKey,
+          depth + 1,
+          inner,
+          opts,
+          fieldPath,
+        );
         // Seen on some samples but not others (the endpoint omits it sometimes)
         // OR the query marks it @include/@skip-conditional (the server can
         // legally omit it regardless of what this sample happened to show):
@@ -1267,15 +1417,17 @@ export function inferZodSchemaFromSamples(
           (opts.conditionalFieldNames?.has(k) ?? false) ||
           opts.singleEntityEvidence === true;
         const optional = isOptional ? `${expr}.optional()` : expr;
-        const findings = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
+        const findings = opts.aggregateUnitBasisFindingsByPath?.get(
+          fieldPath.join("."),
+        );
         const described = findings?.length
           ? `${optional}.describe(${JSON.stringify(
               `Derived: ${findings
                 .map(
                   (finding) =>
-                    `equals the sum of "${finding.unitFieldName}" across every entry of "${finding.breakdownPath.join(".")}"`
+                    `equals the sum of "${finding.unitFieldName}" across every entry of "${finding.breakdownPath.join(".")}"`,
                 )
-                .join("; also ")}.`
+                .join("; also ")}.`,
             )})`
           : optional;
         return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${described}`;
@@ -1291,7 +1443,12 @@ export function inferZodSchemaFromSamples(
 /**
  * Single-sample convenience wrapper preserving the original call signature.
  */
-function inferZodSchema(value: unknown, depth = 0, indent = "", opts: InferOpts = {}): string {
+function inferZodSchema(
+  value: unknown,
+  depth = 0,
+  indent = "",
+  opts: InferOpts = {},
+): string {
   return inferZodSchemaFromSamples([value], depth, indent, opts);
 }
 
@@ -1332,7 +1489,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** A "map of objects" is a dynamically-keyed collection (guest index, room id,
  * line-item id, ...) where every value is itself a record — the per-unit
  * breakdown shape, as opposed to a plain nested object or a scalar map. */
-function isMapOfObjects(value: unknown): value is Record<string, Record<string, unknown>> {
+function isMapOfObjects(
+  value: unknown,
+): value is Record<string, Record<string, unknown>> {
   if (!isPlainObject(value)) return false;
   const values = Object.values(value);
   if (values.length === 0) return false;
@@ -1347,7 +1506,9 @@ interface AggregateCandidate {
 
 interface BreakdownCandidate {
   readonly key: string;
-  readonly getEntries: (instance: Record<string, unknown>) => Record<string, unknown>[] | undefined;
+  readonly getEntries: (
+    instance: Record<string, unknown>,
+  ) => Record<string, unknown>[] | undefined;
 }
 
 /**
@@ -1360,7 +1521,7 @@ interface BreakdownCandidate {
 function collectAggregateCandidates(
   instances: readonly Record<string, unknown>[],
   path: readonly string[],
-  keys: ReadonlySet<string>
+  keys: ReadonlySet<string>,
 ): AggregateCandidate[] {
   const candidates: AggregateCandidate[] = [];
   for (const key of keys) {
@@ -1369,12 +1530,17 @@ function collectAggregateCandidates(
         fieldName: key,
         path: [...path, key],
         getValue: (instance) =>
-          typeof instance[key] === "number" ? (instance[key] as number) : undefined,
+          typeof instance[key] === "number"
+            ? (instance[key] as number)
+            : undefined,
       });
     }
 
-    const nestedObjects = instances.map((instance) => instance[key]).filter(isPlainObject);
-    if (nestedObjects.length === 0 || nestedObjects.some(isMapOfObjects)) continue;
+    const nestedObjects = instances
+      .map((instance) => instance[key])
+      .filter(isPlainObject);
+    if (nestedObjects.length === 0 || nestedObjects.some(isMapOfObjects))
+      continue;
     const innerKeys = new Set(nestedObjects.flatMap((o) => Object.keys(o)));
     for (const innerKey of innerKeys) {
       if (!nestedObjects.some((o) => typeof o[innerKey] === "number")) continue;
@@ -1395,7 +1561,7 @@ function collectAggregateCandidates(
 
 function collectBreakdownCandidates(
   instances: readonly Record<string, unknown>[],
-  keys: ReadonlySet<string>
+  keys: ReadonlySet<string>,
 ): BreakdownCandidate[] {
   const candidates: BreakdownCandidate[] = [];
   for (const key of keys) {
@@ -1425,7 +1591,7 @@ function evaluateAggregateUnitBasisPair(
   breakdownPath: readonly string[],
   aggregate: AggregateCandidate,
   breakdown: BreakdownCandidate,
-  findings: AggregateUnitBasisFinding[]
+  findings: AggregateUnitBasisFinding[],
 ): void {
   let confirmedSamples = 0;
   let maxEntries = 0;
@@ -1434,7 +1600,12 @@ function evaluateAggregateUnitBasisPair(
   for (const instance of instances) {
     const aggregateValue = aggregate.getValue(instance);
     const entries = breakdown.getEntries(instance);
-    if (aggregateValue === undefined || entries === undefined || entries.length === 0) continue;
+    if (
+      aggregateValue === undefined ||
+      entries === undefined ||
+      entries.length === 0
+    )
+      continue;
 
     sawEvidence = true;
     maxEntries = Math.max(maxEntries, entries.length);
@@ -1445,7 +1616,7 @@ function evaluateAggregateUnitBasisPair(
     const sum = (unitValues as number[]).reduce((total, v) => total + v, 0);
     const tolerance = Math.max(
       Math.abs(aggregateValue) * AGGREGATE_UNIT_BASIS_RELATIVE_EPSILON,
-      AGGREGATE_UNIT_BASIS_ABSOLUTE_EPSILON
+      AGGREGATE_UNIT_BASIS_ABSOLUTE_EPSILON,
     );
     if (Math.abs(sum - aggregateValue) > tolerance) return;
 
@@ -1470,7 +1641,7 @@ function evaluateAggregateUnitBasisPair(
 function detectAggregateUnitBasisAtNode(
   instances: readonly Record<string, unknown>[],
   path: readonly string[],
-  findings: AggregateUnitBasisFinding[]
+  findings: AggregateUnitBasisFinding[],
 ): void {
   const keys = new Set(instances.flatMap((instance) => Object.keys(instance)));
   const aggregateCandidates = collectAggregateCandidates(instances, path, keys);
@@ -1488,7 +1659,7 @@ function detectAggregateUnitBasisAtNode(
         [...path, breakdown.key],
         aggregate,
         breakdown,
-        findings
+        findings,
       );
     }
   }
@@ -1498,7 +1669,7 @@ function walkAggregateUnitBasis(
   values: readonly unknown[],
   path: readonly string[],
   depth: number,
-  findings: AggregateUnitBasisFinding[]
+  findings: AggregateUnitBasisFinding[],
 ): void {
   if (depth > MAX_AGGREGATE_UNIT_BASIS_DEPTH) return;
 
@@ -1506,17 +1677,23 @@ function walkAggregateUnitBasis(
   if (instances.length > 0) {
     detectAggregateUnitBasisAtNode(instances, path, findings);
 
-    const keys = new Set(instances.flatMap((instance) => Object.keys(instance)));
+    const keys = new Set(
+      instances.flatMap((instance) => Object.keys(instance)),
+    );
     for (const key of keys) {
       const childValues = instances
         .map((instance) => instance[key])
-        .filter((v): v is NonNullable<typeof v> => v !== undefined && v !== null);
+        .filter(
+          (v): v is NonNullable<typeof v> => v !== undefined && v !== null,
+        );
       if (childValues.length === 0) continue;
       walkAggregateUnitBasis(childValues, [...path, key], depth + 1, findings);
     }
   }
 
-  const arrayItems = values.filter((v): v is unknown[] => Array.isArray(v)).flat();
+  const arrayItems = values
+    .filter((v): v is unknown[] => Array.isArray(v))
+    .flat();
   if (arrayItems.length > 0) {
     walkAggregateUnitBasis(arrayItems, path, depth + 1, findings);
   }
@@ -1537,14 +1714,14 @@ function walkAggregateUnitBasis(
  * already present in the samples -- it emits no schema and mutates nothing.
  */
 export function detectAggregateUnitBasisFindings(
-  samples: readonly unknown[]
+  samples: readonly unknown[],
 ): readonly AggregateUnitBasisFinding[] {
   const findings: AggregateUnitBasisFinding[] = [];
   walkAggregateUnitBasis(
     samples.filter((s) => s !== undefined && s !== null),
     [],
     0,
-    findings
+    findings,
   );
   return findings;
 }
@@ -1552,7 +1729,7 @@ export function detectAggregateUnitBasisFindings(
 /** Groups {@link detectAggregateUnitBasisFindings} output by aggregate path so
  * {@link inferZodSchemaFromSamples} can look findings up per-field in O(1). */
 function groupAggregateUnitBasisFindingsByPath(
-  samples: readonly unknown[]
+  samples: readonly unknown[],
 ): Map<string, AggregateUnitBasisFinding[]> {
   const byPath = new Map<string, AggregateUnitBasisFinding[]>();
   for (const finding of detectAggregateUnitBasisFindings(samples)) {
@@ -1655,7 +1832,9 @@ function isVoidResponse(body: unknown): boolean {
  * `selectReturnAction`, which each pick a different fallback when nothing
  * was re-queried.
  */
-function findRequeriedActions<T extends { capture: Capture }>(steps: readonly T[]): T[] {
+function findRequeriedActions<T extends { capture: Capture }>(
+  steps: readonly T[],
+): T[] {
   const bodiesByEndpoint = new Map<string, Set<string>>();
   for (const step of steps) {
     const key = endpointKey(step.capture.url);
@@ -1690,7 +1869,9 @@ function findRequeriedActions<T extends { capture: Capture }>(steps: readonly T[
  * up across several writes — and lands on those writes for the same reason: the
  * call that merely opened the flow carries none of the caller's fields.
  */
-export function selectPayloadAction<T extends { capture: Capture }>(steps: readonly T[]): T | null {
+export function selectPayloadAction<T extends { capture: Capture }>(
+  steps: readonly T[],
+): T | null {
   const first = steps[0];
   if (!first) return null;
 
@@ -1710,7 +1891,9 @@ export function selectPayloadAction<T extends { capture: Capture }>(steps: reado
  * with varying, non-void bodies is what the flow is about, and its most
  * recent response is the freshest instance of that answer.
  */
-export function selectReturnAction<T extends { capture: Capture }>(steps: readonly T[]): T | null {
+export function selectReturnAction<T extends { capture: Capture }>(
+  steps: readonly T[],
+): T | null {
   const last = steps[steps.length - 1] ?? null;
   if (!last) return null;
 
@@ -1748,21 +1931,31 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * getGql/httpClient emission's own fold-merge loop (see `emitContractTs`)
  * adds at runtime.
  */
-export function selectEffectiveResponseBody<T extends { capture: Capture; isMultipart: boolean }>(
+export function selectEffectiveResponseBody<
+  T extends { capture: Capture; isMultipart: boolean },
+>(
   isSubmissionFlow: boolean,
   actionSteps: readonly T[],
   replayResponseBody: unknown,
   foldReturnSpec: FoldReturnSpec | null = null,
   // See resolveFoldPlan's identical parameter — threaded through so shape
   // inference can't disagree with emitContractTs's own emitted-primary anchor.
-  primaryIdentityAnchor: string | null = null
+  primaryIdentityAnchor: string | null = null,
 ): unknown {
-  const foldPlans = resolveFoldPlan(actionSteps, foldReturnSpec, primaryIdentityAnchor);
+  const foldPlans = resolveFoldPlan(
+    actionSteps,
+    foldReturnSpec,
+    primaryIdentityAnchor,
+  );
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
   if (foldPlans.length <= 1) {
-    if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
+    if (lastFoldPlan)
+      return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
     if (!isSubmissionFlow) return replayResponseBody;
-    return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
+    return (
+      selectReturnAction(actionSteps)?.capture.responseBody ??
+      replayResponseBody
+    );
   }
   // Plans sharing a primaryStepIndex (independent arrays on one primary
   // response) MUST fold onto the SAME accumulating body, not independent
@@ -1778,9 +1971,10 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
   }
   const foldedBodies = [...plansByPrimaryStep.values()].map((plans) =>
     plans.reduce<unknown>(
-      (body, plan) => foldResponseBodyForShapeInference(actionSteps, plan, body),
-      actionSteps[plans[0]!.primaryStepIndex]!.capture.responseBody
-    )
+      (body, plan) =>
+        foldResponseBodyForShapeInference(actionSteps, plan, body),
+      actionSteps[plans[0]!.primaryStepIndex]!.capture.responseBody,
+    ),
   );
   if (foldedBodies.every(isPlainObject)) {
     return mergeFoldedPrimaryBodies(...foldedBodies);
@@ -1824,9 +2018,12 @@ function capturePathname(url: string): string {
  */
 function isHtmlNavigationCapture(capture: Capture): boolean {
   const contentType = Object.entries(capture.responseHeaders).find(
-    ([k]) => k.toLowerCase() === "content-type"
+    ([k]) => k.toLowerCase() === "content-type",
   )?.[1];
-  return typeof contentType === "string" && contentType.toLowerCase().includes("text/html");
+  return (
+    typeof contentType === "string" &&
+    contentType.toLowerCase().includes("text/html")
+  );
 }
 
 /**
@@ -1835,7 +2032,8 @@ function isHtmlNavigationCapture(capture: Capture): boolean {
  * A path segment like `/api/login` on the real backend does not match, since
  * this only inspects the host's first label, not the path.
  */
-const AUTH_HOST_LABEL = /^(login|signin|sign-in|logon|auth|oauth|sso|idp|id|account|accounts)$/i;
+const AUTH_HOST_LABEL =
+  /^(login|signin|sign-in|logon|auth|oauth|sso|idp|id|account|accounts)$/i;
 
 /**
  * Vocabulary for a host label DEDICATED to marketing/landing/redirect
@@ -1845,7 +2043,8 @@ const AUTH_HOST_LABEL = /^(login|signin|sign-in|logon|auth|oauth|sso|idp|id|acco
  * marketing/redirect surface rather than an API backend, never itself the
  * flow's own backend even when it is not also auth/login-labeled.
  */
-const MARKETING_HOST_LABEL = /^(www|home|landing|marketing|promo|redirect|link|go)$/i;
+const MARKETING_HOST_LABEL =
+  /^(www|home|landing|marketing|promo|redirect|link|go)$/i;
 
 /**
  * A same-company redirect -- an authentication/identity bounce (see
@@ -1871,10 +2070,17 @@ const MARKETING_HOST_LABEL = /^(www|home|landing|marketing|promo|redirect|link|g
  * `login.`/`www.` or not, always racks up the most captures; a bounce that
  * merely sorts first never does.
  */
-function isSameCompanyRedirectCapture(capture: Capture, pool: Capture[]): boolean {
+function isSameCompanyRedirectCapture(
+  capture: Capture,
+  pool: Capture[],
+): boolean {
   const host = captureHostname(capture.url);
   const firstLabel = host.split(".")[0] ?? "";
-  if (!AUTH_HOST_LABEL.test(firstLabel) && !MARKETING_HOST_LABEL.test(firstLabel)) return false;
+  if (
+    !AUTH_HOST_LABEL.test(firstLabel) &&
+    !MARKETING_HOST_LABEL.test(firstLabel)
+  )
+    return false;
   const hostCounts = new Map<string, number>();
   for (const c of pool) {
     const h = captureHostname(c.url);
@@ -1969,50 +2175,64 @@ function dominantHostOrigin(candidates: Capture[]): string {
 export function deriveBaseUrl(
   captures: Capture[],
   ownBackendHostnames: string[],
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
 ): string {
   if (ownBackendHostnames.length === 0) {
-    const nonNoise = captures.filter((c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c));
-    const pool = nonNoise.length > 0 ? nonNoise : captures.filter((c) => !isNoiseUrl(c.url));
-    const anchorPool = pool.filter((c) => !isSameCompanyRedirectCapture(c, pool));
+    const nonNoise = captures.filter(
+      (c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c),
+    );
+    const pool =
+      nonNoise.length > 0
+        ? nonNoise
+        : captures.filter((c) => !isNoiseUrl(c.url));
+    const anchorPool = pool.filter(
+      (c) => !isSameCompanyRedirectCapture(c, pool),
+    );
     const anchorSource = anchorPool.length > 0 ? anchorPool : pool;
     const anchorHost = captureHostname(firstCaptureOrigin(anchorSource));
     const anchorDomain = registrableDomain(anchorHost);
     const sameDomainCandidates = pool.filter(
-      (c) => registrableDomain(captureHostname(c.url)) === anchorDomain
+      (c) => registrableDomain(captureHostname(c.url)) === anchorDomain,
     );
     const hasDeclaredSubmitPattern =
-      submitPatterns !== null && (submitPatterns.endpoint !== null || submitPatterns.body !== null);
+      submitPatterns !== null &&
+      (submitPatterns.endpoint !== null || submitPatterns.body !== null);
     const matchesSubmit = compileSubmitMatcher(submitPatterns);
     const crossDomainSubmitMatch =
       hasDeclaredSubmitPattern && !sameDomainCandidates.some(matchesSubmit)
         ? pool.find(matchesSubmit)
         : undefined;
     if (crossDomainSubmitMatch !== undefined) {
-      const submitDomain = registrableDomain(captureHostname(crossDomainSubmitMatch.url));
+      const submitDomain = registrableDomain(
+        captureHostname(crossDomainSubmitMatch.url),
+      );
       const submitDomainCandidates = pool.filter(
-        (c) => registrableDomain(captureHostname(c.url)) === submitDomain
+        (c) => registrableDomain(captureHostname(c.url)) === submitDomain,
       );
       return dominantHostOrigin(submitDomainCandidates);
     }
     const sameDomainHasGraphql = sameDomainCandidates.some(
-      (c) => parsedOperationName(c.query ?? "") !== null
+      (c) => parsedOperationName(c.query ?? "") !== null,
     );
     if (!sameDomainHasGraphql) return firstCaptureOrigin(anchorSource);
     return dominantHostOrigin(sameDomainCandidates);
   }
   const candidates = captures.filter((c) =>
-    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null)
+    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null),
   );
   if (candidates.length === 0) {
-    const captured = [...new Set(captures.map((c) => captureHostname(c.url)))].join(", ");
+    const captured = [
+      ...new Set(captures.map((c) => captureHostname(c.url))),
+    ].join(", ");
     throw new Error(
-      `ownBackendHostnames matched no capture: declared [${ownBackendHostnames.join(", ")}], captured hosts [${captured}]`
+      `ownBackendHostnames matched no capture: declared [${ownBackendHostnames.join(", ")}], captured hosts [${captured}]`,
     );
   }
   const declaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   const submitCandidates = candidates.filter(declaredSubmit);
-  return dominantHostOrigin(submitCandidates.length > 0 ? submitCandidates : candidates);
+  return dominantHostOrigin(
+    submitCandidates.length > 0 ? submitCandidates : candidates,
+  );
 }
 
 function firstCaptureOrigin(captures: Capture[]): string {
@@ -2025,7 +2245,7 @@ function firstCaptureOrigin(captures: Capture[]): string {
     }
   }
   throw new Error(
-    `no capture has a parseable URL to derive a base URL from (${captures.length} candidate captures)`
+    `no capture has a parseable URL to derive a base URL from (${captures.length} candidate captures)`,
   );
 }
 
@@ -2068,7 +2288,7 @@ export function extractEntryUrlParams(entryUrl: string): Map<string, string> {
  */
 export function addClickUrlPathBindings(
   entryUrl: string,
-  into: Map<string, string>
+  into: Map<string, string>,
 ): Map<string, string> {
   let u: URL;
   try {
@@ -2083,16 +2303,21 @@ export function addClickUrlPathBindings(
   // A single-word slug (`/jobs/123/nurse/login`) counts only when more path follows it.
   const isSingleWordSlugAt = (i: number): boolean =>
     /^[A-Za-z][A-Za-z0-9]*$/.test(segments[i] ?? "") &&
-    ((segments[i + 1] ?? "") !== "" || (i === segments.length - 1 && u.search !== ""));
+    ((segments[i + 1] ?? "") !== "" ||
+      (i === segments.length - 1 && u.search !== ""));
   const isShortIdWithSlug = (seg: string, i: number): boolean =>
     /^\d{3,}$/.test(seg) &&
-    (/^[A-Za-z0-9]+(?:[-_.+](?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(segments[i + 1] ?? "") ||
+    (/^[A-Za-z0-9]+(?:[-_.+](?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(
+      segments[i + 1] ?? "",
+    ) ||
       isSingleWordSlugAt(i + 1));
   const isIdSegmentAt = (i: number): boolean => {
     const seg = segments[i];
     if (seg === undefined) return false;
     return (
-      (isStateLikeSegment(seg) && seg.length >= MIN_STATE_VALUE_LENGTH && /\d/.test(seg)) ||
+      (isStateLikeSegment(seg) &&
+        seg.length >= MIN_STATE_VALUE_LENGTH &&
+        /\d/.test(seg)) ||
       isShortIdWithSlug(seg, i)
     );
   };
@@ -2107,9 +2332,12 @@ export function addClickUrlPathBindings(
       afterId &&
       ((isStateLikeSegment(seg) && seg.length >= MIN_STATE_VALUE_LENGTH) ||
         (/[-_.+]/.test(seg) &&
-          /^[A-Za-z0-9]+(?:[-_.+](?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(seg) &&
+          /^[A-Za-z0-9]+(?:[-_.+](?:[A-Za-z0-9]|%[0-9A-Fa-f]{2}|[()])+)+$/.test(
+            seg,
+          ) &&
           isIdSegmentAt(i - 1)) ||
-        (isSingleWordSlugAt(i) && isShortIdWithSlug(segments[i - 1] ?? "", i - 1)));
+        (isSingleWordSlugAt(i) &&
+          isShortIdWithSlug(segments[i - 1] ?? "", i - 1)));
     if ((!isIdSegmentAt(i) && !slugAfterId) || into.has(seg)) return;
     into.set(seg, `new URL(payload.ClickUrl).pathname.split("/")[${i}]`);
   });
@@ -2125,9 +2353,11 @@ export function addClickUrlPathBindings(
 export function bindMultipartSelectAnswers(
   body: string,
   cap: Capture,
-  prior: readonly { capture: Capture }[]
+  prior: readonly { capture: Capture }[],
 ): string {
-  const ct = Object.entries(cap.requestHeaders).find(([k]) => k.toLowerCase() === "content-type");
+  const ct = Object.entries(cap.requestHeaders).find(
+    ([k]) => k.toLowerCase() === "content-type",
+  );
   const ctLower = (ct?.[1] ?? "").toLowerCase();
   const isUrlencoded = ctLower.includes("application/x-www-form-urlencoded");
   if (!ctLower.includes("multipart/") && !isUrlencoded) return body;
@@ -2135,7 +2365,9 @@ export function bindMultipartSelectAnswers(
   for (const [name, values] of htmlSelectsForWrite.get(cap) ?? [])
     selects.set(name, new Set(values));
   for (const p of prior) {
-    for (const [name, values] of extractHtmlSelectOptions(p.capture.responseBody)) {
+    for (const [name, values] of extractHtmlSelectOptions(
+      p.capture.responseBody,
+    )) {
       const merged = selects.get(name) ?? new Set<string>();
       for (const v of values) merged.add(v);
       selects.set(name, merged);
@@ -2157,7 +2389,11 @@ export function bindMultipartSelectAnswers(
         if (eq < 0) return pair;
         const rawValue = pair.slice(eq + 1);
         const name = decode(pair.slice(0, eq));
-        if (rawValue.includes("${") || !selects.get(name)?.has(decode(rawValue))) return pair;
+        if (
+          rawValue.includes("${") ||
+          !selects.get(name)?.has(decode(rawValue))
+        )
+          return pair;
         return `${pair.slice(0, eq)}=\${encodeURIComponent(String(payload.Answers[${JSON.stringify(name)}]))}`;
       })
       .join("&");
@@ -2167,15 +2403,21 @@ export function bindMultipartSelectAnswers(
     (whole, head: string, name: string, value: string) =>
       selects.get(name)?.has(value) && !value.includes("${")
         ? `${head}\${payload.Answers[${JSON.stringify(name)}]}`
-        : whole
+        : whole,
   );
 }
 
-const UPLOAD_HANDLE_NAME_RE = /(?:_TEMP|resume|\bcv\b|_cv|cv_|upload|attachment|handle|file)/i;
+const UPLOAD_HANDLE_NAME_RE =
+  /(?:_TEMP|resume|\bcv\b|_cv|cv_|upload|attachment|handle|file)/i;
 
-function findStringLeafPath(node: unknown, target: string, path: string[] = []): string[] | null {
+function findStringLeafPath(
+  node: unknown,
+  target: string,
+  path: string[] = [],
+): string[] | null {
   if (typeof node === "string") return node === target ? path : null;
-  if (node === null || typeof node !== "object" || Array.isArray(node)) return null;
+  if (node === null || typeof node !== "object" || Array.isArray(node))
+    return null;
   for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
     const hit = findStringLeafPath(v, target, [...path, k]);
     if (hit) return hit;
@@ -2191,14 +2433,18 @@ function findStringLeafPath(node: unknown, target: string, path: string[] = []):
  */
 export function bindMultipartUploadHandles(
   body: string,
-  prior: readonly { capture: Capture; isMultipart: boolean; varName: string }[]
+  prior: readonly { capture: Capture; isMultipart: boolean; varName: string }[],
 ): string {
   const uploads = prior.filter((p) => p.isMultipart);
   if (uploads.length === 0) return body;
   return body.replace(
     /(Content-Disposition: form-data; name="([^"]+)"\r?\n\r?\n)([^\r\n]*)(?=\r?\n--)/g,
     (whole, head: string, name: string, value: string) => {
-      if (!UPLOAD_HANDLE_NAME_RE.test(name) || value.length < 12 || /[\s$]/.test(value))
+      if (
+        !UPLOAD_HANDLE_NAME_RE.test(name) ||
+        value.length < 12 ||
+        /[\s$]/.test(value)
+      )
         return whole;
       for (let k = uploads.length - 1; k >= 0; k--) {
         const u = uploads[k]!;
@@ -2214,7 +2460,7 @@ export function bindMultipartUploadHandles(
         return `${head}\${(${u.varName} as Record<string, any>)${access}}`;
       }
       return whole;
-    }
+    },
   );
 }
 
@@ -2246,12 +2492,15 @@ const VOLATILE_HEADER_NAME_FRAGMENTS = ["correlation-id", "conversation-id"];
  * restore a shape-diverging replay's response shape. They stay out of
  * BASE_HEADERS; the generated contract carries a TODO to obtain each per call.
  */
-export function shapeRestoringCredentialHeaders(replays: ReplayResult[]): string[] {
+export function shapeRestoringCredentialHeaders(
+  replays: ReplayResult[],
+): string[] {
   const names = new Map<string, string>();
   for (const r of replays) {
     for (const h of r.shapeRestoringHeaders ?? []) {
       const lower = h.toLowerCase();
-      if (CREDENTIAL_REQUEST_HEADERS.has(lower) && !names.has(lower)) names.set(lower, h);
+      if (CREDENTIAL_REQUEST_HEADERS.has(lower) && !names.has(lower))
+        names.set(lower, h);
     }
   }
   return [...names.values()];
@@ -2297,9 +2546,11 @@ export function deriveRequestHeaders(
   // every other extractActionSequence caller already is — otherwise the
   // header baseline could be derived from a minority-host capture's headers
   // instead of the primary host's.
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
 ): Record<string, string> {
-  const successfulUrls = new Set(replays.filter(replayReachable).map((r) => endpointKey(r.url)));
+  const successfulUrls = new Set(
+    replays.filter(replayReachable).map((r) => endpointKey(r.url)),
+  );
 
   // Prefer ACTION captures (non-GET 2xx, non-noise) as the authoritative
   // header source. Replay-matched static-asset GETs lack the API-specific
@@ -2315,11 +2566,14 @@ export function deriveRequestHeaders(
     ownBackendHostnames,
     fallbackDomain,
     true,
-    primaryHost
+    primaryHost,
   ).map((a) => a.capture);
-  const replayMatchedCaptures = captures.filter((c) => successfulUrls.has(endpointKey(c.url)));
+  const replayMatchedCaptures = captures.filter((c) =>
+    successfulUrls.has(endpointKey(c.url)),
+  );
 
-  const relevantCaptures = actionCaptures.length > 0 ? actionCaptures : replayMatchedCaptures;
+  const relevantCaptures =
+    actionCaptures.length > 0 ? actionCaptures : replayMatchedCaptures;
 
   const counts = new Map<string, number>();
   for (const c of relevantCaptures) {
@@ -2352,7 +2606,7 @@ export function deriveRequestHeaders(
       (c) =>
         c.url === r.url &&
         c.method === r.method &&
-        (c.operationName ?? null) === (r.operationName ?? null)
+        (c.operationName ?? null) === (r.operationName ?? null),
     );
     for (const h of r.shapeRestoringHeaders ?? []) {
       const lower = h.toLowerCase();
@@ -2363,13 +2617,17 @@ export function deriveRequestHeaders(
       )
         continue;
       loadBearing.add(lower);
-      loadBearingSources.set(lower, [...(loadBearingSources.get(lower) ?? []), ...own]);
+      loadBearingSources.set(lower, [
+        ...(loadBearingSources.get(lower) ?? []),
+        ...own,
+      ]);
       if (!counts.has(lower)) counts.set(lower, 0);
     }
   }
 
   // Add any request header present in all relevant captures, preserving original casing.
-  const headerSources = relevantCaptures.length > 0 ? relevantCaptures : captures;
+  const headerSources =
+    relevantCaptures.length > 0 ? relevantCaptures : captures;
   for (const [lower, count] of counts) {
     if (count < relevantCaptures.length && !loadBearing.has(lower)) continue;
     if (
@@ -2382,7 +2640,9 @@ export function deriveRequestHeaders(
     for (const c of loadBearing.has(lower)
       ? (loadBearingSources.get(lower) ?? [])
       : headerSources) {
-      const original = Object.keys(c.requestHeaders).find((h) => h.toLowerCase() === lower);
+      const original = Object.keys(c.requestHeaders).find(
+        (h) => h.toLowerCase() === lower,
+      );
       if (original) {
         baseline[original] = c.requestHeaders[original]!;
         break;
@@ -2470,9 +2730,10 @@ export function isGraphQL(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
 ): boolean {
-  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  const hasHostProvenance =
+    ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const scoped = captures.filter((c) => {
     if (
       hasHostProvenance &&
@@ -2480,7 +2741,7 @@ export function isGraphQL(
         captureHostname(c.url),
         ownBackendHostnames,
         fallbackDomain,
-        primaryHost
+        primaryHost,
       )
     )
       return false;
@@ -2496,13 +2757,15 @@ export function isGraphQL(
     c.requestPostData !== null &&
     c.requestPostData !== REQUEST_BODY_UNAVAILABLE &&
     c.requestPostData !== "" &&
-    (nonGetEndpointCounts.get(`${c.method.toUpperCase()} ${endpointTemplateKey(c.url)}`) ?? 0) >= 2;
+    (nonGetEndpointCounts.get(
+      `${c.method.toUpperCase()} ${endpointTemplateKey(c.url)}`,
+    ) ?? 0) >= 2;
   const restAntiVoteCandidates = scoped.filter(
     (c) =>
       !c.query &&
       c.operationName === null &&
       !isNoiseUrl(c.url) &&
-      (c.method.toUpperCase() === "GET" || isSubmissionShapedNonGet(c))
+      (c.method.toUpperCase() === "GET" || isSubmissionShapedNonGet(c)),
   );
   const rescuedInvariantEndpoints = new Set<string>();
   const restAntiVotes = restAntiVoteCandidates.filter((c) => {
@@ -2540,8 +2803,9 @@ export function isGraphQL(
     });
   const votingPool = [...proVotes, ...restAntiVotes];
   const parsedCount = votingPool.reduce(
-    (count, c) => (parsedOperationName(c.query ?? "") !== null ? count + 1 : count),
-    0
+    (count, c) =>
+      parsedOperationName(c.query ?? "") !== null ? count + 1 : count,
+    0,
   );
   return parsedCount > 0 && parsedCount * 2 >= votingPool.length;
 }
@@ -2569,9 +2833,10 @@ function firstGraphQLCapture(
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
   submitPatterns: SubmitPatterns | null = null,
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
 ): Capture | null {
-  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  const hasHostProvenance =
+    ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const ownBackendCandidates = captures.filter(
     (c) =>
       c.query &&
@@ -2580,8 +2845,8 @@ function firstGraphQLCapture(
           captureHostname(c.url),
           ownBackendHostnames,
           fallbackDomain,
-          primaryHost
-        ))
+          primaryHost,
+        )),
   );
   if (
     submitPatterns === null ||
@@ -2590,9 +2855,12 @@ function firstGraphQLCapture(
     return ownBackendCandidates[0] ?? null;
   }
   const nonMutationCandidates = ownBackendCandidates.filter(
-    (c) => !/^\s*mutation\b/.test(c.query ?? "")
+    (c) => !/^\s*mutation\b/.test(c.query ?? ""),
   );
-  const pool = nonMutationCandidates.length > 0 ? nonMutationCandidates : ownBackendCandidates;
+  const pool =
+    nonMutationCandidates.length > 0
+      ? nonMutationCandidates
+      : ownBackendCandidates;
   return restrictToSubmitPattern(pool, submitPatterns)[0] ?? null;
 }
 
@@ -2618,7 +2886,7 @@ function stripLeadingGraphQLComments(query: string): string {
  */
 function declaredOperationVariableNames(query: string): string[] {
   const signature = /^\s*(?:query|mutation)\s+\w*\s*\(([^)]*)\)/.exec(
-    stripLeadingGraphQLComments(query)
+    stripLeadingGraphQLComments(query),
   );
   if (!signature) return [];
   return Array.from(signature[1]!.matchAll(/\$(\w+)\s*:/g), (m) => m[1]!);
@@ -2643,7 +2911,10 @@ function operationGroupKey(capture: Capture): string {
       return "";
     }
   })();
-  const name = capture.operationName ?? parsedOperationName(capture.query ?? "") ?? "anonymous";
+  const name =
+    capture.operationName ??
+    parsedOperationName(capture.query ?? "") ??
+    "anonymous";
   return `${endpointPath}::${name}`;
 }
 
@@ -2661,7 +2932,7 @@ function computeEmittedPrimaryAnchor(
   gql: boolean,
   endpointPath: string,
   gqlOperationName: string | null | undefined,
-  gqlQuery: string | null
+  gqlQuery: string | null,
 ): string | null {
   // Mirrors emitContractTs's own isGqlEmission gate: `gql` alone can be true
   // with a null gqlQuery (see gqlQuery's `?? null` fallback), in which case
@@ -2683,7 +2954,7 @@ function computeEmittedPrimaryAnchor(
 export function gatherResponseBodySamples(
   winningCapture: Capture | null,
   isGraphQLWinner: boolean,
-  captures: readonly Capture[]
+  captures: readonly Capture[],
 ): unknown[] {
   if (!winningCapture) return [null];
   const identityOf = (c: Capture): string =>
@@ -2703,7 +2974,8 @@ export function gatherResponseBodySamples(
     samples.push(c.responseBody);
   }
   if (samples.length > 0) return samples;
-  return winningCapture.responseBody === null || winningCapture.responseBody === undefined
+  return winningCapture.responseBody === null ||
+    winningCapture.responseBody === undefined
     ? [null]
     : [winningCapture.responseBody];
 }
@@ -2714,7 +2986,8 @@ export function gatherResponseBodySamples(
  * empty answer) validates and the non-array fields are optional.
  */
 export function emptyArrayOnlySample(body: unknown): unknown | null {
-  if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return null;
   const out: Record<string, unknown[]> = {};
   for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
     if (Array.isArray(v)) out[k] = [];
@@ -2757,7 +3030,8 @@ function computeIdentifyingParams(url: string): Record<string, string> {
     const byName = new Map<string, string[]>();
     for (const [rawName, value] of u.searchParams) {
       const name = rawName.replace(/\[\]$/, "");
-      if (!ID_QUERY_NAME.test(name) || CONSTANT_ID_QUERY_NAME.test(name)) continue;
+      if (!ID_QUERY_NAME.test(name) || CONSTANT_ID_QUERY_NAME.test(name))
+        continue;
       byName.set(name, [...(byName.get(name) ?? []), value]);
     }
     for (const [name, values] of byName) out[name] = values.join(",");
@@ -2776,7 +3050,7 @@ function computeIdentifyingParams(url: string): Record<string, string> {
 export function gatherEntityVarianceEvidence(
   winningCapture: Capture | null,
   isGraphQLWinner: boolean,
-  captures: readonly Capture[]
+  captures: readonly Capture[],
 ): EntityVarianceEvidence {
   const none: EntityVarianceEvidence = {
     entityParameterized: false,
@@ -2791,12 +3065,19 @@ export function gatherEntityVarianceEvidence(
   for (const c of captures) {
     if (c.status < 200 || c.status >= 300) continue;
     if (restResponseIdentity(c.url) !== winningKey) continue;
-    if (JSON.stringify(Object.entries(identifyingParams(c.url)).sort()) !== signature) {
+    if (
+      JSON.stringify(Object.entries(identifyingParams(c.url)).sort()) !==
+      signature
+    ) {
       singleEntity = false;
       break;
     }
   }
-  return { entityParameterized: Object.keys(params).length > 0, params, singleEntity };
+  return {
+    entityParameterized: Object.keys(params).length > 0,
+    params,
+    singleEntity,
+  };
 }
 
 /**
@@ -2841,14 +3122,15 @@ export function selectPrimaryGraphQLOperation(
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
   submitPatterns: SubmitPatterns | null = null,
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
 ): PrimaryGraphQLOperation | null {
   // Callers with no host-provenance data (the exported function's unit
   // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
   // case isAllowedFixtureHost would reject every candidate, so the gate
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
-  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  const hasHostProvenance =
+    ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const ownBackendCandidates = captures.filter(
     (c) =>
       c.status >= 200 &&
@@ -2860,14 +3142,17 @@ export function selectPrimaryGraphQLOperation(
           captureHostname(c.url),
           ownBackendHostnames,
           fallbackDomain,
-          primaryHost
-        ))
+          primaryHost,
+        )),
   );
   // A declared submitEndpointPattern is authoritative for single-endpoint
   // primary selection too: it must not be silently ignored just because
   // this scoring path (not the multi-step submission path) is the one that
   // ends up resolving the flow's single action.
-  const candidates = restrictToSubmitPattern(ownBackendCandidates, submitPatterns);
+  const candidates = restrictToSubmitPattern(
+    ownBackendCandidates,
+    submitPatterns,
+  );
   if (candidates.length === 0) return null;
 
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
@@ -2880,7 +3165,7 @@ export function selectPrimaryGraphQLOperation(
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
-      knownFieldValues
+      knownFieldValues,
     );
     if (field !== null) payloadFields.add(field);
   }
@@ -2893,7 +3178,8 @@ export function selectPrimaryGraphQLOperation(
     }
   };
   const fieldMatchCount = (c: Capture): number => {
-    const haystack = `${c.query ?? ""} ${JSON.stringify(c.variables ?? "")}`.toLowerCase();
+    const haystack =
+      `${c.query ?? ""} ${JSON.stringify(c.variables ?? "")}`.toLowerCase();
     let matches = 0;
     for (const field of payloadFields) {
       if (haystack.includes(field.toLowerCase())) matches++;
@@ -2907,14 +3193,18 @@ export function selectPrimaryGraphQLOperation(
   // appears somewhere in its query/variables text (fieldScore's substring
   // match is incidental and can be satisfied by an unfiltered decoy).
   const spliceableFacetCount = (c: Capture): number => {
-    if (c.variables === null || typeof c.variables !== "object" || Array.isArray(c.variables)) {
+    if (
+      c.variables === null ||
+      typeof c.variables !== "object" ||
+      Array.isArray(c.variables)
+    ) {
       return 0;
     }
     return Math.max(
       0,
       ...Object.values(c.variables as Record<string, unknown>).map((value) =>
-        countSpliceableFacets(value, payloadFieldList)
-      )
+        countSpliceableFacets(value, payloadFieldList),
+      ),
     );
   };
   // A facet-spliceable candidate must win over any non-facet candidate
@@ -2931,7 +3221,10 @@ export function selectPrimaryGraphQLOperation(
 
   const maxSize = Math.max(...scoringPool.map(responseSize), 1);
   const maxFieldMatch = Math.max(...scoringPool.map(fieldMatchCount), 1);
-  const maxRecurrence = Math.max(...Array.from(operationNameCounts.values()), 1);
+  const maxRecurrence = Math.max(
+    ...Array.from(operationNameCounts.values()),
+    1,
+  );
   const maxFacetCount = Math.max(...scoringPool.map(spliceableFacetCount), 1);
 
   const scored = scoringPool.map((capture) => {
@@ -2939,7 +3232,8 @@ export function selectPrimaryGraphQLOperation(
     const fieldScore = fieldMatchCount(capture) / maxFieldMatch;
     const phaseScore = capture.phase !== "home" ? 1 : 0;
     const recurrenceScore =
-      (operationNameCounts.get(operationGroupKey(capture)) ?? 0) / maxRecurrence;
+      (operationNameCounts.get(operationGroupKey(capture)) ?? 0) /
+      maxRecurrence;
     const facetScore = spliceableFacetCount(capture) / maxFacetCount;
     // Field correlation carries the heaviest weight so a smaller facet-matching
     // operation outranks a larger decoy — size alone must not decide this.
@@ -2957,7 +3251,7 @@ export function selectPrimaryGraphQLOperation(
   });
 
   const winner = scored.reduce((best, candidate) =>
-    candidate.score > best.score ? candidate : best
+    candidate.score > best.score ? candidate : best,
   );
 
   const endpointPath = (() => {
@@ -2969,16 +3263,26 @@ export function selectPrimaryGraphQLOperation(
   })();
 
   const winnerGroupKey = operationGroupKey(winner.capture);
-  const sharedCaptures = candidates.filter((c) => operationGroupKey(c) === winnerGroupKey);
-  const declaredVariableNames = declaredOperationVariableNames(winner.capture.query ?? "");
+  const sharedCaptures = candidates.filter(
+    (c) => operationGroupKey(c) === winnerGroupKey,
+  );
+  const declaredVariableNames = declaredOperationVariableNames(
+    winner.capture.query ?? "",
+  );
   const unpopulatedDeclaredVariables = declaredVariableNames.filter(
     (name) =>
       !sharedCaptures.some((c) =>
-        isPopulatedVariableValue((c.variables as Record<string, unknown> | null)?.[name])
-      )
+        isPopulatedVariableValue(
+          (c.variables as Record<string, unknown> | null)?.[name],
+        ),
+      ),
   );
 
-  return { capture: winner.capture, endpointPath, unpopulatedDeclaredVariables };
+  return {
+    capture: winner.capture,
+    endpointPath,
+    unpopulatedDeclaredVariables,
+  };
 }
 
 /**
@@ -2994,7 +3298,7 @@ export function selectPrimaryGraphQLOperation(
  */
 function nonGetBeaconPredicate(
   pool: Capture[],
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
 ): (c: Capture) => boolean {
   const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   const occurrences = new Map<string, Capture[]>();
@@ -3009,13 +3313,22 @@ function nonGetBeaconPredicate(
   // are intermittently empty (null/""), otherwise one fixed body, still ignores
   // its request. With no body-bearing response, fall back to all responses.
   const answerIgnoresRequest = (list: Capture[]): boolean => {
-    const bodied = list.filter((c) => c.responseBody != null && c.responseBody !== "");
+    const bodied = list.filter(
+      (c) => c.responseBody != null && c.responseBody !== "",
+    );
     const pool2 = bodied.length > 0 ? bodied : list;
-    return new Set(pool2.map((c) => JSON.stringify(c.responseBody ?? null))).size === 1;
+    return (
+      new Set(pool2.map((c) => JSON.stringify(c.responseBody ?? null))).size ===
+      1
+    );
   };
   return (c) => {
     if (c.method === "GET") return false;
-    if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool, isDeclaredSubmit)) return true;
+    if (
+      isNoiseUrl(c.url) ||
+      isZeroVarianceRepeatCapture(c, pool, isDeclaredSubmit)
+    )
+      return true;
     const same = occurrences.get(`${c.method} ${endpointKey(c.url)}`) ?? [];
     // A server-rendered form submit whose body differs from another same-endpoint
     // capture is a distinct step, not a beacon.
@@ -3026,7 +3339,8 @@ function nonGetBeaconPredicate(
       return false;
     }
     return (
-      same.length >= 2 && (hasNoBusinessRelevantResponseState(c) || answerIgnoresRequest(same))
+      same.length >= 2 &&
+      (hasNoBusinessRelevantResponseState(c) || answerIgnoresRequest(same))
     );
   };
 }
@@ -3047,14 +3361,15 @@ export function firstEndpointCapture(
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
   submitPatterns: SubmitPatterns | null = null,
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
 ): Capture | null {
   // Callers with no host-provenance data (unit tests exercising the
   // chronological-first fallback in isolation) pass neither argument -- in
   // that case isAllowedFixtureHost would reject every candidate, so the
   // gate only applies once the caller has actually resolved a notion of
   // "own backend" to check against. Mirrors selectPrimaryGraphQLOperation.
-  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  const hasHostProvenance =
+    ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const allowed = (c: Capture): boolean => {
     if (
       hasHostProvenance &&
@@ -3062,7 +3377,7 @@ export function firstEndpointCapture(
         captureHostname(c.url),
         ownBackendHostnames,
         fallbackDomain,
-        primaryHost
+        primaryHost,
       )
     )
       return false;
@@ -3070,7 +3385,10 @@ export function firstEndpointCapture(
   };
   // Declared submit pattern first, over ALL allowed captures: an unrelated
   // non-GET (bot-sensor beacon) must not beat a GET the flow declared.
-  const pool = restrictToSubmitPattern(captures.filter(allowed), submitPatterns);
+  const pool = restrictToSubmitPattern(
+    captures.filter(allowed),
+    submitPatterns,
+  );
   const valid = (c: Capture): boolean => {
     try {
       new URL(c.url);
@@ -3083,14 +3401,22 @@ export function firstEndpointCapture(
   // ({@link isRecurringNonGetBeacon}): "any non-GET wins" let a bot-manager's
   // recurring sensor POST outrank the GET search that produced the flow's data.
   const isRecurringBeacon = nonGetBeaconPredicate(pool, submitPatterns);
-  const nonGet = pool.find((c) => c.method !== "GET" && valid(c) && !isRecurringBeacon(c));
+  const nonGet = pool.find(
+    (c) => c.method !== "GET" && valid(c) && !isRecurringBeacon(c),
+  );
   if (nonGet) return nonGet;
   // Read-only REST flow: prefer a successful non-noise GET, richest query first
   // (ties keep chronological order).
   const queryCount = (c: Capture): number => new URL(c.url).searchParams.size;
   let best: Capture | null = null;
   for (const c of pool) {
-    if (c.method !== "GET" || c.status < 200 || c.status >= 300 || isNoiseUrl(c.url)) continue;
+    if (
+      c.method !== "GET" ||
+      c.status < 200 ||
+      c.status >= 300 ||
+      isNoiseUrl(c.url)
+    )
+      continue;
     if (!valid(c)) continue;
     if (best === null || queryCount(c) > queryCount(best)) best = c;
   }
@@ -3111,8 +3437,12 @@ interface PostBodyBinding {
  * stay literal. Returns null when no body varies or bodies are not JSON objects.
  */
 function derivePostBodyModel(
-  captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
-  endpointPath: string
+  captures: readonly {
+    method?: string;
+    url: string;
+    requestPostData?: string | null;
+  }[],
+  endpointPath: string,
 ): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
   const bodies: Record<string, unknown>[] = [];
   for (const c of captures) {
@@ -3120,7 +3450,11 @@ function derivePostBodyModel(
     if (safeUrlPathname(c.url) !== endpointPath) continue;
     try {
       const parsed: unknown = JSON.parse(c.requestPostData ?? "");
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed))
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed)
+      )
         bodies.push(parsed as Record<string, unknown>);
     } catch {
       // non-JSON body: not modelled
@@ -3137,7 +3471,9 @@ function derivePostBodyModel(
     const first = at(bodies[0], path);
     const values = bodies.map((b) => at(b, path));
     if (isObj(first) && values.every(isObj)) {
-      const keys = [...new Set(values.flatMap((v) => Object.keys(v as object)))];
+      const keys = [
+        ...new Set(values.flatMap((v) => Object.keys(v as object))),
+      ];
       return `{ ${keys.map((k) => `${JSON.stringify(k)}: ${build([...path, k])}`).join(", ")} }`;
     }
     const distinct = new Set(values.map((v) => JSON.stringify(v)));
@@ -3204,25 +3540,31 @@ export interface GetInputModel {
 /** The model without the query keys `keys` (inputs another mechanism owns). */
 export function pruneGetInputModelKeys(
   model: GetInputModel,
-  keys: readonly string[]
+  keys: readonly string[],
 ): GetInputModel {
   const drop = new Set(keys);
-  const dropped = model.dynamicFields.filter((d) => drop.has(d.queryKey)).map((d) => d.field);
+  const dropped = model.dynamicFields
+    .filter((d) => drop.has(d.queryKey))
+    .map((d) => d.field);
   return {
     ...model,
     dynamicFields: model.dynamicFields.filter((d) => !drop.has(d.queryKey)),
     fixedParams: Object.fromEntries(
-      Object.entries(model.fixedParams).filter(([k]) => !drop.has(k))
+      Object.entries(model.fixedParams).filter(([k]) => !drop.has(k)),
     ),
     fieldToQueryKey: Object.fromEntries(
-      Object.entries(model.fieldToQueryKey).filter(([f]) => !dropped.includes(f))
+      Object.entries(model.fieldToQueryKey).filter(
+        ([f]) => !dropped.includes(f),
+      ),
     ),
   };
 }
 
 function safeGetFieldIdentifier(key: string): string {
   const parts = key.split(/[^A-Za-z0-9_$]+/).filter(Boolean);
-  let id = parts.map((p, i) => (i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1))).join("");
+  let id = parts
+    .map((p, i) => (i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1)))
+    .join("");
   if (id === "") id = "param";
   if (/^[0-9]/.test(id)) id = `_${id}`;
   return id;
@@ -3259,18 +3601,25 @@ function isInstanceSlug(
   i: number,
   value: string,
   next: string | undefined,
-  nextBound: boolean
+  nextBound: boolean,
 ): boolean {
   if (i < 2 || value.includes(".") || /^v\d+$/i.test(value)) return false;
   // A multi-word segment directly before an id-bearing or already-bound segment is the
   // collection word (`/<region>/<collection-slug>/<id>/...`), a fixed route part.
   if (
     nextBound ||
-    (next !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(next) && carriesEntityId(next))
+    (next !== undefined &&
+      !/^\d{4}-\d{2}-\d{2}$/.test(next) &&
+      carriesEntityId(next))
   )
     return false;
   // Two adjacent multi-word segments: the first is the collection word, the second the instance.
-  if (next !== undefined && !next.includes(".") && !/^v\d+$/i.test(next) && isSlugSegment(next))
+  if (
+    next !== undefined &&
+    !next.includes(".") &&
+    !/^v\d+$/i.test(next) &&
+    isSlugSegment(next)
+  )
     return false;
   return isSlugSegment(value);
 }
@@ -3288,7 +3637,10 @@ function decodePathSegment(segment: string): string {
  * segment count, differing only where both segments carry an entity id or, for
  * a lone differing slug, when the call signature (query keys) matches.
  */
-function sameRouteGetSiblings(winner: Capture, captures: readonly Capture[]): Capture[] {
+function sameRouteGetSiblings(
+  winner: Capture,
+  captures: readonly Capture[],
+): Capture[] {
   let winnerUrl: URL;
   try {
     winnerUrl = new URL(winner.url);
@@ -3296,7 +3648,8 @@ function sameRouteGetSiblings(winner: Capture, captures: readonly Capture[]): Ca
     return [winner];
   }
   const segments = winnerUrl.pathname.split("/");
-  const queryKeySet = (u: URL): string => [...new Set(u.searchParams.keys())].sort().join("\n");
+  const queryKeySet = (u: URL): string =>
+    [...new Set(u.searchParams.keys())].sort().join("\n");
   const winnerKeys = queryKeySet(winnerUrl);
   const siblings = captures.filter((c) => {
     if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
@@ -3305,7 +3658,9 @@ function sameRouteGetSiblings(winner: Capture, captures: readonly Capture[]): Ca
       if (u.host !== winnerUrl.host) return false;
       const segs = u.pathname.split("/");
       if (segs.length !== segments.length) return false;
-      const differing = segs.flatMap((s, i) => (s === segments[i] ? [] : [[s, segments[i] ?? ""]]));
+      const differing = segs.flatMap((s, i) =>
+        s === segments[i] ? [] : [[s, segments[i] ?? ""]],
+      );
       // Same route shape: segments may differ only where both carry an entity id,
       // or, for a lone differing slug, when the call signature (query keys) matches.
       return differing.every(
@@ -3314,7 +3669,7 @@ function sameRouteGetSiblings(winner: Capture, captures: readonly Capture[]): Ca
             carriesEntityId(decodePathSegment(b as string))) ||
           (isSlugSegment(decodePathSegment(a as string)) &&
             isSlugSegment(decodePathSegment(b as string)) &&
-            queryKeySet(u) === winnerKeys)
+            queryKeySet(u) === winnerKeys),
       );
     } catch {
       return false;
@@ -3326,7 +3681,11 @@ function sameRouteGetSiblings(winner: Capture, captures: readonly Capture[]): Ca
 
 /** A query value shaped like a calendar date, timestamp or epoch: a time-window input, not a constant. */
 function isDateWindowValue(v: string): boolean {
-  if (/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(v))
+  if (
+    /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(
+      v,
+    )
+  )
     return !Number.isNaN(Date.parse(v.slice(0, 10)));
   return /^\d{10}(\d{3})?$/.test(v);
 }
@@ -3338,7 +3697,11 @@ function isDateWindowValue(v: string): boolean {
  */
 function isEntityIdQueryKey(key: string): boolean {
   const name = key.replace(/\[\]$/, "");
-  return /^ids?$/i.test(name) || /[_-]ids?$/i.test(name) || /[a-z0-9]Ids?$/.test(name);
+  return (
+    /^ids?$/i.test(name) ||
+    /[_-]ids?$/i.test(name) ||
+    /[a-z0-9]Ids?$/.test(name)
+  );
 }
 
 /**
@@ -3353,7 +3716,7 @@ function isEntityIdQueryKey(key: string): boolean {
 export function deriveGetInputModel(
   winner: Capture | null | undefined,
   captures: readonly Capture[],
-  declaredNames: Iterable<string> = []
+  declaredNames: Iterable<string> = [],
 ): GetInputModel | null {
   if (winner?.method !== "GET") return null;
   let winnerUrl: URL;
@@ -3370,7 +3733,9 @@ export function deriveGetInputModel(
   // How many siblings carry each key: a key absent from some of them is chosen
   // by the caller per request, so its recorded value is not a constant.
   const capturesWithKey = new Map<string, number>();
-  const valuesBySegment: Array<Set<string>> = segments.map(() => new Set<string>());
+  const valuesBySegment: Array<Set<string>> = segments.map(
+    () => new Set<string>(),
+  );
   // Per key, the distinct value lists the siblings carried (a repeated key such as `ids[]=1&ids[]=2`).
   const listsByKey = new Map<string, Map<string, string[]>>();
   for (const c of siblings) {
@@ -3389,7 +3754,8 @@ export function deriveGetInputModel(
       if (!existing) valuesByKey.set(k, set);
       set.add(v);
     }
-    for (const [i, seg] of u.pathname.split("/").entries()) valuesBySegment[i]?.add(decode(seg));
+    for (const [i, seg] of u.pathname.split("/").entries())
+      valuesBySegment[i]?.add(decode(seg));
   }
   const declared = new Set<string>();
   for (const n of declaredNames) declared.add(n);
@@ -3407,7 +3773,9 @@ export function deriveGetInputModel(
     const base = safeGetFieldIdentifier(key);
     if (declared.has(key) && base === key) return key;
     if (declared.has(base)) return base;
-    const camel = base.replace(/_+([A-Za-z0-9])/g, (_m, c: string) => c.toUpperCase());
+    const camel = base.replace(/_+([A-Za-z0-9])/g, (_m, c: string) =>
+      c.toUpperCase(),
+    );
     if (camel !== base && declared.has(camel)) return camel;
     return undefined;
   };
@@ -3433,7 +3801,11 @@ export function deriveGetInputModel(
     const boundField = boundSegments.get(segIdx);
     if (segIdx >= 0 && boundField !== undefined) {
       // Another query key repeating an already-bound path segment follows the same caller input.
-      pathTwins.push({ field: boundField, segmentIndex: segIdx, queryKey: key });
+      pathTwins.push({
+        field: boundField,
+        segmentIndex: segIdx,
+        queryKey: key,
+      });
     } else if (segIdx >= 0) {
       const field = nameFor(key);
       boundSegments.set(segIdx, field);
@@ -3451,7 +3823,10 @@ export function deriveGetInputModel(
       fieldToQueryKey[field] = key;
       // One recorded value in every sibling: it is the fallback when the payload omits the field.
       // A date window is never replayed: a stale recorded window must not be sent.
-      if (values.size === 1 && (capturesWithKey.get(key) ?? 0) >= siblings.length) {
+      if (
+        values.size === 1 &&
+        (capturesWithKey.get(key) ?? 0) >= siblings.length
+      ) {
         if (![...values].every(isDateWindowValue))
           recordedQueryValues[key] = [...values][0] as string;
       } else if (
@@ -3474,7 +3849,8 @@ export function deriveGetInputModel(
   // Path segments with no query twin that vary between captures or carry an entity id.
   // A value repeated in several segments is one caller input, not one per segment.
   const fieldByValue = new Map<string, string>();
-  for (const [i, field] of boundSegments) fieldByValue.set(decode(segments[i] ?? ""), field);
+  for (const [i, field] of boundSegments)
+    fieldByValue.set(decode(segments[i] ?? ""), field);
   for (let i = 1; i < segments.length; i++) {
     if (boundSegments.has(i)) continue;
     const value = decode(segments[i] ?? "");
@@ -3491,8 +3867,10 @@ export function deriveGetInputModel(
       !isInstanceSlug(
         i,
         value,
-        segments[i + 1] === undefined ? undefined : decode(segments[i + 1] as string),
-        boundSegments.has(i + 1)
+        segments[i + 1] === undefined
+          ? undefined
+          : decode(segments[i + 1] as string),
+        boundSegments.has(i + 1),
       )
     )
       continue;
@@ -3559,7 +3937,7 @@ export function firstEndpointPath(
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
   submitPatterns: SubmitPatterns | null = null,
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
 ): string {
   try {
     const capture = firstEndpointCapture(
@@ -3567,7 +3945,7 @@ export function firstEndpointPath(
       ownBackendHostnames,
       fallbackDomain,
       submitPatterns,
-      primaryHost
+      primaryHost,
     );
     return capture ? new URL(capture.url).pathname : "/api/search";
   } catch {
@@ -3609,11 +3987,13 @@ function isZeroVarianceUnlessDeclared(
   capture: Capture,
   pool: Capture[],
   submitPatterns: SubmitPatterns | null,
-  matchesFoldReturn: (capture: Capture) => boolean
+  matchesFoldReturn: (capture: Capture) => boolean,
 ): boolean {
   const hasDeclaredSubmit =
-    submitPatterns !== null && (submitPatterns.endpoint !== null || submitPatterns.body !== null);
-  if (hasDeclaredSubmit && compileSubmitMatcher(submitPatterns)(capture)) return false;
+    submitPatterns !== null &&
+    (submitPatterns.endpoint !== null || submitPatterns.body !== null);
+  if (hasDeclaredSubmit && compileSubmitMatcher(submitPatterns)(capture))
+    return false;
   if (matchesFoldReturn(capture)) return false;
   return isZeroVarianceRepeatCapture(capture, pool);
 }
@@ -3625,17 +4005,24 @@ function isZeroVarianceUnlessDeclared(
  * unfiltered selection, which would re-admit the page-chrome bloat this gate
  * exists to remove.
  */
-function compileSubmitMatcher(patterns: SubmitPatterns | null): (capture: Capture) => boolean {
-  if (patterns === null || (patterns.endpoint === null && patterns.body === null)) {
+function compileSubmitMatcher(
+  patterns: SubmitPatterns | null,
+): (capture: Capture) => boolean {
+  if (
+    patterns === null ||
+    (patterns.endpoint === null && patterns.body === null)
+  ) {
     return () => true;
   }
-  const endpointRx = patterns.endpoint === null ? null : new RegExp(patterns.endpoint);
+  const endpointRx =
+    patterns.endpoint === null ? null : new RegExp(patterns.endpoint);
   const bodyRx = patterns.body === null ? null : new RegExp(patterns.body);
   return (capture: Capture): boolean => {
     // A CORS preflight is never the declared submit; the runtime issues it itself.
     if (capture.method?.toUpperCase() === "OPTIONS") return false;
     if (endpointRx !== null && !endpointRx.test(capture.url)) return false;
-    if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? "")) return false;
+    if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? ""))
+      return false;
     return true;
   };
 }
@@ -3648,17 +4035,26 @@ function compileSubmitMatcher(patterns: SubmitPatterns | null): (capture: Captur
  * exemption.
  */
 function compileDeclaredSubmitMatcher(
-  patterns: SubmitPatterns | null
-): (capture: { method: string; url: string; requestPostData?: string | null }) => boolean {
-  if (patterns === null || (patterns.endpoint === null && patterns.body === null)) {
+  patterns: SubmitPatterns | null,
+): (capture: {
+  method: string;
+  url: string;
+  requestPostData?: string | null;
+}) => boolean {
+  if (
+    patterns === null ||
+    (patterns.endpoint === null && patterns.body === null)
+  ) {
     return () => false;
   }
-  const endpointRx = patterns.endpoint === null ? null : new RegExp(patterns.endpoint);
+  const endpointRx =
+    patterns.endpoint === null ? null : new RegExp(patterns.endpoint);
   const bodyRx = patterns.body === null ? null : new RegExp(patterns.body);
   return (capture) => {
     if (capture.method.toUpperCase() === "OPTIONS") return false;
     if (endpointRx !== null && !endpointRx.test(capture.url)) return false;
-    if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? "")) return false;
+    if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? ""))
+      return false;
     return true;
   };
 }
@@ -3675,7 +4071,7 @@ function compileDeclaredSubmitMatcher(
  */
 function restrictToSubmitPattern<T extends Capture>(
   pool: T[],
-  submitPatterns: SubmitPatterns | null
+  submitPatterns: SubmitPatterns | null,
 ): T[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matching = pool.filter((c) => matchesSubmit(c));
@@ -3706,7 +4102,7 @@ function restrictToSubmitPattern<T extends Capture>(
 export function truncateActionSequenceAtSubmitPattern(
   sequence: ActionCapture[],
   submitPatterns: SubmitPatterns | null,
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
@@ -3738,7 +4134,7 @@ export function truncateActionSequenceAtSubmitPattern(
  */
 export function resolveManifestActionSequence(
   runRoot: string,
-  captures: Capture[]
+  captures: Capture[],
 ): ActionCapture[] | null {
   const manifestPath = join(runRoot, "submit-manifest.json");
   let entries: { index: number; filename: string; url: string }[];
@@ -3757,7 +4153,7 @@ export function resolveManifestActionSequence(
       readdirSync(join(runRoot, "graphql"))
         .filter(isRawCaptureFilename)
         .sort(compareCaptureFilenames)
-        .map((f, i) => [f, i])
+        .map((f, i) => [f, i]),
     );
   } catch {
     numericPosition = null;
@@ -3782,9 +4178,12 @@ export function resolveManifestActionSequence(
  */
 export function filterManifestByDeclaredSubmit(
   manifest: ActionCapture[],
-  submitPatterns: SubmitPatterns | null
+  submitPatterns: SubmitPatterns | null,
 ): ActionCapture[] {
-  if (submitPatterns === null || (submitPatterns.endpoint === null && submitPatterns.body === null))
+  if (
+    submitPatterns === null ||
+    (submitPatterns.endpoint === null && submitPatterns.body === null)
+  )
     return manifest;
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matching = manifest.filter((a) => matchesSubmit(a.capture));
@@ -3833,17 +4232,26 @@ function resends(haystack: string, value: string): boolean {
  */
 function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
   const getCapture = captures[index]!;
-  if (getCapture.responseBody === undefined || getCapture.responseBody === null) return false;
+  if (getCapture.responseBody === undefined || getCapture.responseBody === null)
+    return false;
   const tokens = new Set<string>();
   for (const { value } of walkAllPrimitiveLeaves(getCapture.responseBody)) {
     if (typeof value !== "string") continue;
-    if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+    if (
+      value.length < ISSUED_TOKEN_MIN_LENGTH ||
+      value.length > ISSUED_TOKEN_MAX_LENGTH
+    )
+      continue;
     if (/\s/.test(value)) continue;
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
   }
   for (const { value } of extractHtmlIssuedTokens(getCapture.responseBody)) {
-    if (value.length < PATH_SEGMENT_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+    if (
+      value.length < PATH_SEGMENT_MIN_LENGTH ||
+      value.length > ISSUED_TOKEN_MAX_LENGTH
+    )
+      continue;
     if (/\s/.test(value)) continue;
     if (getCapture.url.includes(value)) continue;
     tokens.add(value);
@@ -3851,7 +4259,8 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
   if (tokens.size === 0) return false;
   for (let j = index + 1; j < captures.length; j++) {
     const later = captures[j]!;
-    if (later.method === "GET" || later.status < 200 || later.status >= 400) continue;
+    if (later.method === "GET" || later.status < 200 || later.status >= 400)
+      continue;
     const haystacks = [
       later.url,
       later.requestPostData ?? "",
@@ -3926,7 +4335,7 @@ export function extractActionSequence(
   // submitEndpointPattern can survive host-gating alongside the primary
   // host's genuine matches and starve out the submission this sequence is
   // meant to isolate.
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
 ): ActionCapture[] {
   const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
@@ -3934,7 +4343,8 @@ export function extractActionSequence(
   // case isAllowedFixtureHost would reject every candidate, so the gate
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
-  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  const hasHostProvenance =
+    ownBackendHostnames.length > 0 || fallbackDomain !== null;
   // With host-provenance data AND a declared submitEndpointPattern, the
   // endpoint match's job of isolating the submission is taken over by the
   // structural-relevance narrowing pass below (anchored on that SAME
@@ -3948,9 +4358,13 @@ export function extractActionSequence(
   // mechanism and stays unconditional (matches the "submit patterns isolate
   // the submission from same-URL chrome" behavior).
   const hasSubmitEndpointAnchor =
-    hasHostProvenance && submitPatterns !== null && submitPatterns.endpoint !== null;
+    hasHostProvenance &&
+    submitPatterns !== null &&
+    submitPatterns.endpoint !== null;
   const matchesSubmit = compileSubmitMatcher(
-    hasSubmitEndpointAnchor ? { endpoint: null, body: submitPatterns!.body } : submitPatterns
+    hasSubmitEndpointAnchor
+      ? { endpoint: null, body: submitPatterns!.body }
+      : submitPatterns,
   );
   // Compiled once, ahead of structural isolation below, so a capture matching
   // the flow's own declared submitEndpointPattern can be exempted there the
@@ -3964,7 +4378,9 @@ export function extractActionSequence(
   // authoritative, so its genuine matches must not be dropped as
   // "structurally isolated" once same-host noise outnumbers them.
   const declaredSubmitEndpointRx =
-    submitPatterns?.endpoint != null ? new RegExp(submitPatterns.endpoint) : null;
+    submitPatterns?.endpoint != null
+      ? new RegExp(submitPatterns.endpoint)
+      : null;
   const matchesDeclaredSubmitEndpoint = (capture: Capture): boolean =>
     declaredSubmitEndpointRx?.test(capture.url) ?? false;
   const declaredSubmitBodyRx =
@@ -3994,9 +4410,11 @@ export function extractActionSequence(
       c.status >= 200 &&
       c.status < 300 &&
       !matchesFoldReturn(c) &&
-      resolvesResultsArray(c)
+      resolvesResultsArray(c),
   );
-  const navigatedHosts = extractNavigatedHostnames(captures.map((c) => c.responseBody));
+  const navigatedHosts = extractNavigatedHostnames(
+    captures.map((c) => c.responseBody),
+  );
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture, index }) => {
@@ -4009,12 +4427,20 @@ export function extractActionSequence(
         !issuesTokenReusedLater(captures, index)
       )
         return false;
-      if ((capture.status < 200 || capture.status >= 300) && !isServerRenderedFormSubmit(capture))
+      if (
+        (capture.status < 200 || capture.status >= 300) &&
+        !isServerRenderedFormSubmit(capture)
+      )
         return false;
       if (isNoiseUrl(capture.url)) return false;
       if (
         index !== firstPrimaryIndex &&
-        isZeroVarianceUnlessDeclared(capture, captures, submitPatterns, matchesFoldReturn)
+        isZeroVarianceUnlessDeclared(
+          capture,
+          captures,
+          submitPatterns,
+          matchesFoldReturn,
+        )
       )
         return false;
       if (index !== firstPrimaryIndex && !matchesSubmit(capture)) return false;
@@ -4024,7 +4450,7 @@ export function extractActionSequence(
           captureHostname(capture.url),
           ownBackendHostnames,
           fallbackDomain,
-          primaryHost
+          primaryHost,
         ) &&
         !(
           capture.method !== "GET" &&
@@ -4032,12 +4458,16 @@ export function extractActionSequence(
             captureHostname(capture.url),
             navigatedHosts,
             ownBackendHostnames,
-            fallbackDomain
+            fallbackDomain,
           ) ||
             // A form-encoded document POST to a same-site host is itself a
             // navigation to that host, whether or not a captured page names it.
             (isFormDocumentSubmission(capture) &&
-              isSameSiteHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)))
+              isSameSiteHost(
+                captureHostname(capture.url),
+                ownBackendHostnames,
+                fallbackDomain,
+              )))
         )
       )
         return false;
@@ -4083,8 +4513,12 @@ export function extractActionSequence(
   // The vouching pass below is O(n^2) over the pool, so parsing each URL
   // inside its inner loop made a production-scale archive (~4.7k captures)
   // run tens of millions of URL parses and stall for minutes.
-  const hostGatedPaths = hostGated.map(({ capture }) => safeUrlPathname(capture.url));
-  const hostGatedSegments = hostGatedPaths.map((path) => path.split("/").filter(Boolean));
+  const hostGatedPaths = hostGated.map(({ capture }) =>
+    safeUrlPathname(capture.url),
+  );
+  const hostGatedSegments = hostGatedPaths.map((path) =>
+    path.split("/").filter(Boolean),
+  );
   // Producer/consumer sets for the data-dependency exemption below, extracted
   // once per capture rather than once per candidate/target PAIR: the pass is
   // already O(n^2) over the pool, and re-walking both JSON bodies inside it
@@ -4098,7 +4532,7 @@ export function extractActionSequence(
       ({ entry }) =>
         matchesDeclaredSubmitEndpoint(entry.capture) ||
         matchesFoldReturn(entry.capture) ||
-        matchesDeclaredSubmitBody(entry.capture)
+        matchesDeclaredSubmitBody(entry.capture),
     )
     .map(({ entry, j }) => ({
       j,
@@ -4118,7 +4552,7 @@ export function extractActionSequence(
     hostGated.map(({ capture }) => capture),
     foldReturnSpec,
     matchesFoldReturn,
-    true
+    true,
   );
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
@@ -4127,7 +4561,8 @@ export function extractActionSequence(
           const candidateSegments = hostGatedSegments[i]!;
           const denselyNameSpaced =
             pathStructuralTokens(path).size > 2 ||
-            (!isServerRenderedFormSubmit(capture) && hasNoBusinessRelevantResponseState(capture));
+            (!isServerRenderedFormSubmit(capture) &&
+              hasNoBusinessRelevantResponseState(capture));
           // A same-path-FAMILY pool member does not vouch for the candidate
           // when one of their paths is a pure SEGMENT-PREFIX EXTENSION of the
           // other (e.g. `/marketing-spa/banner` and `/marketing-spa/banner/2`,
@@ -4158,7 +4593,10 @@ export function extractActionSequence(
           // (e.g. 6 identical `POST /toggles/product-avail`, whose only family
           // is its own repeats) from reading as isolated against the flow's
           // unrelated paths and being dropped.
-          const isSegmentPrefixExtension = (a: string[], b: string[]): boolean => {
+          const isSegmentPrefixExtension = (
+            a: string[],
+            b: string[],
+          ): boolean => {
             const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
             if (shorter.length === longer.length) return false;
             return shorter.every((segment, k) => segment === longer[k]);
@@ -4171,13 +4609,18 @@ export function extractActionSequence(
             // (`/site-banner` vs `/site-banner?campaign=summer`) does not —
             // one templated endpoint re-parameterized is the same circular
             // evidence as the trailing-segment variant below.
-            if (otherPath === path) return hostGated[j]!.capture.url === capture.url;
+            if (otherPath === path)
+              return hostGated[j]!.capture.url === capture.url;
             if (!isSamePathFamily(path, otherPath)) return true;
-            return !isSegmentPrefixExtension(candidateSegments, hostGatedSegments[j]!);
+            return !isSegmentPrefixExtension(
+              candidateSegments,
+              hostGatedSegments[j]!,
+            );
           };
           const otherPaths: string[] = [];
           for (let j = 0; j < hostGated.length; j += 1) {
-            if (denselyNameSpaced ? hostGatedPaths[j] === path : j === i) continue;
+            if (denselyNameSpaced ? hostGatedPaths[j] === path : j === i)
+              continue;
             if (!vouchesFor(j)) continue;
             otherPaths.push(hostGatedPaths[j]!);
           }
@@ -4201,7 +4644,7 @@ export function extractActionSequence(
             (target) =>
               target.j !== i &&
               target.index > index &&
-              producedValueIsConsumed(producedValuesAt(i), target.consumed)
+              producedValueIsConsumed(producedValuesAt(i), target.consumed),
           );
           return (
             isJoinedDeclaredDrill(capture, index) ||
@@ -4221,7 +4664,8 @@ export function extractActionSequence(
   // authoritative reference, so this pass is a no-op — mirroring
   // compileSubmitMatcher's own null-pattern passthrough — rather than
   // guessing at a reference set.
-  if (!hasSubmitEndpointAnchor || !applyFinalAnchorNarrowing) return structurallyGated;
+  if (!hasSubmitEndpointAnchor || !applyFinalAnchorNarrowing)
+    return structurallyGated;
 
   const referencePaths = structurallyGated
     .filter(({ capture }) => matchesDeclaredSubmitEndpoint(capture))
@@ -4233,17 +4677,30 @@ export function extractActionSequence(
   // token with the submit endpoint, so structural relevance must not drop it.
   // Neither may it drop the earlier call that MINTED the id the drill is keyed
   // by (e.g. a POST whose response carries the id in the drill's path/query).
-  const drillCaptures = structurallyGated.filter(({ capture }) => matchesFoldReturn(capture));
-  const mintsDrillId = ({ capture, index }: { capture: Capture; index: number }): boolean =>
+  const drillCaptures = structurallyGated.filter(({ capture }) =>
+    matchesFoldReturn(capture),
+  );
+  const mintsDrillId = ({
+    capture,
+    index,
+  }: {
+    capture: Capture;
+    index: number;
+  }): boolean =>
     drillCaptures.some(
-      (d) => d.index > index && capturePathAndQueryValuesAppearIn(d.capture, capture.responseBody)
+      (d) =>
+        d.index > index &&
+        capturePathAndQueryValuesAppearIn(d.capture, capture.responseBody),
     );
   return structurallyGated.filter(
     (entry) =>
       matchesDeclaredSubmitEndpoint(entry.capture) ||
       isJoinedDeclaredDrill(entry.capture, entry.index) ||
       mintsDrillId(entry) ||
-      isStructurallyRelevantCapture(safeUrlPathname(entry.capture.url), referencePaths)
+      isStructurallyRelevantCapture(
+        safeUrlPathname(entry.capture.url),
+        referencePaths,
+      ),
   );
 }
 
@@ -4262,7 +4719,8 @@ export function extractActionSequence(
  */
 function capturesProducedValues(producer: Capture): Map<string, Set<string>> {
   const produced = new Map<string, Set<string>>();
-  if (producer.responseBody === null || producer.responseBody === undefined) return produced;
+  if (producer.responseBody === null || producer.responseBody === undefined)
+    return produced;
   for (const { value, path } of walkAllPrimitiveLeaves(producer.responseBody)) {
     if (typeof value !== "string" && typeof value !== "number") continue;
     const text = String(value);
@@ -4284,7 +4742,8 @@ function capturesProducedValues(producer: Capture): Map<string, Set<string>> {
 function leafFieldName(path: readonly (string | number)[]): string | null {
   for (let i = path.length - 1; i >= 0; i -= 1) {
     const segment = path[i];
-    if (typeof segment === "string" && !/^\d+$/.test(segment)) return segment.toLowerCase();
+    if (typeof segment === "string" && !/^\d+$/.test(segment))
+      return segment.toLowerCase();
   }
   return null;
 }
@@ -4321,14 +4780,17 @@ function captureConsumedValues(consumer: Capture): {
     for (const segment of url.pathname.split("/")) {
       addValue(decodePathSegment(segment), POSITIONAL_CONSUMER_KEY);
     }
-    for (const [key, value] of url.searchParams.entries()) addValue(value, key.toLowerCase());
+    for (const [key, value] of url.searchParams.entries())
+      addValue(value, key.toLowerCase());
   } catch {
     // An unparseable consumer URL still has a body worth collecting below.
   }
   const body = consumer.requestPostData ?? null;
   if (body === null || body.length === 0) return { values, rawBody: null };
   try {
-    for (const { value, path } of walkAllPrimitiveLeaves(JSON.parse(body) as unknown)) {
+    for (const { value, path } of walkAllPrimitiveLeaves(
+      JSON.parse(body) as unknown,
+    )) {
       if (typeof value !== "string" && typeof value !== "number") continue;
       const key = leafFieldName(path);
       if (key !== null) addValue(String(value), key);
@@ -4363,7 +4825,7 @@ const POSITIONAL_CONSUMER_KEY = "\u0000positional";
  */
 function producedValueIsConsumed(
   produced: ReadonlyMap<string, Set<string>>,
-  consumed: { values: Map<string, Set<string>>; rawBody: string | null }
+  consumed: { values: Map<string, Set<string>>; rawBody: string | null },
 ): boolean {
   if (produced.size === 0) return false;
   for (const [value, consumerKeys] of consumed.values) {
@@ -4407,7 +4869,12 @@ function producedValueIsConsumed(
  */
 function isOpaqueJoinValue(value: string): boolean {
   if (value.length < 2 || /^\d+$/.test(value)) return false;
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
+  if (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  )
+    return true;
   if (/^[0-9a-f]{16,}$/i.test(value)) return true;
   return /[A-Za-z]/.test(value) && /\d/.test(value);
 }
@@ -4418,11 +4885,11 @@ function isOpaqueJoinValue(value: string): boolean {
  */
 function itemsAtResultsPath(
   capture: Capture,
-  resultsPath: readonly string[]
+  resultsPath: readonly string[],
 ): Record<string, unknown>[] | null {
   return objectItemsAtPath(
     capture.responseBody,
-    resolveDeclaredArrayPath(resultsPath, capture.responseBody)
+    resolveDeclaredArrayPath(resultsPath, capture.responseBody),
   );
 }
 
@@ -4431,7 +4898,10 @@ function itemsAtResultsPath(
  * whose own request did not already send it), memoized per capture list:
  * every structural filter of one generation run asks about the same archive.
  */
-const firstMintedIndexCache = new WeakMap<readonly Capture[], Map<string, number>>();
+const firstMintedIndexCache = new WeakMap<
+  readonly Capture[],
+  Map<string, number>
+>();
 
 function firstMintedIndex(captures: readonly Capture[]): Map<string, number> {
   const cached = firstMintedIndexCache.get(captures);
@@ -4441,7 +4911,11 @@ function firstMintedIndex(captures: readonly Capture[]): Map<string, number> {
     if (producer.status < 200 || producer.status >= 300) return;
     const echoed = collectRequestValuesIncludingHeaders(producer);
     for (const value of collectResponseLeafValues(producer)) {
-      if (value.length < MIN_MINTED_LITERAL_LENGTH || !isMintedDependencyValue(value)) continue;
+      if (
+        value.length < MIN_MINTED_LITERAL_LENGTH ||
+        !isMintedDependencyValue(value)
+      )
+        continue;
       if (echoed.has(value) || built.has(value)) continue;
       built.set(value, index);
     }
@@ -4472,7 +4946,7 @@ function compileJoinedDeclaredDrillMatcher(
   pool: readonly Capture[],
   foldReturnSpec: FoldReturnSpec | null,
   matchesDeclaredDrill: (capture: Capture) => boolean,
-  allowSoleResultsSource: boolean
+  allowSoleResultsSource: boolean,
 ): (capture: Capture, index: number) => boolean {
   if (foldReturnSpec === null) return () => false;
   const resultsPath = foldReturnSpec.resultsPath.split(".");
@@ -4487,7 +4961,10 @@ function compileJoinedDeclaredDrillMatcher(
     const values = collectPrimaryJoinValues(items, joinFields);
     primaryJoinValuesOf.set(capture, values);
     for (const value of values) {
-      primaryJoinValueCounts.set(value, (primaryJoinValueCounts.get(value) ?? 0) + 1);
+      primaryJoinValueCounts.set(
+        value,
+        (primaryJoinValueCounts.get(value) ?? 0) + 1,
+      );
     }
   }
   const joinedByResult = (capture: Capture): boolean => {
@@ -4498,18 +4975,22 @@ function compileJoinedDeclaredDrillMatcher(
     if (items === null) return false;
     const own = primaryJoinValuesOf.get(capture);
     for (const value of collectPrimaryJoinValues(items, joinFields)) {
-      const others = (primaryJoinValueCounts.get(value) ?? 0) - (own?.has(value) ? 1 : 0);
+      const others =
+        (primaryJoinValueCounts.get(value) ?? 0) - (own?.has(value) ? 1 : 0);
       if (others > 0) return true;
     }
     return false;
   };
   const isSoleResultsSource = (capture: Capture): boolean =>
-    allowSoleResultsSource && primaryJoinValuesOf.size === 1 && primaryJoinValuesOf.has(capture);
+    allowSoleResultsSource &&
+    primaryJoinValuesOf.size === 1 &&
+    primaryJoinValuesOf.has(capture);
   const joinedByRequest = (capture: Capture, index: number): boolean => {
     const headerValues = new Set(Object.values(capture.requestHeaders));
     const minted = firstMintedIndex(captures);
     for (const value of collectRequestStringValues(capture)) {
-      if (value.length < MIN_MINTED_LITERAL_LENGTH || headerValues.has(value)) continue;
+      if (value.length < MIN_MINTED_LITERAL_LENGTH || headerValues.has(value))
+        continue;
       const producedAt = minted.get(value);
       if (producedAt !== undefined && producedAt < index) return true;
     }
@@ -4517,7 +4998,9 @@ function compileJoinedDeclaredDrillMatcher(
   };
   return (capture, index) =>
     matchesDeclaredDrill(capture) &&
-    (isSoleResultsSource(capture) || joinedByResult(capture) || joinedByRequest(capture, index));
+    (isSoleResultsSource(capture) ||
+      joinedByResult(capture) ||
+      joinedByRequest(capture, index));
 }
 
 /**
@@ -4525,7 +5008,10 @@ function compileJoinedDeclaredDrillMatcher(
  * appears as a string leaf of `body` — i.e. `body`'s call minted the id the
  * drill is keyed by.
  */
-function capturePathAndQueryValuesAppearIn(drill: Capture, body: unknown): boolean {
+function capturePathAndQueryValuesAppearIn(
+  drill: Capture,
+  body: unknown,
+): boolean {
   if (body === null || typeof body !== "object") return false;
   let url: URL;
   try {
@@ -4542,7 +5028,8 @@ function capturePathAndQueryValuesAppearIn(drill: Capture, body: unknown): boole
   const walk = (v: unknown): void => {
     if (typeof v === "string" || typeof v === "number") leaves.add(String(v));
     else if (Array.isArray(v)) v.forEach(walk);
-    else if (v !== null && typeof v === "object") Object.values(v).forEach(walk);
+    else if (v !== null && typeof v === "object")
+      Object.values(v).forEach(walk);
   };
   walk(body);
   return candidates.some((c) => leaves.has(c));
@@ -4627,17 +5114,19 @@ export function extractGraphQLActionSequence(
   // See extractActionSequence's matching param: narrows host-gating to the
   // flow's dominant own-backend host so a minority-host capture can never
   // pass alongside it.
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
-  const matchesFoldReturnResults = compileFoldReturnResultsMatcher(foldReturnSpec);
+  const matchesFoldReturnResults =
+    compileFoldReturnResultsMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
   // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
   // case isAllowedFixtureHost would reject every candidate, so the gate
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
-  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  const hasHostProvenance =
+    ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const isMutation = isGraphQLMutationCapture;
 
   const admitted = captures
@@ -4650,7 +5139,7 @@ export function extractGraphQLActionSequence(
           capture,
           captures,
           submitPatterns,
-          (c) => matchesFoldReturn(c) || matchesFoldReturnResults(c)
+          (c) => matchesFoldReturn(c) || matchesFoldReturnResults(c),
         )
       )
         return false;
@@ -4661,7 +5150,7 @@ export function extractGraphQLActionSequence(
           captureHostname(capture.url),
           ownBackendHostnames,
           fallbackDomain,
-          primaryHost
+          primaryHost,
         )
       )
         return false;
@@ -4681,13 +5170,16 @@ export function extractGraphQLActionSequence(
     admitted.map(({ capture }) => capture),
     foldReturnSpec,
     matchesFoldReturn,
-    false
+    false,
   );
   return admitted.filter(
     ({ capture, index }) =>
       isMutation(capture) ||
       isJoinedDeclaredDrill(capture, index) ||
-      isStructurallyRelevantCapture(capturePathname(capture.url), mutationPaths)
+      isStructurallyRelevantCapture(
+        capturePathname(capture.url),
+        mutationPaths,
+      ),
   );
 }
 
@@ -4726,7 +5218,7 @@ function responseShapeKey(capture: Capture): string | null {
  */
 export function dedupRedundantSameOperationCaptures(
   actions: ActionCapture[],
-  primary: PrimaryGraphQLOperation | null
+  primary: PrimaryGraphQLOperation | null,
 ): ActionCapture[] {
   if (!primary) return actions;
   const primaryGroupKey = operationGroupKey(primary.capture);
@@ -4734,7 +5226,10 @@ export function dedupRedundantSameOperationCaptures(
   return actions.filter((a) => {
     if (a.capture === primary.capture) return true;
     if (operationGroupKey(a.capture) !== primaryGroupKey) {
-      return !(primaryShapeKey !== null && responseShapeKey(a.capture) === primaryShapeKey);
+      return !(
+        primaryShapeKey !== null &&
+        responseShapeKey(a.capture) === primaryShapeKey
+      );
     }
     return false;
   });
@@ -4819,7 +5314,11 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
   if (capture.requestPostData) {
     try {
       const parsed: unknown = JSON.parse(capture.requestPostData);
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed)
+      ) {
         for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
           fields[path.join(".")] = value;
         }
@@ -4851,7 +5350,10 @@ function fieldKeyLeafName(key: string): string {
  * common case of a REST poll's tracking param, without extending that same
  * trust to a mutation's body-carried payload field (see the comment at its
  * call site in {@link isRedundantSameEndpointGroup}). */
-function isQueryStringOnlyKey(key: string, group: readonly ActionCapture[]): boolean {
+function isQueryStringOnlyKey(
+  key: string,
+  group: readonly ActionCapture[],
+): boolean {
   return group.every((a) => {
     let inQuery = false;
     try {
@@ -4904,9 +5406,14 @@ interface RequestAndResponseValues {
  * (group, varying-key, group-member) combination it's compared against,
  * which is O(groups * keys * members * allActions) recomputations of
  * identical work instead of O(allActions). */
-const requestAndResponseValuesCache = new WeakMap<Capture, RequestAndResponseValues>();
+const requestAndResponseValuesCache = new WeakMap<
+  Capture,
+  RequestAndResponseValues
+>();
 
-function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValues {
+function requestAndResponseValuesByKey(
+  capture: Capture,
+): RequestAndResponseValues {
   const cached = requestAndResponseValuesCache.get(capture);
   if (cached) return cached;
   const byKey = new Map<string, Set<string>>();
@@ -4918,7 +5425,8 @@ function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValu
   };
   try {
     const url = new URL(capture.url);
-    for (const segment of url.pathname.split("/").filter(Boolean)) pathSegments.add(segment);
+    for (const segment of url.pathname.split("/").filter(Boolean))
+      pathSegments.add(segment);
     for (const [key, value] of url.searchParams) add(key, value);
   } catch {
     // Relative/invalid URLs carry no path/query signal to contribute.
@@ -4927,14 +5435,16 @@ function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValu
     try {
       const parsed: unknown = JSON.parse(capture.requestPostData);
       for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
-        if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
+        if (value !== null && path.length > 0)
+          add(path[path.length - 1]!, String(value));
       }
     } catch {
       // A non-JSON body carries no leaf values to contribute.
     }
   }
   for (const { value, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
-    if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
+    if (value !== null && path.length > 0)
+      add(path[path.length - 1]!, String(value));
   }
   const result = { byKey, pathSegments };
   requestAndResponseValuesCache.set(capture, result);
@@ -4953,8 +5463,13 @@ interface FieldValueIndex {
   byKeyValue: Map<string, Map<string, Set<Capture>>>;
   byPathSegment: Map<string, Set<Capture>>;
 }
-const fieldValueIndexCache = new WeakMap<readonly ActionCapture[], FieldValueIndex>();
-function fieldValueIndex(allActions: readonly ActionCapture[]): FieldValueIndex {
+const fieldValueIndexCache = new WeakMap<
+  readonly ActionCapture[],
+  FieldValueIndex
+>();
+function fieldValueIndex(
+  allActions: readonly ActionCapture[],
+): FieldValueIndex {
   const cached = fieldValueIndexCache.get(allActions);
   if (cached) return cached;
   const byKeyValue = new Map<string, Map<string, Set<Capture>>>();
@@ -5006,16 +5521,23 @@ function isFieldValueThreadedElsewhere(
   fieldKey: string,
   value: unknown,
   groupCaptures: ReadonlySet<Capture>,
-  allActions: readonly ActionCapture[]
+  allActions: readonly ActionCapture[],
 ): boolean {
-  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+  if (
+    typeof value !== "string" &&
+    typeof value !== "number" &&
+    typeof value !== "boolean"
+  ) {
     return true;
   }
   const stringValue = String(value);
   if (stringValue.length === 0) return true;
   const { byKeyValue, byPathSegment } = fieldValueIndex(allActions);
-  const isOutsideGroup = (captures: ReadonlySet<Capture> | undefined): boolean =>
-    captures !== undefined && [...captures].some((capture) => !groupCaptures.has(capture));
+  const isOutsideGroup = (
+    captures: ReadonlySet<Capture> | undefined,
+  ): boolean =>
+    captures !== undefined &&
+    [...captures].some((capture) => !groupCaptures.has(capture));
   return (
     isOutsideGroup(byKeyValue.get(fieldKey)?.get(stringValue)) ||
     isOutsideGroup(byPathSegment.get(stringValue))
@@ -5060,11 +5582,12 @@ function isFieldValueThreadedElsewhere(
  */
 export function isRedundantSameEndpointGroup(
   group: ActionCapture[],
-  allActions?: readonly ActionCapture[]
+  allActions?: readonly ActionCapture[],
 ): boolean {
   const shapeKey = responseShapeKey(group[0]!.capture);
   if (shapeKey !== null) {
-    if (!group.every((a) => responseShapeKey(a.capture) === shapeKey)) return false;
+    if (!group.every((a) => responseShapeKey(a.capture) === shapeKey))
+      return false;
   } else {
     // A flat (non-array) response never resolves a `responseShapeKey`, but a
     // zero-variance re-poll of a flag/toggle endpoint still needs a shape to
@@ -5081,7 +5604,8 @@ export function isRedundantSameEndpointGroup(
     const isGraphQLMutation = isGraphQLMutationCapture;
     const responsesByteIdentical = group.every(
       (a) =>
-        JSON.stringify(a.capture.responseBody) === JSON.stringify(group[0]!.capture.responseBody)
+        JSON.stringify(a.capture.responseBody) ===
+        JSON.stringify(group[0]!.capture.responseBody),
     );
     const isFlatObject = (capture: Capture): boolean =>
       !isGraphQLMutation(capture) &&
@@ -5099,7 +5623,9 @@ export function isRedundantSameEndpointGroup(
 
   const varyingKeys = [...allKeys].filter((key) => {
     if (CACHE_BUSTER_QUERY_KEYS.has(key)) return false;
-    const values = new Set(fieldSets.map((fields) => JSON.stringify(fields[key])));
+    const values = new Set(
+      fieldSets.map((fields) => JSON.stringify(fields[key])),
+    );
     return values.size > 1;
   });
 
@@ -5127,7 +5653,13 @@ export function isRedundantSameEndpointGroup(
     }
     if (!allActions) return false;
     return fieldSets.every(
-      (fields) => !isFieldValueThreadedElsewhere(leafName, fields[key], groupCaptures, allActions)
+      (fields) =>
+        !isFieldValueThreadedElsewhere(
+          leafName,
+          fields[key],
+          groupCaptures,
+          allActions,
+        ),
     );
   });
 }
@@ -5158,7 +5690,7 @@ export function isRedundantSameEndpointGroup(
  */
 function collapseRedundantSameEndpointCaptures(
   actions: ActionCapture[],
-  isDeclaredSubmit: ((c: Capture) => boolean) | null = null
+  isDeclaredSubmit: ((c: Capture) => boolean) | null = null,
 ): ActionCapture[] {
   const positionsByGroup = new Map<string, number[]>();
   actions.forEach((a, i) => {
@@ -5175,20 +5707,24 @@ function collapseRedundantSameEndpointCaptures(
     const group = positions.map((i) => actions[i]!);
     // A declared submit endpoint re-queried with a differing non-pagination
     // field (a filter) is the flow's own search, not a redundant re-poll.
-    if (isDeclaredSubmit !== null && group.every((a) => isDeclaredSubmit(a.capture))) {
+    if (
+      isDeclaredSubmit !== null &&
+      group.every((a) => isDeclaredSubmit(a.capture))
+    ) {
       const sets = group.map((a) => captureRequestFields(a.capture));
       const keys = new Set(sets.flatMap((f) => Object.keys(f)));
       const filterVaries = [...keys].some(
         (k) =>
           !CACHE_BUSTER_QUERY_KEYS.has(k) &&
           !PAGINATION_FIELD_NAME_PATTERN.test(fieldKeyLeafName(k)) &&
-          new Set(sets.map((f) => JSON.stringify(f[k]))).size > 1
+          new Set(sets.map((f) => JSON.stringify(f[k]))).size > 1,
       );
       if (filterVaries) continue;
     }
     if (!isRedundantSameEndpointGroup(group, actions)) continue;
     const merged = mergeCollapsedGroupItemsIntoRepresentative(group);
-    if (merged !== null) mergedRepresentativeByPosition.set(positions[0]!, merged);
+    if (merged !== null)
+      mergedRepresentativeByPosition.set(positions[0]!, merged);
     for (const position of positions.slice(1)) drop.add(position);
   }
 
@@ -5218,7 +5754,9 @@ function collapseRedundantSameEndpointCaptures(
  * every caller downstream that hits the stale cache entry instead of the
  * mutated array.
  */
-function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): ActionCapture | null {
+function mergeCollapsedGroupItemsIntoRepresentative(
+  group: ActionCapture[],
+): ActionCapture | null {
   const representative = group[0]!;
   const arrayField = findObjectArrayField(representative.capture.responseBody);
   if (!arrayField) return null;
@@ -5226,7 +5764,11 @@ function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): Act
   let contributed = false;
   for (const other of group.slice(1)) {
     const otherArrayField = findObjectArrayField(other.capture.responseBody);
-    if (!otherArrayField || otherArrayField.path.join(".") !== arrayField.path.join(".")) continue;
+    if (
+      !otherArrayField ||
+      otherArrayField.path.join(".") !== arrayField.path.join(".")
+    )
+      continue;
     mergedItems.push(...otherArrayField.items);
     contributed = true;
   }
@@ -5234,9 +5776,12 @@ function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): Act
   const mergedBody = setValueAtPath(
     representative.capture.responseBody,
     arrayField.path,
-    mergedItems
+    mergedItems,
   );
-  return { ...representative, capture: { ...representative.capture, responseBody: mergedBody } };
+  return {
+    ...representative,
+    capture: { ...representative.capture, responseBody: mergedBody },
+  };
 }
 
 /**
@@ -5249,9 +5794,14 @@ function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): Act
  * `arrayField.path` is a DFS-discovered chain of object keys, never an array
  * index), so an unresolvable segment returns `body` unchanged.
  */
-function setValueAtPath(body: unknown, path: readonly string[], newValue: unknown): unknown {
+function setValueAtPath(
+  body: unknown,
+  path: readonly string[],
+  newValue: unknown,
+): unknown {
   if (path.length === 0) return newValue;
-  if (body === null || typeof body !== "object" || Array.isArray(body)) return body;
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return body;
   const [head, ...rest] = path as [string, ...string[]];
   const record = body as Record<string, unknown>;
   return { ...record, [head]: setValueAtPath(record[head], rest, newValue) };
@@ -5299,7 +5849,7 @@ interface StateValue {
  */
 function* walkStringLeaves(
   value: unknown,
-  path: string[] = []
+  path: string[] = [],
 ): Generator<{ value: string; path: string[] }, void, unknown> {
   if (typeof value === "string") {
     yield { value, path };
@@ -5328,8 +5878,11 @@ function* walkStringLeaves(
  * reused value — while a value legitimately embedded inside a longer value
  * still matches via substring.
  */
-function jsonBodyLeafValues(requestPostData: string | null | undefined): string[] | null {
-  if (typeof requestPostData !== "string" || requestPostData.length === 0) return null;
+function jsonBodyLeafValues(
+  requestPostData: string | null | undefined,
+): string[] | null {
+  if (typeof requestPostData !== "string" || requestPostData.length === 0)
+    return null;
   const parsed = ((): unknown => {
     try {
       return JSON.parse(requestPostData);
@@ -5346,8 +5899,11 @@ function jsonBodyLeafValues(requestPostData: string | null | undefined): string[
 }
 
 /** Parses a captured request body as JSON; null for an absent or non-JSON body (multipart raw bytes). */
-function parseJsonBodyOrNull(requestPostData: string | null | undefined): unknown {
-  if (typeof requestPostData !== "string" || requestPostData.length === 0) return null;
+function parseJsonBodyOrNull(
+  requestPostData: string | null | undefined,
+): unknown {
+  if (typeof requestPostData !== "string" || requestPostData.length === 0)
+    return null;
   try {
     return JSON.parse(requestPostData);
   } catch {
@@ -5367,9 +5923,10 @@ function parseJsonBodyOrNull(requestPostData: string | null | undefined): unknow
  * conditions as `jsonBodyLeafValues`, for the same non-JSON fallback.
  */
 function jsonBodyLeafValuesByKey(
-  requestPostData: string | null | undefined
+  requestPostData: string | null | undefined,
 ): Map<string, Set<string>> | null {
-  if (typeof requestPostData !== "string" || requestPostData.length === 0) return null;
+  if (typeof requestPostData !== "string" || requestPostData.length === 0)
+    return null;
   const parsed = ((): unknown => {
     try {
       return JSON.parse(requestPostData);
@@ -5472,14 +6029,18 @@ function endsWithIdentifierWord(key: string): boolean {
  */
 function keyNamesCorrelate(sourceKey: string, targetKey: string): boolean {
   if (sourceKey === targetKey) return true;
-  if (isBareIdentifierKey(sourceKey) && endsWithIdentifierWord(targetKey)) return true;
+  if (isBareIdentifierKey(sourceKey) && endsWithIdentifierWord(targetKey))
+    return true;
   const sourceWords = keyNameWords(sourceKey);
   const targetWords = keyNameWords(targetKey);
-  const wordsMatch = (a: string, b: string): boolean => a.includes(b) || b.includes(a);
+  const wordsMatch = (a: string, b: string): boolean =>
+    a.includes(b) || b.includes(a);
   const sourceSpecific = sourceWords.filter((w) => !GENERIC_KEY_WORDS.has(w));
   const targetSpecific = targetWords.filter((w) => !GENERIC_KEY_WORDS.has(w));
   if (sourceSpecific.length > 0 && targetSpecific.length > 0) {
-    return sourceSpecific.some((sw) => targetSpecific.some((tw) => wordsMatch(sw, tw)));
+    return sourceSpecific.some((sw) =>
+      targetSpecific.some((tw) => wordsMatch(sw, tw)),
+    );
   }
   return sourceWords.some((sw) => targetWords.some((tw) => wordsMatch(sw, tw)));
 }
@@ -5532,15 +6093,24 @@ const EMITTER_RECORD_CAST = / as Record<string, unknown>/g;
  * check — slip past the root-binding test as an "expression".
  */
 function deriveSplicedSourceName(accessor: string): string | null {
-  const trimmed = accessor.trim().replace(EMITTER_RECORD_CAST, "").replace(/[()]/g, "");
-  if (NAME_FREE_ACCESSOR_PATTERN.test(trimmed) || ARRAY_INDEX_VAR_PATTERN.test(trimmed)) {
+  const trimmed = accessor
+    .trim()
+    .replace(EMITTER_RECORD_CAST, "")
+    .replace(/[()]/g, "");
+  if (
+    NAME_FREE_ACCESSOR_PATTERN.test(trimmed) ||
+    ARRAY_INDEX_VAR_PATTERN.test(trimmed)
+  ) {
     return null;
   }
   if (!FOLD_SCOPED_ROOT_PATTERN.test(trimmed)) return null;
   // A non-identifier expression (a template literal, a ternary, a function
   // call) carries no single derivable name to correlate — only a bare
   // dotted-path accessor is in scope for this check.
-  if (!/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(trimmed)) return null;
+  if (
+    !/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(trimmed)
+  )
+    return null;
   const segments = trimmed.split(".");
   return segments[segments.length - 1] ?? null;
 }
@@ -5571,7 +6141,7 @@ function deriveSplicedSourceName(accessor: string): string | null {
  */
 export function assertBodyFieldSourceNameCorrelates(
   emitterName: string,
-  renderedBody: string
+  renderedBody: string,
 ): void {
   const pattern = /"([^"\\]+)"\s*:\s*"?\$\{([^{}]+)\}/g;
   for (const match of renderedBody.matchAll(pattern)) {
@@ -5581,7 +6151,7 @@ export function assertBodyFieldSourceNameCorrelates(
     if (sourceName === null) continue;
     if (keyNamesCorrelate(sourceName, key)) continue;
     throw new Error(
-      `${emitterName}: body field "${key}" is spliced from "\${${accessor}}", whose own inferred name ("${sourceName}") doesn't correlate with "${key}" — a field must be assigned from a source whose own name plausibly names the same concept as the key it lands under, not from a value that only coincidentally matches`
+      `${emitterName}: body field "${key}" is spliced from "\${${accessor}}", whose own inferred name ("${sourceName}") doesn't correlate with "${key}" — a field must be assigned from a source whose own name plausibly names the same concept as the key it lands under, not from a value that only coincidentally matches`,
     );
   }
 }
@@ -5596,8 +6166,12 @@ export function assertBodyFieldSourceNameCorrelates(
  */
 function* walkAllPrimitiveLeaves(
   value: unknown,
-  path: string[] = []
-): Generator<{ value: string | number | boolean | null; path: string[] }, void, unknown> {
+  path: string[] = [],
+): Generator<
+  { value: string | number | boolean | null; path: string[] },
+  void,
+  unknown
+> {
   if (
     typeof value === "string" ||
     typeof value === "number" ||
@@ -5647,7 +6221,10 @@ function substituteOrigin(value: string, baseUrl: string): string {
 function isCredentialHeaderName(lower: string): boolean {
   // Cache validators share the "never frozen" set but are not credentials: they
   // keep the old drop-when-unthreaded behaviour instead of throwing per call.
-  if (/^if-(none-match|match|modified-since|unmodified-since|range)$/.test(lower)) return false;
+  if (
+    /^if-(none-match|match|modified-since|unmodified-since|range)$/.test(lower)
+  )
+    return false;
   return (
     CREDENTIAL_REQUEST_HEADERS.has(lower) ||
     lower === "api-token" ||
@@ -5663,7 +6240,7 @@ function isCredentialHeaderName(lower: string): boolean {
  */
 function credentialHeaderThrowExpr(headerName: string): string {
   const msg = JSON.stringify(
-    `TODO: ${headerName} requires a runtime credential; none is wired (captured value intentionally not emitted)`
+    `TODO: ${headerName} requires a runtime credential; none is wired (captured value intentionally not emitted)`,
   ).replace(/[`\\]|\$\{/g, (m) => (m === "`" ? "'" : m));
   return `\${(() => { throw new Error(${msg}); })()}`;
 }
@@ -5675,7 +6252,7 @@ export function partitionBaseHeaders(
   firstSubdomain: string,
   staticBaseHeaders: Record<string, string>,
   baseUrlDerivedHeaders: Map<string, string>,
-  tenantSubdomainHeaders: Map<string, string>
+  tenantSubdomainHeaders: Map<string, string>,
 ): void {
   for (const [k, v] of Object.entries(baseHeaders)) {
     if (firstSubdomain.length > 0 && v === firstSubdomain) {
@@ -5695,14 +6272,22 @@ export function partitionBaseHeaders(
  * the body. Matched case-insensitively so `Message`/`message`/`Error`/`error`
  * all detect.
  */
-const KNOWN_TOP_LEVEL_ERROR_KEYS = new Set(["message", "error", "errormessage"]);
+const KNOWN_TOP_LEVEL_ERROR_KEYS = new Set([
+  "message",
+  "error",
+  "errormessage",
+]);
 
 /**
  * Suffixes that mark a JSON key as carrying validation/data errors when its
  * value is non-null. Case-sensitive because real APIs use mixed-case in the
  * exact form they ship (e.g. a `ResponseValidationErrors` key).
  */
-const NESTED_ERROR_KEY_SUFFIXES = ["ValidationErrors", "DataErrors", "ValidationError"];
+const NESTED_ERROR_KEY_SUFFIXES = [
+  "ValidationErrors",
+  "DataErrors",
+  "ValidationError",
+];
 
 interface ErrorSignals {
   /** Top-level string-valued key whose presence in a response signals an
@@ -5726,7 +6311,10 @@ interface ErrorSignals {
  * would emit guards for those instead.
  */
 function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
-  const candidateTopLevelKeys = new Map<string, { presentInSuccess: boolean }>();
+  const candidateTopLevelKeys = new Map<
+    string,
+    { presentInSuccess: boolean }
+  >();
   const candidateNestedPaths = new Map<
     string,
     { parentPath: string[]; errorKey: string; presentInSuccess: boolean }
@@ -5734,12 +6322,16 @@ function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
 
   for (const step of actions) {
     const body = step.capture.responseBody;
-    if (body === null || typeof body !== "object" || Array.isArray(body)) continue;
+    if (body === null || typeof body !== "object" || Array.isArray(body))
+      continue;
 
     for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
       if (KNOWN_TOP_LEVEL_ERROR_KEYS.has(k.toLowerCase())) {
-        const existing = candidateTopLevelKeys.get(k) ?? { presentInSuccess: false };
-        if (typeof v === "string" && v.length > 0) existing.presentInSuccess = true;
+        const existing = candidateTopLevelKeys.get(k) ?? {
+          presentInSuccess: false,
+        };
+        if (typeof v === "string" && v.length > 0)
+          existing.presentInSuccess = true;
         candidateTopLevelKeys.set(k, existing);
       }
     }
@@ -5757,7 +6349,10 @@ function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
   const nestedErrorPaths: ErrorSignals["nestedErrorPaths"] = [];
   for (const info of candidateNestedPaths.values()) {
     if (!info.presentInSuccess) {
-      nestedErrorPaths.push({ parentPath: info.parentPath, errorKey: info.errorKey });
+      nestedErrorPaths.push({
+        parentPath: info.parentPath,
+        errorKey: info.errorKey,
+      });
     }
   }
 
@@ -5767,9 +6362,13 @@ function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
 function walkForNestedErrorKeys(
   value: unknown,
   path: string[],
-  candidates: Map<string, { parentPath: string[]; errorKey: string; presentInSuccess: boolean }>
+  candidates: Map<
+    string,
+    { parentPath: string[]; errorKey: string; presentInSuccess: boolean }
+  >,
 ): void {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return;
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     if (NESTED_ERROR_KEY_SUFFIXES.some((suffix) => k.endsWith(suffix))) {
       const dedupeKey = `${path.join(".")}::${k}`;
@@ -5791,7 +6390,8 @@ function walkForNestedErrorKeys(
  * by Microsoft/RFC4122 UUIDs. Used to distinguish schema identifiers (UUIDs
  * that the API uses as stable structural keys) from semantic strings.
  */
-const UUID_REGEX = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+const UUID_REGEX =
+  /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
 /**
  * Map from form-schema field-id UUIDs to PascalCase payload field names. Used
@@ -5825,7 +6425,9 @@ type FieldOptionsMap = Map<string, FieldOptionsMapping>;
 function sourceCodeToPascalCase(sourceCode: string): string | null {
   const parts = sourceCode.split(/[.\-_\s]+/).filter((p) => p.length > 0);
   if (parts.length === 0) return null;
-  const pascal = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join("");
+  const pascal = parts
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+    .join("");
   return isValidJsIdentifier(pascal) ? pascal : null;
 }
 
@@ -5854,12 +6456,17 @@ function headerNameToPayloadFieldName(headerName: string): string {
     .join("");
 }
 
-function fieldNameToPascalCase(fieldName: string, prefix: string | null): string | null {
+function fieldNameToPascalCase(
+  fieldName: string,
+  prefix: string | null,
+): string | null {
   const cleaned = fieldName.replace(/[^a-zA-Z0-9\s]/g, " ").trim();
   if (cleaned === "") return null;
   const parts = cleaned.split(/\s+/).filter((p) => p.length > 0);
   if (parts.length === 0) return null;
-  const pascal = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join("");
+  const pascal = parts
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+    .join("");
   const withPrefix = prefix ? `${prefix}${pascal}` : pascal;
   return isValidJsIdentifier(withPrefix) ? withPrefix : null;
 }
@@ -5880,7 +6487,7 @@ function fieldNameToPascalCase(fieldName: string, prefix: string | null): string
  */
 export function detectFormSchemaFieldNames(
   captures: Capture[],
-  formSchema: ReconFormSchema | null
+  formSchema: ReconFormSchema | null,
 ): {
   fieldNameMap: FieldNameMap;
   fieldOptionsMap: FieldOptionsMap;
@@ -5891,9 +6498,15 @@ export function detectFormSchemaFieldNames(
   const allSchemaUuids = new Set<string>();
   // No form-schema declared → recover nothing. The engine carries no vendor's
   // wire keys, so there is nothing to fingerprint ATS responses against.
-  if (formSchema === null) return { fieldNameMap, fieldOptionsMap, allSchemaUuids };
+  if (formSchema === null)
+    return { fieldNameMap, fieldOptionsMap, allSchemaUuids };
   for (const capture of captures) {
-    walkForSectionFieldsArrays(capture.responseBody, fieldNameMap, fieldOptionsMap, formSchema);
+    walkForSectionFieldsArrays(
+      capture.responseBody,
+      fieldNameMap,
+      fieldOptionsMap,
+      formSchema,
+    );
     walkForSchemaUuids(capture.responseBody, allSchemaUuids, formSchema);
   }
   return { fieldNameMap, fieldOptionsMap, allSchemaUuids };
@@ -5911,7 +6524,11 @@ export function detectFormSchemaFieldNames(
  * vendor declares its own keys with `--form-schema` rather than the engine
  * hardcoding any — the inversion issue #57 asked for.
  */
-function walkForSchemaUuids(value: unknown, out: Set<string>, formSchema: ReconFormSchema): void {
+function walkForSchemaUuids(
+  value: unknown,
+  out: Set<string>,
+  formSchema: ReconFormSchema,
+): void {
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
     for (const item of value) walkForSchemaUuids(item, out, formSchema);
@@ -5967,7 +6584,7 @@ function stripCacheBusterParams(url: string): string {
 export function detectFormSchemaFetchCapture(
   captures: Capture[],
   baseUrl: string,
-  formSchema: ReconFormSchema
+  formSchema: ReconFormSchema,
 ): { capture: Capture; index: number } | null {
   let host: string;
   try {
@@ -5994,7 +6611,10 @@ export function detectFormSchemaFetchCapture(
   return null;
 }
 
-function responseContainsSectionFields(value: unknown, formSchema: ReconFormSchema): boolean {
+function responseContainsSectionFields(
+  value: unknown,
+  formSchema: ReconFormSchema,
+): boolean {
   if (value === null || typeof value !== "object") return false;
   if (Array.isArray(value)) {
     if (looksLikeSectionFieldsArray(value, formSchema)) return true;
@@ -6013,7 +6633,7 @@ function walkForSectionFieldsArrays(
   value: unknown,
   fieldNameMap: FieldNameMap,
   fieldOptionsMap: FieldOptionsMap,
-  formSchema: ReconFormSchema
+  formSchema: ReconFormSchema,
 ): void {
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
@@ -6022,11 +6642,16 @@ function walkForSectionFieldsArrays(
         value as Array<Record<string, unknown>>,
         fieldNameMap,
         fieldOptionsMap,
-        formSchema
+        formSchema,
       );
     }
     for (const item of value)
-      walkForSectionFieldsArrays(item, fieldNameMap, fieldOptionsMap, formSchema);
+      walkForSectionFieldsArrays(
+        item,
+        fieldNameMap,
+        fieldOptionsMap,
+        formSchema,
+      );
     return;
   }
   for (const v of Object.values(value as Record<string, unknown>)) {
@@ -6038,7 +6663,10 @@ function walkForSectionFieldsArrays(
  * Structural fingerprint: array of objects, at least half of which have a
  * UUID-shaped field-id AND at least one of the schema's field-name keys.
  */
-function looksLikeSectionFieldsArray(arr: unknown[], formSchema: ReconFormSchema): boolean {
+function looksLikeSectionFieldsArray(
+  arr: unknown[],
+  formSchema: ReconFormSchema,
+): boolean {
   if (arr.length === 0) return false;
   let matches = 0;
   for (const item of arr) {
@@ -6058,7 +6686,7 @@ function assignFieldNamesFromArray(
   arr: Array<Record<string, unknown>>,
   fieldNameMap: FieldNameMap,
   fieldOptionsMap: FieldOptionsMap,
-  formSchema: ReconFormSchema
+  formSchema: ReconFormSchema,
 ): void {
   let currentPrefix: string | null = null;
   // Repeated/indexed headings (e.g. "Reference #1") must keep suppressing
@@ -6077,24 +6705,36 @@ function assignFieldNamesFromArray(
     const fieldId = obj[formSchema.fieldIdKey];
     if (typeof fieldId !== "string") continue;
 
-    const sourceCode = codeKey !== undefined && labelKey !== undefined ? obj[codeKey] : undefined;
+    const sourceCode =
+      codeKey !== undefined && labelKey !== undefined
+        ? obj[codeKey]
+        : undefined;
     const name = labelKey !== undefined ? obj[labelKey] : obj[codeKey ?? ""];
 
     let semantic: string | null = null;
     if (typeof sourceCode === "string" && sourceCode.trim().length > 0) {
-      semantic = resolveCanonicalAtsFieldName(sourceCode) ?? sourceCodeToPascalCase(sourceCode);
+      semantic =
+        resolveCanonicalAtsFieldName(sourceCode) ??
+        sourceCodeToPascalCase(sourceCode);
       currentPrefix = null;
       currentPrefixIsRepeated = false;
-    } else if (typeof name === "string" && name.trim().length > 0 && name.length < 250) {
-      const hasNoSourceCode = typeof sourceCode !== "string" || sourceCode.trim().length === 0;
+    } else if (
+      typeof name === "string" &&
+      name.trim().length > 0 &&
+      name.length < 250
+    ) {
+      const hasNoSourceCode =
+        typeof sourceCode !== "string" || sourceCode.trim().length === 0;
       // Section-heading heuristic: short label, no machine code, MOSTLY
       // uppercase letters (>= 70% of alphabetic chars) OR contains '#'.
       // Whole-name uppercase ratio avoids false positives like "MM/DD/YYYY"
       // appearing as a format hint inside a normal field label.
       const letters = name.replace(/[^a-zA-Z]/g, "");
       const upperLetters = name.replace(/[^A-Z]/g, "");
-      const isMostlyUppercase = letters.length >= 3 && upperLetters.length / letters.length >= 0.7;
-      const isSectionHeading = hasNoSourceCode && (isMostlyUppercase || name.includes("#"));
+      const isMostlyUppercase =
+        letters.length >= 3 && upperLetters.length / letters.length >= 0.7;
+      const isSectionHeading =
+        hasNoSourceCode && (isMostlyUppercase || name.includes("#"));
       if (isSectionHeading) {
         const headingPrefix = fieldNameToPascalCase(name, null);
         if (headingPrefix !== null) {
@@ -6105,7 +6745,8 @@ function assignFieldNamesFromArray(
           // 1-2 digit index, standing on its own word boundary, is a repetition
           // marker; a longer digit run (e.g. a year in "EMPLOYMENT HISTORY
           // 2024") is not, and must still canonicalize underneath it.
-          currentPrefixIsRepeated = /\b\d{1,2}\s*$/.test(name) || name.includes("#");
+          currentPrefixIsRepeated =
+            /\b\d{1,2}\s*$/.test(name) || name.includes("#");
         }
         continue;
       }
@@ -6154,7 +6795,11 @@ function assignFieldNamesFromArray(
           }
           options.push({ value: optValue, optionId: optId });
         }
-        if (allSemantic && options.length > 0 && !fieldOptionsMap.has(fieldId)) {
+        if (
+          allSemantic &&
+          options.length > 0 &&
+          !fieldOptionsMap.has(fieldId)
+        ) {
           fieldOptionsMap.set(fieldId, { semanticName: unique, options });
         }
       }
@@ -6175,7 +6820,7 @@ function applyFormSchemaSubstitutions(
   rawBody: string,
   fieldNameMap: FieldNameMap,
   outDiscoveredFields: Set<string>,
-  formSchema: ReconFormSchema
+  formSchema: ReconFormSchema,
 ): string {
   if (fieldNameMap.size === 0) return rawBody;
   let result = rawBody;
@@ -6206,7 +6851,8 @@ function applyFormSchemaSubstitutions(
         continue;
       }
       const replacement = `\${payload.${semanticName}}`;
-      result = result.slice(0, valueStart) + replacement + result.slice(valueEnd);
+      result =
+        result.slice(0, valueStart) + replacement + result.slice(valueEnd);
       outDiscoveredFields.add(semanticName);
       cursor = valueStart + replacement.length;
     }
@@ -6229,7 +6875,7 @@ function applyFormSchemaOptionIdSubstitutions(
   rawBody: string,
   fieldOptionsMap: FieldOptionsMap,
   outDiscoveredOptionFields: Set<string>,
-  formSchema: ReconFormSchema
+  formSchema: ReconFormSchema,
 ): string {
   if (fieldOptionsMap.size === 0) return rawBody;
   let result = rawBody;
@@ -6260,7 +6906,8 @@ function applyFormSchemaOptionIdSubstitutions(
         continue;
       }
       const replacement = `\${OPT_${mapping.semanticName}[payload.${mapping.semanticName}]}`;
-      result = result.slice(0, optionStart) + replacement + result.slice(optionEnd);
+      result =
+        result.slice(0, optionStart) + replacement + result.slice(optionEnd);
       outDiscoveredOptionFields.add(mapping.semanticName);
       cursor = optionStart + replacement.length;
     }
@@ -6285,7 +6932,7 @@ function applyRawOptionIdPayloadSubstitutions(
   fieldNameMap: FieldNameMap,
   fieldOptionsMap: FieldOptionsMap,
   outDiscoveredRawOptionFields: Map<string, string>,
-  formSchema: ReconFormSchema
+  formSchema: ReconFormSchema,
 ): string {
   if (fieldNameMap.size === 0) return rawBody;
   let result = rawBody;
@@ -6318,7 +6965,8 @@ function applyRawOptionIdPayloadSubstitutions(
       }
       const fieldNameOptionId = `${fieldName}OptionId`;
       const replacement = `\${payload.${fieldNameOptionId}}`;
-      result = result.slice(0, optionStart) + replacement + result.slice(optionEnd);
+      result =
+        result.slice(0, optionStart) + replacement + result.slice(optionEnd);
       // Record the recon-observed UUID so the contract can document it in
       // a TSDoc comment as the caller's starting reference value.
       if (!outDiscoveredRawOptionFields.has(fieldNameOptionId)) {
@@ -6369,7 +7017,7 @@ function isI18nLabel(label: string): boolean {
  * identities are discovered from the response, never hardcoded.
  */
 export function indexEnumEnumNamesSchemas(
-  captures: Capture[]
+  captures: Capture[],
 ): Map<string, { codes: string[]; labels: string[] }> {
   const out = new Map<string, { codes: string[]; labels: string[] }>();
   const walk = (value: unknown): void => {
@@ -6395,7 +7043,9 @@ export function indexEnumEnumNamesSchemas(
       const labels = nm as string[];
       const usable = labels.filter((l) => !isI18nLabel(l)).length;
       const prior = out.get(name);
-      const priorUsable = prior ? prior.labels.filter((l) => !isI18nLabel(l)).length : -1;
+      const priorUsable = prior
+        ? prior.labels.filter((l) => !isI18nLabel(l)).length
+        : -1;
       if (usable > priorUsable) out.set(name, { codes, labels });
     }
     for (const v of Object.values(obj)) walk(v);
@@ -6415,7 +7065,9 @@ export function indexEnumEnumNamesSchemas(
  * Site-agnostic: `label`/`value` are generic option-object keys; no field name
  * is assumed.
  */
-export function indexLabelValueOptionCodes(captures: Capture[]): Map<string, string> {
+export function indexLabelValueOptionCodes(
+  captures: Capture[],
+): Map<string, string> {
   const out = new Map<string, string>();
   const walk = (value: unknown): void => {
     if (Array.isArray(value)) {
@@ -6469,7 +7121,7 @@ export function buildSelectOptionResolutions(
   flowSteps: FlowStepInput[],
   captures: Capture[],
   vocabulary: ReconVocabulary,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
 ): {
   resolutions: SelectOptionResolution[];
   rawCodeFields: Map<string, { wireKey: string; code: string }>;
@@ -6482,7 +7134,10 @@ export function buildSelectOptionResolutions(
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
   for (const step of flowSteps) {
     const instruction = typeof step === "string" ? step : step.step;
-    if (!/^\s*(select|choose|pick)\b/i.test(instruction) && !/\bselect\b/i.test(instruction)) {
+    if (
+      !/^\s*(select|choose|pick)\b/i.test(instruction) &&
+      !/\bselect\b/i.test(instruction)
+    ) {
       continue;
     }
     const idMatch = /id=(\w+)/.exec(instruction);
@@ -6493,7 +7148,9 @@ export function buildSelectOptionResolutions(
     // starts with "On", so read the first quote directly here for id= steps.
     const firstQuoteText = findInstructionSpans(instruction)[0]?.text;
     const firstQuoteLabel = firstQuoteText ? firstQuoteText : null;
-    const label = idMatch ? firstQuoteLabel : extractStepPersonaValue(instruction, env);
+    const label = idMatch
+      ? firstQuoteLabel
+      : extractStepPersonaValue(instruction, env);
     if (label === null) continue;
     // Primary: an id= hint names the wire key AND the enum/enumNames schema key.
     if (idMatch) {
@@ -6523,7 +7180,10 @@ export function buildSelectOptionResolutions(
       // channel emits a caller-supplied default.
       if (usableOptions.length === 0 && schema.codes.length > 0) {
         const fallbackIdx = idx >= 0 ? idx : schema.codes.length - 1;
-        rawCodeFields.set(semanticName, { wireKey, code: schema.codes[fallbackIdx]! });
+        rawCodeFields.set(semanticName, {
+          wireKey,
+          code: schema.codes[fallbackIdx]!,
+        });
         seenWireKeys.add(wireKey);
       }
       continue;
@@ -6535,7 +7195,7 @@ export function buildSelectOptionResolutions(
       typeof step === "string" ? undefined : step.payloadField,
       typeof step === "string" ? undefined : step.payloadFieldNone,
       vocabulary,
-      knownFieldValues
+      knownFieldValues,
     );
     if (field === null) continue;
     const code = labelValue.get(label);
@@ -6547,7 +7207,13 @@ export function buildSelectOptionResolutions(
     // The {label,value} map only reliably yields the one answered label→code
     // pair here; emit a single-choice enum so the field still binds (the caller
     // can widen it). Co-located labels aren't safely attributable to this field.
-    resolutions.push({ wireKey, semanticName, code, label, options: [{ label, code }] });
+    resolutions.push({
+      wireKey,
+      semanticName,
+      code,
+      label,
+      options: [{ label, code }],
+    });
     seenWireKeys.add(wireKey);
   }
   return { resolutions, rawCodeFields };
@@ -6571,7 +7237,7 @@ function applyGenericOptionCodeSubstitutions(
   rawBody: string,
   resolutions: SelectOptionResolution[],
   fieldOptionsMap: FieldOptionsMap,
-  outDiscoveredOptionFields: Set<string>
+  outDiscoveredOptionFields: Set<string>,
 ): string {
   if (resolutions.length === 0) return rawBody;
   let result = rawBody;
@@ -6602,7 +7268,7 @@ function applyGenericOptionCodeSubstitutions(
  */
 function applyGenericRawCodeSubstitutions(
   rawBody: string,
-  rawCodeFields: Map<string, { wireKey: string; code: string }>
+  rawCodeFields: Map<string, { wireKey: string; code: string }>,
 ): string {
   if (rawCodeFields.size === 0) return rawBody;
   let result = rawBody;
@@ -6638,7 +7304,8 @@ function directPrimitiveChildCount(obj: Record<string, unknown>): number {
 function locateFormEnvelopePath(parsedBody: unknown): string[] {
   const candidates: Array<{ path: string[]; primitives: number }> = [];
   const visit = (value: unknown, path: string[]): void => {
-    if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      return;
     const obj = value as Record<string, unknown>;
     candidates.push({ path, primitives: directPrimitiveChildCount(obj) });
     for (const [k, v] of Object.entries(obj)) visit(v, [...path, k]);
@@ -6655,7 +7322,9 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
   // No object carries a scalar field (maxP === 0): the body root is the only
   // sensible envelope — operate at the top level.
   if (rich.length === 0) return [];
-  rich.sort((a, b) => a.path.length - b.path.length || b.primitives - a.primitives);
+  rich.sort(
+    (a, b) => a.path.length - b.path.length || b.primitives - a.primitives,
+  );
   return rich[0]!.path;
 }
 
@@ -6742,7 +7411,10 @@ function isTokenBoundaryChar(ch: string | undefined): boolean {
  * the same boundary discipline `bindsWithoutCollision` already applies when
  * registering a value for substring splicing in the first place.
  */
-function containsValueAtTokenBoundary(haystack: string, needle: string): boolean {
+function containsValueAtTokenBoundary(
+  haystack: string,
+  needle: string,
+): boolean {
   if (needle.length === 0 || needle === haystack) return false;
   let from = 0;
   while (true) {
@@ -6758,7 +7430,10 @@ function containsValueAtTokenBoundary(haystack: string, needle: string): boolean
   }
 }
 
-const structuredFieldSamples = new WeakMap<Map<string, string>, Map<string, unknown[]>>();
+const structuredFieldSamples = new WeakMap<
+  Map<string, string>,
+  Map<string, unknown[]>
+>();
 
 /**
  * Single registration point for a structured (array/object) payload field, so
@@ -6770,11 +7445,12 @@ const structuredFieldSamples = new WeakMap<Map<string, string>, Map<string, unkn
 function registerStructuredPayloadField(
   outStructuredKeys: Map<string, string>,
   field: string,
-  value: unknown
+  value: unknown,
 ): void {
   if (value === undefined || value === null) return;
   const samplesByField =
-    structuredFieldSamples.get(outStructuredKeys) ?? new Map<string, unknown[]>();
+    structuredFieldSamples.get(outStructuredKeys) ??
+    new Map<string, unknown[]>();
   structuredFieldSamples.set(outStructuredKeys, samplesByField);
   const samples = samplesByField.get(field) ?? [];
   samplesByField.set(field, samples);
@@ -6794,7 +7470,7 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
   envelopePath: string[],
   rootBody: Record<string, unknown>,
   payloadAccessorExcludePattern: RegExp | null,
-  ownedArrayPathKeys: ReadonlySet<string>
+  ownedArrayPathKeys: ReadonlySet<string>,
 ): { result: string; nextSearchFrom: number } {
   let result = template;
   let cursor = searchFrom;
@@ -6806,12 +7482,14 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
   // keys already present on the envelope are skipped so nothing is visited
   // (or registered) twice.
   const envelopeEntries = Object.entries(envelope).map(
-    ([key, value]) => [key, value, [...envelopePath, key]] as const
+    ([key, value]) => [key, value, [...envelopePath, key]] as const,
   );
   const rootEntries = (
     envelopePath.length === 0
       ? []
-      : Object.entries(rootBody).filter(([key]) => key !== envelopePath[0] && !(key in envelope))
+      : Object.entries(rootBody).filter(
+          ([key]) => key !== envelopePath[0] && !(key in envelope),
+        )
   ).map(([key, value]) => [key, value, [key]] as const);
   for (const [key, value, valuePath] of [...envelopeEntries, ...rootEntries]) {
     const isNonEmptyArray = Array.isArray(value) && value.length > 0;
@@ -6823,7 +7501,8 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
     if (!isNonEmptyArray && !isNestedObject) continue;
     // An array path the facet pass owns is rendered element by element at every
     // call site, so it is neither a payload field of its own nor swallowable.
-    if (isNonEmptyArray && ownedArrayPathKeys.has(arrayPathKey(valuePath))) continue;
+    if (isNonEmptyArray && ownedArrayPathKeys.has(arrayPathKey(valuePath)))
+      continue;
     // One field per distinct body value path: when an ancestor of this path is
     // already a registered whole-structure payload field (a wrapped body such as
     // `{"order":{"items_attributes":[...]}}` carries the array inside `order`),
@@ -6832,7 +7511,9 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // same array twice.
     let coveringAncestorLen = 0;
     for (let len = 1; len < valuePath.length; len++) {
-      if (outStructuredKeys.has(pathToPayloadFieldName(valuePath.slice(0, len)))) {
+      if (
+        outStructuredKeys.has(pathToPayloadFieldName(valuePath.slice(0, len)))
+      ) {
         coveringAncestorLen = len;
         break;
       }
@@ -6903,8 +7584,10 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
           const sourceName = restrictedExcludeSourceByValue.get(leafValue);
           if (sourceName === undefined) return false;
           const leafKey = leafPath.at(-1);
-          return leafKey !== undefined && keyNamesCorrelate(sourceName, leafKey);
-        }
+          return (
+            leafKey !== undefined && keyNamesCorrelate(sourceName, leafKey)
+          );
+        },
       );
       if (carriesThreadedValue) continue;
     }
@@ -6957,7 +7640,9 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
     for (const seg of valuePath.slice(coveringAncestorLen)) {
       ancestorExpr = `(${ancestorExpr} as Record<string, unknown>)[${JSON.stringify(seg)}]`;
     }
-    const valueExpr = coveredByAncestorField ? ancestorExpr : `payload.${fieldName}`;
+    const valueExpr = coveredByAncestorField
+      ? ancestorExpr
+      : `payload.${fieldName}`;
     const replacement = `$${"{"}JSON.stringify(${valueExpr})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
@@ -6979,16 +7664,24 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
   restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number,
   payloadAccessorExcludePattern: RegExp | null,
-  ownedArrayPathKeys: ReadonlySet<string>
+  ownedArrayPathKeys: ReadonlySet<string>,
 ): { result: string; nextSearchFrom: number } {
   const envelopePath = locateFormEnvelopePath(objectBody);
   let envelope: unknown = objectBody;
   for (const seg of envelopePath) {
-    if (envelope !== null && typeof envelope === "object" && !Array.isArray(envelope)) {
+    if (
+      envelope !== null &&
+      typeof envelope === "object" &&
+      !Array.isArray(envelope)
+    ) {
       envelope = (envelope as Record<string, unknown>)[seg];
     }
   }
-  if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
+  if (
+    envelope === null ||
+    typeof envelope !== "object" ||
+    Array.isArray(envelope)
+  ) {
     return { result: template, nextSearchFrom: searchFrom };
   }
   return applyStructuredValuePayloadSubstitutionsForEnvelope(
@@ -7001,7 +7694,7 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     envelopePath,
     objectBody,
     payloadAccessorExcludePattern,
-    ownedArrayPathKeys
+    ownedArrayPathKeys,
   );
 }
 
@@ -7035,7 +7728,7 @@ export function applyStructuredValuePayloadSubstitutions(
   priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
   joinFieldValues: ReadonlySet<string> = new Set(),
   payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map(),
-  ownedArrayPathKeys: ReadonlySet<string> = new Set()
+  ownedArrayPathKeys: ReadonlySet<string> = new Set(),
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
@@ -7043,13 +7736,16 @@ export function applyStructuredValuePayloadSubstitutions(
   const unconditionalExcludeValues = new Set<string>(joinFieldValues);
   const restrictedExcludeSourceByValue = new Map<string, string>();
   for (const [value, binding] of priorStepStateBindings) {
-    if (binding.restricted) restrictedExcludeSourceByValue.set(value, binding.sourceName);
+    if (binding.restricted)
+      restrictedExcludeSourceByValue.set(value, binding.sourceName);
     else unconditionalExcludeValues.add(value);
   }
   const payloadAccessorExcludePattern =
     payloadAccessorExcludeValues.size > 0
       ? buildValueAlternationPattern(
-          [...payloadAccessorExcludeValues.keys()].sort((a, b) => b.length - a.length)
+          [...payloadAccessorExcludeValues.keys()].sort(
+            (a, b) => b.length - a.length,
+          ),
         )
       : null;
   // A travel-brand-style multi-room/multi-guest search body commonly batches
@@ -7062,7 +7758,12 @@ export function applyStructuredValuePayloadSubstitutions(
     let result = template;
     let cursor = 0;
     for (const element of parsedBody) {
-      if (element === null || typeof element !== "object" || Array.isArray(element)) continue;
+      if (
+        element === null ||
+        typeof element !== "object" ||
+        Array.isArray(element)
+      )
+        continue;
       const { result: nextResult, nextSearchFrom } =
         applyStructuredValuePayloadSubstitutionsForObjectBody(
           result,
@@ -7072,7 +7773,7 @@ export function applyStructuredValuePayloadSubstitutions(
           restrictedExcludeSourceByValue,
           cursor,
           payloadAccessorExcludePattern,
-          ownedArrayPathKeys
+          ownedArrayPathKeys,
         );
       result = nextResult;
       cursor = nextSearchFrom;
@@ -7087,7 +7788,7 @@ export function applyStructuredValuePayloadSubstitutions(
     restrictedExcludeSourceByValue,
     0,
     payloadAccessorExcludePattern,
-    ownedArrayPathKeys
+    ownedArrayPathKeys,
   );
   return result;
 }
@@ -7112,7 +7813,9 @@ const MAX_COOKIE_STATE_VALUE_LENGTH = 4096;
  * then 404 with "candidate does not exist". Closed set, literal-string match —
  * never expand to pattern-based detection (would trip the no-regex-on-open-sets
  * rule). */
-const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"]);
+const PLACEHOLDER_STATE_VALUES = new Set([
+  "00000000-0000-0000-0000-000000000000",
+]);
 
 /**
  * Splits a raw `Set-Cookie` response-header string into `name`/`value` pairs.
@@ -7126,7 +7829,7 @@ const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"
 /** Exported for unit testing — lets tests exercise the newline-fold parsing
  * directly against synthetic multi-cookie strings. */
 export function* walkSetCookiePairs(
-  rawSetCookie: string
+  rawSetCookie: string,
 ): Generator<{ name: string; value: string }> {
   for (const line of rawSetCookie.split("\n")) {
     const pair = line.split(";", 1)[0] ?? "";
@@ -7205,7 +7908,7 @@ export function indexStateValues(
   captures: Capture[],
   shieldedUuids: Set<string> = new Set(),
   actionCaptureIndices: Set<number> = new Set(),
-  forceIncludeValues: ReadonlyMap<string, ReadonlySet<Capture>> = new Map()
+  forceIncludeValues: ReadonlyMap<string, ReadonlySet<Capture>> = new Map(),
 ): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
   registerHtmlSelectsForLaterWrites(captures);
@@ -7217,15 +7920,17 @@ export function indexStateValues(
   // fold plan that confirmed it is structural or spec-declared.
   const chainForceIncludeValues = collectDependentDrillDownChainValues(
     captures.map((capture) => ({ capture })),
-    null
+    null,
   );
   // Short record ids a later write re-sends under an identifier key are exempt
   // from the length floor exactly like a fold-chain value, scoped to the
   // consuming write captures.
-  for (const [value, consumers] of collectMutationIdentifierThreadedValues(captures)) {
+  for (const [value, consumers] of collectMutationIdentifierThreadedValues(
+    captures,
+  )) {
     chainForceIncludeValues.set(
       value,
-      new Set([...(chainForceIncludeValues.get(value) ?? []), ...consumers])
+      new Set([...(chainForceIncludeValues.get(value) ?? []), ...consumers]),
     );
   }
   // The set of captures a short/force-included value is actually eligible to
@@ -7233,7 +7938,9 @@ export function indexStateValues(
   // caller-supplied `forceIncludeValues` proved for that value. `undefined`
   // when the value isn't exemption-derived, meaning the eligibility
   // restriction doesn't apply (see `StateValue.eligibleConsumers`).
-  const eligibleConsumersFor = (value: string): ReadonlySet<Capture> | undefined => {
+  const eligibleConsumersFor = (
+    value: string,
+  ): ReadonlySet<Capture> | undefined => {
     const chainConsumers = chainForceIncludeValues.get(value);
     const forceConsumers = forceIncludeValues.get(value);
     if (!chainConsumers && !forceConsumers) return undefined;
@@ -7246,14 +7953,18 @@ export function indexStateValues(
   // literal. Requiring that the value is absent from the origin's own (and
   // earlier) request headers excludes constants echoed both ways such as
   // `application/json`.
-  const isMintedThenSentAsRequestHeader = (value: string, originIdx: number): boolean => {
+  const isMintedThenSentAsRequestHeader = (
+    value: string,
+    originIdx: number,
+  ): boolean => {
     if (value.length < MIN_STATE_VALUE_LENGTH) return false;
     const sentIn = (c: Capture): boolean =>
       Object.entries(c.requestHeaders).some(
-        ([k, v]) => k.toLowerCase() !== "cookie" && v === value
+        ([k, v]) => k.toLowerCase() !== "cookie" && v === value,
       );
     for (let j = 0; j <= originIdx; j++) if (sentIn(captures[j]!)) return false;
-    for (let j = originIdx + 1; j < captures.length; j++) if (sentIn(captures[j]!)) return true;
+    for (let j = originIdx + 1; j < captures.length; j++)
+      if (sentIn(captures[j]!)) return true;
     return false;
   };
   // First pass: identify the earliest origin among ACTION captures for each
@@ -7271,7 +7982,7 @@ export function indexStateValues(
     // token-mint call like listings-fixture's `authz/private` returns `{}` and
     // carries its whole payload in `Set-Cookie`.
     const rawSetCookie = Object.entries(c.responseHeaders).find(
-      ([k]) => k.toLowerCase() === "set-cookie"
+      ([k]) => k.toLowerCase() === "set-cookie",
     )?.[1];
     if (rawSetCookie !== undefined) {
       for (const { name, value } of walkSetCookiePairs(rawSetCookie)) {
@@ -7280,7 +7991,11 @@ export function indexStateValues(
         // confirmed is threaded into a later hop's request is exactly as
         // legitimate as a long one, so it must not be dropped for being short.
         const isShort = value.length < MIN_STATE_VALUE_LENGTH;
-        if (isShort && !chainForceIncludeValues.has(value) && !forceIncludeValues.has(value))
+        if (
+          isShort &&
+          !chainForceIncludeValues.has(value) &&
+          !forceIncludeValues.has(value)
+        )
           continue;
         if (value.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
         if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
@@ -7290,7 +8005,9 @@ export function indexStateValues(
             originIndex: i,
             path: [],
             headerOrigin: { sourceHeader: "set-cookie", cookieName: name },
-            eligibleConsumers: isShort ? eligibleConsumersFor(value) : undefined,
+            eligibleConsumers: isShort
+              ? eligibleConsumersFor(value)
+              : undefined,
           });
         }
       }
@@ -7339,8 +8056,17 @@ export function indexStateValues(
     // markup parameters never enter the index.
     for (const t of extractHtmlIssuedTokens(c.responseBody)) {
       const v = t.value;
-      if (v.length < PATH_SEGMENT_MIN_LENGTH || v.length > MAX_STATE_VALUE_LENGTH) continue;
-      if (/\s/.test(v) || PLACEHOLDER_STATE_VALUES.has(v) || shieldedUuids.has(v)) continue;
+      if (
+        v.length < PATH_SEGMENT_MIN_LENGTH ||
+        v.length > MAX_STATE_VALUE_LENGTH
+      )
+        continue;
+      if (
+        /\s/.test(v) ||
+        PLACEHOLDER_STATE_VALUES.has(v) ||
+        shieldedUuids.has(v)
+      )
+        continue;
       if (index.has(v)) continue;
       let reused = false;
       for (let j = i + 1; j < captures.length && !reused; j++) {
@@ -7350,9 +8076,11 @@ export function indexStateValues(
         reused =
           later.method === "GET"
             ? resends(later.url, v)
-            : [later.url, later.requestPostData ?? "", ...Object.values(later.requestHeaders)].some(
-                (h) => resends(h, v)
-              );
+            : [
+                later.url,
+                later.requestPostData ?? "",
+                ...Object.values(later.requestHeaders),
+              ].some((h) => resends(h, v));
       }
       if (!reused) continue;
       index.set(v, {
@@ -7362,11 +8090,17 @@ export function indexStateValues(
         htmlOrigin: { element: t.element, name: t.name },
       });
     }
-    for (const { value: rawValue, path } of walkAllPrimitiveLeaves(c.responseBody)) {
+    for (const { value: rawValue, path } of walkAllPrimitiveLeaves(
+      c.responseBody,
+    )) {
       if (rawValue === null) continue;
       const value = String(rawValue);
       const isShort = value.length < MIN_STATE_VALUE_LENGTH;
-      if (isShort && !chainForceIncludeValues.has(value) && !forceIncludeValues.has(value))
+      if (
+        isShort &&
+        !chainForceIncludeValues.has(value) &&
+        !forceIncludeValues.has(value)
+      )
         continue;
       if (value.length > MAX_STATE_VALUE_LENGTH) continue;
       if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
@@ -7502,7 +8236,9 @@ function pathToPayloadFieldName(path: string[]): string {
       const clean = isValidJsIdentifier(segment)
         ? segment
         : (fieldNameToPascalCase(segment, null) ?? `Field${index}`);
-      return index === 0 ? clean : clean.charAt(0).toUpperCase() + clean.slice(1);
+      return index === 0
+        ? clean
+        : clean.charAt(0).toUpperCase() + clean.slice(1);
     })
     .join("");
 }
@@ -7529,8 +8265,13 @@ function payloadAccessorForPath(path: string[]): {
     return { accessor: `payload.${field}`, field, structuredRootPath: null };
   }
   const objectPath = path.slice(0, arrayIndexPos);
-  const field = objectPath.length > 0 ? pathToPayloadFieldName(objectPath) : (path[0] ?? "");
-  const suffix = pathToAccessor(path.slice(arrayIndexPos), { assertNonNull: true });
+  const field =
+    objectPath.length > 0
+      ? pathToPayloadFieldName(objectPath)
+      : (path[0] ?? "");
+  const suffix = pathToAccessor(path.slice(arrayIndexPos), {
+    assertNonNull: true,
+  });
   return {
     accessor: `payload.${field}${suffix}`,
     field,
@@ -7545,7 +8286,7 @@ function valueAtJsonPath(root: unknown, path: string[]): unknown {
       node !== null && typeof node === "object"
         ? (node as Record<string, unknown>)[segment]
         : undefined,
-    root
+    root,
   );
 }
 
@@ -7557,7 +8298,9 @@ export function sanitizeFixtureIdentifier(filename: string): string {
     .replace(/\.json$/, "")
     .split(/[^A-Za-z0-9_$]+/)
     .filter(Boolean)
-    .map((part, i) => (i === 0 ? part : `${part.charAt(0).toUpperCase()}${part.slice(1)}`))
+    .map((part, i) =>
+      i === 0 ? part : `${part.charAt(0).toUpperCase()}${part.slice(1)}`,
+    )
     .join("");
   const stripped = camelCased.replace(/[^A-Za-z0-9_$]/g, "");
   return isValidJsIdentifier(stripped) ? stripped : `fixture${stripped}`;
@@ -7580,11 +8323,13 @@ export function sanitizeFixtureIdentifier(filename: string): string {
  */
 function pathToAccessor(
   path: string[],
-  opts: { assertNonNull: boolean } = { assertNonNull: true }
+  opts: { assertNonNull: boolean } = { assertNonNull: true },
 ): string {
   return path
     .map((p) =>
-      isValidJsIdentifier(p) ? `.${p}` : `[${JSON.stringify(p)}]${opts.assertNonNull ? "!" : ""}`
+      isValidJsIdentifier(p)
+        ? `.${p}`
+        : `[${JSON.stringify(p)}]${opts.assertNonNull ? "!" : ""}`,
     )
     .join("");
 }
@@ -7604,9 +8349,13 @@ function pathToAccessor(
  */
 function unknownValueAccessor(varName: string, path: string[]): string {
   return path.reduce((expr, segment, index) => {
-    const accessor = isValidJsIdentifier(segment) ? `.${segment}` : `[${JSON.stringify(segment)}]`;
+    const accessor = isValidJsIdentifier(segment)
+      ? `.${segment}`
+      : `[${JSON.stringify(segment)}]`;
     const isLast = index === path.length - 1;
-    return isLast ? `${expr}${accessor}` : `(${expr}${accessor} as Record<string, unknown>)`;
+    return isLast
+      ? `${expr}${accessor}`
+      : `(${expr}${accessor} as Record<string, unknown>)`;
   }, varName);
 }
 
@@ -7621,10 +8370,10 @@ function unknownValueAccessor(varName: string, path: string[]): string {
  */
 function ancestorTypedRemainders(
   primaryArrayPath: readonly string[],
-  ancestorVars: readonly string[]
+  ancestorVars: readonly string[],
 ): Map<string, readonly string[]> {
   const wildcardPositions = primaryArrayPath.flatMap((segment, i) =>
-    segment === ARRAY_WILDCARD_SEGMENT ? [i] : []
+    segment === ARRAY_WILDCARD_SEGMENT ? [i] : [],
   );
   return new Map(
     wildcardPositions.flatMap((position, ancestorIndex) => {
@@ -7632,7 +8381,7 @@ function ancestorTypedRemainders(
       return varName === undefined
         ? []
         : [[varName, primaryArrayPath.slice(position + 1)] as const];
-    })
+    }),
   );
 }
 
@@ -7649,10 +8398,11 @@ function ancestorTypedRemainders(
  */
 function isAncestorOnPathField(
   fieldSegments: readonly string[],
-  typedRemainder: readonly string[]
+  typedRemainder: readonly string[],
 ): boolean {
   const firstWildcard = typedRemainder.indexOf(ARRAY_WILDCARD_SEGMENT);
-  const plainDepth = firstWildcard === -1 ? typedRemainder.length : firstWildcard;
+  const plainDepth =
+    firstWildcard === -1 ? typedRemainder.length : firstWildcard;
   return (
     fieldSegments.length <= plainDepth &&
     fieldSegments.every((segment, i) => segment === typedRemainder[i])
@@ -7671,13 +8421,19 @@ function isAncestorOnPathField(
 export function ancestorScopedAccessor(
   varName: string,
   field: string,
-  typedRemainder: readonly string[] | null
+  typedRemainder: readonly string[] | null,
 ): string {
   const segments = field.split(".");
-  if (typedRemainder !== null && isAncestorOnPathField(segments, typedRemainder)) {
+  if (
+    typedRemainder !== null &&
+    isAncestorOnPathField(segments, typedRemainder)
+  ) {
     return `${varName}${pathToAccessor(segments, { assertNonNull: false })}`;
   }
-  return unknownValueAccessor(`(${varName} as Record<string, unknown>)`, segments);
+  return unknownValueAccessor(
+    `(${varName} as Record<string, unknown>)`,
+    segments,
+  );
 }
 
 /**
@@ -7690,7 +8446,10 @@ export function ancestorScopedAccessor(
  * keep emitted code free of `any` casts while still letting nested-path
  * access compile against `Record<string, unknown>`-typed response variables.
  */
-function pathToAssertionType(path: string[], leafType: "string" | "number" | "boolean"): string {
+function pathToAssertionType(
+  path: string[],
+  leafType: "string" | "number" | "boolean",
+): string {
   if (path.length === 0) return leafType;
   const segment = path[0]!;
   const key = isValidJsIdentifier(segment) ? segment : JSON.stringify(segment);
@@ -7708,7 +8467,10 @@ function pathToAssertionType(path: string[], leafType: "string" | "number" | "bo
  * caller type the terminal value as a single object instead — the flat
  * one-item-collection case {@link emitFoldMatchAndMergeLines} wraps itself.
  */
-function foldArrayAssertionType(path: string[], leaf = "Record<string, unknown>[]"): string {
+function foldArrayAssertionType(
+  path: string[],
+  leaf = "Record<string, unknown>[]",
+): string {
   if (path.length === 0) return leaf;
   const segment = path[0]!;
   if (segment === ARRAY_WILDCARD_SEGMENT) {
@@ -7726,7 +8488,11 @@ function foldArrayAssertionType(path: string[], leaf = "Record<string, unknown>[
  * detection (see {@link ARRAY_WILDCARD_SEGMENT}'s docstring). A path with no
  * wildcard segment degrades to the plain {@link pathToAccessor} chain.
  */
-function pathToFoldAccessorExpr(expr: string, path: string[], depth = 0): string {
+function pathToFoldAccessorExpr(
+  expr: string,
+  path: string[],
+  depth = 0,
+): string {
   const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
   if (wildcardIndex === -1) {
     return `${expr}${pathToAccessor(path, { assertNonNull: false })}`;
@@ -7769,7 +8535,7 @@ function pathToFoldLoopLines(
   itemVar: string,
   indent: string,
   varSuffix = "",
-  depth = 0
+  depth = 0,
 ): {
   openLines: string[];
   closeLines: string[];
@@ -7810,7 +8576,14 @@ function pathToFoldLoopLines(
   const after = path.slice(wildcardIndex + 1);
   const groupVar = `g${depth}${varSuffix}`;
   const outerExpr = `${expr}${pathToAccessor(before, { assertNonNull: false })}`;
-  const inner = pathToFoldLoopLines(groupVar, after, itemVar, `${indent}  `, varSuffix, depth + 1);
+  const inner = pathToFoldLoopLines(
+    groupVar,
+    after,
+    itemVar,
+    `${indent}  `,
+    varSuffix,
+    depth + 1,
+  );
   const ancestorOpenLines = [
     `${indent}for (const ${groupVar} of ${outerExpr}) {`,
     ...inner.ancestorOpenLines,
@@ -7847,7 +8620,7 @@ function emitItemLoopLines(
   itemScopedLines: string[],
   itemCloseLines: string[],
   itemVar: string,
-  hasItemScopedFetch: boolean
+  hasItemScopedFetch: boolean,
 ): string[] {
   if (!hasItemScopedFetch) {
     return [...itemOpenLines, ...itemScopedLines, ...itemCloseLines];
@@ -7856,7 +8629,9 @@ function emitItemLoopLines(
   const forLine = itemOpenLines[forLineIndex]!;
   const forLineMatch = forLine.match(/^(\s*)for \(const \w+ of (.+)\) \{$/);
   if (!forLineMatch) {
-    throw new Error(`emitItemLoopLines: unrecognized fold item-loop shape: ${forLine}`);
+    throw new Error(
+      `emitItemLoopLines: unrecognized fold item-loop shape: ${forLine}`,
+    );
   }
   const [, indent, iterableExpr] = forLineMatch as [string, string, string];
   return [
@@ -7887,14 +8662,17 @@ function emitItemLoopLines(
  * capture that merely contains the same digits.
  */
 function collectMutationIdentifierThreadedValues(
-  captures: readonly Capture[]
+  captures: readonly Capture[],
 ): Map<string, Set<Capture>> {
   const result = new Map<string, Set<Capture>>();
   const isIdentifierKey = (key: string | undefined): key is string =>
-    key !== undefined && !ARRAY_INDEX_KEY_PATTERN.test(key) && endsWithIdentifierWord(key);
+    key !== undefined &&
+    !ARRAY_INDEX_KEY_PATTERN.test(key) &&
+    endsWithIdentifierWord(key);
   for (let i = 0; i < captures.length; i++) {
     const source = captures[i]!;
-    if (source.responseBody === undefined || source.responseBody === null) continue;
+    if (source.responseBody === undefined || source.responseBody === null)
+      continue;
     const produced = new Map<string, string>();
     for (const { value, path } of walkAllPrimitiveLeaves(source.responseBody)) {
       const key = path.at(-1);
@@ -7945,7 +8723,8 @@ function collectMutationIdentifierThreadedValues(
         if (value === null || !isIdentifierKey(targetKey)) continue;
         const text = String(value);
         const sourceKey = produced.get(text);
-        if (sourceKey === undefined || !keyNamesCorrelate(sourceKey, targetKey)) continue;
+        if (sourceKey === undefined || !keyNamesCorrelate(sourceKey, targetKey))
+          continue;
         markConsumed(text);
       }
     }
@@ -7971,7 +8750,7 @@ export function stepFeedsDeclaredSubmit(
   capture: Capture,
   steps: ActionStep[],
   matchesDeclaredSubmit: (c: Capture) => boolean,
-  seen = new Set<Capture>()
+  seen = new Set<Capture>(),
 ): boolean {
   if (seen.has(capture)) return false;
   seen.add(capture);
@@ -7979,7 +8758,8 @@ export function stepFeedsDeclaredSubmit(
   return (
     step?.consumers?.some(
       (c) =>
-        matchesDeclaredSubmit(c) || stepFeedsDeclaredSubmit(c, steps, matchesDeclaredSubmit, seen)
+        matchesDeclaredSubmit(c) ||
+        stepFeedsDeclaredSubmit(c, steps, matchesDeclaredSubmit, seen),
     ) ?? false
   );
 }
@@ -7992,7 +8772,7 @@ export function stepFeedsDeclaredSubmit(
 /** Exported for unit testing — see `indexStateValues`. */
 export function compileActionSteps(
   actions: ActionCapture[],
-  stateIndex: Map<string, StateValue>
+  stateIndex: Map<string, StateValue>,
 ): ActionStep[] {
   const usedValues = new Set<string>();
   // Maps a used state value to the request-header NAME that carries it, for
@@ -8018,7 +8798,9 @@ export function compileActionSteps(
   // so we only "produce" the values that are actually consumed downstream.
   for (const { capture } of actions) {
     const bodyLeafValues = jsonBodyLeafValues(capture.requestPostData);
-    const bodyLeafValuesByKey = jsonBodyLeafValuesByKey(capture.requestPostData);
+    const bodyLeafValuesByKey = jsonBodyLeafValuesByKey(
+      capture.requestPostData,
+    );
     for (const sv of stateIndex.values()) {
       // A short value indexed only via the chain/force-include exemption
       // (see `StateValue.eligibleConsumers`) is a real dependency ONLY for
@@ -8068,13 +8850,16 @@ export function compileActionSteps(
         : [...(bodyLeafValuesByKey?.entries() ?? [])].some(
             ([targetKey, leaves]) =>
               keyNamesCorrelate(sourceKeyName, targetKey) &&
-              [...leaves].some((leaf) => leaf.includes(sv.value))
+              [...leaves].some((leaf) => leaf.includes(sv.value)),
           );
       if (matches) markUsed(sv.value, capture);
     }
-    for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
+    for (const [headerName, headerValue] of Object.entries(
+      capture.requestHeaders,
+    )) {
       for (const sv of stateIndex.values()) {
-        if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture)) continue;
+        if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture))
+          continue;
         if (!headerValue.includes(sv.value)) continue;
         markUsed(sv.value, capture);
         if (!usedValueTargetHeader.has(sv.value)) {
@@ -8095,10 +8880,12 @@ export function compileActionSteps(
     // BOTH a Set-Cookie and the JSON body (unlikely, but not ruled out) prefers
     // the header binding, which is what the runtime actually threads.
     const rawSetCookie = Object.entries(capture.responseHeaders).find(
-      ([k]) => k.toLowerCase() === "set-cookie"
+      ([k]) => k.toLowerCase() === "set-cookie",
     )?.[1];
     if (rawSetCookie !== undefined) {
-      for (const { name: cookieName, value } of walkSetCookiePairs(rawSetCookie)) {
+      for (const { name: cookieName, value } of walkSetCookiePairs(
+        rawSetCookie,
+      )) {
         if (!usedValues.has(value)) continue;
         const sv = stateIndex.get(value);
         if (!sv || sv.originIndex !== index || !sv.headerOrigin) continue;
@@ -8132,7 +8919,9 @@ export function compileActionSteps(
     // thread a header-origin value forward, since the emitted response
     // variable never exposes response headers to the rest of the generated
     // code the way it exposes the parsed body.
-    for (const [headerName, headerValue] of Object.entries(capture.responseHeaders)) {
+    for (const [headerName, headerValue] of Object.entries(
+      capture.responseHeaders,
+    )) {
       if (headerName.toLowerCase() === "set-cookie") continue;
       if (!usedValues.has(headerValue)) continue;
       const sv = stateIndex.get(headerValue);
@@ -8158,7 +8947,9 @@ export function compileActionSteps(
     }
 
     if (capture.responseBody !== undefined && capture.responseBody !== null) {
-      for (const { value: rawValue, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
+      for (const { value: rawValue, path } of walkAllPrimitiveLeaves(
+        capture.responseBody,
+      )) {
         if (rawValue === null) continue;
         const value = String(rawValue);
         if (!usedValues.has(value)) continue;
@@ -8195,8 +8986,10 @@ export function compileActionSteps(
       if (!usedValues.has(t.value)) continue;
       const sv = stateIndex.get(t.value);
       if (!sv || sv.originIndex !== index || !sv.htmlOrigin) continue;
-      if (sv.htmlOrigin.element !== t.element || sv.htmlOrigin.name !== t.name) continue;
-      if (produces.some((q) => q.kind === "html" && q.value === t.value)) continue;
+      if (sv.htmlOrigin.element !== t.element || sv.htmlOrigin.name !== t.name)
+        continue;
+      if (produces.some((q) => q.kind === "html" && q.value === t.value))
+        continue;
       const base = `${pathToVarName(t.name.split(/[^A-Za-z0-9_$]+/).filter(Boolean))}Token`;
       let name = /^[A-Za-z_$]/.test(base) ? base : `_${base}`;
       let suffix = 1;
@@ -8216,11 +9009,12 @@ export function compileActionSteps(
     }
 
     const ct = Object.entries(capture.requestHeaders).find(
-      ([k]) => k.toLowerCase() === "content-type"
+      ([k]) => k.toLowerCase() === "content-type",
     );
     const isMultipart =
       (ct?.[1] ?? "").toLowerCase().includes("multipart/") &&
-      (capture.requestPostData === null || capture.requestPostData === REQUEST_BODY_UNAVAILABLE);
+      (capture.requestPostData === null ||
+        capture.requestPostData === REQUEST_BODY_UNAVAILABLE);
 
     let currentHost: string | null = null;
     try {
@@ -8238,10 +9032,13 @@ export function compileActionSteps(
 
     // Multipart steps are emitted through a path that cannot read the HTML
     // text, so an html produce there would be interpolated but never declared.
-    const finalProduces = isMultipart ? produces.filter((q) => q.kind !== "html") : produces;
+    const finalProduces = isMultipart
+      ? produces.filter((q) => q.kind !== "html")
+      : produces;
     const consumers = new Set<Capture>();
     for (const v of producedValues) {
-      for (const c of usedValueConsumers.get(v) ?? []) if (c !== capture) consumers.add(c);
+      for (const c of usedValueConsumers.get(v) ?? [])
+        if (c !== capture) consumers.add(c);
     }
     return {
       capture,
@@ -8261,12 +9058,19 @@ export function compileActionSteps(
  * stable structural identifiers the generator already anchors or binds.
  */
 function isOpaqueToken(value: string): boolean {
-  if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH)
+  if (
+    value.length < ISSUED_TOKEN_MIN_LENGTH ||
+    value.length > ISSUED_TOKEN_MAX_LENGTH
+  )
     return false;
-  if (/\s/.test(value) || value.includes("://") || UUID_REGEX.test(value)) return false;
+  if (/\s/.test(value) || value.includes("://") || UUID_REGEX.test(value))
+    return false;
   if (!/^[A-Za-z0-9_\-+/=.~%]+$/.test(value)) return false;
   const mixed = /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value);
-  return mixed || (value.length >= 32 && /^[0-9a-f]+$/i.test(value) && /\d/.test(value));
+  return (
+    mixed ||
+    (value.length >= 32 && /^[0-9a-f]+$/i.test(value) && /\d/.test(value))
+  );
 }
 
 /**
@@ -8289,28 +9093,40 @@ export function findFrozenRequestTokens(
   actionSteps: ActionStep[],
   allCaptures: readonly Capture[],
   emittedBody: string,
-  shieldedUuids: ReadonlySet<string> = new Set()
+  shieldedUuids: ReadonlySet<string> = new Set(),
 ): string[] {
   const responseText = (c: Capture): string => {
     const body =
-      typeof c.responseBody === "string" ? c.responseBody : JSON.stringify(c.responseBody ?? "");
+      typeof c.responseBody === "string"
+        ? c.responseBody
+        : JSON.stringify(c.responseBody ?? "");
     return `${body}\n${Object.values(c.responseHeaders ?? {}).join("\n")}`;
   };
   const issuedBefore = (capture: Capture): Capture[] => {
     const at = allCaptures.indexOf(capture);
     return at >= 0
       ? allCaptures.slice(0, at)
-      : allCaptures.filter((c) => c !== capture && c.timestamp < capture.timestamp);
+      : allCaptures.filter(
+          (c) => c !== capture && c.timestamp < capture.timestamp,
+        );
   };
   const frozen = new Set<string>();
   const carriers = (value: string): number =>
     allCaptures.filter((c) =>
-      [c.url, c.requestPostData ?? "", ...Object.values(c.requestHeaders ?? {})].some((h) =>
-        resends(h, value)
-      )
+      [
+        c.url,
+        c.requestPostData ?? "",
+        ...Object.values(c.requestHeaders ?? {}),
+      ].some((h) => resends(h, value)),
     ).length;
-  const check = (value: string, capture: Capture, urlValue: boolean, isQuery = false): void => {
-    if (!isOpaqueToken(value) || shieldedUuids.has(value) || frozen.has(value)) return;
+  const check = (
+    value: string,
+    capture: Capture,
+    urlValue: boolean,
+    isQuery = false,
+  ): void => {
+    if (!isOpaqueToken(value) || shieldedUuids.has(value) || frozen.has(value))
+      return;
     if (!resends(emittedBody, value)) return;
     const earlier = issuedBefore(capture);
     const perRequest = urlValue
@@ -8320,7 +9136,11 @@ export function findFrozenRequestTokens(
         // header carries has no producer to thread and no sibling to prove it
         // constant: it is a credential minted for this one request.
         (isQuery && carriers(value) <= 1)
-      : earlier.some((c) => extractHtmlIssuedTokens(c.responseBody).some((t) => t.value === value));
+      : earlier.some((c) =>
+          extractHtmlIssuedTokens(c.responseBody).some(
+            (t) => t.value === value,
+          ),
+        );
     if (perRequest) frozen.add(value);
   };
   for (const { capture } of actionSteps) {
@@ -8343,9 +9163,12 @@ export function findFrozenRequestTokens(
     const raw = capture.requestPostData;
     if (typeof raw !== "string" || raw === "") continue;
     // A solved captcha token is single-use and unproducible: untraceable.
-    for (const f of findCaptchaResponseFields(raw)) frozen.add(f.value || f.name);
+    for (const f of findCaptchaResponseFields(raw))
+      frozen.add(f.value || f.name);
     try {
-      for (const { value } of walkAllPrimitiveLeaves(JSON.parse(raw) as unknown)) {
+      for (const { value } of walkAllPrimitiveLeaves(
+        JSON.parse(raw) as unknown,
+      )) {
         if (typeof value === "string") check(value, capture, false);
       }
     } catch {
@@ -8383,7 +9206,9 @@ export function findFrozenRequestTokens(
  * the produce → bind collection step directly against synthetic ActionStep
  * sequences.
  */
-export function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[] {
+export function collectHeaderBindings(
+  actionSteps: ActionStep[],
+): HeaderProduce[] {
   const byKey = new Map<string, HeaderProduce>();
   for (const step of actionSteps) {
     for (const p of step.produces) {
@@ -8401,7 +9226,10 @@ export function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[
  * is absent or the leaf isn't a string. Shared by state-threading and the
  * producer-boundary binding so both resolve produced values identically.
  */
-function resolveResponsePathValue(responseBody: unknown, path: string[]): string | null {
+function resolveResponsePathValue(
+  responseBody: unknown,
+  path: string[],
+): string | null {
   let cursor: unknown = responseBody;
   for (const segment of path) {
     if (
@@ -8414,7 +9242,9 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
       return null;
     }
   }
-  return typeof cursor === "string" || typeof cursor === "number" || typeof cursor === "boolean"
+  return typeof cursor === "string" ||
+    typeof cursor === "number" ||
+    typeof cursor === "boolean"
     ? String(cursor)
     : null;
 }
@@ -8437,7 +9267,10 @@ function buildValueAlternationPattern(sortedValues: string[]): RegExp {
     const trail = /\w$/.test(v) ? "\\b" : "(?!\\w)";
     return `${lead}${escaped}${trail}`;
   });
-  return new RegExp(`(?<![A-Za-z0-9][-.])(?:${alternatives.join("|")})(?![-.][A-Za-z0-9])`, "g");
+  return new RegExp(
+    `(?<![A-Za-z0-9][-.])(?:${alternatives.join("|")})(?![-.][A-Za-z0-9])`,
+    "g",
+  );
 }
 
 /** Normalizes a JSON key or a produced var name to a bare comparable token —
@@ -8575,14 +9408,15 @@ function replaceGuardedAgainstExistingPlaceholders(
     // `label` produce genuinely re-sent as a differently-named `ref`) would
     // wrongly lose its only binding.
     unconditionalValues: ReadonlySet<string>;
-  }
+  },
 ): string {
   const protectedSpans = findBalancedPlaceholderSpans(text);
   const matches = [...text.matchAll(pattern)].filter(
     (match) =>
       !protectedSpans.some(
-        ([spanStart, spanEnd]) => match.index < spanEnd && match.index + match[0].length > spanStart
-      )
+        ([spanStart, spanEnd]) =>
+          match.index < spanEnd && match.index + match[0].length > spanStart,
+      ),
   );
   const hasCorrelatedTargetByValue = new Map<string, boolean>();
   if (keyCorrelationGuard) {
@@ -8593,7 +9427,11 @@ function replaceGuardedAgainstExistingPlaceholders(
       if (hasCorrelatedTargetByValue.get(value)) continue;
       const sourceName = keyCorrelationGuard.sourceNameByValue.get(value);
       const targetKey = findEnclosingJsonKey(text, match.index);
-      if (sourceName !== undefined && targetKey !== null && keysCorrelate(sourceName, targetKey)) {
+      if (
+        sourceName !== undefined &&
+        targetKey !== null &&
+        keysCorrelate(sourceName, targetKey)
+      ) {
         hasCorrelatedTargetByValue.set(value, true);
       }
     }
@@ -8606,11 +9444,16 @@ function replaceGuardedAgainstExistingPlaceholders(
     const value = match[0];
     const isGated =
       keyCorrelationGuard?.restrictedValues.has(value) &&
-      (keyCorrelationGuard.unconditionalValues.has(value) || hasCorrelatedTargetByValue.get(value));
+      (keyCorrelationGuard.unconditionalValues.has(value) ||
+        hasCorrelatedTargetByValue.get(value));
     if (isGated) {
       const sourceName = keyCorrelationGuard?.sourceNameByValue.get(value);
       const targetKey = findEnclosingJsonKey(text, start);
-      if (sourceName === undefined || targetKey === null || !keysCorrelate(sourceName, targetKey)) {
+      if (
+        sourceName === undefined ||
+        targetKey === null ||
+        !keysCorrelate(sourceName, targetKey)
+      ) {
         result += text.slice(cursor, end);
         cursor = end;
         continue;
@@ -8681,7 +9524,10 @@ function interpolateStateValues(
   targetCapture: Capture,
   payloadAccessorByValue: Map<string, string> = new Map(),
   isJsonBody = false,
-  producerBoundaryBindings: ReadonlyMap<string, ProducerBoundaryBinding> = new Map(),
+  producerBoundaryBindings: ReadonlyMap<
+    string,
+    ProducerBoundaryBinding
+  > = new Map(),
   stepIndex = -1,
   topLevelPayloadKvValues: ReadonlySet<string> = new Set(),
   // A fold target's own join-field value (see `joinFieldValuesByStep` in
@@ -8691,7 +9537,7 @@ function interpolateStateValues(
   // item; the fold loop's own later `parameterize` pass is what rebinds the
   // literal to `${item.<field>}` per iteration, but only if the literal
   // text survives this pass untouched.
-  excludedJoinFieldValues: ReadonlySet<string> = new Set()
+  excludedJoinFieldValues: ReadonlySet<string> = new Set(),
 ): string {
   const stateBindings = deriveStateVarByValue(priorSteps, targetCapture);
 
@@ -8709,7 +9555,10 @@ function interpolateStateValues(
         !bindingByValue.has(encoded) &&
         !payloadAccessorByValue.has(encoded)
       ) {
-        bindingByValue.set(encoded, `\${encodeURIComponent(String(${accessor}))}`);
+        bindingByValue.set(
+          encoded,
+          `\${encodeURIComponent(String(${accessor}))}`,
+        );
       }
     }
   }
@@ -8717,7 +9566,8 @@ function interpolateStateValues(
   const unconditionalValues = new Set<string>();
   const sourceNameByValue = new Map<string, string>();
   for (const [value, binding] of stateBindings) {
-    const isProducerStep = producerBoundaryBindings.get(value)?.producerIndex === stepIndex;
+    const isProducerStep =
+      producerBoundaryBindings.get(value)?.producerIndex === stepIndex;
     if (payloadAccessorByValue.has(value) && !isProducerStep) continue;
     if (topLevelPayloadKvValues.has(value) && !isProducerStep) continue;
     if (excludedJoinFieldValues.has(value) && !isProducerStep) continue;
@@ -8738,7 +9588,9 @@ function interpolateStateValues(
   }
   if (bindingByValue.size === 0) return template;
 
-  const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
+  const sortedValues = [...bindingByValue.keys()].sort(
+    (a, b) => b.length - a.length,
+  );
   const pattern = buildValueAlternationPattern(sortedValues);
 
   return replaceGuardedAgainstExistingPlaceholders(
@@ -8747,7 +9599,7 @@ function interpolateStateValues(
     bindingByValue,
     isJsonBody && restrictedValues.size > 0
       ? { restrictedValues, sourceNameByValue, unconditionalValues }
-      : undefined
+      : undefined,
   );
 }
 
@@ -8768,16 +9620,22 @@ function interpolateStateValues(
  */
 function substituteThreadedValues(
   text: string,
-  bindings: ReadonlyArray<{ value: string; replacement: string }>
+  bindings: ReadonlyArray<{ value: string; replacement: string }>,
 ): string {
   if (bindings.length === 0) return text;
   const bindingByValue = new Map<string, string>();
   for (const { value, replacement } of bindings) {
     if (!bindingByValue.has(value)) bindingByValue.set(value, replacement);
   }
-  const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
+  const sortedValues = [...bindingByValue.keys()].sort(
+    (a, b) => b.length - a.length,
+  );
   const pattern = buildValueAlternationPattern(sortedValues);
-  return replaceGuardedAgainstExistingPlaceholders(text, pattern, bindingByValue);
+  return replaceGuardedAgainstExistingPlaceholders(
+    text,
+    pattern,
+    bindingByValue,
+  );
 }
 
 /** A producer-boundary coordinate: the capture value, its `payload.<field>`
@@ -8839,7 +9697,7 @@ interface ProducerBoundaryBinding {
  */
 export function deriveProducerBoundaryBindings(
   actions: ActionStep[],
-  alreadyBound: ReadonlyMap<string, string>
+  alreadyBound: ReadonlyMap<string, string>,
 ): Map<string, ProducerBoundaryBinding> {
   const bindings = new Map<string, ProducerBoundaryBinding>();
   for (let i = 0; i < actions.length; i++) {
@@ -8869,13 +9727,18 @@ export function deriveProducerBoundaryBindings(
       // leaf, and the longer one's whole-value bind carries the embedded copy. A
       // non-JSON (multipart) body has no parseable leaves and the whole-value pass
       // can't rewrite it, so it never qualifies (`bodyLeafValues === null`).
-      if (bodyLeafValues === null || !bodyLeafValues.some((leaf) => leaf === value)) continue;
+      if (
+        bodyLeafValues === null ||
+        !bodyLeafValues.some((leaf) => leaf === value)
+      )
+        continue;
       // Reuse the higher-priority source's field when present; otherwise the
       // produced var name IS the wire key (pathToVarName). Use it verbatim so it
       // stays consistent with the downstream `${<key>N}` var; don't PascalCase it
       // (that lowercases camelCase, e.g. jobId→Jobid, and diverges from both the
       // state var and the entry-URL-param raw-key convention).
-      const field = existing !== undefined ? existing.slice("payload.".length) : p.name;
+      const field =
+        existing !== undefined ? existing.slice("payload.".length) : p.name;
       if (!isValidJsIdentifier(field)) continue;
       // `pathToVarName` returns the sentinel `"value"` when a produce path has no
       // identifier segment (all array indices) — a meaningless caller field name.
@@ -8884,7 +9747,11 @@ export function deriveProducerBoundaryBindings(
       // higher-priority accessor is a real declared field, so only veto the
       // sentinel when the name came from `p.name`.
       if (existing === undefined && field === "value") continue;
-      bindings.set(value, { accessor: `payload.${field}`, field, producerIndex: i });
+      bindings.set(value, {
+        accessor: `payload.${field}`,
+        field,
+        producerIndex: i,
+      });
     }
   }
   // Drop per-step position constants: a field bound to ≥2 distinct values across
@@ -8893,12 +9760,14 @@ export function deriveProducerBoundaryBindings(
   // entry leaves each step's captured literal in place and undeclared.
   const distinctValuesByField = new Map<string, Set<string>>();
   for (const [value, binding] of bindings) {
-    const values = distinctValuesByField.get(binding.field) ?? new Set<string>();
+    const values =
+      distinctValuesByField.get(binding.field) ?? new Set<string>();
     values.add(value);
     distinctValuesByField.set(binding.field, values);
   }
   for (const [value, binding] of [...bindings]) {
-    if ((distinctValuesByField.get(binding.field)?.size ?? 0) >= 2) bindings.delete(value);
+    if ((distinctValuesByField.get(binding.field)?.size ?? 0) >= 2)
+      bindings.delete(value);
   }
   return bindings;
 }
@@ -8935,7 +9804,7 @@ function applyWholeValuePayloadSubstitutions(
   parsedBody: unknown,
   producerScoped: Map<string, ProducerBoundaryBinding>,
   entryUrlBindings: ReadonlyMap<string, string>,
-  stepIndex: number
+  stepIndex: number,
 ): string {
   if (producerScoped.size === 0 && entryUrlBindings.size === 0) return template;
   let result = template;
@@ -9000,7 +9869,7 @@ export interface StateVarBinding {
 
 function deriveStateVarByValue(
   priorSteps: ActionStep[],
-  targetCapture: Capture
+  targetCapture: Capture,
 ): Map<string, StateVarBinding> {
   const varNameByValue = new Map<string, StateVarBinding>();
   for (const step of priorSteps) {
@@ -9017,7 +9886,8 @@ function deriveStateVarByValue(
         });
         continue;
       }
-      if (p.eligibleConsumers && !p.eligibleConsumers.has(targetCapture)) continue;
+      if (p.eligibleConsumers && !p.eligibleConsumers.has(targetCapture))
+        continue;
       const value = resolveResponsePathValue(step.capture.responseBody, p.path);
       if (value !== null) {
         // A source path with NO identifier segment anywhere (every segment a
@@ -9030,7 +9900,9 @@ function deriveStateVarByValue(
         // its name existing at all is exactly the signal a target key
         // coincidence has to match to be a genuine splice, not a bare
         // array-index/path-segment eligibility coincidence.
-        const sourceHasName = p.path.some((segment) => isValidJsIdentifier(segment));
+        const sourceHasName = p.path.some((segment) =>
+          isValidJsIdentifier(segment),
+        );
         varNameByValue.set(value, {
           varName: p.name,
           sourceName: p.name,
@@ -9098,7 +9970,7 @@ function wrapEncode(expr: string, depth: number): string {
 function applyUrlParamPayloadSubstitutions(
   template: string,
   parsedBody: unknown,
-  bindings: ReadonlyMap<string, string>
+  bindings: ReadonlyMap<string, string>,
 ): string {
   if (bindings.size === 0) return template;
   let result = template;
@@ -9211,7 +10083,7 @@ export function applyPayloadKeyValueSubstitutions(
   outStructuredKeys: Map<string, string> = new Map(),
   /** The recorded origin: runtime context (`context.baseUrl`), so a value that
    * is or embeds it never mints a caller payload key. */
-  baseUrl = ""
+  baseUrl = "",
 ): string {
   const merged: Array<[string, string | number | boolean]> = [];
   const seenPairs = new Set<string>();
@@ -9222,7 +10094,12 @@ export function applyPayloadKeyValueSubstitutions(
   // a name that is an array/object in one body and a primitive in another gets
   // the structured schema regardless of which body is visited first.
   for (const body of allBodies) {
-    if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
+    if (
+      body === undefined ||
+      body === null ||
+      typeof body !== "object" ||
+      Array.isArray(body)
+    ) {
       continue;
     }
     // A top-level key that wraps the body's form envelope is a container, not a
@@ -9230,16 +10107,28 @@ export function applyPayloadKeyValueSubstitutions(
     // path (`<wrapper><Child>`), so registering the wrapper too would expose the
     // same nested value under two names.
     const [wrapperKey] = locateFormEnvelopePath(body);
-    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    for (const [key, value] of Object.entries(
+      body as Record<string, unknown>,
+    )) {
       if (!isValidJsIdentifier(key)) continue;
       if (key === wrapperKey) continue;
       if (value === null || typeof value !== "object") continue;
-      if (Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0) continue;
+      if (
+        Array.isArray(value)
+          ? value.length === 0
+          : Object.keys(value).length === 0
+      )
+        continue;
       registerStructuredPayloadField(outStructuredKeys, key, value);
     }
   }
   for (const body of allBodies) {
-    if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
+    if (
+      body === undefined ||
+      body === null ||
+      typeof body !== "object" ||
+      Array.isArray(body)
+    ) {
       continue;
     }
     for (const { value, path } of walkAllPrimitiveLeaves(body)) {
@@ -9280,7 +10169,8 @@ export function applyPayloadKeyValueSubstitutions(
         (typeof value === "string" || typeof value === "number") &&
         !PAGINATION_FIELD_NAME_PATTERN.test(key)
       ) {
-        const distinct = distinctValuesByKey.get(key) ?? new Set<string | number>();
+        const distinct =
+          distinctValuesByKey.get(key) ?? new Set<string | number>();
         distinct.add(value);
         distinctValuesByKey.set(key, distinct);
       }
@@ -9294,9 +10184,12 @@ export function applyPayloadKeyValueSubstitutions(
       // case) are filtered back out at the emitContractTs merge point via
       // isReservedByApplicantContactSchema — this function has no visibility
       // into that flag, so it must not special-case inputBody's own keys.
-      if (typeof value === "string") outAdditionalKeys.set(key, { kind: "string" });
-      else if (typeof value === "number") outAdditionalKeys.set(key, { kind: "number" });
-      else if (typeof value === "boolean") outAdditionalKeys.set(key, { kind: "boolean" });
+      if (typeof value === "string")
+        outAdditionalKeys.set(key, { kind: "string" });
+      else if (typeof value === "number")
+        outAdditionalKeys.set(key, { kind: "number" });
+      else if (typeof value === "boolean")
+        outAdditionalKeys.set(key, { kind: "boolean" });
     }
   }
   // Vocabulary-derived enum: a "string" key whose distinct observed values
@@ -9309,7 +10202,8 @@ export function applyPayloadKeyValueSubstitutions(
   const capacityCandidatesByMinBound = (): number[] => {
     const candidates: number[] = [];
     for (const body of responseBodiesForCapacitySignal) {
-      if (body === undefined || body === null || typeof body !== "object") continue;
+      if (body === undefined || body === null || typeof body !== "object")
+        continue;
       for (const { value, path } of walkAllPrimitiveLeaves(body)) {
         const leafName = path[path.length - 1] ?? "";
         if (typeof value !== "number") continue;
@@ -9324,7 +10218,10 @@ export function applyPayloadKeyValueSubstitutions(
     const distinct = distinctValuesByKey.get(key);
     if (!distinct) continue;
     if (info.kind === "string") {
-      if (distinct.size >= 2 && distinct.size <= VOCABULARY_ENUM_MAX_DISTINCT_VALUES) {
+      if (
+        distinct.size >= 2 &&
+        distinct.size <= VOCABULARY_ENUM_MAX_DISTINCT_VALUES
+      ) {
         info.enumValues = [...distinct].map(String).sort();
       }
       continue;
@@ -9369,7 +10266,8 @@ export function applyPayloadKeyValueSubstitutions(
   if (scalarFieldNames.length > 0) {
     const splicedStrings = new Set<string>();
     for (const body of allBodies) {
-      if (body === undefined || body === null || typeof body !== "object") continue;
+      if (body === undefined || body === null || typeof body !== "object")
+        continue;
       for (const { value, path } of walkAllPrimitiveLeaves(body)) {
         if (typeof value !== "string" || value.length === 0) continue;
         if (splicedStrings.has(value)) continue;
@@ -9415,7 +10313,7 @@ export function applyPayloadKeyValueSubstitutions(
 function applyScalarFacetSplicePayloadSubstitutions(
   template: string,
   inputBody: unknown,
-  navigateToFacets: readonly NavigateToFacetBinding[]
+  navigateToFacets: readonly NavigateToFacetBinding[],
 ): string {
   if (navigateToFacets.length === 0) return template;
   if (inputBody === null || typeof inputBody !== "object") return template;
@@ -9454,7 +10352,7 @@ function applyScalarFacetSplicePayloadSubstitutions(
  * applyArrayFacetSplicePayloadSubstitutions}`'s raw-array search surface. */
 function* walkArrayLeaves(
   value: unknown,
-  path: string[] = []
+  path: string[] = [],
 ): Generator<{ value: unknown[]; path: string[] }, void, unknown> {
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
@@ -9492,7 +10390,7 @@ function applyArrayFacetSplicePayloadSubstitutions(
   inputBody: unknown,
   navigateToFacets: readonly NavigateToFacetBinding[],
   ownedArrayPathKeys: ReadonlySet<string>,
-  siblingBodies: readonly unknown[] = []
+  siblingBodies: readonly unknown[] = [],
 ): string {
   if (navigateToFacets.length === 0) return template;
   if (inputBody === null || typeof inputBody !== "object") return template;
@@ -9505,15 +10403,24 @@ function applyArrayFacetSplicePayloadSubstitutions(
     ) {
       continue;
     }
-    const absentFacets = collectSiblingArrayFacets(value, path, siblingBodies, navigateToFacets);
+    const absentFacets = collectSiblingArrayFacets(
+      value,
+      path,
+      siblingBodies,
+      navigateToFacets,
+    );
     const absentFields = new Set(absentFacets.map(({ facet }) => facet.field));
     const expression = renderFacetValueExpression(
       insertAbsentFacetElements(value, absentFacets),
       navigateToFacets.map((facet) =>
-        absentFields.has(facet.field) ? { ...facet, optional: true } : facet
-      )
+        absentFields.has(facet.field) ? { ...facet, optional: true } : facet,
+      ),
     );
-    result = replaceJsonArrayOccurrences(result, value, `\${JSON.stringify(${expression})}`);
+    result = replaceJsonArrayOccurrences(
+      result,
+      value,
+      `\${JSON.stringify(${expression})}`,
+    );
   }
   return result;
 }
@@ -9532,11 +10439,13 @@ interface SiblingArrayFacet {
  */
 function insertAbsentFacetElements(
   own: readonly unknown[],
-  absent: readonly SiblingArrayFacet[]
+  absent: readonly SiblingArrayFacet[],
 ): unknown[] {
   const merged = [...own];
   const indexOfElement = (target: unknown): number =>
-    merged.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(target));
+    merged.findIndex(
+      (candidate) => JSON.stringify(candidate) === JSON.stringify(target),
+    );
   for (const { element, before, after } of absent) {
     const previous = [...before]
       .reverse()
@@ -9564,12 +10473,14 @@ function collectSiblingArrayFacets(
   own: readonly unknown[],
   path: readonly string[],
   siblingBodies: readonly unknown[],
-  facets: readonly NavigateToFacetBinding[]
+  facets: readonly NavigateToFacetBinding[],
 ): SiblingArrayFacet[] {
   const present = new Set(
     own.flatMap((element) =>
-      typeof element === "string" ? [matchArrayElementFacet(element, facets)?.field] : []
-    )
+      typeof element === "string"
+        ? [matchArrayElementFacet(element, facets)?.field]
+        : [],
+    ),
   );
   const key = arrayPathKey(path);
   const absent: SiblingArrayFacet[] = [];
@@ -9596,10 +10507,14 @@ function collectSiblingArrayFacets(
 
 /** Whether `value` is, or contains at any depth, an array with a
  * facet-bearing string element. */
-function containsFacetArray(value: unknown, facets: readonly NavigateToFacetBinding[]): boolean {
+function containsFacetArray(
+  value: unknown,
+  facets: readonly NavigateToFacetBinding[],
+): boolean {
   for (const { value: array } of walkArrayLeaves(value)) {
     const hasFacet = array.some(
-      (element) => typeof element === "string" && matchArrayElementFacet(element, facets)
+      (element) =>
+        typeof element === "string" && matchArrayElementFacet(element, facets),
     );
     if (hasFacet) return true;
   }
@@ -9610,20 +10525,26 @@ function containsFacetArray(value: unknown, facets: readonly NavigateToFacetBind
  * one construction covers arrays nested inside array elements. */
 function renderFacetValueExpression(
   value: unknown,
-  facets: readonly NavigateToFacetBinding[]
+  facets: readonly NavigateToFacetBinding[],
 ): string {
-  if (value === null || typeof value !== "object" || !containsFacetArray(value, facets)) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    !containsFacetArray(value, facets)
+  ) {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
     return (
       spliceFacetsIntoArrayVariable(value, facets, (element) =>
-        renderFacetValueExpression(element, facets)
-      ) ?? `[${value.map((element) => renderFacetValueExpression(element, facets)).join(", ")}]`
+        renderFacetValueExpression(element, facets),
+      ) ??
+      `[${value.map((element) => renderFacetValueExpression(element, facets)).join(", ")}]`
     );
   }
   const entries = Object.entries(value as Record<string, unknown>).map(
-    ([key, inner]) => `${JSON.stringify(key)}: ${renderFacetValueExpression(inner, facets)}`
+    ([key, inner]) =>
+      `${JSON.stringify(key)}: ${renderFacetValueExpression(inner, facets)}`,
   );
   return `{ ${entries.join(", ")} }`;
 }
@@ -9637,9 +10558,14 @@ function arrayPathKey(path: readonly string[]): string {
 
 /** True when `path` addresses anything inside an array in `ownedKeys`, at any
  * depth (string or object element alike). */
-function isInsideOwnedArray(path: readonly string[], ownedKeys: ReadonlySet<string>): boolean {
+function isInsideOwnedArray(
+  path: readonly string[],
+  ownedKeys: ReadonlySet<string>,
+): boolean {
   return path.some(
-    (segment, index) => /^\d+$/.test(segment) && ownedKeys.has(arrayPathKey(path.slice(0, index)))
+    (segment, index) =>
+      /^\d+$/.test(segment) &&
+      ownedKeys.has(arrayPathKey(path.slice(0, index))),
   );
 }
 
@@ -9652,7 +10578,7 @@ function isInsideOwnedArray(path: readonly string[], ownedKeys: ReadonlySet<stri
  */
 function collectFacetArrayPathKeys(
   bodies: readonly unknown[],
-  facets: readonly NavigateToFacetBinding[]
+  facets: readonly NavigateToFacetBinding[],
 ): Set<string> {
   const keys = new Set<string>();
   if (facets.length === 0) return keys;
@@ -9661,7 +10587,8 @@ function collectFacetArrayPathKeys(
     for (const { value, path } of walkArrayLeaves(body)) {
       const hasFacet = value.some(
         (element) =>
-          typeof element === "string" && matchArrayElementFacet(element, facets) !== undefined
+          typeof element === "string" &&
+          matchArrayElementFacet(element, facets) !== undefined,
       );
       if (hasFacet) keys.add(arrayPathKey(path));
     }
@@ -9678,7 +10605,7 @@ function collectFacetArrayPathKeys(
 function replaceJsonArrayOccurrences(
   template: string,
   target: unknown[],
-  replacement: string
+  replacement: string,
 ): string {
   const targetKey = JSON.stringify(target);
   let out = "";
@@ -9687,8 +10614,10 @@ function replaceJsonArrayOccurrences(
     const open = template.indexOf("[", from);
     if (open === -1) break;
     const close = findMatchingBracket(template, open);
-    const candidate = close === -1 ? undefined : template.slice(open, close + 1);
-    const matches = candidate !== undefined && jsonTextEquals(candidate, targetKey);
+    const candidate =
+      close === -1 ? undefined : template.slice(open, close + 1);
+    const matches =
+      candidate !== undefined && jsonTextEquals(candidate, targetKey);
     if (!matches) {
       out += template.slice(from, open + 1);
       from = open + 1;
@@ -9730,7 +10659,7 @@ function jsonTextEquals(candidate: string, targetKey: string): boolean {
  * pass, which owns the optional fallback for it. */
 function packedFacetRecurrence(
   value: string,
-  facets: readonly NavigateToFacetBinding[]
+  facets: readonly NavigateToFacetBinding[],
 ): string | null {
   const spliced = spliceFacetRecurrenceIntoScalarVariable(value, facets);
   return spliced !== null && !spliced.startsWith("payload.") ? spliced : null;
@@ -9741,9 +10670,10 @@ function applyFacetSplicePayloadSubstitutions(
   inputBody: unknown,
   payloadFieldNames: ReadonlySet<string>,
   optionalFieldNames: ReadonlySet<string>,
-  navigateToFacets: readonly NavigateToFacetBinding[] = []
+  navigateToFacets: readonly NavigateToFacetBinding[] = [],
 ): string {
-  if (payloadFieldNames.size === 0 && navigateToFacets.length === 0) return template;
+  if (payloadFieldNames.size === 0 && navigateToFacets.length === 0)
+    return template;
   if (
     inputBody === undefined ||
     inputBody === null ||
@@ -9758,7 +10688,11 @@ function applyFacetSplicePayloadSubstitutions(
     const key = path[path.length - 1];
     if (key === undefined || !isValidJsIdentifier(key)) continue;
     if (typeof value !== "string") continue;
-    const kv = spliceFacetsIntoStringVariable(value, fields, optionalFieldNames);
+    const kv = spliceFacetsIntoStringVariable(
+      value,
+      fields,
+      optionalFieldNames,
+    );
     const spliced = kv ?? packedFacetRecurrence(value, navigateToFacets);
     if (spliced === null) continue;
     const target = `"${key}":${JSON.stringify(value)}`;
@@ -9769,7 +10703,9 @@ function applyFacetSplicePayloadSubstitutions(
       spliced.startsWith("`") &&
       !spliced.startsWith("`${") &&
       JSON.stringify(value).slice(1, -1) === value;
-    const replacement = inline ? `"${key}":"${spliced.slice(1, -1)}"` : `"${key}":"\${${spliced}}"`;
+    const replacement = inline
+      ? `"${key}":"${spliced.slice(1, -1)}"`
+      : `"${key}":"\${${spliced}}"`;
     result = result.split(target).join(replacement);
   }
   return result;
@@ -9782,7 +10718,12 @@ function applyFacetSplicePayloadSubstitutions(
  * sets feedback, matching {@link CACHE_BUSTER_QUERY_KEYS}'s posture. A frozen
  * capture timestamp would make every submission claim the recon instant.
  */
-const VOLATILE_TIMESTAMP_KEY_FRAGMENTS = ["timestamp", "esign", "signeddate", "signedat"];
+const VOLATILE_TIMESTAMP_KEY_FRAGMENTS = [
+  "timestamp",
+  "esign",
+  "signeddate",
+  "signedat",
+];
 
 /** JSON-key-name suffix marking a value as a per-request time the plugin must
  * regenerate (e.g. `stepStartTime`, `submissionTime`). Separate from the
@@ -9791,7 +10732,8 @@ const VOLATILE_TIME_KEY_SUFFIX = "time";
 
 function isVolatileTimestampKey(key: string): boolean {
   const k = key.toLowerCase();
-  if (VOLATILE_TIMESTAMP_KEY_FRAGMENTS.some((frag) => k.includes(frag))) return true;
+  if (VOLATILE_TIMESTAMP_KEY_FRAGMENTS.some((frag) => k.includes(frag)))
+    return true;
   return k.endsWith(VOLATILE_TIME_KEY_SUFFIX) && k !== "time";
 }
 
@@ -9817,7 +10759,7 @@ function applyVolatileFieldSubstitutions(
   template: string,
   parsedBody: unknown,
   shieldedUuids: Set<string>,
-  boundValues: Set<string>
+  boundValues: Set<string>,
 ): string {
   const uuidGen = `$${"{"}crypto.randomUUID()${"}"}`;
   const isoGen = `$${"{"}new Date().toISOString()${"}"}`;
@@ -9860,7 +10802,7 @@ function bindLaterWriteScalarLeaves(
   boundValues: Set<string>,
   baseUrl: string,
   payloadAccessorByValue: Map<string, string>,
-  outDiscoveredFields: Set<string>
+  outDiscoveredFields: Set<string>,
 ): string {
   let result = template;
   for (const { value, path } of walkAllPrimitiveLeaves(parsedBody)) {
@@ -9875,7 +10817,8 @@ function bindLaterWriteScalarLeaves(
       const { field: base } = payloadAccessorForPath(path);
       if (!isValidJsIdentifier(base)) continue;
       let field = base;
-      for (let n = 2; outDiscoveredFields.has(field); n++) field = `${base}${n}`;
+      for (let n = 2; outDiscoveredFields.has(field); n++)
+        field = `${base}${n}`;
       outDiscoveredFields.add(field);
       accessor = `payload.${field}`;
       payloadAccessorByValue.set(value, accessor);
@@ -9898,12 +10841,13 @@ function bindLaterWriteScalarLeaves(
 export function collectUnboundLiterals(
   finalTemplate: string,
   parsedBody: unknown,
-  shieldedUuids: Set<string>
+  shieldedUuids: Set<string>,
 ): string[] {
   const unbound: string[] = [];
   const seen = new Set<string>();
   for (const { value, path } of walkAllPrimitiveLeaves(parsedBody)) {
-    if (typeof value !== "string" || value.length < MIN_STATE_VALUE_LENGTH) continue;
+    if (typeof value !== "string" || value.length < MIN_STATE_VALUE_LENGTH)
+      continue;
     if (shieldedUuids.has(value)) continue;
     const key = path[path.length - 1] ?? "";
     if (seen.has(key)) continue;
@@ -9943,13 +10887,17 @@ export function collectUnboundLiterals(
  * Returns lines indented to sit inside the `if (typeof X === "object" && X !==
  * null)` wrapper that `emitMultiStepExecuteHttp` writes.
  */
-function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorSignals): string[] {
+function emitErrorSignalGuards(
+  varName: string,
+  urlPath: string,
+  signals: ErrorSignals,
+): string[] {
   const out: string[] = [];
 
   if (signals.stringMessageKey !== null) {
     const k = signals.stringMessageKey;
     out.push(
-      `      if (typeof (${varName} as { ${k}?: unknown }).${k} === "string") throw new Error(\`step ${varName} (${urlPath}) returned error: \${(${varName} as { ${k}: string }).${k}}\`);`
+      `      if (typeof (${varName} as { ${k}?: unknown }).${k} === "string") throw new Error(\`step ${varName} (${urlPath}) returned error: \${(${varName} as { ${k}: string }).${k}}\`);`,
     );
   }
 
@@ -9965,7 +10913,7 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
     if (parentPathStr === "") {
       for (const { errorKey } of errorKeys) {
         out.push(
-          `      if ((${varName} as { ${errorKey}?: unknown }).${errorKey} != null) throw new Error(\`step ${varName} ${errorKey.toLowerCase()}: \${JSON.stringify((${varName} as { ${errorKey}: unknown }).${errorKey})}\`);`
+          `      if ((${varName} as { ${errorKey}?: unknown }).${errorKey} != null) throw new Error(\`step ${varName} ${errorKey.toLowerCase()}: \${JSON.stringify((${varName} as { ${errorKey}: unknown }).${errorKey})}\`);`,
         );
       }
       continue;
@@ -9973,12 +10921,16 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
     const parentSegments = parentPathStr.split(".");
     const parentVar = `${varName}_${parentSegments[parentSegments.length - 1]!.toLowerCase()}`;
     const parentAccessor = parentSegments.join("?.");
-    const parentTypeAssertion = errorKeys.map(({ errorKey }) => `${errorKey}?: unknown`).join("; ");
+    const parentTypeAssertion = errorKeys
+      .map(({ errorKey }) => `${errorKey}?: unknown`)
+      .join("; ");
     const parentObjType = parentSegments
       .reverse()
       .reduce((inner, seg) => `${seg}?: { ${inner} }`, parentTypeAssertion);
     parentSegments.reverse();
-    out.push(`      const ${parentVar} = (${varName} as { ${parentObjType} }).${parentAccessor};`);
+    out.push(
+      `      const ${parentVar} = (${varName} as { ${parentObjType} }).${parentAccessor};`,
+    );
     for (const { errorKey } of errorKeys) {
       // Humanize the wire key generically (CamelCase → "camel case"); no
       // per-vendor special cases — the engine carries no vendor's key vocabulary.
@@ -9987,7 +10939,7 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
         .trim()
         .toLowerCase();
       out.push(
-        `      if (${parentVar} != null && ${parentVar}.${errorKey} != null) throw new Error(\`step ${varName} ${label}: \${JSON.stringify(${parentVar}.${errorKey})}\`);`
+        `      if (${parentVar} != null && ${parentVar}.${errorKey} != null) throw new Error(\`step ${varName} ${label}: \${JSON.stringify(${parentVar}.${errorKey})}\`);`,
       );
     }
   }
@@ -10007,7 +10959,7 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
 export function wholeArrayAttachKey(
   target: Pick<FoldTarget, "joinFields" | "chainArrayPath" | "attachAs">,
   terminalBody: unknown,
-  drillUrl: string
+  drillUrl: string,
 ): string | null {
   const rows = objectItemsAtPath(terminalBody, target.chainArrayPath);
   if (!rows) return null;
@@ -10027,7 +10979,7 @@ export function wholeArrayAttachKey(
         readValueAtPath(row, segments) !== undefined ||
         readValueAtPath(row, [segments[segments.length - 1]!]) !== undefined
       );
-    })
+    }),
   );
   if (carriesJoinField) return null;
   let pathname: string;
@@ -10069,9 +11021,10 @@ export function wrapIsolatedDrillLines(
   target: Pick<FoldTarget, "payloadFlag" | "attachAs">,
   drillName: string,
   itemVar: string,
-  lines: string[]
+  lines: string[],
 ): string[] {
-  if (target.payloadFlag === undefined && target.attachAs === undefined) return lines;
+  if (target.payloadFlag === undefined && target.attachAs === undefined)
+    return lines;
   const body = [
     "      try {",
     ...lines.map((l) => `  ${l}`),
@@ -10101,7 +11054,7 @@ export function emitFoldMatchAndMergeLines(
   itemVar: string,
   suffix: string,
   joinAccessor: (field: string) => string,
-  wholeArrayKey: string | null = null
+  wholeArrayKey: string | null = null,
 ): string[] {
   // A declared `attachAs` publishes the matched answer under that key (never
   // overriding an existing field); an undeclared drill flat-merges its fields.
@@ -10112,7 +11065,8 @@ export function emitFoldMatchAndMergeLines(
   // An array-root terminal (the response body IS the row array) is cast via
   // `unknown` — an array is not a `Record<string, unknown>`.
   const isArrayRoot =
-    target.chainArrayPath.length === 0 && Array.isArray(terminalStep.capture.responseBody);
+    target.chainArrayPath.length === 0 &&
+    Array.isArray(terminalStep.capture.responseBody);
   // An empty chainArrayPath means the terminal step's response IS the
   // implicit one-item collection (see findAllObjectArrayFieldsOrWholeObject
   // / objectItemsAtPath's flat-object branch): the response is a flat
@@ -10135,17 +11089,19 @@ export function emitFoldMatchAndMergeLines(
   // evidence plan resolution used, so the two never disagree.
   const isFlatObjectAtPath =
     !target.chainArrayPath.includes(ARRAY_WILDCARD_SEGMENT) &&
-    isObjectArrayItem(readValueAtPath(terminalStep.capture.responseBody, target.chainArrayPath));
+    isObjectArrayItem(
+      readValueAtPath(terminalStep.capture.responseBody, target.chainArrayPath),
+    );
   const foldMatchesExpr = isArrayRoot
     ? `(${terminalStep.varName} as unknown as Record<string, unknown>[])`
     : isFlatObjectAtPath
       ? `[${pathToFoldAccessorExpr(
           `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath, "Record<string, unknown>")})`,
-          target.chainArrayPath
+          target.chainArrayPath,
         )}]`
       : pathToFoldAccessorExpr(
           `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
-          target.chainArrayPath
+          target.chainArrayPath,
         );
   if (wholeArrayKey !== null) {
     return [
@@ -10153,7 +11109,11 @@ export function emitFoldMatchAndMergeLines(
       `      if (foldMatches${suffix} != null && !(${JSON.stringify(wholeArrayKey)} in ${itemVar})) Object.assign(${itemVar}, { [${JSON.stringify(wholeArrayKey)}]: foldMatches${suffix} });`,
     ];
   }
-  const matchAccessorFor = (f: string, varName: string, optionalRoot: boolean): string => {
+  const matchAccessorFor = (
+    f: string,
+    varName: string,
+    optionalRoot: boolean,
+  ): string => {
     const segments = f.split(".");
     // The drill-down response is a DIFFERENT payload than the
     // primary item, so it has no obligation to mirror the
@@ -10165,22 +11125,30 @@ export function emitFoldMatchAndMergeLines(
     // then fall back to the bare last segment.
     const lastSegment = segments[segments.length - 1]!;
     const bracket = (segment: string): string =>
-      optionalRoot ? `?.[${JSON.stringify(segment)}]` : `[${JSON.stringify(segment)}]`;
+      optionalRoot
+        ? `?.[${JSON.stringify(segment)}]`
+        : `[${JSON.stringify(segment)}]`;
     // Every intermediate hop off the (unknown-typed) candidate needs
     // re-asserting back to `Record<string, unknown>` before the next bracket
     // access — see {@link unknownValueAccessor}'s doc for why a bare chain of
     // `?.[...]` accessors fails to typecheck past the first segment.
     const nestedAccessor = segments.reduce((expr, segment, index) => {
       const isLast = index === segments.length - 1;
-      const accessor = index === 0 ? bracket(segment) : `?.[${JSON.stringify(segment)}]`;
-      return isLast ? `${expr}${accessor}` : `(${expr}${accessor} as Record<string, unknown>)`;
+      const accessor =
+        index === 0 ? bracket(segment) : `?.[${JSON.stringify(segment)}]`;
+      return isLast
+        ? `${expr}${accessor}`
+        : `(${expr}${accessor} as Record<string, unknown>)`;
     }, varName);
     return segments.length > 1
       ? `(${nestedAccessor} ?? ${varName}${bracket(lastSegment)})`
       : `${varName}${bracket(lastSegment)}`;
   };
   const joinCondition = target.joinFields
-    .map((f) => `String(${matchAccessorFor(f, "m", false)}) === String(${joinAccessor(f)})`)
+    .map(
+      (f) =>
+        `String(${matchAccessorFor(f, "m", false)}) === String(${joinAccessor(f)})`,
+    )
     .join(" && ");
   // A sole candidate whose join field(s) aren't present on it at all
   // (common: many drill endpoints don't echo the request key back onto
@@ -10189,7 +11157,10 @@ export function emitFoldMatchAndMergeLines(
   // with a different value is a genuine mismatch and must not be grafted
   // on; two-or-more candidates always require an actual join-key match.
   const soleCandidateFieldsAbsent = target.joinFields
-    .map((f) => `${matchAccessorFor(f, `foldMatches${suffix}[0]`, true)} === undefined`)
+    .map(
+      (f) =>
+        `${matchAccessorFor(f, `foldMatches${suffix}[0]`, true)} === undefined`,
+    )
     .join(" && ");
   return [
     `      const foldMatches${suffix} = ${foldMatchesExpr};`,
@@ -10203,7 +11174,8 @@ export function emitFoldMatchAndMergeLines(
 function parseUrlQueryParams(url: string): Map<string, string> {
   const params = new Map<string, string>();
   try {
-    for (const [key, value] of new URL(url).searchParams) params.set(key, value);
+    for (const [key, value] of new URL(url).searchParams)
+      params.set(key, value);
   } catch {
     // malformed URL — treat as having no query params
   }
@@ -10225,7 +11197,9 @@ function parseUrlQueryValues(url: string): string[] {
 function parseBodyLeafValues(requestPostData: string | null): string[] {
   if (!requestPostData) return [];
   try {
-    return [...walkStringLeaves(JSON.parse(requestPostData))].map((leaf) => leaf.value);
+    return [...walkStringLeaves(JSON.parse(requestPostData))].map(
+      (leaf) => leaf.value,
+    );
   } catch {
     return [];
   }
@@ -10255,7 +11229,7 @@ function parseBodyLeafValues(requestPostData: string | null): string[] {
  */
 function collectNewlyAppearingRequestValueTransitions(
   actions: readonly Pick<ActionStep, "capture">[],
-  explainedLiterals: readonly string[] = []
+  explainedLiterals: readonly string[] = [],
 ): string[][] {
   const seenGlobally = new Set<string>();
   const transitions: string[][] = [];
@@ -10265,8 +11239,18 @@ function collectNewlyAppearingRequestValueTransitions(
     const seenThisTransition = new Set<string>();
     const values: string[] = [];
     const record = (value: string): void => {
-      if (value.length === 0 || seenGlobally.has(value) || seenThisTransition.has(value)) return;
-      if (explainedLiterals.some((literal) => occursAtTokenBoundary(value, literal))) return;
+      if (
+        value.length === 0 ||
+        seenGlobally.has(value) ||
+        seenThisTransition.has(value)
+      )
+        return;
+      if (
+        explainedLiterals.some((literal) =>
+          occursAtTokenBoundary(value, literal),
+        )
+      )
+        return;
       seenThisTransition.add(value);
       values.push(value);
     };
@@ -10289,14 +11273,19 @@ function collectNewlyAppearingRequestValueTransitions(
  * flanked by an alphanumeric), so a global rewrite of it cannot mangle a longer
  * token. Shared by the persona-binding guard and facet identity resolution.
  */
-function bindsWithoutCollisionIn(bodies: readonly string[], value: string): boolean {
-  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+function bindsWithoutCollisionIn(
+  bodies: readonly string[],
+  value: string,
+): boolean {
+  const isAlnum = (ch: string | undefined): boolean =>
+    ch !== undefined && /[A-Za-z0-9]/.test(ch);
   for (const body of bodies) {
     let from = 0;
     while (true) {
       const at = body.indexOf(value, from);
       if (at === -1) break;
-      if (isAlnum(body[at - 1]) || isAlnum(body[at + value.length])) return false;
+      if (isAlnum(body[at - 1]) || isAlnum(body[at + value.length]))
+        return false;
       from = at + value.length;
     }
   }
@@ -10308,16 +11297,22 @@ function bindsWithoutCollisionIn(bodies: readonly string[], value: string): bool
  * so facet reachability agrees with the token-boundary {@link matchFacetRecurrence}
  * the splice passes use instead of counting a mere substring of a longer token.
  */
-function occursAtTokenBoundary(rawText: string, rawValue: string, ignoreCase = false): boolean {
+function occursAtTokenBoundary(
+  rawText: string,
+  rawValue: string,
+  ignoreCase = false,
+): boolean {
   if (rawValue.length === 0) return false;
   const text = ignoreCase ? rawText.toLowerCase() : rawText;
   const value = ignoreCase ? rawValue.toLowerCase() : rawValue;
-  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  const isAlnum = (ch: string | undefined): boolean =>
+    ch !== undefined && /[A-Za-z0-9]/.test(ch);
   let from = 0;
   while (true) {
     const at = text.indexOf(value, from);
     if (at === -1) return false;
-    if (!isAlnum(text[at - 1]) && !isAlnum(text[at + value.length])) return true;
+    if (!isAlnum(text[at - 1]) && !isAlnum(text[at + value.length]))
+      return true;
     from = at + 1;
   }
 }
@@ -10330,9 +11325,11 @@ function occursAtTokenBoundary(rawText: string, rawValue: string, ignoreCase = f
  */
 export function facetResolutionPool(
   actionSteps: readonly Pick<ActionStep, "capture">[],
-  allCaptures: readonly Capture[] = []
+  allCaptures: readonly Capture[] = [],
 ): readonly Pick<ActionStep, "capture">[] {
-  return actionSteps.length > 0 ? actionSteps : allCaptures.map((capture) => ({ capture }));
+  return actionSteps.length > 0
+    ? actionSteps
+    : allCaptures.map((capture) => ({ capture }));
 }
 
 /**
@@ -10345,7 +11342,7 @@ export function facetResolutionPool(
  */
 export function resolveRecurringNavigateToFacets(
   declared: readonly NavigateToFacetBinding[],
-  actions: readonly Pick<ActionStep, "capture">[]
+  actions: readonly Pick<ActionStep, "capture">[],
 ): NavigateToFacetBinding[] {
   const appearsAnywhere = (value: string): boolean =>
     actions.some(
@@ -10353,14 +11350,20 @@ export function resolveRecurringNavigateToFacets(
         occursAtTokenBoundary(capture.url, value, true) ||
         (capture.requestPostData != null &&
           occursAtTokenBoundary(capture.requestPostData, value, true)) ||
-        Object.values(capture.requestHeaders).some((h) => occursAtTokenBoundary(h, value, true))
+        Object.values(capture.requestHeaders).some((h) =>
+          occursAtTokenBoundary(h, value, true),
+        ),
     );
-  const reachable = declared.filter(({ value }) => value.length > 0 && appearsAnywhere(value));
+  const reachable = declared.filter(
+    ({ value }) => value.length > 0 && appearsAnywhere(value),
+  );
   const resolvedDeclared = declared.filter(
-    (facet) => facet.value.length > 0 && (facet.origin !== "step" || reachable.includes(facet))
+    (facet) =>
+      facet.value.length > 0 &&
+      (facet.origin !== "step" || reachable.includes(facet)),
   );
   const unreachable = declared.filter(
-    (facet) => facet.origin !== "step" && !reachable.includes(facet)
+    (facet) => facet.origin !== "step" && !reachable.includes(facet),
   );
   // Every declared facet also owns the elements of its own kind in the code
   // vocabulary, whether or not its declared literal recurs: a literal that
@@ -10377,25 +11380,39 @@ export function resolveRecurringNavigateToFacets(
         const known = [facet.value, ...(facet.literals ?? [])];
         // A case-only variant is already owned by the declared facet, whose
         // renderer re-cases any caller value to the captured element's casing.
-        if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
+        if (
+          known.some(
+            (candidate) => candidate.toLowerCase() === literal.toLowerCase(),
+          )
+        )
+          return [];
         // The traffic carries codes, not which declared value each belongs to;
         // pair only where the code abbreviates the value, never by position.
         const sameField = declared.filter(
-          ({ field, value }) => field === facet.field && value.length > 0
+          ({ field, value }) => field === facet.field && value.length > 0,
         );
-        const abbreviated = sameField.filter(({ value }) => abbreviates(literal, value));
-        const owners = abbreviated.length > 0 || sameField.length !== 1 ? abbreviated : sameField;
+        const abbreviated = sameField.filter(({ value }) =>
+          abbreviates(literal, value),
+        );
+        const owners =
+          abbreviated.length > 0 || sameField.length !== 1
+            ? abbreviated
+            : sameField;
         if (owners.length > 0)
           pairsByField.set(facet.field, [
             ...(pairsByField.get(facet.field) ?? []),
             ...owners.map((owner): [string, string] => [owner.value, literal]),
           ]);
-        return [{ ...facet, value: literal, literals: [literal], keyedByKind: true }];
-      })
+        return [
+          { ...facet, value: literal, literals: [literal], keyedByKind: true },
+        ];
+      }),
     )
     .map((alias) => {
       const pairs = pairsByField.get(alias.field) ?? [];
-      return pairs.length === 0 ? alias : { ...alias, valueMap: new Map(pairs) };
+      return pairs.length === 0
+        ? alias
+        : { ...alias, valueMap: new Map(pairs) };
     });
   if (unreachable.length === 0 && aliased.length === 0) return resolvedDeclared;
   const aliasedFields = new Set(aliased.map(({ field }) => field));
@@ -10405,17 +11422,21 @@ export function resolveRecurringNavigateToFacets(
   const correlated = correlateUnreachableNavigateToFacets(
     awaiting,
     actions,
-    [...reachable, ...aliased].map(({ value }) => value)
+    [...reachable, ...aliased].map(({ value }) => value),
   );
   if (correlated === null) return withAliases;
   const bodies = actions
     .map(({ capture }) => capture.requestPostData)
-    .filter((body): body is string => typeof body === "string" && body.length > 0);
+    .filter(
+      (body): body is string => typeof body === "string" && body.length > 0,
+    );
   const extras = awaiting.flatMap((facet) => {
     const diffed = correlated.get(facet.field);
     if (diffed === undefined || diffed.length === 0) return [];
     if (declared.some(({ value }) => value === diffed)) return [];
-    return bindsWithoutCollisionIn(bodies, diffed) ? [{ ...facet, value: diffed }] : [];
+    return bindsWithoutCollisionIn(bodies, diffed)
+      ? [{ ...facet, value: diffed }]
+      : [];
   });
   return [...withAliases, ...extras];
 }
@@ -10431,19 +11452,19 @@ export function resolveRecurringNavigateToFacets(
  */
 function findKindKeyedLiterals(
   facet: NavigateToFacetBinding,
-  actions: readonly Pick<ActionStep, "capture">[]
+  actions: readonly Pick<ActionStep, "capture">[],
 ): string[] {
   const byTier = new Map<number, Set<string>>();
   const sameMonth = new Set<string>();
   const facetMonths = new Set(
     [facet.value, ...(facet.literals ?? [])]
       .map((literal) => monthCodeOf(literal))
-      .filter((code): code is string => code !== undefined)
+      .filter((code): code is string => code !== undefined),
   );
   const yearlessMonths = new Set(
     [facet.value, ...(facet.literals ?? [])]
       .map((literal) => bareMonthNumberOf(literal))
-      .filter((month): month is string => month !== undefined)
+      .filter((month): month is string => month !== undefined),
   );
   for (const { capture } of actions) {
     const values = [
@@ -10454,15 +11475,17 @@ function findKindKeyedLiterals(
       const parsed = parseElementKind(value);
       if (parsed === undefined) continue;
       const tier = kindMatchTier(facet, parsed.kind);
-      if (tier > 0) byTier.set(tier, (byTier.get(tier) ?? new Set()).add(parsed.literal));
+      if (tier > 0)
+        byTier.set(tier, (byTier.get(tier) ?? new Set()).add(parsed.literal));
       const month = monthCodeOf(parsed.literal);
       const isOwnLiteral = [facet.value, ...(facet.literals ?? [])].some(
-        (known) => known.toLowerCase() === parsed.literal.toLowerCase()
+        (known) => known.toLowerCase() === parsed.literal.toLowerCase(),
       );
       if (
         month !== undefined &&
         !isOwnLiteral &&
-        (facetMonths.has(month) || yearlessMonths.has(month.slice("YYYY-".length)))
+        (facetMonths.has(month) ||
+          yearlessMonths.has(month.slice("YYYY-".length)))
       ) {
         sameMonth.add(parsed.literal);
       }
@@ -10470,8 +11493,12 @@ function findKindKeyedLiterals(
   }
   const closest = [...byTier.entries()].sort(([a], [b]) => a - b)[0]?.[1];
   if (closest === undefined) return sameMonth.size === 1 ? [...sameMonth] : [];
-  const sameMonthInKind = [...closest].filter((literal) => sameMonth.has(literal));
-  return sameMonthInKind.length > 0 && closest.size > 1 ? sameMonthInKind : [...closest];
+  const sameMonthInKind = [...closest].filter((literal) =>
+    sameMonth.has(literal),
+  );
+  return sameMonthInKind.length > 0 && closest.size > 1
+    ? sameMonthInKind
+    : [...closest];
 }
 
 /**
@@ -10498,9 +11525,12 @@ function findKindKeyedLiterals(
 function correlateUnreachableNavigateToFacets(
   facets: readonly NavigateToFacetBinding[],
   actions: readonly Pick<ActionStep, "capture">[],
-  explainedLiterals: readonly string[]
+  explainedLiterals: readonly string[],
 ): ReadonlyMap<string, string> | null {
-  const transitions = collectNewlyAppearingRequestValueTransitions(actions, explainedLiterals);
+  const transitions = collectNewlyAppearingRequestValueTransitions(
+    actions,
+    explainedLiterals,
+  );
   const byField = new Map<string, string>();
   if (transitions.length === facets.length) {
     facets.forEach(({ field }, index) => {
@@ -10563,7 +11593,7 @@ export function emitMultiStepExecuteHttp(
   flowSteps: FlowStepInput[] = [],
   vocabulary: ReconVocabulary | undefined = undefined,
   /** Explicit `applicantContract` flow declaration; see {@link contractUsesApplicantContactSchema}. */
-  applicantContract: boolean | undefined = undefined
+  applicantContract: boolean | undefined = undefined,
 ): string {
   interface Rendered {
     url: string;
@@ -10595,14 +11625,19 @@ export function emitMultiStepExecuteHttp(
     optionalPayloadFieldNames: restOptionalFieldNames,
   } = computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env);
   const payloadAccessorByValue = new Map<string, string>();
-  const declaredNavigateToFacets = extractNavigateToFacetOrder(flowSteps, process.env);
+  const declaredNavigateToFacets = extractNavigateToFacetOrder(
+    flowSteps,
+    process.env,
+  );
   const navigateToFacetOrder = resolveRecurringNavigateToFacets(
     declaredNavigateToFacets,
-    facetResolutionPool(actions)
+    facetResolutionPool(actions),
   );
   const facetArrayPathKeys = collectFacetArrayPathKeys(
-    actions.map((action) => parseJsonBodyOrNull(action.capture.requestPostData)),
-    navigateToFacetOrder
+    actions.map((action) =>
+      parseJsonBodyOrNull(action.capture.requestPostData),
+    ),
+    navigateToFacetOrder,
   );
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
@@ -10617,10 +11652,18 @@ export function emitMultiStepExecuteHttp(
       if (isInsideOwnedArray(path, facetArrayPathKeys)) continue;
       // A leaf recurring as a declared facet literal binds to that facet's
       // payloadField via the persona pass, not to a by-index accessor.
-      if (matchFacetRecurrence(value, navigateToFacetOrder, { allowDelimiterSuffix: true })) {
+      if (
+        matchFacetRecurrence(value, navigateToFacetOrder, {
+          allowDelimiterSuffix: true,
+        })
+      ) {
         continue;
       }
-      const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
+      const {
+        accessor,
+        field: accessorField,
+        structuredRootPath,
+      } = payloadAccessorForPath(path);
       payloadAccessorByValue.set(value, accessor);
       // The accessor indexes into this field, so its declared type must be the
       // structured shape regardless of whether Mechanism B visited the key.
@@ -10628,10 +11671,11 @@ export function emitMultiStepExecuteHttp(
         registerStructuredPayloadField(
           outStructuredKeys,
           accessorField,
-          valueAtJsonPath(inputBody, structuredRootPath)
+          valueAtJsonPath(inputBody, structuredRootPath),
         );
       }
-      if (isValidJsIdentifier(accessorField)) outDiscoveredFields.add(accessorField);
+      if (isValidJsIdentifier(accessorField))
+        outDiscoveredFields.add(accessorField);
       // Phase F: register a lowercase variant for UUID-shaped values so case-
       // variant URL path segments (e.g. r9 echoes the requisition UUID in
       // lowercase even though r0's body had it uppercase) still get
@@ -10650,7 +11694,10 @@ export function emitMultiStepExecuteHttp(
     // redirect query parameter) is still the runtime origin.
     const encodedOrigin = encodeURIComponent(baseUrl);
     if (encodedOrigin !== baseUrl) {
-      payloadAccessorByValue.set(encodedOrigin, "encodeURIComponent(context.baseUrl)");
+      payloadAccessorByValue.set(
+        encodedOrigin,
+        "encodeURIComponent(context.baseUrl)",
+      );
     }
   }
   // Persona identity bindings (from the flow's quoted literals + RECON_EMAIL,
@@ -10673,7 +11720,8 @@ export function emitMultiStepExecuteHttp(
   const actionBodies = actions
     .map((a) => a.capture.requestPostData)
     .filter((b): b is string => typeof b === "string" && b.length > 0);
-  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  const isAlnum = (ch: string | undefined): boolean =>
+    ch !== undefined && /[A-Za-z0-9]/.test(ch);
   const bindsWithoutCollision = (value: string): boolean => {
     for (const body of actionBodies) {
       let from = 0;
@@ -10682,7 +11730,8 @@ export function emitMultiStepExecuteHttp(
         if (at === -1) break;
         // Flanked by an alphanumeric on either side → it's a substring of a
         // longer token; binding it would mangle that token. Block the value.
-        if (isAlnum(body[at - 1]) || isAlnum(body[at + value.length])) return false;
+        if (isAlnum(body[at - 1]) || isAlnum(body[at + value.length]))
+          return false;
         from = at + value.length;
       }
     }
@@ -10691,9 +11740,13 @@ export function emitMultiStepExecuteHttp(
   for (const [value, accessor] of personaBindings) {
     if (value.length === 0) continue;
     if (!bindsWithoutCollision(value)) continue;
-    if (!payloadAccessorByValue.has(value)) payloadAccessorByValue.set(value, accessor);
-    const field = accessor.startsWith("payload.") ? accessor.slice("payload.".length) : null;
-    if (field !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(field)) outDiscoveredFields.add(field);
+    if (!payloadAccessorByValue.has(value))
+      payloadAccessorByValue.set(value, accessor);
+    const field = accessor.startsWith("payload.")
+      ? accessor.slice("payload.".length)
+      : null;
+    if (field !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(field))
+      outDiscoveredFields.add(field);
   }
   // Fallback for a navigateTo step's declared `payloadField` whose extracted
   // hash literal has ZERO recurrence anywhere in the capture — not merely
@@ -10718,7 +11771,9 @@ export function emitMultiStepExecuteHttp(
   // and the field(s) stay unbound rather than risk a wrong binding.
   // Every facet any splice pass binds comes from the one resolved list, so the
   // schema declaration and accessor table cannot disagree with the splices.
-  const declaredFacetValues = new Set(declaredNavigateToFacets.map(({ value }) => value));
+  const declaredFacetValues = new Set(
+    declaredNavigateToFacets.map(({ value }) => value),
+  );
   for (const { value, field } of navigateToFacetOrder) {
     if (!isValidJsIdentifier(field)) continue;
     if (declaredFacetValues.has(value)) {
@@ -10736,9 +11791,13 @@ export function emitMultiStepExecuteHttp(
   // jobId inside a jobSeqNo — rewrites to the caller-supplied value.
   for (const [value, accessor] of entryUrlParams) {
     if (value.length === 0) continue;
-    if (!payloadAccessorByValue.has(value)) payloadAccessorByValue.set(value, accessor);
-    const field = accessor.startsWith("payload.") ? accessor.slice("payload.".length) : null;
-    if (field !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(field)) outDiscoveredFields.add(field);
+    if (!payloadAccessorByValue.has(value))
+      payloadAccessorByValue.set(value, accessor);
+    const field = accessor.startsWith("payload.")
+      ? accessor.slice("payload.".length)
+      : null;
+    if (field !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(field))
+      outDiscoveredFields.add(field);
   }
   // Producer-boundary job coordinates: values a step's response produces (and
   // steps 2..N thread as `${var}`) that ALSO appear in that producing step's
@@ -10750,7 +11809,7 @@ export function emitMultiStepExecuteHttp(
   // var would otherwise fragment. `bindsWithoutCollision`-guarded like personas.
   const producerBoundaryBindings = deriveProducerBoundaryBindings(
     actions,
-    new Map(payloadAccessorByValue)
+    new Map(payloadAccessorByValue),
   );
   for (const [value, { accessor, field }] of producerBoundaryBindings) {
     // Always declare: the whole-value pass binds this value's own JSON slot on
@@ -10790,7 +11849,9 @@ export function emitMultiStepExecuteHttp(
   // carries the request field itself) is available to bound a request-side
   // numeric field — the ceiling and the field it bounds are frequently
   // declared on different calls (an availability check, then a booking).
-  const allResponseBodies: unknown[] = actions.map((a) => a.capture.responseBody);
+  const allResponseBodies: unknown[] = actions.map(
+    (a) => a.capture.responseBody,
+  );
 
   // Every value `applyPayloadKeyValueSubstitutions` will unconditionally
   // payload-ify from the ENTRY payload's own top-level key/value pairs,
@@ -10806,7 +11867,11 @@ export function emitMultiStepExecuteHttp(
   // real cross-step state threading. Only the caller's OWN entry payload is
   // an unambiguous non-state origin.
   const topLevelPayloadKvValues = new Set<string>();
-  if (inputBody !== undefined && inputBody !== null && !Array.isArray(inputBody)) {
+  if (
+    inputBody !== undefined &&
+    inputBody !== null &&
+    !Array.isArray(inputBody)
+  ) {
     for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
       if (path.length !== 1) continue;
       const key = path[0]!;
@@ -10829,9 +11894,11 @@ export function emitMultiStepExecuteHttp(
     for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) {
       if (UUID_REGEX.test(v) && !shieldedUuids.has(v)) seen.add(v);
     }
-    for (const v of seen) uuidBodyCounts.set(v, (uuidBodyCounts.get(v) ?? 0) + 1);
+    for (const v of seen)
+      uuidBodyCounts.set(v, (uuidBodyCounts.get(v) ?? 0) + 1);
   }
-  const threadedTxnId = [...uuidBodyCounts.entries()].find(([, n]) => n >= 2)?.[0] ?? null;
+  const threadedTxnId =
+    [...uuidBodyCounts.entries()].find(([, n]) => n >= 2)?.[0] ?? null;
   // The value→`${txnId}` binding rides the same substitution map as payload
   // accessors (Pass 2 of interpolateStateValues); the hoisted `const txnId`
   // declaration is emitted once above the step sequence below. `txnId` is a
@@ -10880,7 +11947,9 @@ export function emitMultiStepExecuteHttp(
   const absorbedSiblingBodiesByStep = new Map<number, unknown[]>();
   for (const plan of earlyFoldPlans) {
     for (const target of plan.targets) {
-      const drillEndpoint = endpointKey(actions[target.drillStepIndex]!.capture.url);
+      const drillEndpoint = endpointKey(
+        actions[target.drillStepIndex]!.capture.url,
+      );
       const siblings = plan.absorbedIndices
         .map((index) => actions[index]!.capture)
         .filter((capture) => endpointKey(capture.url) === drillEndpoint)
@@ -10891,41 +11960,50 @@ export function emitMultiStepExecuteHttp(
   for (const plan of earlyFoldPlans) {
     const primaryItems = objectItemsAtPath(
       actions[plan.primaryStepIndex]!.capture.responseBody,
-      plan.primaryArrayPath
+      plan.primaryArrayPath,
     );
     for (const target of plan.targets) {
       const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
       if (!firstItem) continue;
       for (const stepIndex of [target.drillStepIndex, ...target.chain]) {
-        const headerNames = joinCarryingHeaderNamesByStep.get(stepIndex) ?? new Set<string>();
+        const headerNames =
+          joinCarryingHeaderNamesByStep.get(stepIndex) ?? new Set<string>();
         for (const [headerName, headerValue] of Object.entries(
-          actions[stepIndex]!.capture.requestHeaders
+          actions[stepIndex]!.capture.requestHeaders,
         )) {
           const matchesJoinField = target.joinFields.some((field) => {
             const value = readValueAtPath(firstItem, field.split("."));
             return (
-              (typeof value === "string" && value.length > 0 && value === headerValue) ||
+              (typeof value === "string" &&
+                value.length > 0 &&
+                value === headerValue) ||
               ((typeof value === "number" || typeof value === "boolean") &&
                 String(value) === headerValue)
             );
           });
           if (matchesJoinField) headerNames.add(headerName);
         }
-        if (headerNames.size > 0) joinCarryingHeaderNamesByStep.set(stepIndex, headerNames);
-        const joinValues = joinFieldValuesByStep.get(stepIndex) ?? new Set<string>();
+        if (headerNames.size > 0)
+          joinCarryingHeaderNamesByStep.set(stepIndex, headerNames);
+        const joinValues =
+          joinFieldValuesByStep.get(stepIndex) ?? new Set<string>();
         for (const field of target.joinFields) {
           const value = readValueAtPath(firstItem, field.split("."));
-          if (typeof value === "string" && value.length > 0) joinValues.add(value);
+          if (typeof value === "string" && value.length > 0)
+            joinValues.add(value);
           else if (typeof value === "number" || typeof value === "boolean")
             joinValues.add(String(value));
         }
         const templateTokens =
-          target.joinTemplate === undefined ? null : parseJoinTemplate(target.joinTemplate);
+          target.joinTemplate === undefined
+            ? null
+            : parseJoinTemplate(target.joinTemplate);
         const composedKey = templateTokens
           ? evalJoinTemplate(templateTokens, firstItem)
           : undefined;
         if (composedKey !== undefined) joinValues.add(composedKey);
-        if (joinValues.size > 0) joinFieldValuesByStep.set(stepIndex, joinValues);
+        if (joinValues.size > 0)
+          joinFieldValuesByStep.set(stepIndex, joinValues);
       }
     }
   }
@@ -10941,10 +12019,11 @@ export function emitMultiStepExecuteHttp(
   for (const { capture } of actions) {
     for (const headerName of Object.keys(capture.requestHeaders)) {
       const lower = headerName.toLowerCase();
-      if (!isVolatileHeaderName(lower) || volatileHeaderVarNames.has(lower)) continue;
+      if (!isVolatileHeaderName(lower) || volatileHeaderVarNames.has(lower))
+        continue;
       volatileHeaderVarNames.set(
         lower,
-        `${headerNameToPayloadFieldName(headerName).replace(/^./, (c) => c.toLowerCase())}Value`
+        `${headerNameToPayloadFieldName(headerName).replace(/^./, (c) => c.toLowerCase())}Value`,
       );
     }
   }
@@ -10961,7 +12040,9 @@ export function emitMultiStepExecuteHttp(
     const cap = step.capture;
     // An unavailable-body marker means "a body existed" — never emit or parse it.
     const emittableBody =
-      cap.requestPostData === REQUEST_BODY_UNAVAILABLE ? null : cap.requestPostData;
+      cap.requestPostData === REQUEST_BODY_UNAVAILABLE
+        ? null
+        : cap.requestPostData;
     const prior = actions.slice(0, i);
     // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
     // must never be treated as an interpolation target at all: its URL is
@@ -10982,7 +12063,7 @@ export function emitMultiStepExecuteHttp(
           producerBoundaryBindings,
           i,
           new Set(),
-          joinFieldValuesByStep.get(i) ?? new Set()
+          joinFieldValuesByStep.get(i) ?? new Set(),
         );
     // Form-schema substitution runs first on the raw recon body so its
     // field-id-anchored matches see the original JSON. State-threading and
@@ -11000,16 +12081,16 @@ export function emitMultiStepExecuteHttp(
                 emittableBody,
                 fieldNameMap,
                 outDiscoveredFields,
-                formSchema
+                formSchema,
               ),
               fieldOptionsMap,
               outDiscoveredOptionFields,
-              formSchema
+              formSchema,
             ),
             fieldNameMap,
             fieldOptionsMap,
             outDiscoveredRawOptionFields,
-            formSchema
+            formSchema,
           )
         : (emittableBody ?? "");
     // Parsed once and shared by the structured (Mechanism B) and volatile passes
@@ -11039,7 +12120,7 @@ export function emitMultiStepExecuteHttp(
             parsedBody,
             restPayloadFieldNames,
             restOptionalFieldNames,
-            navigateToFacetOrder
+            navigateToFacetOrder,
           )
         : rawBodyWithFormSubs;
     // Optional-facet array-element splice — a navigateTo facet literal
@@ -11056,7 +12137,7 @@ export function emitMultiStepExecuteHttp(
             parsedBody,
             navigateToFacetOrder,
             facetArrayPathKeys,
-            absorbedSiblingBodiesByStep.get(i)
+            absorbedSiblingBodiesByStep.get(i),
           )
         : rawBodyWithFacetSplices;
     const rawBodyWithScalarFacetSplices =
@@ -11064,7 +12145,7 @@ export function emitMultiStepExecuteHttp(
         ? applyScalarFacetSplicePayloadSubstitutions(
             rawBodyWithOptionalArrayFacetSplices,
             parsedBody,
-            navigateToFacetOrder
+            navigateToFacetOrder,
           )
         : rawBodyWithOptionalArrayFacetSplices;
     // Mechanism B — parameterize whole nested caller structures
@@ -11085,7 +12166,7 @@ export function emitMultiStepExecuteHttp(
             deriveStateVarByValue(prior, cap),
             joinFieldValuesByStep.get(i) ?? new Set(),
             payloadAccessorByValue,
-            facetArrayPathKeys
+            facetArrayPathKeys,
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
@@ -11101,7 +12182,7 @@ export function emitMultiStepExecuteHttp(
             parsedBody,
             producerBoundaryBindings,
             entryUrlParams,
-            i
+            i,
           )
         : rawBodyWithStructuredSubs;
     // Coordinates copied into a URL-valued leaf's query string bind here, BEFORE
@@ -11112,9 +12193,11 @@ export function emitMultiStepExecuteHttp(
     // state var (jobId2) wins over the caller payload accessor for that same
     // coordinate on steps that thread it, matching the top-level slot's behaviour.
     const urlParamBindings = new Map<string, string>(payloadAccessorByValue);
-    for (const [value, accessor] of entryUrlParams) urlParamBindings.set(value, accessor);
+    for (const [value, accessor] of entryUrlParams)
+      urlParamBindings.set(value, accessor);
     for (const [value, binding] of producerBoundaryBindings) {
-      if (binding.producerIndex === i) urlParamBindings.set(value, binding.accessor);
+      if (binding.producerIndex === i)
+        urlParamBindings.set(value, binding.accessor);
     }
     for (const [value, binding] of deriveStateVarByValue(prior, cap)) {
       urlParamBindings.set(value, binding.varName);
@@ -11124,7 +12207,7 @@ export function emitMultiStepExecuteHttp(
         ? applyUrlParamPayloadSubstitutions(
             rawBodyWithProducerBoundary,
             parsedBody,
-            urlParamBindings
+            urlParamBindings,
           )
         : rawBodyWithProducerBoundary;
     const bodyAfterStateAndKv = rawBodyWithUrlParams
@@ -11138,14 +12221,14 @@ export function emitMultiStepExecuteHttp(
             producerBoundaryBindings,
             i,
             topLevelPayloadKvValues,
-            joinFieldValuesByStep.get(i) ?? new Set()
+            joinFieldValuesByStep.get(i) ?? new Set(),
           ),
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys,
           allResponseBodies,
           outStructuredKeys,
-          baseUrl
+          baseUrl,
         )
       : "";
     // Mechanism A — generic (plain-JSON, wire-key-anchored) dropdown label→code
@@ -11162,9 +12245,9 @@ export function emitMultiStepExecuteHttp(
             bodyAfterStateAndKv,
             selectResolutions,
             fieldOptionsMap,
-            outDiscoveredOptionFields
+            outDiscoveredOptionFields,
           ),
-          rawCodeFields
+          rawCodeFields,
         )
       : bodyAfterStateAndKv;
     // Volatile pass: after persona/job/state/kv binding, regenerate any
@@ -11177,7 +12260,7 @@ export function emitMultiStepExecuteHttp(
         bodyTemplate,
         parsedBody,
         shieldedUuids,
-        boundValues
+        boundValues,
       );
       // A later write that threads a prior response carries the caller's own scalars (contact
       // details and the like): bind each still-literal string leaf to a payload input instead
@@ -11186,8 +12269,8 @@ export function emitMultiStepExecuteHttp(
       const threadsPriorResponse = (text: string): boolean =>
         prior.some((p) =>
           [p.varName, ...p.produces.map((pr) => pr.name)].some((name) =>
-            new RegExp(`\\$\\{[^}]*(?<![.\\w])${name}\\b`).test(text)
-          )
+            new RegExp(`\\$\\{[^}]*(?<![.\\w])${name}\\b`).test(text),
+          ),
         );
       if (
         isMutatingMethod(cap.method) &&
@@ -11201,10 +12284,14 @@ export function emitMultiStepExecuteHttp(
           boundValues,
           baseUrl,
           payloadAccessorByValue,
-          outDiscoveredFields
+          outDiscoveredFields,
         );
       }
-      for (const key of collectUnboundLiterals(bodyTemplate, parsedBody, shieldedUuids)) {
+      for (const key of collectUnboundLiterals(
+        bodyTemplate,
+        parsedBody,
+        shieldedUuids,
+      )) {
         unboundLiteralKeys.add(key);
       }
     }
@@ -11230,7 +12317,9 @@ export function emitMultiStepExecuteHttp(
 
     const joinCarryingHeaderNames = joinCarryingHeaderNamesByStep.get(i);
     const boundHeaderNames = new Set(
-      collectHeaderBindings(actions as ActionStep[]).map((b) => b.targetHeader.toLowerCase())
+      collectHeaderBindings(actions as ActionStep[]).map((b) =>
+        b.targetHeader.toLowerCase(),
+      ),
     );
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
@@ -11260,7 +12349,7 @@ export function emitMultiStepExecuteHttp(
         payloadAccessorByValue,
         false,
         producerBoundaryBindings,
-        i
+        i,
       );
       // Authorization/Api-Token and a structurally-detected join-carrying
       // header are always emitted per-call (even when interpolation finds
@@ -11311,14 +12400,16 @@ export function emitMultiStepExecuteHttp(
     let multipartBodyCrlf = false;
     if (cap.requestPostData !== null && cap.requestPostData !== undefined) {
       const capturedCt = Object.entries(cap.requestHeaders).find(
-        ([k]) => k.toLowerCase() === "content-type"
+        ([k]) => k.toLowerCase() === "content-type",
       )?.[1];
       // Header absent or non-multipart: derive type+boundary from the body's own
       // first delimiter line so the JSON BASE_HEADERS type never wins.
       const delim = /^(--[^\r\n]+)\r?\n/.exec(cap.requestPostData);
       const bodyLooksMultipart =
-        delim !== null && /^Content-Disposition:\s*form-data/im.test(cap.requestPostData);
-      const capturedMultipart = capturedCt?.toLowerCase().includes("multipart/") === true;
+        delim !== null &&
+        /^Content-Disposition:\s*form-data/im.test(cap.requestPostData);
+      const capturedMultipart =
+        capturedCt?.toLowerCase().includes("multipart/") === true;
       const multipartCt = capturedMultipart
         ? /boundary=/i.test(capturedCt!) || !bodyLooksMultipart
           ? capturedCt
@@ -11331,7 +12422,10 @@ export function emitMultiStepExecuteHttp(
         for (const k of Object.keys(perCallHeaders)) {
           if (k.toLowerCase() === "content-type") delete perCallHeaders[k];
         }
-        perCallHeaders["Content-Type"] = multipartCt.replace(/[`\\]|\$\{/g, (m) => `\\${m}`);
+        perCallHeaders["Content-Type"] = multipartCt.replace(
+          /[`\\]|\$\{/g,
+          (m) => `\\${m}`,
+        );
       }
     }
     const headersExpr = Object.keys(perCallHeaders).length
@@ -11352,7 +12446,13 @@ export function emitMultiStepExecuteHttp(
     // contract would enforce that narrowed shape on every call in the chain.
     const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
-    rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
+    rendered.push({
+      url,
+      method: cap.method,
+      headersExpr,
+      bodyArg,
+      schemaExpr,
+    });
   }
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
@@ -11372,7 +12472,7 @@ export function emitMultiStepExecuteHttp(
       : [r.url, r.headersExpr, r.bodyArg];
     for (const haystack of haystacks) {
       for (const match of haystack.matchAll(
-        /\$\{(?:encodeURIComponent\(|\()*([A-Za-z_$][A-Za-z0-9_$]*)/g
+        /\$\{(?:encodeURIComponent\(|\()*([A-Za-z_$][A-Za-z0-9_$]*)/g,
       )) {
         referencedNames.add(match[1]!);
       }
@@ -11384,9 +12484,11 @@ export function emitMultiStepExecuteHttp(
   // whichever call selectReturnAction would otherwise pick — is what
   // `return { data }` must reference when any plan resolves.
   const foldPlans = earlyFoldPlans;
-  const returnAction = foldPlans.length > 0 ? null : selectReturnAction(actions);
+  const returnAction =
+    foldPlans.length > 0 ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
-  for (const plan of foldPlans) referencedNames.add(actions[plan.primaryStepIndex]!.varName);
+  for (const plan of foldPlans)
+    referencedNames.add(actions[plan.primaryStepIndex]!.varName);
 
   // Pass 2: emit. Skip response bindings that aren't referenced; skip
   // produces[] entries whose name isn't referenced. A step's response var
@@ -11413,7 +12515,7 @@ export function emitMultiStepExecuteHttp(
   // exactly which slots still carry recon data. Comment only — never blocks emit.
   if (unboundLiteralKeys.size > 0) {
     lines.push(
-      `    // TODO: unbound captured literal(s) — verify these carry caller data, not the recon capture's: ${[...unboundLiteralKeys].join(", ")}`
+      `    // TODO: unbound captured literal(s) — verify these carry caller data, not the recon capture's: ${[...unboundLiteralKeys].join(", ")}`,
     );
   }
   const declaredNames = new Set<string>();
@@ -11438,7 +12540,7 @@ export function emitMultiStepExecuteHttp(
     foldPlans.flatMap((plan) => [
       ...plan.targets.flatMap((target) => target.chain),
       ...plan.absorbedIndices,
-    ])
+    ]),
   );
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
@@ -11462,7 +12564,8 @@ export function emitMultiStepExecuteHttp(
     // own produced response values (later chain steps, which already render
     // with `${producedName}` templates — see deriveStateVarByValue).
     const matchingPlanIndex = foldPlans.findIndex(
-      (plan) => plan.targets.length > 0 && plan.targets[0]!.drillStepIndex === i
+      (plan) =>
+        plan.targets.length > 0 && plan.targets[0]!.drillStepIndex === i,
     );
     if (matchingPlanIndex !== -1) {
       const foldPlan = foldPlans[matchingPlanIndex]!;
@@ -11474,7 +12577,7 @@ export function emitMultiStepExecuteHttp(
       // real object to be read off of, not just the flattened leaf item.
       const primaryItemsWithAncestors = objectItemsWithAncestorsAtPath(
         primaryStep.capture.responseBody,
-        foldPlan.primaryArrayPath
+        foldPlan.primaryArrayPath,
       );
 
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
@@ -11488,14 +12591,19 @@ export function emitMultiStepExecuteHttp(
       // Nested `for` loops (not a `.flatMap`-derived collection) so every
       // intermediate array's binding stays addressable inside the innermost
       // loop body — see pathToFoldLoopLines's docstring.
-      const { ancestorOpenLines, itemOpenLines, itemCloseLines, ancestorCloseLines, ancestorVars } =
-        pathToFoldLoopLines(
-          `(${primaryStep.varName} as ${primaryArrType})`,
-          foldPlan.primaryArrayPath,
-          itemVar,
-          "    ",
-          planSuffix
-        );
+      const {
+        ancestorOpenLines,
+        itemOpenLines,
+        itemCloseLines,
+        ancestorCloseLines,
+        ancestorVars,
+      } = pathToFoldLoopLines(
+        `(${primaryStep.varName} as ${primaryArrType})`,
+        foldPlan.primaryArrayPath,
+        itemVar,
+        "    ",
+        planSuffix,
+      );
 
       // A target whose chain starts at the primary step itself is a
       // self-fold (resultsPath nests entirely inside the primary's own
@@ -11538,20 +12646,24 @@ export function emitMultiStepExecuteHttp(
         // target's drill request was actually built from, not always index
         // 0, and can differ per target even though every target now shares
         // the same runtime loop item.
-        const matchedPrimaryItem = primaryItemsWithAncestors[target.primaryMatchedItemIndex];
+        const matchedPrimaryItem =
+          primaryItemsWithAncestors[target.primaryMatchedItemIndex];
         if (!matchedPrimaryItem) {
           throw new Error(
-            `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
+            `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`,
           );
         }
-        const { item: firstItem, ancestors: firstItemAncestors } = matchedPrimaryItem;
+        const { item: firstItem, ancestors: firstItemAncestors } =
+          matchedPrimaryItem;
         // Each ancestor binding (`g0`, `g1`, ...) paired with the design-time
         // object it holds at runtime, so a threaded field resolved against
         // that binding can be read off the same object `readValueAtPath`
         // needs, and the runtime accessor built from the SAME variable name
         // the emitted nested loop actually declares.
         const ancestorObjByVar = new Map(
-          ancestorVars.map((varName, idx) => [varName, firstItemAncestors[idx]!] as const)
+          ancestorVars.map(
+            (varName, idx) => [varName, firstItemAncestors[idx]!] as const,
+          ),
         );
         // Searched ancestor-scope-first (outer to inner, then item last): a
         // drill whose value is resolvable from an ancestor binding should
@@ -11560,7 +12672,10 @@ export function emitMultiStepExecuteHttp(
         // (below) can lift the fetch above the per-item loop instead of
         // pinning it inside for byte-identical ancestor-scoped data.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          ...ancestorVars.map((varName) => ({
+            varName,
+            obj: ancestorObjByVar.get(varName)!,
+          })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -11573,14 +12688,17 @@ export function emitMultiStepExecuteHttp(
           target,
           actions,
           primaryItemsWithAncestors,
-          firstItemAncestors
+          firstItemAncestors,
         );
         // Each target's chain variables and merge result get their own
         // suffixed local names so multiple independent targets sharing the
         // same loop body can each declare their own locals without
         // colliding on `foldMatches`/`foldMatch`. The overwhelmingly common
         // single-target case keeps the original unsuffixed names.
-        const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
+        const suffix =
+          foldPlan.targets.length > 1
+            ? `${planSuffix}${targetIndex}`
+            : planSuffix;
         // Only `itemVar` (and fold-match candidates) are `Record<string,
         // unknown>`-typed; an ancestor loop var is typed by the primary-array
         // assertion, which declares only the path below it — see
@@ -11588,13 +12706,18 @@ export function emitMultiStepExecuteHttp(
         // cast form while an on-path chain keeps the plain property access.
         const typedRemainderByAncestor = ancestorTypedRemainders(
           foldPlan.primaryArrayPath,
-          ancestorVars
+          ancestorVars,
         );
         const scopedAccessor = (varName: string, field: string): string =>
           varName === itemVar
             ? unknownValueAccessor(varName, field.split("."))
-            : ancestorScopedAccessor(varName, field, typedRemainderByAncestor.get(varName) ?? null);
-        const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
+            : ancestorScopedAccessor(
+                varName,
+                field,
+                typedRemainderByAncestor.get(varName) ?? null,
+              );
+        const joinAccessor = (field: string): string =>
+          scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterize`
         // call: `actions` never changes across the url/headers/body calls a
         // single chain step makes (or across chain steps), so re-deriving
@@ -11611,7 +12734,10 @@ export function emitMultiStepExecuteHttp(
         const isProvenInvariantFor = (chainCapture: Capture): boolean => {
           const cached = isProvenInvariantMemo.get(chainCapture);
           if (cached !== undefined) return cached;
-          const computed = isZeroVarianceRepeatCapture(chainCapture, allCaptures);
+          const computed = isZeroVarianceRepeatCapture(
+            chainCapture,
+            allCaptures,
+          );
           isProvenInvariantMemo.set(chainCapture, computed);
           return computed;
         };
@@ -11636,7 +12762,11 @@ export function emitMultiStepExecuteHttp(
           // invisible and gets frozen as a literal.
           const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
-            ...findThreadedJoinFields(threadingScopes, chainCapture, allCaptures),
+            ...findThreadedJoinFields(
+              threadingScopes,
+              chainCapture,
+              allCaptures,
+            ),
           ]);
           // A proven ancestor-scoped drill (see isAncestorScoped above) still
           // rebinds fields findThreadedJoinFields left on itemVar purely
@@ -11654,7 +12784,7 @@ export function emitMultiStepExecuteHttp(
             isAncestorScoped,
             rawThreadedFields,
             itemVar,
-            ancestorScopes
+            ancestorScopes,
           );
           // Accessor swap first: rewrites an already-templated `${payload.X}`
           // reference (from applyPayloadKeyValueSubstitutions) to this field's
@@ -11664,33 +12794,37 @@ export function emitMultiStepExecuteHttp(
           // sequential pass here carries none of the reentrancy risk the
           // literal-value pass below has.
           let swapFiredForItemBoundField = false;
-          const swapped = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
-            const replacement = `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`;
-            // applyPayloadKeyValueSubstitutions only ever names a payload
-            // accessor after the DRILL REQUEST's own top-level JSON key
-            // (`${payload.sku}`), never after `field`'s dot path into the
-            // PRIMARY ITEM — those are unrelated structures that only
-            // happen to share a leaf name for a top-level join field. A
-            // nested join field (e.g. `identifiers.sku`) must therefore
-            // also match on its bare last segment, or the accessor swap
-            // silently no-ops and leaves an undefined `payload.sku`
-            // reference behind once the literal value itself has already
-            // been replaced by the payload-key-value pass.
-            const lastSegment = valueField.field.split(".").pop()!;
-            const payloadFieldPlaceholder = `\${payload.${valueField.field}}`;
-            const payloadLastSegmentPlaceholder = `\${payload.${lastSegment}}`;
-            if (
-              accessorField.varName === itemVar &&
-              (acc.includes(payloadFieldPlaceholder) || acc.includes(payloadLastSegmentPlaceholder))
-            ) {
-              swapFiredForItemBoundField = true;
-            }
-            return acc
-              .split(payloadFieldPlaceholder)
-              .join(replacement)
-              .split(payloadLastSegmentPlaceholder)
-              .join(replacement);
-          }, text);
+          const swapped = threadedFieldPairs.reduce(
+            (acc, { valueField, accessorField }) => {
+              const replacement = `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`;
+              // applyPayloadKeyValueSubstitutions only ever names a payload
+              // accessor after the DRILL REQUEST's own top-level JSON key
+              // (`${payload.sku}`), never after `field`'s dot path into the
+              // PRIMARY ITEM — those are unrelated structures that only
+              // happen to share a leaf name for a top-level join field. A
+              // nested join field (e.g. `identifiers.sku`) must therefore
+              // also match on its bare last segment, or the accessor swap
+              // silently no-ops and leaves an undefined `payload.sku`
+              // reference behind once the literal value itself has already
+              // been replaced by the payload-key-value pass.
+              const lastSegment = valueField.field.split(".").pop()!;
+              const payloadFieldPlaceholder = `\${payload.${valueField.field}}`;
+              const payloadLastSegmentPlaceholder = `\${payload.${lastSegment}}`;
+              if (
+                accessorField.varName === itemVar &&
+                (acc.includes(payloadFieldPlaceholder) ||
+                  acc.includes(payloadLastSegmentPlaceholder))
+              ) {
+                swapFiredForItemBoundField = true;
+              }
+              return acc
+                .split(payloadFieldPlaceholder)
+                .join(replacement)
+                .split(payloadLastSegmentPlaceholder)
+                .join(replacement);
+            },
+            text,
+          );
           // Literal-value substitution: ONE guarded regex-alternation pass over
           // `swapped` for every threaded field's value, longest first — see
           // substituteThreadedValues's doc for why a per-field sequential pass
@@ -11701,7 +12835,10 @@ export function emitMultiStepExecuteHttp(
                 valueField.varName === itemVar
                   ? firstItem
                   : ancestorObjByVar.get(valueField.varName)!;
-              const value = readValueAtPath(scopeObj, valueField.field.split("."));
+              const value = readValueAtPath(
+                scopeObj,
+                valueField.field.split("."),
+              );
               const stringValue =
                 typeof value === "string" && value.length > 0
                   ? value
@@ -11718,18 +12855,18 @@ export function emitMultiStepExecuteHttp(
             })
             .filter(
               (
-                b
+                b,
               ): b is {
                 value: string;
                 replacement: string;
                 isItemBound: boolean;
-              } => b !== null
+              } => b !== null,
             );
           const templateBinding = joinTemplateValueBinding(
             target,
             firstItem,
             itemVar,
-            scopedAccessor
+            scopedAccessor,
           );
           if (templateBinding) valueBindings.push(templateBinding);
           // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
@@ -11742,7 +12879,7 @@ export function emitMultiStepExecuteHttp(
           const isProvenInvariant = isProvenInvariantFor(chainCapture);
           const filteredValueBindings = isProvenInvariant
             ? valueBindings.filter((b) =>
-                isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures)
+                isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures),
               )
             : valueBindings;
           // Ground truth for the hoist gate, computed per FIELD from what
@@ -11761,14 +12898,20 @@ export function emitMultiStepExecuteHttp(
           // zero-variance guard) is correctly excluded here too — it never
           // reaches the rendered request, so it can't leak an out-of-scope
           // identifier into it.
-          if (swapFiredForItemBoundField || filteredValueBindings.some((b) => b.isItemBound)) {
+          if (
+            swapFiredForItemBoundField ||
+            filteredValueBindings.some((b) => b.isItemBound)
+          ) {
             referencesItemVar = true;
           }
-          const result = substituteThreadedValues(swapped, filteredValueBindings);
+          const result = substituteThreadedValues(
+            swapped,
+            filteredValueBindings,
+          );
           const withDrillParamBindings = applyDrillParamBindings(
             specForTarget(target, foldReturnSpec),
             chainCapture,
-            result
+            result,
           );
           // The frozen-varying-param safety net exists to catch a
           // misconfigured drill (a param that genuinely needs joinFields/an
@@ -11781,7 +12924,7 @@ export function emitMultiStepExecuteHttp(
               "emitMultiStepExecuteHttp",
               chainCapture,
               withDrillParamBindings,
-              allCaptures
+              allCaptures,
             );
           }
           return withDrillParamBindings;
@@ -11817,7 +12960,9 @@ export function emitMultiStepExecuteHttp(
           (target.payloadFlag !== undefined || target.attachAs !== undefined) &&
           target.chain[0] !== foldPlan.primaryStepIndex &&
           target.chainArrayPath.length === 0 &&
-          !Array.isArray(actions[target.chainTerminalIndex]!.capture.responseBody);
+          !Array.isArray(
+            actions[target.chainTerminalIndex]!.capture.responseBody,
+          );
         const itemVarRefPattern = new RegExp(`\\b${itemVar}\\b`);
         let referencesItemVar = ancestorVars.length === 0;
         // A chain step that produces a response HEADER threads it through
@@ -11846,11 +12991,15 @@ export function emitMultiStepExecuteHttp(
             }
             return out;
           };
-          const paramUrl = threadAttached(parameterize(chainRendered.url, chainStep.capture));
-          const paramHeaders = threadAttached(
-            parameterize(chainRendered.headersExpr, chainStep.capture)
+          const paramUrl = threadAttached(
+            parameterize(chainRendered.url, chainStep.capture),
           );
-          const paramBody = threadAttached(parameterize(chainRendered.bodyArg, chainStep.capture));
+          const paramHeaders = threadAttached(
+            parameterize(chainRendered.headersExpr, chainStep.capture),
+          );
+          const paramBody = threadAttached(
+            parameterize(chainRendered.bodyArg, chainStep.capture),
+          );
           if (
             itemVarRefPattern.test(paramUrl) ||
             itemVarRefPattern.test(paramHeaders) ||
@@ -11870,11 +13019,16 @@ export function emitMultiStepExecuteHttp(
           // references (Biome noUnusedVariables).
           const isChainTerminal = chainIndex === target.chainTerminalIndex;
           const hasReferencedProduce = chainStep.produces.some(
-            (p) => p.kind !== "header" && referencedNames.has(p.name) && !chainDeclared.has(p.name)
+            (p) =>
+              p.kind !== "header" &&
+              referencedNames.has(p.name) &&
+              !chainDeclared.has(p.name),
           );
           const chainHtmlProduces = chainStep.produces.filter(
             (p): p is HtmlProduce =>
-              p.kind === "html" && referencedNames.has(p.name) && !chainDeclared.has(p.name)
+              p.kind === "html" &&
+              referencedNames.has(p.name) &&
+              !chainDeclared.has(p.name),
           );
           const bindsChainResponse = isChainTerminal || hasReferencedProduce;
           if (chainHtmlProduces.length > 0) {
@@ -11889,8 +13043,8 @@ export function emitMultiStepExecuteHttp(
                 paramBody,
                 textVar,
                 chainStep.varName,
-                "      "
-              )
+                "      ",
+              ),
             );
             for (const p of chainHtmlProduces) {
               chainDeclared.add(p.name);
@@ -11902,13 +13056,17 @@ export function emitMultiStepExecuteHttp(
             bindsChainResponse
               ? `      const ${chainStep.varName} = (await httpClient(\`${paramUrl}\`, {`
               : `      await httpClient(\`${paramUrl}\`, {`,
-            `        method: ${JSON.stringify(chainRendered.method)},`
+            `        method: ${JSON.stringify(chainRendered.method)},`,
           );
-          const joined = [paramHeaders, paramBody].filter((s) => s !== "").join(" ");
+          const joined = [paramHeaders, paramBody]
+            .filter((s) => s !== "")
+            .join(" ");
           if (joined !== "") chainLines.push(`        ${joined}`);
           chainLines.push(`        schema: ${chainRendered.schemaExpr},`);
           chainLines.push(
-            bindsChainResponse ? `      })) as Record<string, unknown>;` : `      });`
+            bindsChainResponse
+              ? `      })) as Record<string, unknown>;`
+              : `      });`,
           );
           for (const p of chainStep.produces) {
             if (p.kind === "header") {
@@ -11920,16 +13078,18 @@ export function emitMultiStepExecuteHttp(
             if (!referencedNames.has(p.name)) continue;
             // The terminal's mint is read back off the item's attached
             // result by later targets; a block-scoped local would go unread.
-            if (mintsAttachedValues && chainIndex === target.chainTerminalIndex) continue;
+            if (mintsAttachedValues && chainIndex === target.chainTerminalIndex)
+              continue;
             chainDeclared.add(p.name);
             const assertion = pathToAssertionType(p.path, p.leafType);
             chainLines.push(
-              `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+              `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`,
             );
           }
         }
         const terminalStep = actions[target.chainTerminalIndex]!;
-        const isolated = target.payloadFlag !== undefined || target.attachAs !== undefined;
+        const isolated =
+          target.payloadFlag !== undefined || target.attachAs !== undefined;
         const matchLines = emitFoldMatchAndMergeLines(
           terminalStep,
           target,
@@ -11939,22 +13099,30 @@ export function emitMultiStepExecuteHttp(
           wholeArrayAttachKey(
             target,
             terminalStep.capture.responseBody,
-            actions[target.drillStepIndex]!.capture.url
-          )
+            actions[target.drillStepIndex]!.capture.url,
+          ),
         );
-        const drillName = drillLabel(actions[target.drillStepIndex]!.capture.url);
+        const drillName = drillLabel(
+          actions[target.drillStepIndex]!.capture.url,
+        );
         if (mintsAttachedValues) {
           for (const p of terminalStep.produces) {
             if (p.kind !== "body" || !referencedNames.has(p.name)) continue;
             if (!attachedMintedValues.has(p.name)) {
-              attachedMintedValues.set(p.name, unknownValueAccessor(itemVar, p.path));
+              attachedMintedValues.set(
+                p.name,
+                unknownValueAccessor(itemVar, p.path),
+              );
             }
           }
         }
         if (isolated && target.chain[0] !== foldPlan.primaryStepIndex) {
           // Fetch and merge travel together so a failure drops only this drill.
           itemScopedLines.push(
-            ...wrapIsolatedDrillLines(target, drillName, itemVar, [...chainLines, ...matchLines])
+            ...wrapIsolatedDrillLines(target, drillName, itemVar, [
+              ...chainLines,
+              ...matchLines,
+            ]),
           );
           if (chainLines.length > 0) hasItemScopedFetch = true;
           if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
@@ -11979,10 +13147,10 @@ export function emitMultiStepExecuteHttp(
           itemScopedLines,
           itemCloseLines,
           itemVar,
-          hasItemScopedFetch && !hasItemScopedHeaderThreading
+          hasItemScopedFetch && !hasItemScopedHeaderThreading,
         ),
         ...ancestorCloseLines,
-        ""
+        "",
       );
       continue;
     }
@@ -12010,18 +13178,20 @@ export function emitMultiStepExecuteHttp(
       declaredNames.add(p.name);
       const assertion = pathToAssertionType(p.path, p.leafType);
       produceLines.push(
-        `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+        `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`,
       );
     }
     const htmlProduces = step.produces.filter(
-      (p): p is HtmlProduce => p.kind === "html" && referencedNames.has(p.name)
+      (p): p is HtmlProduce => p.kind === "html" && referencedNames.has(p.name),
     );
     const bindResponse =
-      referencedNames.has(step.varName) || produceLines.length > 0 || htmlProduces.length > 0;
+      referencedNames.has(step.varName) ||
+      produceLines.length > 0 ||
+      htmlProduces.length > 0;
 
     if (step.isCrossDomain) {
       lines.push(
-        `    // TODO: cross-domain redirect detected (${cap.url.split("/")[2]}) — likely needs browser fallback for this step.`
+        `    // TODO: cross-domain redirect detected (${cap.url.split("/")[2]}) — likely needs browser fallback for this step.`,
       );
     }
 
@@ -12037,8 +13207,8 @@ export function emitMultiStepExecuteHttp(
           r.bodyArg,
           textVar,
           step.varName,
-          "    "
-        )
+          "    ",
+        ),
       );
       for (const p of htmlProduces) {
         if (declaredNames.has(p.name)) continue;
@@ -12082,7 +13252,9 @@ export function emitMultiStepExecuteHttp(
         // from the flow-wide hoisted mint instead of the captured literal.
         const volatileVarName = volatileHeaderVarNames.get(lower);
         if (volatileVarName !== undefined) {
-          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`\${${volatileVarName}}\``);
+          perCallHeaderEntries.push(
+            `${JSON.stringify(k)}: \`\${${volatileVarName}}\``,
+          );
           continue;
         }
         const interpolated = interpolateStateValues(
@@ -12092,7 +13264,7 @@ export function emitMultiStepExecuteHttp(
           payloadAccessorByValue,
           false,
           producerBoundaryBindings,
-          i
+          i,
         );
         // Mirrors the non-multipart per-call header builder above: any
         // header name (not just Authorization/Api-Token) that interpolation
@@ -12100,9 +13272,17 @@ export function emitMultiStepExecuteHttp(
         // per-call too, or its custom name freezes into an invariant
         // BASE_HEADERS-equivalent literal.
         if (isCredentialHeaderName(lower) && interpolated === v) {
-          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k)}\``);
-        } else if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
-          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
+          perCallHeaderEntries.push(
+            `${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k)}\``,
+          );
+        } else if (
+          lower === "api-token" ||
+          lower === "authorization" ||
+          interpolated !== v
+        ) {
+          perCallHeaderEntries.push(
+            `${JSON.stringify(k)}: \`${interpolated}\``,
+          );
         }
       }
       // G1+G2: include tenant-derived headers in the multipart fetch too.
@@ -12114,7 +13294,9 @@ export function emitMultiStepExecuteHttp(
       }
       for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
         const fieldName = headerNameToPayloadFieldName(headerName);
-        perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`\${payload.${fieldName}}\``);
+        perCallHeaderEntries.push(
+          `${JSON.stringify(headerName)}: \`\${payload.${fieldName}}\``,
+        );
       }
       const perCallHeadersLit = perCallHeaderEntries.length
         ? `, ${perCallHeaderEntries.join(", ")}`
@@ -12135,26 +13317,34 @@ export function emitMultiStepExecuteHttp(
         `      headers: ${headersVar},`,
         `      body: ${fdVar},`,
         `    });`,
-        `    if (!${respVar}.ok) throw new Error(\`step ${step.varName} (multipart upload) failed: HTTP \${${respVar}.status}\`);`
+        `    if (!${respVar}.ok) throw new Error(\`step ${step.varName} (multipart upload) failed: HTTP \${${respVar}.status}\`);`,
       );
       if (bindResponse) {
         lines.push(
-          `    const ${step.varName} = (await ${respVar}.json()) as Record<string, unknown>;`
+          `    const ${step.varName} = (await ${respVar}.json()) as Record<string, unknown>;`,
         );
       } else {
         lines.push(`    await ${respVar}.json();`);
       }
     } else {
       const urlPath = cap.url.split("/").slice(3).join("/").split("?")[0] ?? "";
-      const guardLines = emitErrorSignalGuards(step.varName, urlPath, errorSignals);
+      const guardLines = emitErrorSignalGuards(
+        step.varName,
+        urlPath,
+        errorSignals,
+      );
       const needsBinding = bindResponse || guardLines.length > 0;
       if (needsBinding) {
-        lines.push(`    const ${step.varName} = (await httpClient(\`${r.url}\`, {`);
+        lines.push(
+          `    const ${step.varName} = (await httpClient(\`${r.url}\`, {`,
+        );
       } else {
         lines.push(`    await httpClient(\`${r.url}\`, {`);
       }
       lines.push(`      method: ${JSON.stringify(r.method)},`);
-      const joined = [r.headersExpr, r.bodyArg].filter((s) => s !== "").join(" ");
+      const joined = [r.headersExpr, r.bodyArg]
+        .filter((s) => s !== "")
+        .join(" ");
       if (joined !== "") {
         lines.push(`      ${joined}`);
       }
@@ -12165,7 +13355,9 @@ export function emitMultiStepExecuteHttp(
         lines.push(`    });`);
       }
       if (guardLines.length > 0) {
-        lines.push(`    if (typeof ${step.varName} === "object" && ${step.varName} !== null) {`);
+        lines.push(
+          `    if (typeof ${step.varName} === "object" && ${step.varName} !== null) {`,
+        );
         for (const line of guardLines) lines.push(line);
         lines.push(`    }`);
       }
@@ -12195,10 +13387,12 @@ export function emitMultiStepExecuteHttp(
   // arrays with itself, duplicating every already-folded item.
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
   const uniquePrimaryVarNames = [
-    ...new Set(foldPlans.map((plan) => actions[plan.primaryStepIndex]!.varName)),
+    ...new Set(
+      foldPlans.map((plan) => actions[plan.primaryStepIndex]!.varName),
+    ),
   ];
   const everyPrimaryIsPlainObject = foldPlans.every((plan) =>
-    isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody)
+    isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody),
   );
   // Every intermediate `httpClient` call above is bound `as Record<string,
   // unknown>` regardless of its own `schema:`, so per-item fold/merge code
@@ -12212,7 +13406,7 @@ export function emitMultiStepExecuteHttp(
     pascalName ? `${expr} as unknown as ${pascalName}Response` : expr;
   if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
     lines.push(
-      `    return { data: ${castToResponseType(`mergeFoldedPrimaryBodies(${uniquePrimaryVarNames.join(", ")})`)} };`
+      `    return { data: ${castToResponseType(`mergeFoldedPrimaryBodies(${uniquePrimaryVarNames.join(", ")})`)} };`,
     );
   } else {
     const returnVar = lastFoldPlan
@@ -12222,7 +13416,10 @@ export function emitMultiStepExecuteHttp(
   }
 
   const renderedMultiStepBody = lines.join("\n");
-  assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
+  assertBodyFieldSourceNameCorrelates(
+    "emitMultiStepExecuteHttp",
+    renderedMultiStepBody,
+  );
   return renderedMultiStepBody;
 }
 
@@ -12239,10 +13436,11 @@ function emitHtmlFetchLines(
   bodyArg: string,
   textVar: string,
   stepVar: string,
-  indent: string
+  indent: string,
 ): string[] {
   const literal = headersExpr.replace(/^headers:\s*/, "").replace(/,\s*$/, "");
-  const headers = literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
+  const headers =
+    literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
   const respVar = `resp_${stepVar}`;
   return [
     `${indent}const ${respVar} = await fetchFollowingRedirectsPreservingMethod(\`${url}\`, {`,
@@ -12275,7 +13473,9 @@ function pathSegmentLocator(locatorName: string): {
       return seg;
     }
   };
-  const segments = raw.map((seg, k) => (k !== at && isStateLikeSegment(decode(seg)) ? null : seg));
+  const segments = raw.map((seg, k) =>
+    k !== at && isStateLikeSegment(decode(seg)) ? null : seg,
+  );
   return {
     segments,
     at,
@@ -12289,9 +13489,14 @@ function pathSegmentLocator(locatorName: string): {
  * longer carries it, so a changed page fails loudly instead of replaying a
  * stale token.
  */
-function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string): string[] {
+function emitHtmlExtractionLines(
+  p: HtmlProduce,
+  textVar: string,
+  indent: string,
+): string[] {
   const name = JSON.stringify(p.locatorName);
-  const pathPattern = p.element === "path-segment" ? pathSegmentLocator(p.locatorName) : null;
+  const pathPattern =
+    p.element === "path-segment" ? pathSegmentLocator(p.locatorName) : null;
   const shownName = pathPattern?.display ?? p.locatorName;
   const fail = `${indent}if (${p.name} === undefined) throw new Error(\`HTML token ${shownName.replace(/[`$\\]/g, "")} not found in response\`);`;
   if (p.element === "hidden-input") {
@@ -12328,7 +13533,9 @@ function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string
     ];
   }
   const tagPattern =
-    p.element === "form-action" ? "<form\\b[^>]*>" : "<(?:a|iframe|frame)\\b[^>]*>";
+    p.element === "form-action"
+      ? "<form\\b[^>]*>"
+      : "<(?:a|iframe|frame)\\b[^>]*>";
   const attrName = p.element === "form-action" ? "action" : "(?:href|src)";
   return [
     `${indent}const ${p.name} = (() => {`,
@@ -12369,7 +13576,9 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
   const entries = headerBindings
     .map((b) => {
       const cookieNameField =
-        b.cookieName !== undefined ? ` cookieName: ${JSON.stringify(b.cookieName)},` : "";
+        b.cookieName !== undefined
+          ? ` cookieName: ${JSON.stringify(b.cookieName)},`
+          : "";
       return `{ sourceHeader: ${JSON.stringify(b.sourceHeader)},${cookieNameField} targetHeader: ${JSON.stringify(b.targetHeader)} }`;
     })
     .join(", ");
@@ -12411,10 +13620,15 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
  * compare how much of a candidate's facet string is actually wireable
  * instead of only whether any of it is.
  */
-export function countSpliceableFacets(value: unknown, fields: readonly string[]): number {
+export function countSpliceableFacets(
+  value: unknown,
+  fields: readonly string[],
+): number {
   if (typeof value !== "string") return 0;
   const segments = value.split(/([|,;])/);
-  const hasFacetShape = segments.some((segment, index) => index % 2 === 0 && segment.includes(":"));
+  const hasFacetShape = segments.some(
+    (segment, index) => index % 2 === 0 && segment.includes(":"),
+  );
   if (!hasFacetShape) return 0;
   let count = 0;
   for (let index = 0; index < segments.length; index += 2) {
@@ -12422,7 +13636,8 @@ export function countSpliceableFacets(value: unknown, fields: readonly string[])
     if (!segment.includes(":")) continue;
     const colonIndex = segment.indexOf(":");
     const facetKey = segment.slice(0, colonIndex);
-    if (fields.some((field) => field.toLowerCase() === facetKey.toLowerCase())) count++;
+    if (fields.some((field) => field.toLowerCase() === facetKey.toLowerCase()))
+      count++;
   }
   return count;
 }
@@ -12430,7 +13645,7 @@ export function countSpliceableFacets(value: unknown, fields: readonly string[])
 export function spliceFacetsIntoStringVariable(
   value: unknown,
   fields: readonly string[],
-  optionalFields: ReadonlySet<string> = new Set()
+  optionalFields: ReadonlySet<string> = new Set(),
 ): string | null {
   if (typeof value !== "string") return null;
   if (countSpliceableFacets(value, fields) === 0) return null;
@@ -12439,7 +13654,9 @@ export function spliceFacetsIntoStringVariable(
   const matchedFieldFor = (segment: string): string | undefined => {
     const colonIndex = segment.indexOf(":");
     const facetKey = segment.slice(0, colonIndex);
-    return fields.find((field) => field.toLowerCase() === facetKey.toLowerCase());
+    return fields.find(
+      (field) => field.toLowerCase() === facetKey.toLowerCase(),
+    );
   };
   for (let index = 0; index < segments.length; index += 2) {
     const segment = segments[index] as string;
@@ -12451,7 +13668,8 @@ export function spliceFacetsIntoStringVariable(
   if (!hasOptionalMatch) {
     const body = segments
       .map((segment, index) => {
-        if (index % 2 !== 0 || !segment.includes(":")) return escapeForTemplateLiteral(segment);
+        if (index % 2 !== 0 || !segment.includes(":"))
+          return escapeForTemplateLiteral(segment);
         const matchedField = matchedFieldFor(segment);
         if (!matchedField) return escapeForTemplateLiteral(segment);
         const colonIndex = segment.indexOf(":");
@@ -12470,10 +13688,12 @@ export function spliceFacetsIntoStringVariable(
   for (let index = 0; index < segments.length; index += 2) {
     const segment = segments[index] as string;
     const trailingDelimiter = (segments[index + 1] as string | undefined) ?? "";
-    const matchedField = segment.includes(":") ? matchedFieldFor(segment) : undefined;
+    const matchedField = segment.includes(":")
+      ? matchedFieldFor(segment)
+      : undefined;
     if (!matchedField) {
       elements.push(
-        `\`${escapeForTemplateLiteral(segment)}${escapeForTemplateLiteral(trailingDelimiter)}\``
+        `\`${escapeForTemplateLiteral(segment)}${escapeForTemplateLiteral(trailingDelimiter)}\``,
       );
       continue;
     }
@@ -12483,7 +13703,7 @@ export function spliceFacetsIntoStringVariable(
     elements.push(
       optionalFields.has(matchedField)
         ? `...(payload.${matchedField} ? [${segmentLiteral}] : [])`
-        : segmentLiteral
+        : segmentLiteral,
     );
   }
   return `[${elements.join(", ")}].join("")`;
@@ -12497,7 +13717,7 @@ export function spliceFacetsIntoStringVariable(
  */
 function matchArrayElementFacet(
   element: string,
-  facets: readonly NavigateToFacetBinding[]
+  facets: readonly NavigateToFacetBinding[],
 ): NavigateToFacetBinding | undefined {
   return matchFacetRecurrence(element, facets, { allowDelimiterSuffix: true });
 }
@@ -12513,9 +13733,10 @@ function matchArrayElementFacet(
 export function matchFacetRecurrence(
   text: string,
   facets: readonly NavigateToFacetBinding[],
-  options: { allowDelimiterSuffix: boolean }
+  options: { allowDelimiterSuffix: boolean },
 ): NavigateToFacetBinding | undefined {
-  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  const isAlnum = (ch: string | undefined): boolean =>
+    ch !== undefined && /[A-Za-z0-9]/.test(ch);
   const parsedElement = parseElementKind(text);
   const elementKind = parsedElement?.kind;
   // A kind no declared facet names (an identifier format such as
@@ -12523,14 +13744,17 @@ export function matchFacetRecurrence(
   // kind gate only protects elements some facet claims; a whole-literal
   // match there still binds the facet whose literal the element carries.
   const kindUnclaimed =
-    elementKind !== undefined && !facets.some((candidate) => kindsMatch(candidate, elementKind));
+    elementKind !== undefined &&
+    !facets.some((candidate) => kindsMatch(candidate, elementKind));
   const pick = (ignoreCase: boolean): NavigateToFacetBinding | undefined =>
     facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
-      const readFromElement = facet.keyedByKind === true && parsedElement?.literal === facet.value;
+      const readFromElement =
+        facet.keyedByKind === true && parsedElement?.literal === facet.value;
       const ownsUnclaimedKind =
         kindUnclaimed &&
         [facet.value, ...(facet.literals ?? [])].some(
-          (known) => known.toLowerCase() === parsedElement?.literal.toLowerCase()
+          (known) =>
+            known.toLowerCase() === parsedElement?.literal.toLowerCase(),
         );
       if (
         elementKind !== undefined &&
@@ -12544,7 +13768,9 @@ export function matchFacetRecurrence(
       const literal = [facet.value, ...(facet.literals ?? [])]
         .filter((candidate) => {
           const same = (value: string): boolean =>
-            ignoreCase ? value.toLowerCase() === candidate.toLowerCase() : value === candidate;
+            ignoreCase
+              ? value.toLowerCase() === candidate.toLowerCase()
+              : value === candidate;
           return (
             candidate.length > 0 &&
             (same(text) ||
@@ -12555,13 +13781,20 @@ export function matchFacetRecurrence(
         })
         .reduce<string | undefined>(
           (longest, candidate) =>
-            longest === undefined || candidate.length > longest.length ? candidate : longest,
-          undefined
+            longest === undefined || candidate.length > longest.length
+              ? candidate
+              : longest,
+          undefined,
         );
       const matchedLiteral = literal;
       if (matchedLiteral === undefined) return best;
-      const matched = matchedLiteral === facet.value ? facet : { ...facet, value: matchedLiteral };
-      return best === undefined || matchedLiteral.length > best.value.length ? matched : best;
+      const matched =
+        matchedLiteral === facet.value
+          ? facet
+          : { ...facet, value: matchedLiteral };
+      return best === undefined || matchedLiteral.length > best.value.length
+        ? matched
+        : best;
     }, undefined);
   return pick(false) ?? pick(true);
 }
@@ -12571,7 +13804,9 @@ export function matchFacetRecurrence(
  * literal and kind, or returns `undefined` when the element carries no kind
  * suffix. Structural only — no key or kind vocabulary is assumed.
  */
-function parseElementKind(element: string): { literal: string; kind: string } | undefined {
+function parseElementKind(
+  element: string,
+): { literal: string; kind: string } | undefined {
   const parsed = /^(.+)[;&|,]([^;&|,=]+)=([^;&|,=]+)$/.exec(element);
   return parsed ? { literal: parsed[1]!, kind: parsed[3]! } : undefined;
 }
@@ -12580,7 +13815,14 @@ function normalizeKind(kind: string): string {
   return deriveFacetKind(kind).replace(/\s+/g, "").replace(/s$/, "");
 }
 
-const KIND_NOISE_WORDS = new Set(["facet", "filter", "field", "value", "option", "selection"]);
+const KIND_NOISE_WORDS = new Set([
+  "facet",
+  "filter",
+  "field",
+  "value",
+  "option",
+  "selection",
+]);
 
 // Calendar-granularity words (`month`, `year`) all name a slice of a date, so a
 // facet worded with one owns the element kind spelled with the umbrella `date`.
@@ -12594,14 +13836,22 @@ const DATE_PART_WORDS = new Set(["month", "year", "day", "week", "date"]);
  * A caller picking an element for the facet takes the closest tier, so a field
  * naming two kinds still resolves to the one it ends with.
  */
-function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 1 | 2 | 3 {
+function kindMatchTier(
+  facet: NavigateToFacetBinding,
+  elementKind: string,
+): 0 | 1 | 2 | 3 {
   const element = normalizeKind(elementKind);
   if (element.length === 0 || facet.kind === undefined) return 0;
   const words = deriveFacetKind(facet.kind).split(" ");
   const meaningful = words.filter((word) => !KIND_NOISE_WORDS.has(word));
   const named = meaningful.length > 0 ? meaningful : words;
-  if (normalizeKind(facet.kind) === element || normalizeKind(named.join(" ")) === element) return 1;
-  if ((facet.kindHints ?? []).some((hint) => normalizeKind(hint) === element)) return 1;
+  if (
+    normalizeKind(facet.kind) === element ||
+    normalizeKind(named.join(" ")) === element
+  )
+    return 1;
+  if ((facet.kindHints ?? []).some((hint) => normalizeKind(hint) === element))
+    return 1;
   if (normalizeKind(named[named.length - 1] ?? "") === element) return 2;
   if (named.some((word) => normalizeKind(word) === element)) return 3;
   const namesDatePart = [
@@ -12619,9 +13869,14 @@ function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 
     .filter((word) => !KIND_NOISE_WORDS.has(word))
     .map(normalizeKind);
   const facetWords = new Set(
-    [...named, ...(facet.kindHints ?? []).flatMap((hint) => deriveFacetKind(hint).split(" "))]
+    [
+      ...named,
+      ...(facet.kindHints ?? []).flatMap((hint) =>
+        deriveFacetKind(hint).split(" "),
+      ),
+    ]
       .filter((word) => !KIND_NOISE_WORDS.has(word))
-      .map(normalizeKind)
+      .map(normalizeKind),
   );
   return elementWords.length > 1 &&
     elementWords.some((word) => word.length > 2 && facetWords.has(word))
@@ -12629,7 +13884,10 @@ function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 
     : 0;
 }
 
-function kindsMatch(facet: NavigateToFacetBinding, elementKind: string): boolean {
+function kindsMatch(
+  facet: NavigateToFacetBinding,
+  elementKind: string,
+): boolean {
   return kindMatchTier(facet, elementKind) > 0;
 }
 
@@ -12666,9 +13924,11 @@ function monthCodeOf(literal: string): string | undefined {
   const name = (yearFirst ? named[2]! : named[1]!).toLowerCase();
   const year = yearFirst ? named[1]! : named[2]!;
   const index = MONTH_NAMES.findIndex(
-    (month) => month === name || (name.length === 3 && month.startsWith(name))
+    (month) => month === name || (name.length === 3 && month.startsWith(name)),
   );
-  return index === -1 ? undefined : `${year}-${String(index + 1).padStart(2, "0")}`;
+  return index === -1
+    ? undefined
+    : `${year}-${String(index + 1).padStart(2, "0")}`;
 }
 
 /** Month number (`12`) of a month written without a year (`december`, `Dec`),
@@ -12676,7 +13936,7 @@ function monthCodeOf(literal: string): string | undefined {
 function bareMonthNumberOf(literal: string): string | undefined {
   const name = literal.trim().toLowerCase();
   const index = MONTH_NAMES.findIndex(
-    (month) => month === name || (name.length === 3 && month.startsWith(name))
+    (month) => month === name || (name.length === 3 && month.startsWith(name)),
   );
   return index === -1 ? undefined : String(index + 1).padStart(2, "0");
 }
@@ -12697,7 +13957,7 @@ function isKindKeyed(facet: NavigateToFacetBinding): boolean {
  */
 function facetCaseMethod(
   captured: string,
-  facet: NavigateToFacetBinding
+  facet: NavigateToFacetBinding,
 ): "toUpperCase" | "toLowerCase" | undefined {
   const prefix = captured.slice(0, facet.value.length);
   if (prefix === facet.value) return undefined;
@@ -12724,14 +13984,20 @@ function abbreviates(code: string, value: string): boolean {
  * vocabulary: a kind-keyed alias translates the caller's declared literal
  * through its `valueMap`, passing an already-coded value through untouched.
  */
-function facetPayloadExpression(facet: NavigateToFacetBinding, fallback = ""): string {
+function facetPayloadExpression(
+  facet: NavigateToFacetBinding,
+  fallback = "",
+): string {
   const raw = `payload.${facet.field}${fallback}`;
   if (!facet.valueMap || facet.valueMap.size === 0) return raw;
   const entries = JSON.stringify([...facet.valueMap.entries()]);
   return `(new Map(${entries}).get(String(payload.${facet.field})) ?? ${raw})`;
 }
 
-function renderFacetPayloadValue(captured: string, facet: NavigateToFacetBinding): string {
+function renderFacetPayloadValue(
+  captured: string,
+  facet: NavigateToFacetBinding,
+): string {
   const method = facetCaseMethod(captured, facet);
   const expression = facetPayloadExpression(facet);
   return method ? `\${String(${expression}).${method}()}` : `\${${expression}}`;
@@ -12745,11 +14011,13 @@ function renderFacetPayloadValue(captured: string, facet: NavigateToFacetBinding
  */
 function spliceFacetRecurrenceIntoScalarVariable(
   value: unknown,
-  facets: readonly NavigateToFacetBinding[]
+  facets: readonly NavigateToFacetBinding[],
 ): string | null {
   if (facets.length === 0) return null;
   if (typeof value === "string" || typeof value === "number") {
-    const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
+    const facet = matchFacetRecurrence(String(value), facets, {
+      allowDelimiterSuffix: false,
+    });
     if (facet !== undefined) {
       const rendered = renderFacetPayloadValue(String(value), facet);
       return rendered === `\${${facetPayloadExpression(facet)}}`
@@ -12773,7 +14041,9 @@ function spliceFacetRecurrenceIntoScalarVariable(
             allowDelimiterSuffix: false,
           });
     if (facet === undefined) {
-      units.push(`\`${escapeForTemplateLiteral(segment + trailingDelimiter)}\``);
+      units.push(
+        `\`${escapeForTemplateLiteral(segment + trailingDelimiter)}\``,
+      );
       continue;
     }
     bound = true;
@@ -12810,7 +14080,8 @@ function spliceFacetRecurrenceIntoScalarVariable(
 export function spliceFacetsIntoArrayVariable(
   value: unknown,
   facets: readonly NavigateToFacetBinding[],
-  renderElement: (element: unknown) => string = (element) => JSON.stringify(element)
+  renderElement: (element: unknown) => string = (element) =>
+    JSON.stringify(element),
 ): string | null {
   if (!Array.isArray(value)) return null;
   let matchCount = 0;
@@ -12842,29 +14113,37 @@ export function spliceFacetsIntoArrayVariable(
 export function correlateNavigateToParamsWithVariables(
   flowSteps: readonly FlowStepInput[],
   allCaptures: readonly Capture[],
-  primaryVariables: unknown
+  primaryVariables: unknown,
 ): Map<string, string[]> {
   const wired = new Map<string, string[]>();
   const primary = allCaptures.find((c) => c.variables === primaryVariables);
   if (primary === undefined) return wired;
   const identity = operationGroupKey(primary);
-  const group = allCaptures.filter((c) => c.variables != null && operationGroupKey(c) === identity);
+  const group = allCaptures.filter(
+    (c) => c.variables != null && operationGroupKey(c) === identity,
+  );
   if (group.length < 2) return wired;
   const collapse = (values: string[]): string =>
     JSON.stringify(values.filter((v, i) => i === 0 || values[i - 1] !== v));
   const steps = flowSteps.filter(
-    (s): s is Exclude<FlowStepInput, string> => typeof s !== "string" && s.navigateTo !== undefined
+    (s): s is Exclude<FlowStepInput, string> =>
+      typeof s !== "string" && s.navigateTo !== undefined,
   );
   const queries = steps.map((s) => parseUrlQueryParams(s.navigateTo!));
   const varSeq = new Map<string, string>();
   for (const { path } of walkAllPrimitiveLeaves(primary.variables ?? {})) {
     const seq = group.map((c) => readValueAtPath(c.variables ?? {}, path));
-    if (seq.some((v) => v === undefined || (v !== null && typeof v === "object"))) continue;
+    if (
+      seq.some((v) => v === undefined || (v !== null && typeof v === "object"))
+    )
+      continue;
     varSeq.set(path.join("."), collapse(seq.map(String)));
   }
   const paramSeq = new Map<string, string>();
   for (const key of new Set(queries.flatMap((q) => [...q.keys()]))) {
-    const seq = queries.map((q) => q.get(key)).filter((v): v is string => v !== undefined);
+    const seq = queries
+      .map((q) => q.get(key))
+      .filter((v): v is string => v !== undefined);
     if (new Set(seq).size > 1) paramSeq.set(key, collapse(seq));
   }
   steps.forEach((step, i) => {
@@ -12877,10 +14156,11 @@ export function correlateNavigateToParamsWithVariables(
       for (const [path, vs] of varSeq) if (vs === seq) paths.add(path);
     }
     const leafMatch = [...paths].filter(
-      (p) => p.split(".").pop()!.toLowerCase() === field.toLowerCase()
+      (p) => p.split(".").pop()!.toLowerCase() === field.toLowerCase(),
     );
     const chosen = paths.size === 1 ? [...paths] : leafMatch;
-    if (chosen.length === 1 && !wired.has(field)) wired.set(field, chosen[0]!.split("."));
+    if (chosen.length === 1 && !wired.has(field))
+      wired.set(field, chosen[0]!.split("."));
   });
   return wired;
 }
@@ -12906,12 +14186,17 @@ export function renderGqlVariablesExpr(
   payloadFieldNames: Set<string> | undefined,
   optionalFieldNames: ReadonlySet<string> = new Set(),
   navigateToFacets: readonly NavigateToFacetBinding[] = [],
-  fieldVariablePaths: ReadonlyMap<string, readonly string[]> = new Map()
+  fieldVariablePaths: ReadonlyMap<string, readonly string[]> = new Map(),
 ): string {
-  if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
+  if (
+    variables === null ||
+    typeof variables !== "object" ||
+    Array.isArray(variables)
+  )
+    return "{}";
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
   const pathToField = new Map<string, string>(
-    [...fieldVariablePaths].map(([field, path]) => [path.join("."), field])
+    [...fieldVariablePaths].map(([field, path]) => [path.join("."), field]),
   );
   const renderValue = (value: unknown): string => {
     const spliced =
@@ -12929,7 +14214,10 @@ export function renderGqlVariablesExpr(
         pathToField.get([...prefix, key].join(".")) ??
         fields.find((field) => field.toLowerCase() === key.toLowerCase());
       const nested =
-        !matchedField && value !== null && typeof value === "object" && !Array.isArray(value)
+        !matchedField &&
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value)
           ? renderObject(value, [...prefix, key])
           : null;
       return `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${matchedField ? `payload.${matchedField}` : (nested ?? renderValue(value))}`;
@@ -12961,14 +14249,21 @@ interface PaginationContainer {
 
 function findPaginationContainer(
   variables: unknown,
-  path: string[] = []
+  path: string[] = [],
 ): PaginationContainer | null {
-  if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return null;
+  if (
+    variables === null ||
+    typeof variables !== "object" ||
+    Array.isArray(variables)
+  )
+    return null;
   const entries = Object.entries(variables as Record<string, unknown>);
   const countEntry = entries.find(
-    ([k, v]) => PAGE_SIZE_KEY_PATTERN.test(k) && typeof v === "number" && v > 0
+    ([k, v]) => PAGE_SIZE_KEY_PATTERN.test(k) && typeof v === "number" && v > 0,
   );
-  const skipEntry = entries.find(([k, v]) => SKIP_KEY_PATTERN.test(k) && typeof v === "number");
+  const skipEntry = entries.find(
+    ([k, v]) => SKIP_KEY_PATTERN.test(k) && typeof v === "number",
+  );
   if (countEntry && skipEntry) {
     return {
       path,
@@ -12988,7 +14283,7 @@ function findPaginationContainer(
 function findNumericFieldByName(
   value: unknown,
   pattern: RegExp,
-  path: string[] = []
+  path: string[] = [],
 ): string[] | null {
   if (value === null || typeof value !== "object") return null;
   if (Array.isArray(value)) {
@@ -12999,7 +14294,9 @@ function findNumericFieldByName(
     return null;
   }
   const entries = Object.entries(value as Record<string, unknown>);
-  const direct = entries.find(([k, v]) => typeof v === "number" && pattern.test(k));
+  const direct = entries.find(
+    ([k, v]) => typeof v === "number" && pattern.test(k),
+  );
   if (direct) return [...path, direct[0]];
   for (const [key, v] of entries) {
     const found = findNumericFieldByName(v, pattern, [...path, key]);
@@ -13037,20 +14334,20 @@ const ARRAY_WILDCARD_SEGMENT = "*";
  * sentinel, never a literal index — see its docstring. */
 function findAllObjectArrayFieldsUncached(
   value: unknown,
-  path: string[] = []
+  path: string[] = [],
 ): { path: string[]; items: Record<string, unknown>[] }[] {
   if (value === null || typeof value !== "object") return [];
   if (Array.isArray(value)) {
     const objectItems = value.filter(isObjectArrayItem);
     const nestedCandidates = objectItems.flatMap((item) =>
-      findAllObjectArrayFieldsUncached(item, [...path, ARRAY_WILDCARD_SEGMENT])
+      findAllObjectArrayFieldsUncached(item, [...path, ARRAY_WILDCARD_SEGMENT]),
     );
     return objectItems.length > 0
       ? [{ path, items: objectItems }, ...nestedCandidates]
       : nestedCandidates;
   }
   return Object.entries(value as Record<string, unknown>).flatMap(([key, v]) =>
-    findAllObjectArrayFieldsUncached(v, [...path, key])
+    findAllObjectArrayFieldsUncached(v, [...path, key]),
   );
 }
 
@@ -13074,7 +14371,7 @@ const objectArrayFieldsCache = new WeakMap<
  * the cache and hits the underlying scan directly. */
 export function findAllObjectArrayFields(
   value: unknown,
-  path: string[] = []
+  path: string[] = [],
 ): { path: string[]; items: Record<string, unknown>[] }[] {
   if (path.length > 0 || value === null || typeof value !== "object") {
     return findAllObjectArrayFieldsUncached(value, path);
@@ -13093,7 +14390,7 @@ export function findAllObjectArrayFields(
  * directly instead of this first-match shortcut. */
 function findObjectArrayField(
   value: unknown,
-  path: string[] = []
+  path: string[] = [],
 ): { path: string[]; items: Record<string, unknown>[] } | null {
   return findAllObjectArrayFields(value, path)[0] ?? null;
 }
@@ -13124,16 +14421,20 @@ const objectArrayFieldsOrWholeObjectCache = new WeakMap<
  * it is exactly as hot a redundant-recompute site as the underlying scan. */
 export function findAllObjectArrayFieldsOrWholeObject(
   value: unknown,
-  path: string[] = []
+  path: string[] = [],
 ): { path: string[]; items: Record<string, unknown>[] }[] {
   if (path.length > 0 || value === null || typeof value !== "object") {
     const found = findAllObjectArrayFields(value, path);
-    return isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
+    return isObjectArrayItem(value)
+      ? [...found, { path, items: [value] }]
+      : found;
   }
   const cached = objectArrayFieldsOrWholeObjectCache.get(value);
   if (cached) return cached;
   const found = findAllObjectArrayFields(value, path);
-  const computed = isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
+  const computed = isObjectArrayItem(value)
+    ? [...found, { path, items: [value] }]
+    : found;
   objectArrayFieldsOrWholeObjectCache.set(value, computed);
   return computed;
 }
@@ -13142,7 +14443,7 @@ export function findAllObjectArrayFieldsOrWholeObject(
  * the flat-object-aware counterpart of {@link findObjectArrayField}. */
 function findObjectArrayFieldOrWholeObject(
   value: unknown,
-  path: string[] = []
+  path: string[] = [],
 ): { path: string[]; items: Record<string, unknown>[] } | null {
   return findAllObjectArrayFieldsOrWholeObject(value, path)[0] ?? null;
 }
@@ -13252,9 +14553,14 @@ export interface FoldTarget {
  * whole array on every {@link sameEndpointCapturesFor} call — the O(n)
  * per-call filter otherwise makes every caller that invokes it once per
  * capture (e.g. {@link findThreadedJoinFields}) O(n^2) overall. */
-const endpointGroupsCache = new WeakMap<readonly Capture[], Map<string, Capture[]>>();
+const endpointGroupsCache = new WeakMap<
+  readonly Capture[],
+  Map<string, Capture[]>
+>();
 
-function endpointGroupsFor(allCaptures: readonly Capture[]): Map<string, Capture[]> {
+function endpointGroupsFor(
+  allCaptures: readonly Capture[],
+): Map<string, Capture[]> {
   const cached = endpointGroupsCache.get(allCaptures);
   if (cached) return cached;
   const groups = new Map<string, Capture[]>();
@@ -13270,10 +14576,11 @@ function endpointGroupsFor(allCaptures: readonly Capture[]): Map<string, Capture
 
 function sameEndpointCapturesFor(
   capture: Capture,
-  allCaptures: readonly Capture[] | undefined
+  allCaptures: readonly Capture[] | undefined,
 ): readonly Capture[] {
   if (!allCaptures) return [];
-  const group = endpointGroupsFor(allCaptures).get(endpointKey(capture.url)) ?? [];
+  const group =
+    endpointGroupsFor(allCaptures).get(endpointKey(capture.url)) ?? [];
   return group.filter((c) => c !== capture);
 }
 
@@ -13287,7 +14594,7 @@ function sameEndpointCapturesFor(
 function requestValueVaries(
   own: string,
   others: (string | undefined)[],
-  sameEndpointCapturesLength: number
+  sameEndpointCapturesLength: number,
 ): boolean {
   return sameEndpointCapturesLength === 0
     ? true
@@ -13310,7 +14617,10 @@ function parsedRequestBodyFor(capture: Capture): unknown {
     return cached === PARSE_FAILED ? undefined : cached;
   }
   const parsed = ((): unknown => {
-    if (typeof capture.requestPostData !== "string" || capture.requestPostData.length === 0) {
+    if (
+      typeof capture.requestPostData !== "string" ||
+      capture.requestPostData.length === 0
+    ) {
       return PARSE_FAILED;
     }
     try {
@@ -13329,7 +14639,10 @@ function parsedRequestBodyFor(capture: Capture): unknown {
  * itself invoked once per fold/drill-loop item across several call sites, so
  * without caching the same capture's URL/body values are recomputed (and,
  * for the body, re-walked and every sibling re-parsed) once per call. */
-const requestUrlValuesCache = new WeakMap<Capture, WeakMap<readonly Capture[], Set<string>>>();
+const requestUrlValuesCache = new WeakMap<
+  Capture,
+  WeakMap<readonly Capture[], Set<string>>
+>();
 const requestBodyValuesByKeyCache = new WeakMap<
   Capture,
   WeakMap<readonly Capture[], Map<string, Set<string>> | null>
@@ -13343,7 +14656,10 @@ const NO_ALL_CAPTURES = Object.freeze([]) as readonly Capture[];
  * can still treat URL/query matches as the name-free signal they've always
  * been — a REST-style `/orders/{id}` path segment or query param carries no
  * JSON key to correlate against in the first place. */
-function collectRequestUrlValues(capture: Capture, allCaptures?: readonly Capture[]): Set<string> {
+function collectRequestUrlValues(
+  capture: Capture,
+  allCaptures?: readonly Capture[],
+): Set<string> {
   const cacheKey = allCaptures ?? NO_ALL_CAPTURES;
   const perCaptureCache = requestUrlValuesCache.get(capture) ?? new WeakMap();
   requestUrlValuesCache.set(capture, perCaptureCache);
@@ -13354,7 +14670,8 @@ function collectRequestUrlValues(capture: Capture, allCaptures?: readonly Captur
   const values = new Set<string>();
   try {
     const url = new URL(capture.url);
-    for (const segment of url.pathname.split("/").filter(Boolean)) values.add(segment);
+    for (const segment of url.pathname.split("/").filter(Boolean))
+      values.add(segment);
     for (const [paramKey, value] of url.searchParams.entries()) {
       const otherValues = sameEndpointCaptures.map((c) => {
         try {
@@ -13363,7 +14680,8 @@ function collectRequestUrlValues(capture: Capture, allCaptures?: readonly Captur
           return undefined;
         }
       });
-      if (requestValueVaries(value, otherValues, sameEndpointCaptures.length)) values.add(value);
+      if (requestValueVaries(value, otherValues, sameEndpointCaptures.length))
+        values.add(value);
     }
   } catch {
     // Relative or malformed URL — no query params or path segments to contribute.
@@ -13383,13 +14701,17 @@ function collectRequestUrlValues(capture: Capture, allCaptures?: readonly Captur
  * {@link jsonBodyLeafValuesByKey} returns. */
 export function collectRequestBodyValuesByKey(
   capture: Capture,
-  allCaptures?: readonly Capture[]
+  allCaptures?: readonly Capture[],
 ): Map<string, Set<string>> | null {
-  if (typeof capture.requestPostData !== "string" || capture.requestPostData.length === 0) {
+  if (
+    typeof capture.requestPostData !== "string" ||
+    capture.requestPostData.length === 0
+  ) {
     return null;
   }
   const cacheKey = allCaptures ?? NO_ALL_CAPTURES;
-  const perCaptureCache = requestBodyValuesByKeyCache.get(capture) ?? new WeakMap();
+  const perCaptureCache =
+    requestBodyValuesByKeyCache.get(capture) ?? new WeakMap();
   requestBodyValuesByKeyCache.set(capture, perCaptureCache);
   if (perCaptureCache.has(cacheKey)) return perCaptureCache.get(cacheKey)!;
 
@@ -13413,7 +14735,10 @@ export function collectRequestBodyValuesByKey(
         return undefined;
       }
     });
-    if (!requestValueVaries(stringValue, otherValues, sameEndpointCaptures.length)) continue;
+    if (
+      !requestValueVaries(stringValue, otherValues, sameEndpointCaptures.length)
+    )
+      continue;
     const namedSegment = [...path]
       .reverse()
       .find((segment) => !ARRAY_INDEX_KEY_PATTERN.test(segment));
@@ -13428,7 +14753,7 @@ export function collectRequestBodyValuesByKey(
 
 function collectRequestStringValues(
   capture: Capture,
-  allCaptures?: readonly Capture[]
+  allCaptures?: readonly Capture[],
 ): Set<string> {
   // Copied rather than mutated in place: collectRequestUrlValues now returns
   // a cached Set shared across every caller of this exact (capture,
@@ -13469,21 +14794,30 @@ function isExplainedByCorrelatedSiblingField(
   path: readonly string[],
   parsedBody: unknown,
   otherBodies: readonly unknown[],
-  siblingPaths: ReadonlySet<string>
+  siblingPaths: ReadonlySet<string>,
 ): boolean {
   const allBodies = [parsedBody, ...otherBodies];
   const siblingReaders: Array<(body: unknown) => string | undefined> = [
     ...[...siblingPaths].map((siblingPath) => {
       const pathSegments = siblingPath.split(".");
       return (body: unknown): string | undefined => {
-        const siblingRaw = readComparableBodyLeaf(parsedBody, body, pathSegments);
+        const siblingRaw = readComparableBodyLeaf(
+          parsedBody,
+          body,
+          pathSegments,
+        );
         return siblingRaw === undefined ? undefined : String(siblingRaw);
       };
     }),
-    ...selfDescribingArrayPaths(parsedBody).map((arrayPath) => (body: unknown): string => {
-      const array = readValueAtPath(body, arrayPath);
-      return Array.isArray(array) ? identityShape(array) : ABSENT_ARRAY_SHAPE;
-    }),
+    ...selfDescribingArrayPaths(parsedBody).map(
+      (arrayPath) =>
+        (body: unknown): string => {
+          const array = readValueAtPath(body, arrayPath);
+          return Array.isArray(array)
+            ? identityShape(array)
+            : ABSENT_ARRAY_SHAPE;
+        },
+    ),
   ];
   return siblingReaders.some((readSibling) => {
     const pairs: Array<{ siblingValue: string; fieldValue: string }> = [];
@@ -13530,11 +14864,11 @@ function isExplainedByCorrelatedSiblingField(
 export function findFrozenVaryingDrillParams(
   capture: Capture,
   renderedText: string,
-  allCaptures: readonly Capture[]
+  allCaptures: readonly Capture[],
 ): FrozenVaryingDrillParam[] {
   const key = endpointKey(capture.url);
   const sameEndpointCaptures = allCaptures.filter(
-    (c) => c !== capture && endpointKey(c.url) === key
+    (c) => c !== capture && endpointKey(c.url) === key,
   );
   if (sameEndpointCaptures.length === 0) return [];
   const isFrozenLiteral = (value: string): boolean =>
@@ -13567,7 +14901,8 @@ export function findFrozenVaryingDrillParams(
   }
   const parsedBody = ((): unknown => {
     try {
-      return typeof capture.requestPostData === "string" && capture.requestPostData.length > 0
+      return typeof capture.requestPostData === "string" &&
+        capture.requestPostData.length > 0
         ? JSON.parse(capture.requestPostData)
         : undefined;
     } catch {
@@ -13585,7 +14920,8 @@ export function findFrozenVaryingDrillParams(
       .filter((c) => !isGraphql || operationGroupKey(c) === ownIdentity)
       .map((c) => {
         try {
-          return typeof c.requestPostData === "string" && c.requestPostData.length > 0
+          return typeof c.requestPostData === "string" &&
+            c.requestPostData.length > 0
             ? JSON.parse(c.requestPostData)
             : undefined;
         } catch {
@@ -13593,11 +14929,15 @@ export function findFrozenVaryingDrillParams(
         }
       })
       .filter((b): b is unknown => b !== undefined);
-    const allPaths = Array.from(walkAllPrimitiveLeaves(parsedBody)).map(({ path }) =>
-      path.join(".")
+    const allPaths = Array.from(walkAllPrimitiveLeaves(parsedBody)).map(
+      ({ path }) => path.join("."),
     );
     for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
-      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+      if (
+        typeof value !== "string" &&
+        typeof value !== "number" &&
+        typeof value !== "boolean"
+      )
         continue;
       const stringValue = String(value);
       if (!isFrozenLiteral(stringValue)) continue;
@@ -13614,7 +14954,7 @@ export function findFrozenVaryingDrillParams(
           path,
           parsedBody,
           otherBodies,
-          new Set(allPaths.filter((p) => p !== fieldPath))
+          new Set(allPaths.filter((p) => p !== fieldPath)),
         )
       ) {
         frozen.push({
@@ -13638,12 +14978,16 @@ export function findFrozenVaryingDrillParams(
  */
 export function collectPayloadVariantFields(
   primary: Capture,
-  allCaptures: readonly Capture[]
+  allCaptures: readonly Capture[],
 ): string[] {
   const identity = operationGroupKey(primary);
-  const siblings = allCaptures.filter((c) => c !== primary && operationGroupKey(c) === identity);
+  const siblings = allCaptures.filter(
+    (c) => c !== primary && operationGroupKey(c) === identity,
+  );
   const fields: string[] = [];
-  for (const { path, value } of walkAllPrimitiveLeaves(primary.variables ?? {})) {
+  for (const { path, value } of walkAllPrimitiveLeaves(
+    primary.variables ?? {},
+  )) {
     if (
       siblings.some((c) => {
         const other = readValueAtPath(c.variables ?? {}, path);
@@ -13662,7 +15006,7 @@ export function collectPayloadVariantFields(
  * parse time). */
 function formatDrillParamBindingDefault(
   type: "int" | "string" | "boolean",
-  value: string | number | boolean
+  value: string | number | boolean,
 ): string {
   return type === "string" ? JSON.stringify(value) : String(value);
 }
@@ -13693,25 +15037,31 @@ function formatDrillParamBindingDefault(
 export function applyDrillParamBindings(
   spec: FoldReturnSpec | null,
   capture: Capture,
-  text: string
+  text: string,
 ): string {
   if (spec?.drillParamBindings === undefined) return text;
   if (!compileFoldReturnEndpointMatcher(spec)(capture)) return text;
-  return Object.entries(spec.drillParamBindings).reduce((acc, [paramName, binding]) => {
-    const accessor = `\${payload.${binding.payloadField} ?? ${formatDrillParamBindingDefault(binding.type, binding.default)}}`;
-    const escapedParamName = paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
-    const withQuery = acc.replace(paramRx, (_full, prefix: string) => `${prefix}${accessor}`);
-    // JSON body key: `"name": <scalar>` — keeps the original quoting so a
-    // captured `"2"` stays a JSON string and a bare `2` stays a number.
-    const keyRx = new RegExp(
-      `("${escapedParamName}"\\s*:\\s*)("(?:[^"\\\\]|\\\\.)*"|-?\\d[\\d.eE+-]*|true|false|null)`,
-      "g"
-    );
-    return withQuery.replace(keyRx, (_full, prefix: string, old: string) =>
-      old.startsWith('"') ? `${prefix}"${accessor}"` : `${prefix}${accessor}`
-    );
-  }, text);
+  return Object.entries(spec.drillParamBindings).reduce(
+    (acc, [paramName, binding]) => {
+      const accessor = `\${payload.${binding.payloadField} ?? ${formatDrillParamBindingDefault(binding.type, binding.default)}}`;
+      const escapedParamName = paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
+      const withQuery = acc.replace(
+        paramRx,
+        (_full, prefix: string) => `${prefix}${accessor}`,
+      );
+      // JSON body key: `"name": <scalar>` — keeps the original quoting so a
+      // captured `"2"` stays a JSON string and a bare `2` stays a number.
+      const keyRx = new RegExp(
+        `("${escapedParamName}"\\s*:\\s*)("(?:[^"\\\\]|\\\\.)*"|-?\\d[\\d.eE+-]*|true|false|null)`,
+        "g",
+      );
+      return withQuery.replace(keyRx, (_full, prefix: string, old: string) =>
+        old.startsWith('"') ? `${prefix}"${accessor}"` : `${prefix}${accessor}`,
+      );
+    },
+    text,
+  );
 }
 
 /** True when `value` is a QUERY PARAM value in `capture.url` whose key
@@ -13728,7 +15078,7 @@ export function applyDrillParamBindings(
 function isGenuineVaryingQueryValue(
   value: string,
   capture: Capture,
-  allCaptures: readonly Capture[]
+  allCaptures: readonly Capture[],
 ): boolean {
   let url: URL;
   try {
@@ -13757,18 +15107,22 @@ function assertNoFrozenVaryingDrillParams(
   emitterName: string,
   capture: Capture,
   renderedText: string,
-  allCaptures: readonly Capture[]
+  allCaptures: readonly Capture[],
 ): void {
-  const frozen = findFrozenVaryingDrillParams(capture, renderedText, allCaptures);
+  const frozen = findFrozenVaryingDrillParams(
+    capture,
+    renderedText,
+    allCaptures,
+  );
   if (frozen.length === 0) return;
   const described = frozen
     .map(
       (f) =>
-        `${f.location} "${f.key}" (froze "${f.frozenValue}", also captured as "${f.differingValue}")`
+        `${f.location} "${f.key}" (froze "${f.frozenValue}", also captured as "${f.differingValue}")`,
     )
     .join("; ");
   throw new Error(
-    `${emitterName}: drill request to ${endpointKey(capture.url)} would freeze a value that varied across this run's own captures: ${described} — no threaded field (item or ancestor) explains it, so baking in one capture's literal would silently reuse it for every fold iteration; add the missing field to joinFields or make it resolvable from an ancestor binding`
+    `${emitterName}: drill request to ${endpointKey(capture.url)} would freeze a value that varied across this run's own captures: ${described} — no threaded field (item or ancestor) explains it, so baking in one capture's literal would silently reuse it for every fold iteration; add the missing field to joinFields or make it resolvable from an ancestor binding`,
   );
 }
 
@@ -13783,7 +15137,7 @@ function assertNoFrozenVaryingDrillParams(
  */
 function* walkItemFieldPaths(
   item: Record<string, unknown>,
-  path: string[] = []
+  path: string[] = [],
 ): Generator<{ path: string[]; value: unknown }, void, unknown> {
   for (const [k, v] of Object.entries(item)) {
     const childPath = [...path, k];
@@ -13821,7 +15175,7 @@ function* walkItemFieldPaths(
  * dominated by same-shaped primary candidates.
  */
 function buildRequestStringValueIndex<T extends { capture: Capture }>(
-  actions: readonly T[]
+  actions: readonly T[],
 ): Map<string, number[]> {
   const index = new Map<string, number[]>();
   for (let i = 0; i < actions.length; i++) {
@@ -13839,12 +15193,15 @@ function buildRequestStringValueIndex<T extends { capture: Capture }>(
  * possibly thread out of this primary array, used to prune the candidate
  * drill indices {@link scanPrimaryCandidateGroups} walks instead of
  * considering every later action index. */
-function collectItemsFieldValues(items: readonly Record<string, unknown>[]): Set<string> {
+function collectItemsFieldValues(
+  items: readonly Record<string, unknown>[],
+): Set<string> {
   const values = new Set<string>();
   for (const item of items) {
     for (const { value } of walkItemFieldPaths(item)) {
       if (typeof value === "string" && value.length > 0) values.add(value);
-      else if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
+      else if (typeof value === "number" || typeof value === "boolean")
+        values.add(String(value));
     }
   }
   return values;
@@ -13856,7 +15213,7 @@ function collectItemsFieldValues(items: readonly Record<string, unknown>[]): Set
 function collectCandidateIndicesAscending(
   requestStringValueIndex: ReadonlyMap<string, number[]>,
   values: ReadonlySet<string>,
-  afterIndex: number
+  afterIndex: number,
 ): number[] {
   const candidates = new Set<number>();
   for (const value of values) {
@@ -13883,7 +15240,9 @@ interface ThreadedField {
  * occurrence wins is therefore whatever order the caller built `fields` in
  * (see {@link findThreadedJoinFields}'s `scopes` parameter), not a property
  * of this function. */
-function dedupeThreadedFields(fields: readonly ThreadedField[]): ThreadedField[] {
+function dedupeThreadedFields(
+  fields: readonly ThreadedField[],
+): ThreadedField[] {
   const seen = new Set<string>();
   return fields.filter(({ varName, field }) => {
     const key = `${varName}.${field}`;
@@ -13919,11 +15278,18 @@ function dedupeThreadedFields(fields: readonly ThreadedField[]): ThreadedField[]
 function findThreadedJoinFields(
   scopes: readonly { varName: string; obj: Record<string, unknown> }[],
   drillCapture: Capture,
-  allCaptures?: readonly Capture[]
+  allCaptures?: readonly Capture[],
 ): ThreadedField[] {
   const urlValues = collectRequestUrlValues(drillCapture, allCaptures);
-  const bodyValuesByKey = collectRequestBodyValuesByKey(drillCapture, allCaptures);
-  if (urlValues.size === 0 && (bodyValuesByKey === null || bodyValuesByKey.size === 0)) return [];
+  const bodyValuesByKey = collectRequestBodyValuesByKey(
+    drillCapture,
+    allCaptures,
+  );
+  if (
+    urlValues.size === 0 &&
+    (bodyValuesByKey === null || bodyValuesByKey.size === 0)
+  )
+    return [];
   // A candidate field's value must EITHER surface name-free in the drill
   // request's own URL/query (a path segment or query param carries no JSON
   // key to correlate against, matching interpolateStateValues' isJsonBody
@@ -13949,10 +15315,11 @@ function findThreadedJoinFields(
         const sourceKeyName = path.at(-1)!;
         return [...bodyValuesByKey.entries()].some(
           ([targetKey, leaves]) =>
-            leaves.has(stringValue) && keyNamesCorrelate(sourceKeyName, targetKey)
+            leaves.has(stringValue) &&
+            keyNamesCorrelate(sourceKeyName, targetKey),
         );
       })
-      .map(({ path }) => ({ varName, field: path.join(".") }))
+      .map(({ path }) => ({ varName, field: path.join(".") })),
   );
 }
 
@@ -13973,27 +15340,32 @@ function isFoldTargetAncestorScoped(
     item: Record<string, unknown>;
     ancestors: Record<string, unknown>[];
   }[],
-  firstItemAncestors: readonly Record<string, unknown>[]
+  firstItemAncestors: readonly Record<string, unknown>[],
 ): boolean {
   if (firstItemAncestors.length === 0) return false;
   const rows = objectItemsAtPath(
     actions[target.chainTerminalIndex]!.capture.responseBody,
-    target.chainArrayPath
+    target.chainArrayPath,
   );
   if (!rows || rows.length === 0) return false;
-  const rowMatchesItem = (row: Record<string, unknown>, item: Record<string, unknown>): boolean =>
+  const rowMatchesItem = (
+    row: Record<string, unknown>,
+    item: Record<string, unknown>,
+  ): boolean =>
     target.joinFields.every((field) => {
       const rowValue = readValueAtPath(row, field.split("."));
       const itemValue = readValueAtPath(item, field.split("."));
       return (
-        rowValue !== undefined && itemValue !== undefined && String(rowValue) === String(itemValue)
+        rowValue !== undefined &&
+        itemValue !== undefined &&
+        String(rowValue) === String(itemValue)
       );
     });
   const matchedSiblingCount = primaryItemsWithAncestors.filter(
     ({ item, ancestors }) =>
       ancestors.length === firstItemAncestors.length &&
       ancestors.every((a, idx) => a === firstItemAncestors[idx]) &&
-      rows.some((row) => rowMatchesItem(row, item))
+      rows.some((row) => rowMatchesItem(row, item)),
   ).length;
   return matchedSiblingCount > 1;
 }
@@ -14018,12 +15390,13 @@ function isFoldTargetAncestorScoped(
  * never literally shares the item's `code` field name). */
 function findStructurallyCorrespondingAncestorField(
   ancestorScopes: readonly { varName: string; obj: Record<string, unknown> }[],
-  field: string
+  field: string,
 ): ThreadedField | null {
   const lastSegment = field.split(".").pop()!;
   for (const { varName, obj } of ancestorScopes) {
     for (const { path } of walkItemFieldPaths(obj)) {
-      if (path[path.length - 1] === lastSegment) return { varName, field: path.join(".") };
+      if (path[path.length - 1] === lastSegment)
+        return { varName, field: path.join(".") };
     }
     const arrayPath = findFieldInFirstArrayElement(obj, lastSegment);
     if (arrayPath) return { varName, field: arrayPath.join(".") };
@@ -14049,14 +15422,18 @@ function findStructurallyCorrespondingAncestorField(
 function findFieldInFirstArrayElement(
   obj: Record<string, unknown>,
   lastSegment: string,
-  path: string[] = []
+  path: string[] = [],
 ): string[] | null {
   for (const [key, value] of Object.entries(obj)) {
     const childPath = [...path, key];
     if (Array.isArray(value)) {
       for (let i = 0; i < value.length; i++) {
         const candidate = value[i];
-        if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate))
+        if (
+          candidate === null ||
+          typeof candidate !== "object" ||
+          Array.isArray(candidate)
+        )
           continue;
         const candidateObj = candidate as Record<string, unknown>;
         for (const { path: subPath } of walkItemFieldPaths(candidateObj)) {
@@ -14067,12 +15444,16 @@ function findFieldInFirstArrayElement(
       }
       for (let i = 0; i < value.length; i++) {
         const candidate = value[i];
-        if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate))
+        if (
+          candidate === null ||
+          typeof candidate !== "object" ||
+          Array.isArray(candidate)
+        )
           continue;
         const nested = findFieldInFirstArrayElement(
           candidate as Record<string, unknown>,
           lastSegment,
-          [...childPath, String(i)]
+          [...childPath, String(i)],
         );
         if (nested) return nested;
       }
@@ -14082,7 +15463,7 @@ function findFieldInFirstArrayElement(
       const nested = findFieldInFirstArrayElement(
         value as Record<string, unknown>,
         lastSegment,
-        childPath
+        childPath,
       );
       if (nested) return nested;
     }
@@ -14111,16 +15492,22 @@ function buildThreadedFieldPairs(
   isAncestorScoped: boolean,
   rawThreadedFields: readonly ThreadedField[],
   itemVar: string,
-  ancestorScopes: readonly { varName: string; obj: Record<string, unknown> }[]
+  ancestorScopes: readonly { varName: string; obj: Record<string, unknown> }[],
 ): { valueField: ThreadedField; accessorField: ThreadedField }[] {
   if (!isAncestorScoped) {
-    return rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
+    return rawThreadedFields.map((tf) => ({
+      valueField: tf,
+      accessorField: tf,
+    }));
   }
   return rawThreadedFields.map((tf) => ({
     valueField: tf,
     accessorField:
       tf.varName === itemVar
-        ? (findStructurallyCorrespondingAncestorField(ancestorScopes, tf.field) ?? tf)
+        ? (findStructurallyCorrespondingAncestorField(
+            ancestorScopes,
+            tf.field,
+          ) ?? tf)
         : tf,
   }));
 }
@@ -14196,24 +15583,30 @@ function collectResponseLeafValuesUncached(capture: Capture): Set<string> {
  * reuse instead of each doing its own first-DFS-match shortcut. */
 function selectDisambiguatedCandidate(
   responseBody: unknown,
-  capture: Capture
+  capture: Capture,
 ): { path: string[]; items: Record<string, unknown>[] } | null {
   const candidates = findAllObjectArrayFieldsOrWholeObject(responseBody);
   if (candidates.length === 0) return null;
   const requestValues = collectRequestValuesIncludingHeaders(capture);
   const threaded = candidates.find((candidate) =>
     candidate.items.some(
-      (item) => findThreadedJoinFields([{ varName: "item", obj: item }], capture).length > 0
-    )
+      (item) =>
+        findThreadedJoinFields([{ varName: "item", obj: item }], capture)
+          .length > 0,
+    ),
   );
   if (threaded) return threaded;
   return candidates.reduce((richest, candidate) => {
     const candidateRichness = chainTerminalItemRichness(
       responseBody,
       candidate.path,
-      requestValues
+      requestValues,
     );
-    const richestSoFar = chainTerminalItemRichness(responseBody, richest.path, requestValues);
+    const richestSoFar = chainTerminalItemRichness(
+      responseBody,
+      richest.path,
+      requestValues,
+    );
     return candidateRichness > richestSoFar ? candidate : richest;
   });
 }
@@ -14259,7 +15652,7 @@ function isMintedDependencyValue(value: string): boolean {
 export function computeFoldChain<T extends { capture: Capture }>(
   actions: readonly T[],
   drillStepIndex: number,
-  drillArrayPath: string[]
+  drillArrayPath: string[],
 ): { chain: number[]; chainArrayPath: string[]; chainTerminalIndex: number } {
   const chain = [drillStepIndex];
   let chainArrayPath = drillArrayPath;
@@ -14267,17 +15660,23 @@ export function computeFoldChain<T extends { capture: Capture }>(
   let chainTerminalRichness = chainTerminalItemRichness(
     actions[drillStepIndex]!.capture.responseBody,
     drillArrayPath,
-    collectRequestValuesIncludingHeaders(actions[drillStepIndex]!.capture)
+    collectRequestValuesIncludingHeaders(actions[drillStepIndex]!.capture),
   );
   for (let i = drillStepIndex + 1; i < actions.length; i++) {
     const candidate = actions[i]!;
-    const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
+    const requestValues = collectRequestValuesIncludingHeaders(
+      candidate.capture,
+    );
     const dependsOnChain = chain.some((chainIndex) => {
       const chainStepCapture = actions[chainIndex]!.capture;
       const responseValues = collectResponseLeafValues(chainStepCapture);
-      const echoedValues = collectRequestValuesIncludingHeaders(chainStepCapture);
+      const echoedValues =
+        collectRequestValuesIncludingHeaders(chainStepCapture);
       return [...responseValues].some(
-        (v) => isMintedDependencyValue(v) && !echoedValues.has(v) && requestValues.has(v)
+        (v) =>
+          isMintedDependencyValue(v) &&
+          !echoedValues.has(v) &&
+          requestValues.has(v),
       );
     });
     if (!dependsOnChain) continue;
@@ -14302,13 +15701,13 @@ export function computeFoldChain<T extends { capture: Capture }>(
     // see buildMulticallSingleShotSearchDrillDownRichnessTiedConfirmationHopChainedDependentActionSteps.
     const candidateArray = selectDisambiguatedCandidate(
       candidate.capture.responseBody,
-      candidate.capture
+      candidate.capture,
     );
     if (!candidateArray) continue;
     const candidateRichness = chainTerminalItemRichness(
       candidate.capture.responseBody,
       candidateArray.path,
-      requestValues
+      requestValues,
     );
     const isGenuineArrayCandidate = candidateArray.path.length > 0;
     const advancesOnTie =
@@ -14337,7 +15736,7 @@ export function computeFoldChain<T extends { capture: Capture }>(
 function chainTerminalItemRichness(
   responseBody: unknown,
   path: string[],
-  requestValues: ReadonlySet<string>
+  requestValues: ReadonlySet<string>,
 ): number {
   const items = objectItemsAtPath(responseBody, path);
   return items && items.length > 0
@@ -14354,12 +15753,16 @@ function chainTerminalItemRichness(
  * terminal on field count alone. */
 function directPrimitiveChildCountExcludingEchoed(
   obj: Record<string, unknown>,
-  requestValues: ReadonlySet<string>
+  requestValues: ReadonlySet<string>,
 ): number {
   let n = 0;
   for (const v of Object.values(obj)) {
     if (v === null || (typeof v !== "object" && typeof v !== "function")) {
-      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      if (
+        typeof v === "string" ||
+        typeof v === "number" ||
+        typeof v === "boolean"
+      ) {
         if (requestValues.has(String(v))) continue;
       }
       n++;
@@ -14440,12 +15843,14 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
   globallyConsumedIndices: ReadonlySet<number>,
   requestStringValueIndex: ReadonlyMap<string, number[]>,
   // See detectDrillDownFoldPlan's identical parameter.
-  allowSelfEndpointDrill = true
+  allowSelfEndpointDrill: boolean | ((drill: Capture) => boolean) = true,
 ): PrimaryScanGroup[] {
   scanPrimaryCandidateGroupsCallCount++;
   const primary = actions[primaryIndex]!;
   const primaryEndpointKey = endpointKey(primary.capture.url);
-  const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
+  const primaryCandidates = findAllObjectArrayFields(
+    primary.capture.responseBody,
+  );
   if (primaryCandidates.length === 0) return [];
 
   const groups: PrimaryScanGroup[] = [];
@@ -14470,7 +15875,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
     const candidateDrillIndices = collectCandidateIndicesAscending(
       requestStringValueIndex,
       collectItemsFieldValues(primaryArray.items),
-      primaryIndex
+      primaryIndex,
     );
 
     for (const drillIndex of candidateDrillIndices) {
@@ -14495,10 +15900,13 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // capture a payload variant of the primary: it differs only in
       // variables, is evidence for payload fields, and is never a drill.
       if (
-        !allowSelfEndpointDrill &&
+        !(typeof allowSelfEndpointDrill === "function"
+          ? allowSelfEndpointDrill(drill.capture)
+          : allowSelfEndpointDrill) &&
         endpointKey(drill.capture.url) === primaryEndpointKey &&
         (!isGraphQLCapture(primary.capture) ||
-          operationGroupKey(drill.capture) === operationGroupKey(primary.capture))
+          operationGroupKey(drill.capture) ===
+            operationGroupKey(primary.capture))
       ) {
         continue;
       }
@@ -14509,12 +15917,21 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // — a flow that only ever drilled into a later item (never the
       // first) must still resolve.
       const primaryMatchedItemIndex = primaryArray.items.findIndex(
-        (item) => findThreadedJoinFields([{ varName: "item", obj: item }], drill.capture).length > 0
+        (item) =>
+          findThreadedJoinFields(
+            [{ varName: "item", obj: item }],
+            drill.capture,
+          ).length > 0,
       );
       if (primaryMatchedItemIndex === -1) continue;
       const joinFields = findThreadedJoinFields(
-        [{ varName: "item", obj: primaryArray.items[primaryMatchedItemIndex]! }],
-        drill.capture
+        [
+          {
+            varName: "item",
+            obj: primaryArray.items[primaryMatchedItemIndex]!,
+          },
+        ],
+        drill.capture,
       ).map((f) => f.field);
 
       // A genuinely per-item-varying repeated endpoint (the SAME drill
@@ -14530,7 +15947,9 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // httpClient calls inside the loop instead of collapsing to one.
       const drillEndpointKey = endpointKey(drill.capture.url);
       const alreadyTargetedSameEndpoint = targets.some(
-        (t) => endpointKey(actions[t.drillStepIndex]!.capture.url) === drillEndpointKey
+        (t) =>
+          endpointKey(actions[t.drillStepIndex]!.capture.url) ===
+          drillEndpointKey,
       );
       if (alreadyTargetedSameEndpoint) {
         absorbedIndices.push(drillIndex);
@@ -14564,18 +15983,21 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // computeFoldChain the empty-path baseline FoldTarget already
       // documents as its fallback contract, and only bail once the
       // resolved chain terminal itself has no real items to fold onto.
-      const drillArray = selectDisambiguatedCandidate(drill.capture.responseBody, drill.capture);
+      const drillArray = selectDisambiguatedCandidate(
+        drill.capture.responseBody,
+        drill.capture,
+      );
       const drillArrayPath = drillArray?.path ?? [];
 
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         drillIndex,
-        drillArrayPath
+        drillArrayPath,
       );
 
       const chainTerminalItems = objectItemsAtPath(
         actions[chainTerminalIndex]!.capture.responseBody,
-        chainArrayPath
+        chainArrayPath,
       );
       if (!chainTerminalItems || chainTerminalItems.length === 0) continue;
 
@@ -14591,9 +16013,10 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // `firstItem` lookup and the shape-inference fold — land on the exact
       // same item regardless of which group it came from.
       const flattenedPrimaryItems =
-        objectItemsAtPath(primary.capture.responseBody, primaryArray.path) ?? [];
+        objectItemsAtPath(primary.capture.responseBody, primaryArray.path) ??
+        [];
       const globalMatchedItemIndex = flattenedPrimaryItems.indexOf(
-        primaryArray.items[primaryMatchedItemIndex]!
+        primaryArray.items[primaryMatchedItemIndex]!,
       );
 
       targets.push({
@@ -14601,7 +16024,9 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
         drillStepIndex: drillIndex,
         drillArrayPath,
         primaryMatchedItemIndex:
-          globalMatchedItemIndex === -1 ? primaryMatchedItemIndex : globalMatchedItemIndex,
+          globalMatchedItemIndex === -1
+            ? primaryMatchedItemIndex
+            : globalMatchedItemIndex,
         chain,
         chainArrayPath,
         chainTerminalIndex,
@@ -14615,7 +16040,11 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
     }
 
     if (targets.length > 0) {
-      groups.push({ primaryArrayPath: primaryArray.path, targets, absorbedIndices });
+      groups.push({
+        primaryArrayPath: primaryArray.path,
+        targets,
+        absorbedIndices,
+      });
     }
   }
 
@@ -14643,7 +16072,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
    * `assertNoFrozenVaryingDrillParams` throw on a read-only GET search whose
    * flow deliberately varies its facets.
    */
-  allowSelfEndpointDrill = true
+  allowSelfEndpointDrill: boolean | ((drill: Capture) => boolean) = true,
 ): FoldPlan[] {
   const plans: FoldPlan[] = [];
   // Spans every primary candidate, not just the current one's own drill
@@ -14674,7 +16103,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       index,
       globallyConsumedIndices,
       requestStringValueIndex,
-      allowSelfEndpointDrill
+      allowSelfEndpointDrill,
     );
     scanCache.set(index, result);
     scanCacheVersion.set(index, consumedVersion);
@@ -14717,20 +16146,27 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // first one the forward scan happens to reach.
       let freshestIndex = primaryIndex;
       let freshestGroup = group;
-      for (let laterIndex = primaryIndex + 1; laterIndex < actions.length; laterIndex++) {
+      for (
+        let laterIndex = primaryIndex + 1;
+        laterIndex < actions.length;
+        laterIndex++
+      ) {
         if (globallyConsumedIndices.has(laterIndex)) continue;
         const laterAction = actions[laterIndex]!;
-        if (endpointKey(laterAction.capture.url) !== primaryEndpointKey) continue;
+        if (endpointKey(laterAction.capture.url) !== primaryEndpointKey)
+          continue;
         const laterGroups = scanCached(laterIndex);
         const laterGroup = laterGroups.find(
           (g) =>
-            JSON.stringify(g.primaryArrayPath) === JSON.stringify(freshestGroup.primaryArrayPath)
+            JSON.stringify(g.primaryArrayPath) ===
+            JSON.stringify(freshestGroup.primaryArrayPath),
         );
         if (laterGroup === undefined) continue;
         const threadsSameDrill = laterGroup.targets.some((laterTarget) =>
           freshestGroup.targets.some(
-            (currentTarget) => currentTarget.drillStepIndex === laterTarget.drillStepIndex
-          )
+            (currentTarget) =>
+              currentTarget.drillStepIndex === laterTarget.drillStepIndex,
+          ),
         );
         if (!threadsSameDrill) continue;
         // A primary occurrence's targets all read from THAT occurrence's own
@@ -14741,10 +16177,12 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         // unique to the earlier occurrence (one it threads independently of
         // the re-queried join key) would be silently dropped instead of
         // folded at all.
-        const laterCoversEveryCurrentTarget = freshestGroup.targets.every((currentTarget) =>
-          laterGroup.targets.some(
-            (laterTarget) => laterTarget.drillStepIndex === currentTarget.drillStepIndex
-          )
+        const laterCoversEveryCurrentTarget = freshestGroup.targets.every(
+          (currentTarget) =>
+            laterGroup.targets.some(
+              (laterTarget) =>
+                laterTarget.drillStepIndex === currentTarget.drillStepIndex,
+            ),
         );
         if (!laterCoversEveryCurrentTarget) continue;
         freshestIndex = laterIndex;
@@ -14776,7 +16214,8 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // part of any target's chain, so they must be consumed here too, or
       // they would surface as leftover raw indices and get emitted a second
       // time as their own single hardcoded calls.
-      for (const absorbedIndex of freshestGroup.absorbedIndices) addConsumed(absorbedIndex);
+      for (const absorbedIndex of freshestGroup.absorbedIndices)
+        addConsumed(absorbedIndex);
     }
   }
   return plans;
@@ -14846,7 +16285,9 @@ const JOIN_DATE_FORMAT_RE = /^(?:yyyy|yy|MM|dd|HH|mm|ss|[^A-Za-z])+$/;
 
 /** Parses `{a}{date|yyMMdd}{b}`; `null` for an unbalanced brace, empty
  * placeholder, template with no placeholder, or an unsupported date format. */
-export function parseJoinTemplate(template: string): JoinTemplateToken[] | null {
+export function parseJoinTemplate(
+  template: string,
+): JoinTemplateToken[] | null {
   const tokens: JoinTemplateToken[] = [];
   let literal = "";
   let i = 0;
@@ -14862,7 +16303,8 @@ export function parseJoinTemplate(template: string): JoinTemplateToken[] | null 
     if (close === -1) return null;
     const inner = template.slice(i + 1, close);
     const [field, format, ...rest] = inner.split("|");
-    if (rest.length > 0 || field === undefined || field.trim() === "") return null;
+    if (rest.length > 0 || field === undefined || field.trim() === "")
+      return null;
     if (format !== undefined && !JOIN_DATE_FORMAT_RE.test(format)) return null;
     if (literal !== "") tokens.push({ kind: "literal", text: literal });
     literal = "";
@@ -14878,14 +16320,18 @@ export function parseJoinTemplate(template: string): JoinTemplateToken[] | null 
 }
 
 /** Distinct primary-row fields a template reads, in order. */
-export function joinTemplateFields(tokens: readonly JoinTemplateToken[]): string[] {
+export function joinTemplateFields(
+  tokens: readonly JoinTemplateToken[],
+): string[] {
   const out: string[] = [];
-  for (const t of tokens) if (t.kind === "field" && !out.includes(t.field)) out.push(t.field);
+  for (const t of tokens)
+    if (t.kind === "field" && !out.includes(t.field)) out.push(t.field);
   return out;
 }
 
 function formatJoinDate(value: unknown, format: string): string | null {
-  const raw = typeof value === "string" || typeof value === "number" ? value : null;
+  const raw =
+    typeof value === "string" || typeof value === "number" ? value : null;
   if (raw === null) return null;
   const iso =
     typeof raw === "string"
@@ -14905,7 +16351,14 @@ function formatJoinDate(value: unknown, format: string): string | null {
       d.getUTCSeconds(),
     ];
   }
-  const [y, mo, d, h, mi, s] = parts as [number, number, number, number, number, number];
+  const [y, mo, d, h, mi, s] = parts as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
   const pad = (n: number, w = 2): string => String(n).padStart(w, "0");
   return format.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (tok) =>
     tok === "yyyy"
@@ -14920,7 +16373,7 @@ function formatJoinDate(value: unknown, format: string): string | null {
               ? pad(h)
               : tok === "mm"
                 ? pad(mi)
-                : pad(s)
+                : pad(s),
   );
 }
 
@@ -14928,7 +16381,7 @@ function formatJoinDate(value: unknown, format: string): string | null {
  * referenced field is missing or an unusable date. */
 export function evalJoinTemplate(
   tokens: readonly JoinTemplateToken[],
-  item: unknown
+  item: unknown,
 ): string | undefined {
   let out = "";
   for (const t of tokens) {
@@ -14952,7 +16405,7 @@ export function evalJoinTemplate(
  * the emitted twin of {@link evalJoinTemplate}. `accessor` renders a field read. */
 export function emitJoinTemplateExpr(
   tokens: readonly JoinTemplateToken[],
-  accessor: (field: string) => string
+  accessor: (field: string) => string,
 ): string {
   const parts = tokens.map((t) => {
     if (t.kind === "literal") return JSON.stringify(t.text);
@@ -14969,7 +16422,9 @@ export function emitJoinTemplateExpr(
  * mirroring the same null-safe pattern the flow loader already applies to
  * `submitEndpointPattern`/`submitBodyPattern`.
  */
-export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | null {
+export function parseFoldReturnSpec(
+  flowFileContents: string,
+): FoldReturnSpec | null {
   const specs = parseFoldReturnSpecs(flowFileContents);
   return specs === null ? null : specs[0]!;
 }
@@ -14980,7 +16435,9 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
  * `resultsPath` when they omit it. Any invalid entry rejects the whole
  * declaration (`null`), matching the single-object behavior.
  */
-export function parseFoldReturnSpecs(flowFileContents: string): FoldReturnSpec[] | null {
+export function parseFoldReturnSpecs(
+  flowFileContents: string,
+): FoldReturnSpec[] | null {
   try {
     const raw: unknown = JSON.parse(flowFileContents);
     if (Array.isArray(raw)) return null;
@@ -14993,7 +16450,9 @@ export function parseFoldReturnSpecs(flowFileContents: string): FoldReturnSpec[]
       return null;
     }
     const foldReturn = (raw as { foldReturn?: unknown }).foldReturn;
-    const entries: unknown[] = Array.isArray(foldReturn) ? foldReturn : [foldReturn];
+    const entries: unknown[] = Array.isArray(foldReturn)
+      ? foldReturn
+      : [foldReturn];
     if (entries.length === 0) return null;
     const specs: FoldReturnSpec[] = [];
     for (const entry of entries) {
@@ -15009,9 +16468,14 @@ export function parseFoldReturnSpecs(flowFileContents: string): FoldReturnSpec[]
 
 function parseFoldReturnEntry(
   entry: unknown,
-  inheritedResultsPath?: string
+  inheritedResultsPath?: string,
 ): FoldReturnSpec | null {
-  if (entry === undefined || entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+  if (
+    entry === undefined ||
+    entry === null ||
+    typeof entry !== "object" ||
+    Array.isArray(entry)
+  ) {
     return null;
   }
   const {
@@ -15045,7 +16509,9 @@ function parseFoldReturnEntry(
       ? joinTemplateFields(templateTokens)
       : declaredJoinFields;
   const resultsPath =
-    declaredResultsPath === undefined ? inheritedResultsPath : declaredResultsPath;
+    declaredResultsPath === undefined
+      ? inheritedResultsPath
+      : declaredResultsPath;
   const optNonEmptyString = (v: unknown): boolean =>
     v === undefined || (typeof v === "string" && v.length > 0);
   if (
@@ -15061,17 +16527,28 @@ function parseFoldReturnEntry(
     return null;
   }
   const parsedDrillParamBindings =
-    drillParamBindings !== undefined ? parseDrillParamBindings(drillParamBindings) : undefined;
-  if (drillParamBindings !== undefined && parsedDrillParamBindings === null) return null;
+    drillParamBindings !== undefined
+      ? parseDrillParamBindings(drillParamBindings)
+      : undefined;
+  if (drillParamBindings !== undefined && parsedDrillParamBindings === null)
+    return null;
   return {
     endpointPattern,
     resultsPath,
-    ...(drillResultsPath !== undefined ? { drillResultsPath: drillResultsPath as string } : {}),
+    ...(drillResultsPath !== undefined
+      ? { drillResultsPath: drillResultsPath as string }
+      : {}),
     joinFields,
-    ...(joinTemplate !== undefined ? { joinTemplate: joinTemplate as string } : {}),
+    ...(joinTemplate !== undefined
+      ? { joinTemplate: joinTemplate as string }
+      : {}),
     ...(attachAs !== undefined ? { attachAs: attachAs as string } : {}),
-    ...(payloadFlag !== undefined ? { payloadFlag: payloadFlag as string } : {}),
-    ...(parsedDrillParamBindings ? { drillParamBindings: parsedDrillParamBindings } : {}),
+    ...(payloadFlag !== undefined
+      ? { payloadFlag: payloadFlag as string }
+      : {}),
+    ...(parsedDrillParamBindings
+      ? { drillParamBindings: parsedDrillParamBindings }
+      : {}),
   };
 }
 
@@ -15096,10 +16573,13 @@ export interface FallbackGateSpec {
  * resolve to an empty spec (today's behavior) rather than aborting
  * generation over a field that only tightens an opt-in guard.
  */
-export function parseFallbackGateSpec(flowFileContents: string): FallbackGateSpec {
+export function parseFallbackGateSpec(
+  flowFileContents: string,
+): FallbackGateSpec {
   try {
     const raw: unknown = JSON.parse(flowFileContents);
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+      return {};
     const { browserFallbackGate, httpTimeoutMs } = raw as {
       browserFallbackGate?: unknown;
       httpTimeoutMs?: unknown;
@@ -15109,19 +16589,27 @@ export function parseFallbackGateSpec(flowFileContents: string): FallbackGateSpe
       if (
         Array.isArray(browserFallbackGate) &&
         browserFallbackGate.length > 0 &&
-        browserFallbackGate.every((n): n is string => typeof n === "string" && n.length > 0)
+        browserFallbackGate.every(
+          (n): n is string => typeof n === "string" && n.length > 0,
+        )
       ) {
         return browserFallbackGate;
       }
       return undefined;
     })();
     const resolvedTimeout =
-      typeof httpTimeoutMs === "number" && Number.isFinite(httpTimeoutMs) && httpTimeoutMs > 0
+      typeof httpTimeoutMs === "number" &&
+      Number.isFinite(httpTimeoutMs) &&
+      httpTimeoutMs > 0
         ? httpTimeoutMs
         : undefined;
     return {
-      ...(resolvedGate !== undefined ? { browserFallbackGate: resolvedGate } : {}),
-      ...(resolvedTimeout !== undefined ? { httpTimeoutMs: resolvedTimeout } : {}),
+      ...(resolvedGate !== undefined
+        ? { browserFallbackGate: resolvedGate }
+        : {}),
+      ...(resolvedTimeout !== undefined
+        ? { httpTimeoutMs: resolvedTimeout }
+        : {}),
     };
   } catch {
     return {};
@@ -15133,18 +16621,22 @@ export function parseFallbackGateSpec(flowFileContents: string): FallbackGateSpe
  * agrees" pattern the rest of {@link parseFoldReturnSpec} uses for its other
  * fields, so a mistyped default is rejected at parse time rather than
  * surfacing as a runtime coercion mismatch downstream. */
-const DRILL_PARAM_BINDING_TYPEOF: Record<"int" | "string" | "boolean", string> = {
-  int: "number",
-  string: "string",
-  boolean: "boolean",
-};
+const DRILL_PARAM_BINDING_TYPEOF: Record<"int" | "string" | "boolean", string> =
+  {
+    int: "number",
+    string: "string",
+    boolean: "boolean",
+  };
 
 /** Validates the `drillParamBindings` map on an object-form `foldReturn`
  * block, returning `null` on any malformed entry so the caller can drop the
  * whole `foldReturn` — mirroring how {@link parseFoldReturnSpec} already
  * treats a malformed `joinFields`/`drillResultsPath`. */
-function parseDrillParamBindings(raw: unknown): FoldReturnSpec["drillParamBindings"] | null {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+function parseDrillParamBindings(
+  raw: unknown,
+): FoldReturnSpec["drillParamBindings"] | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    return null;
   const entries = Object.entries(raw as Record<string, unknown>);
   const parsed: Record<
     string,
@@ -15173,7 +16665,11 @@ function parseDrillParamBindings(raw: unknown): FoldReturnSpec["drillParamBindin
     ) {
       return null;
     }
-    parsed[paramName] = { payloadField, type, default: defaultValue as string | number | boolean };
+    parsed[paramName] = {
+      payloadField,
+      type,
+      default: defaultValue as string | number | boolean,
+    };
   }
   return parsed;
 }
@@ -15222,13 +16718,17 @@ const ABSENT_ARRAY_SHAPE = "\u0001absent";
  * (see {@link arrayElementIdentity}). Which identity suffixes such an array
  * carries is itself a property of the request — a sibling field that differs
  * only because the array took a different shape is explained by that shape. */
-function selfDescribingArrayPaths(body: unknown, path: readonly string[] = []): string[][] {
+function selfDescribingArrayPaths(
+  body: unknown,
+  path: readonly string[] = [],
+): string[][] {
   if (body === null || typeof body !== "object") return [];
   const children = Object.entries(body).flatMap(([key, child]) =>
-    selfDescribingArrayPaths(child, [...path, key])
+    selfDescribingArrayPaths(child, [...path, key]),
   );
   const isSelfDescribing =
-    Array.isArray(body) && body.some((element) => arrayElementIdentity(element) !== undefined);
+    Array.isArray(body) &&
+    body.some((element) => arrayElementIdentity(element) !== undefined);
   return isSelfDescribing ? [[...path], ...children] : children;
 }
 
@@ -15236,10 +16736,14 @@ function selfDescribingArrayPaths(body: unknown, path: readonly string[] = []): 
  * Index of the innermost path segment that indexes into an array (the array
  * holding the leaf, or one holding an object element that carries it), or -1.
  */
-function innermostArrayIndexSegment(body: unknown, path: readonly string[]): number {
+function innermostArrayIndexSegment(
+  body: unknown,
+  path: readonly string[],
+): number {
   for (let index = path.length - 1; index >= 0; index--) {
     if (!/^\d+$/.test(path[index]!)) continue;
-    if (Array.isArray(readValueAtPath(body, path.slice(0, index)))) return index;
+    if (Array.isArray(readValueAtPath(body, path.slice(0, index))))
+      return index;
   }
   return -1;
 }
@@ -15263,10 +16767,11 @@ function innermostArrayIndexSegment(body: unknown, path: readonly string[]): num
 export function readComparableBodyLeaf(
   body: unknown,
   otherBody: unknown,
-  path: readonly string[]
+  path: readonly string[],
 ): unknown {
   const leaf = readValueAtPath(body, path);
-  const arrayEnd = typeof leaf === "string" ? innermostArrayIndexSegment(body, path) : -1;
+  const arrayEnd =
+    typeof leaf === "string" ? innermostArrayIndexSegment(body, path) : -1;
   if (arrayEnd === -1) return readValueAtPath(otherBody, path);
   const arrayPath = path.slice(0, arrayEnd);
   const elementSubpath = path.slice(arrayEnd + 1);
@@ -15274,7 +16779,9 @@ export function readComparableBodyLeaf(
   const otherArray = readValueAtPath(otherBody, arrayPath);
   const identity = arrayElementIdentity(leaf);
   const isSelfDescribing = (array: unknown[]): boolean =>
-    array.some((element) => arrayElementIdentity(readValueAtPath(element, elementSubpath)));
+    array.some((element) =>
+      arrayElementIdentity(readValueAtPath(element, elementSubpath)),
+    );
   if (
     identity === undefined &&
     !isSelfDescribing(ownArray) &&
@@ -15283,10 +16790,14 @@ export function readComparableBodyLeaf(
     return readValueAtPath(otherBody, path);
   }
   if (!Array.isArray(otherArray)) return undefined;
-  const counterparts = otherArray.map((element) => readValueAtPath(element, elementSubpath));
+  const counterparts = otherArray.map((element) =>
+    readValueAtPath(element, elementSubpath),
+  );
   if (counterparts.includes(leaf)) return leaf;
   if (identity === undefined) return undefined;
-  const ownCounterparts = ownArray.map((element) => readValueAtPath(element, elementSubpath));
+  const ownCounterparts = ownArray.map((element) =>
+    readValueAtPath(element, elementSubpath),
+  );
   const sharesIdentity = (candidate: unknown): boolean =>
     arrayElementIdentity(candidate) === identity;
   const ownSharing = ownCounterparts.filter(sharesIdentity);
@@ -15294,9 +16805,14 @@ export function readComparableBodyLeaf(
   if (ownSharing.length !== 1 || otherSharing.length !== 1) return undefined;
   const name = identityName(identity);
   const nameIsUnique = (values: readonly unknown[]): boolean =>
-    values.filter((value) => identityName(arrayElementIdentity(value)) === name).length === 1;
-  const isSameShape = identityShape(ownCounterparts) === identityShape(counterparts);
-  if (!isSameShape && !(nameIsUnique(ownCounterparts) && nameIsUnique(counterparts))) {
+    values.filter((value) => identityName(arrayElementIdentity(value)) === name)
+      .length === 1;
+  const isSameShape =
+    identityShape(ownCounterparts) === identityShape(counterparts);
+  if (
+    !isSameShape &&
+    !(nameIsUnique(ownCounterparts) && nameIsUnique(counterparts))
+  ) {
     return undefined;
   }
   return otherSharing[0];
@@ -15338,7 +16854,10 @@ export function readComparableBodyLeaf(
  * {@link objectItemsAtPath}'s later wildcard-driven `.flatMap` — not this
  * one-shot shape walk — is responsible for reconciling.
  */
-function resolveDeclaredArrayPath(rawSegments: readonly string[], body: unknown): string[] {
+function resolveDeclaredArrayPath(
+  rawSegments: readonly string[],
+  body: unknown,
+): string[] {
   const resolved: string[] = [];
   let node: unknown = body;
   for (const segment of rawSegments) {
@@ -15375,7 +16894,7 @@ function resolveDeclaredArrayPath(rawSegments: readonly string[], body: unknown)
  * items a fold covers. */
 function objectItemsAtPath(
   body: unknown,
-  path: readonly string[]
+  path: readonly string[],
 ): Record<string, unknown>[] | null {
   const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
   if (wildcardIndex === -1) {
@@ -15389,7 +16908,9 @@ function objectItemsAtPath(
   const outer = readValueAtPath(body, path.slice(0, wildcardIndex));
   if (!Array.isArray(outer)) return null;
   const after = path.slice(wildcardIndex + 1);
-  const items = outer.flatMap((element) => objectItemsAtPath(element, after) ?? []);
+  const items = outer.flatMap(
+    (element) => objectItemsAtPath(element, after) ?? [],
+  );
   return items.length > 0 ? items : null;
 }
 
@@ -15405,15 +16926,19 @@ function objectItemsAtPath(
 function objectItemsWithAncestorsAtPath(
   body: unknown,
   path: readonly string[],
-  ancestors: readonly Record<string, unknown>[] = []
+  ancestors: readonly Record<string, unknown>[] = [],
 ): { item: Record<string, unknown>; ancestors: Record<string, unknown>[] }[] {
   const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
   if (wildcardIndex === -1) {
     const value = readValueAtPath(body, path);
     if (Array.isArray(value)) {
-      return value.filter(isObjectArrayItem).map((item) => ({ item, ancestors: [...ancestors] }));
+      return value
+        .filter(isObjectArrayItem)
+        .map((item) => ({ item, ancestors: [...ancestors] }));
     }
-    return isObjectArrayItem(value) ? [{ item: value, ancestors: [...ancestors] }] : [];
+    return isObjectArrayItem(value)
+      ? [{ item: value, ancestors: [...ancestors] }]
+      : [];
   }
   const outer = readValueAtPath(body, path.slice(0, wildcardIndex));
   if (!Array.isArray(outer)) return [];
@@ -15421,7 +16946,7 @@ function objectItemsWithAncestorsAtPath(
   return outer.flatMap((element) =>
     isObjectArrayItem(element)
       ? objectItemsWithAncestorsAtPath(element, after, [...ancestors, element])
-      : []
+      : [],
   );
 }
 
@@ -15450,7 +16975,9 @@ const requestValuesCache = new WeakMap<Capture, Set<string>>();
  * threads through it. Keyed on `Capture` identity rather than
  * `responseBody`, since this walks the capture's request side (URL, body,
  * headers), not its response. */
-export function collectRequestValuesIncludingHeaders(capture: Capture): Set<string> {
+export function collectRequestValuesIncludingHeaders(
+  capture: Capture,
+): Set<string> {
   const cached = requestValuesCache.get(capture);
   if (cached) return cached;
   const values = collectRequestStringValues(capture);
@@ -15471,20 +16998,30 @@ function resolveSpecMatchedPrimaryItemIndex(
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
   drillCapture: Capture,
-  joinTemplate?: string
+  joinTemplate?: string,
 ): number | null {
   const requestValues = collectRequestValuesIncludingHeaders(drillCapture);
   if (requestValues.size === 0) return null;
-  const templateTokens = joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
+  const templateTokens =
+    joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
   const matchedIndex = primaryItems.findIndex((item) => {
     // A declared computed key matches on its composed value alone: the drill
     // never carries the template's constituent fields separately.
-    const composed = templateTokens ? evalJoinTemplate(templateTokens, item) : undefined;
-    if (composed !== undefined && composed !== "" && requestValues.has(composed)) return true;
+    const composed = templateTokens
+      ? evalJoinTemplate(templateTokens, item)
+      : undefined;
+    if (
+      composed !== undefined &&
+      composed !== "" &&
+      requestValues.has(composed)
+    )
+      return true;
     return joinFields.every((field) => {
       const value = readValueAtPath(item, field.split("."));
       return (
-        (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
+        (typeof value === "string" &&
+          value.length > 0 &&
+          requestValues.has(value)) ||
         (typeof value === "number" && requestValues.has(String(value))) ||
         (typeof value === "boolean" && requestValues.has(String(value)))
       );
@@ -15508,20 +17045,30 @@ function resolveSpecMatchedPrimaryItemIndexFromResponse(
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
   drillCapture: Capture,
-  joinTemplate?: string
+  joinTemplate?: string,
 ): number | null {
   const responseValues = collectResponseLeafValues(drillCapture);
   if (responseValues.size === 0) return null;
-  const templateTokens = joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
+  const templateTokens =
+    joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
   const matchedIndex = primaryItems.findIndex((item) => {
     // A declared computed key matches on its composed value alone: the drill
     // never carries the template's constituent fields separately.
-    const composed = templateTokens ? evalJoinTemplate(templateTokens, item) : undefined;
-    if (composed !== undefined && composed !== "" && responseValues.has(composed)) return true;
+    const composed = templateTokens
+      ? evalJoinTemplate(templateTokens, item)
+      : undefined;
+    if (
+      composed !== undefined &&
+      composed !== "" &&
+      responseValues.has(composed)
+    )
+      return true;
     return joinFields.every((field) => {
       const value = readValueAtPath(item, field.split("."));
       return (
-        (typeof value === "string" && value.length > 0 && responseValues.has(value)) ||
+        (typeof value === "string" &&
+          value.length > 0 &&
+          responseValues.has(value)) ||
         (typeof value === "number" && responseValues.has(String(value))) ||
         (typeof value === "boolean" && responseValues.has(String(value)))
       );
@@ -15542,11 +17089,13 @@ function resolveSpecMatchedPrimaryItemIndexFromResponse(
  * per-candidate backward walk the reported large-capture-set hang traced to.
  */
 function buildRequestValueIndex<T extends { capture: Capture }>(
-  actions: readonly T[]
+  actions: readonly T[],
 ): Map<string, number[]> {
   const index = new Map<string, number[]>();
   for (let i = 0; i < actions.length; i++) {
-    for (const value of collectRequestValuesIncludingHeaders(actions[i]!.capture)) {
+    for (const value of collectRequestValuesIncludingHeaders(
+      actions[i]!.capture,
+    )) {
       const indices = index.get(value);
       if (indices) indices.push(i);
       else index.set(value, [i]);
@@ -15562,7 +17111,7 @@ function joinTemplateValueBinding(
   target: Pick<FoldTarget, "joinTemplate">,
   firstItem: unknown,
   itemVar: string,
-  scopedAccessor: (varName: string, field: string) => string
+  scopedAccessor: (varName: string, field: string) => string,
 ): { value: string; replacement: string; isItemBound: boolean } | null {
   if (target.joinTemplate === undefined) return null;
   const tokens = parseJoinTemplate(target.joinTemplate);
@@ -15585,10 +17134,11 @@ function joinTemplateValueBinding(
 function collectPrimaryJoinValues(
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
-  joinTemplate?: string
+  joinTemplate?: string,
 ): Set<string> {
   const values = new Set<string>();
-  const tokens = joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
+  const tokens =
+    joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
   for (const item of primaryItems) {
     if (tokens) {
       const composed = evalJoinTemplate(tokens, item);
@@ -15597,7 +17147,8 @@ function collectPrimaryJoinValues(
     for (const field of joinFields) {
       const value = readValueAtPath(item, field.split("."));
       if (typeof value === "string" && value.length > 0) values.add(value);
-      else if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
+      else if (typeof value === "number" || typeof value === "boolean")
+        values.add(String(value));
     }
   }
   return values;
@@ -15610,7 +17161,7 @@ function collectPrimaryJoinValues(
 function collectCandidateEntryIndicesDescending(
   requestValueIndex: ReadonlyMap<string, number[]>,
   joinValues: ReadonlySet<string>,
-  primaryStepIndex: number
+  primaryStepIndex: number,
 ): number[] {
   const candidates = new Set<number>();
   for (const value of joinValues) {
@@ -15653,7 +17204,9 @@ export function resetFoldPlanResolutionCallCountForTests(): void {
   resolveSpecMatchedPrimaryItemIndexAlongChainCallCount = 0;
 }
 
-function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Capture }>(
+function resolveSpecMatchedPrimaryItemIndexAlongChain<
+  T extends { capture: Capture },
+>(
   actions: readonly T[],
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
@@ -15675,7 +17228,7 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
   // `primaryStepIndex` is what collapses the backward search from
   // O(actions) to O(occurrences of the actual join value) per candidate.
   candidateEntryIndicesDescending: readonly number[],
-  joinTemplate?: string
+  joinTemplate?: string,
 ): { entryIndex: number; primaryMatchedItemIndex: number } | null {
   resolveSpecMatchedPrimaryItemIndexAlongChainCallCount++;
   for (const entryIndex of candidateEntryIndicesDescending) {
@@ -15689,15 +17242,17 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
               primaryItems,
               joinFields,
               actions[entryIndex]!.capture,
-              joinTemplate
+              joinTemplate,
             );
             matchedItemIndexCache.set(entryIndex, resolved);
             return resolved;
           })();
     if (matched === null) continue;
-    if (entryIndex === drillStepIndex) return { entryIndex, primaryMatchedItemIndex: matched };
+    if (entryIndex === drillStepIndex)
+      return { entryIndex, primaryMatchedItemIndex: matched };
     const { chain } = computeFoldChain(actions, entryIndex, []);
-    if (chain.includes(drillStepIndex)) return { entryIndex, primaryMatchedItemIndex: matched };
+    if (chain.includes(drillStepIndex))
+      return { entryIndex, primaryMatchedItemIndex: matched };
   }
   return null;
 }
@@ -15712,7 +17267,7 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
  * plan, instead of dropping it before the fold pipeline ever sees it.
  */
 function compileFoldReturnEndpointMatcher(
-  spec: FoldReturnSpec | null
+  spec: FoldReturnSpec | null,
 ): (capture: Capture) => boolean {
   if (spec === null) return () => false;
   const endpointRx = ((): RegExp | null => {
@@ -15734,9 +17289,11 @@ function compileFoldReturnEndpointMatcher(
  */
 function compileDeclaredDrillMatcher(
   spec: FoldReturnSpec | null,
-  extraDrillSpecs: readonly FoldReturnSpec[] = ambientExtraDrillSpecs
+  extraDrillSpecs: readonly FoldReturnSpec[] = ambientExtraDrillSpecs,
 ): (capture: Capture) => boolean {
-  const matchers = [spec, ...extraDrillSpecs].map((s) => compileFoldReturnEndpointMatcher(s));
+  const matchers = [spec, ...extraDrillSpecs].map((s) =>
+    compileFoldReturnEndpointMatcher(s),
+  );
   return (capture: Capture) => matchers.some((m) => m(capture));
 }
 
@@ -15754,14 +17311,14 @@ function compileDeclaredDrillMatcher(
  * `buildFoldPlanFromSpec` with no `primaryStepIndex` to resolve against.
  */
 function compileFoldReturnResultsMatcher(
-  spec: FoldReturnSpec | null
+  spec: FoldReturnSpec | null,
 ): (capture: Capture) => boolean {
   if (spec === null) return () => false;
   const rawResultsPath = spec.resultsPath.split(".");
   return (capture: Capture) =>
     objectItemsAtPath(
       capture.responseBody,
-      resolveDeclaredArrayPath(rawResultsPath, capture.responseBody)
+      resolveDeclaredArrayPath(rawResultsPath, capture.responseBody),
     ) !== null;
 }
 
@@ -15774,11 +17331,13 @@ function compileFoldReturnResultsMatcher(
  * memoized, so repeated calls only re-pay the indexing. */
 function buildDrillResponseValueIndex<T extends { capture: Capture }>(
   actions: readonly T[],
-  drillStepIndices: readonly number[]
+  drillStepIndices: readonly number[],
 ): Map<string, number[]> {
   const index = new Map<string, number[]>();
   for (const drillStepIndex of drillStepIndices) {
-    for (const value of collectResponseLeafValues(actions[drillStepIndex]!.capture)) {
+    for (const value of collectResponseLeafValues(
+      actions[drillStepIndex]!.capture,
+    )) {
       const indices = index.get(value);
       if (indices) indices.push(drillStepIndex);
       else index.set(value, [drillStepIndex]);
@@ -15798,7 +17357,7 @@ function collectDrillStepIndicesWorthTrying(
   drillResponseValueIndex: ReadonlyMap<string, number[]>,
   joinValues: ReadonlySet<string>,
   candidateEntryIndicesDescending: readonly number[],
-  unpruned: boolean
+  unpruned: boolean,
 ): number[] {
   if (unpruned) return allDrillStepIndices.slice(firstDrillOffset).reverse();
   const worthTrying = new Set<number>();
@@ -15806,7 +17365,7 @@ function collectDrillStepIndicesWorthTrying(
   if (earliestEntryIndex !== undefined) {
     const requestStart = Math.max(
       firstDrillOffset,
-      firstIndexGreaterThan(allDrillStepIndices, earliestEntryIndex - 1)
+      firstIndexGreaterThan(allDrillStepIndices, earliestEntryIndex - 1),
     );
     for (let i = requestStart; i < allDrillStepIndices.length; i++) {
       worthTrying.add(allDrillStepIndices[i]!);
@@ -15826,7 +17385,10 @@ function collectDrillStepIndicesWorthTrying(
   return [...worthTrying].sort((a, b) => b - a);
 }
 
-function firstIndexGreaterThan(sortedAscending: readonly number[], value: number): number {
+function firstIndexGreaterThan(
+  sortedAscending: readonly number[],
+  value: number,
+): number {
   let low = 0;
   let high = sortedAscending.length;
   while (low < high) {
@@ -15874,7 +17436,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   // OWN response (e.g. a per-item drill-down's "details" array, matched
   // purely by coincidental naming) hijack or append onto that plan instead
   // of being correctly left unmerged.
-  allowSelfFold: boolean = false
+  allowSelfFold: boolean = false,
 ): FoldPlan | null {
   const rawPrimaryArrayPath = spec.resultsPath.split(".");
   const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
@@ -15891,38 +17453,51 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     (restrictToDrillEndpointKey === null ||
       endpointKey(action.capture.url) === restrictToDrillEndpointKey)
       ? [index]
-      : []
+      : [],
   );
   const drillResponseValueIndex = buildDrillResponseValueIndex(
     actions,
-    allMatchingDrillStepIndices
+    allMatchingDrillStepIndices,
   );
   let freshestPlan: FoldPlan | null = null;
-  for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
-    if (exactPrimaryStepIndex !== null && primaryStepIndex !== exactPrimaryStepIndex) {
+  for (
+    let primaryStepIndex = 0;
+    primaryStepIndex < actions.length;
+    primaryStepIndex++
+  ) {
+    if (
+      exactPrimaryStepIndex !== null &&
+      primaryStepIndex !== exactPrimaryStepIndex
+    ) {
       continue;
     }
     if (
       primaryIdentityAnchor !== null &&
-      operationGroupKey(actions[primaryStepIndex]!.capture) !== primaryIdentityAnchor
+      operationGroupKey(actions[primaryStepIndex]!.capture) !==
+        primaryIdentityAnchor
     ) {
       continue;
     }
     const primaryArrayPath = resolveDeclaredArrayPath(
       rawPrimaryArrayPath,
-      actions[primaryStepIndex]!.capture.responseBody
+      actions[primaryStepIndex]!.capture.responseBody,
     );
     const primaryItems = objectItemsAtPath(
       actions[primaryStepIndex]!.capture.responseBody,
-      primaryArrayPath
+      primaryArrayPath,
     );
     if (!primaryItems) continue;
-    const joinValues = collectPrimaryJoinValues(primaryItems, spec.joinFields, spec.joinTemplate);
-    const candidateEntryIndicesDescending = collectCandidateEntryIndicesDescending(
-      requestValueIndex,
-      joinValues,
-      primaryStepIndex
+    const joinValues = collectPrimaryJoinValues(
+      primaryItems,
+      spec.joinFields,
+      spec.joinTemplate,
     );
+    const candidateEntryIndicesDescending =
+      collectCandidateEntryIndicesDescending(
+        requestValueIndex,
+        joinValues,
+        primaryStepIndex,
+      );
     // Drills are tried from the freshest (highest) index down so the
     // expensive backward-walk + computeFoldChain resolution runs on the
     // candidate that would win ties in the original last-write-wins scan
@@ -15946,7 +17521,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     // admitted range to include `primaryStepIndex` itself.
     const firstDrillOffset = firstIndexGreaterThan(
       allMatchingDrillStepIndices,
-      allowSelfFold ? primaryStepIndex - 1 : primaryStepIndex
+      allowSelfFold ? primaryStepIndex - 1 : primaryStepIndex,
     );
     if (
       candidateEntryIndicesDescending.length === 0 &&
@@ -15960,7 +17535,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       drillResponseValueIndex,
       joinValues,
       candidateEntryIndicesDescending,
-      spec.joinFields.length === 0
+      spec.joinFields.length === 0,
     );
     // Shared across every matching-drill candidate tried below for THIS
     // primaryStepIndex — see resolveSpecMatchedPrimaryItemIndexAlongChain's
@@ -15991,7 +17566,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         drillStepIndex,
         matchedItemIndexCache,
         candidateEntryIndicesDescending,
-        spec.joinTemplate
+        spec.joinTemplate,
       );
       // A request-carried join value (checked above, across this whole
       // primary/drill chain) disambiguates unambiguously; only fall back to
@@ -16000,12 +17575,13 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       const matchResult =
         chainMatchResult ??
         ((): { entryIndex: number; primaryMatchedItemIndex: number } | null => {
-          const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndexFromResponse(
-            primaryItems,
-            spec.joinFields,
-            drill.capture,
-            spec.joinTemplate
-          );
+          const primaryMatchedItemIndex =
+            resolveSpecMatchedPrimaryItemIndexFromResponse(
+              primaryItems,
+              spec.joinFields,
+              drill.capture,
+              spec.joinTemplate,
+            );
           return primaryMatchedItemIndex === null
             ? null
             : { entryIndex: drillStepIndex, primaryMatchedItemIndex };
@@ -16024,8 +17600,9 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       const drillArrayPath = ((): string[] | null => {
         if (entryIndex !== drillStepIndex) {
           return (
-            findObjectArrayFieldOrWholeObject(actions[entryIndex]!.capture.responseBody)?.path ??
-            null
+            findObjectArrayFieldOrWholeObject(
+              actions[entryIndex]!.capture.responseBody,
+            )?.path ?? null
           );
         }
         if (spec.drillResultsPath === undefined) {
@@ -16040,24 +17617,32 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
           // discarding the declared `resultsPath`'s own nesting depth.
           return drillStepIndex === primaryStepIndex
             ? primaryArrayPath
-            : (findObjectArrayFieldOrWholeObject(drill.capture.responseBody)?.path ?? null);
+            : (findObjectArrayFieldOrWholeObject(drill.capture.responseBody)
+                ?.path ?? null);
         }
         const path = resolveDeclaredArrayPath(
           spec.drillResultsPath.split("."),
-          drill.capture.responseBody
+          drill.capture.responseBody,
         );
-        return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;
+        return objectItemsAtPath(drill.capture.responseBody, path)
+          ? path
+          : null;
       })();
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         entryIndex,
-        drillArrayPath ?? []
+        drillArrayPath ?? [],
       );
       // The chain's resolved terminal must actually hold foldable data —
       // an intermediate drill step with neither its own candidate NOR a
       // later chained step that resolves one has nothing to merge, so it
       // is skipped exactly as the pre-chain null check used to skip it.
-      if (!objectItemsAtPath(actions[chainTerminalIndex]!.capture.responseBody, chainArrayPath)) {
+      if (
+        !objectItemsAtPath(
+          actions[chainTerminalIndex]!.capture.responseBody,
+          chainArrayPath,
+        )
+      ) {
         continue;
       }
       freshestPlan = {
@@ -16066,7 +17651,9 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         targets: [
           {
             joinFields: spec.joinFields,
-            ...(spec.joinTemplate !== undefined ? { joinTemplate: spec.joinTemplate } : {}),
+            ...(spec.joinTemplate !== undefined
+              ? { joinTemplate: spec.joinTemplate }
+              : {}),
             drillStepIndex: entryIndex,
             drillArrayPath: drillArrayPath ?? [],
             primaryMatchedItemIndex,
@@ -16093,13 +17680,16 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * structural heuristic resolves `groups.*` but the author declares
  * `groups.*.members.*`.
  */
-function isDescendantArrayPath(candidate: readonly string[], base: readonly string[]): boolean {
+function isDescendantArrayPath(
+  candidate: readonly string[],
+  base: readonly string[],
+): boolean {
   if (candidate.length <= base.length) return false;
   return base.every(
     (segment, i) =>
       segment === candidate[i] ||
       segment === ARRAY_WILDCARD_SEGMENT ||
-      candidate[i] === ARRAY_WILDCARD_SEGMENT
+      candidate[i] === ARRAY_WILDCARD_SEGMENT,
   );
 }
 
@@ -16145,7 +17735,7 @@ function isDescendantArrayPath(candidate: readonly string[], base: readonly stri
  */
 function foldTargetDrillIdentity<T extends { capture: Capture }>(
   actions: readonly T[],
-  target: FoldTarget
+  target: FoldTarget,
 ): string {
   return `${endpointKey(actions[target.chainTerminalIndex]!.capture.url)}\u0000${target.chainArrayPath.join(".")}`;
 }
@@ -16158,7 +17748,7 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // function's own buildFoldPlanFromSpec call so a spec plan resolved here
   // can never anchor on a DIFFERENT primary than the (already anchor-
   // constrained) structuralPlans it's about to be merged onto.
-  primaryIdentityAnchor: string | null = null
+  primaryIdentityAnchor: string | null = null,
 ): FoldPlan[] {
   if (foldReturnSpec === null) return [...structuralPlans];
   // Override joinFields on EVERY structural primary occurrence the spec can
@@ -16167,100 +17757,117 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // to land on. A re-issued/paginated primary (same endpoint, multiple
   // captures) produces one independent structural plan per occurrence; each
   // must get the declared override, not just the freshest one.
-  const structuralPlansWithPerOccurrenceOverrides = structuralPlans.map((plan) => {
-    // Resolved once per structural TARGET (keyed on that target's own drill
-    // endpoint), not once for the whole primary occurrence: buildFoldPlanFromSpec's
-    // freshest-first scan `break`s after the first drill endpoint it resolves, so a
-    // single unrestricted call can only ever produce an override for ONE of a
-    // primary's structural targets even when it has several (e.g. a genuinely
-    // per-item drill loop resolving one independent target per item, each at its
-    // own endpoint). See buildFoldPlanFromSpec's restrictToDrillEndpointKey docstring.
-    const matchesDeclaredEndpoint = compileFoldReturnEndpointMatcher(foldReturnSpec);
-    const declaredPrimaryArrayPath = resolveDeclaredArrayPath(
-      foldReturnSpec.resultsPath.split("."),
-      actions[plan.primaryStepIndex]!.capture.responseBody
-    );
-    const mergedTargets = plan.targets.map((target) => {
+  const structuralPlansWithPerOccurrenceOverrides = structuralPlans.map(
+    (plan) => {
+      // Resolved once per structural TARGET (keyed on that target's own drill
+      // endpoint), not once for the whole primary occurrence: buildFoldPlanFromSpec's
+      // freshest-first scan `break`s after the first drill endpoint it resolves, so a
+      // single unrestricted call can only ever produce an override for ONE of a
+      // primary's structural targets even when it has several (e.g. a genuinely
+      // per-item drill loop resolving one independent target per item, each at its
+      // own endpoint). See buildFoldPlanFromSpec's restrictToDrillEndpointKey docstring.
+      const matchesDeclaredEndpoint =
+        compileFoldReturnEndpointMatcher(foldReturnSpec);
+      const declaredPrimaryArrayPath = resolveDeclaredArrayPath(
+        foldReturnSpec.resultsPath.split("."),
+        actions[plan.primaryStepIndex]!.capture.responseBody,
+      );
+      const mergedTargets = plan.targets.map((target) => {
+        const ownSpecPlan = buildFoldPlanFromSpec(
+          actions,
+          foldReturnSpec,
+          primaryIdentityAnchor,
+          plan.primaryStepIndex,
+          endpointKey(actions[target.drillStepIndex]!.capture.url),
+        );
+        if (
+          ownSpecPlan !== null &&
+          JSON.stringify(ownSpecPlan.primaryArrayPath) ===
+            JSON.stringify(plan.primaryArrayPath)
+        ) {
+          // ownSpecPlan was resolved with restrictToDrillEndpointKey pinned to
+          // this target's OWN drill endpoint, so its single target (see
+          // buildFoldPlanFromSpec's `targets: [{...}]` literal — it never
+          // returns more than one) IS the spec's resolution of this restricted
+          // endpoint by construction. Matching it back to `target` via
+          // foldTargetDrillIdentity is not just redundant but actively wrong: a
+          // multi-hop drill chain can make the spec's forward walk
+          // (buildFoldPlanFromSpec's computeFoldChain resolution) land on a
+          // different chainTerminalIndex/chainArrayPath than the structural
+          // heuristic did for the exact same restricted endpoint, so the
+          // identity lookup misses and the declared joinFields override is
+          // silently dropped in favor of the heuristic's structural guess.
+          const specTarget = ownSpecPlan.targets[0];
+          return specTarget === undefined
+            ? target
+            : { ...target, joinFields: specTarget.joinFields };
+        }
+        // buildFoldPlanFromSpec came back null (or landed on a different
+        // primaryArrayPath) because it couldn't resolve a
+        // primaryMatchedItemIndex for this drill — the join value it names
+        // sits on the drill response but isn't discoverable at that same
+        // literal path on any primary item (a generation-time-only schema-
+        // inference concern; see resolveSpecMatchedPrimaryItemIndexFromResponse).
+        // That failure has nothing to do with whether the declared joinFields
+        // should be trusted at RUNTIME: emitFoldMatchAndMergeLines only ever
+        // reads target.joinFields (a field-name string), never
+        // primaryMatchedItemIndex. Once the declared spec's own endpoint
+        // pattern and resultsPath demonstrably match THIS already
+        // structurally-resolved target, the declared joinFields must win over
+        // the structural guess regardless of whether a representative item
+        // could be picked.
+        // Test against the chain's TERMINAL capture (where the fold array —
+        // and thus the declared identifier field — actually lives), not the
+        // structural heuristic's threading-entry `drillStepIndex`: on a
+        // multi-hop chain the two can diverge (see foldTargetDrillIdentity's
+        // docstring above), and a declared endpointPattern names the call
+        // that holds the array, not whichever earlier hop some other field
+        // happened to be threaded into.
+        const targetMatchesDeclaredEndpoint = matchesDeclaredEndpoint(
+          actions[target.chainTerminalIndex]!.capture,
+        );
+        const primaryArrayPathMatchesSpec =
+          JSON.stringify(declaredPrimaryArrayPath) ===
+          JSON.stringify(plan.primaryArrayPath);
+        return targetMatchesDeclaredEndpoint && primaryArrayPathMatchesSpec
+          ? { ...target, joinFields: foldReturnSpec.joinFields }
+          : target;
+      });
+      // A spec-declared target the heuristic missed entirely (an independent
+      // drill-down at a NEW endpoint) is still found via the original
+      // unrestricted resolution, which is free to land on any endpoint.
       const ownSpecPlan = buildFoldPlanFromSpec(
         actions,
         foldReturnSpec,
         primaryIdentityAnchor,
         plan.primaryStepIndex,
-        endpointKey(actions[target.drillStepIndex]!.capture.url)
       );
-      if (
+      const existingDrillIdentities = new Set(
+        plan.targets.map((target) => foldTargetDrillIdentity(actions, target)),
+      );
+      const newTargets =
         ownSpecPlan !== null &&
-        JSON.stringify(ownSpecPlan.primaryArrayPath) === JSON.stringify(plan.primaryArrayPath)
-      ) {
-        // ownSpecPlan was resolved with restrictToDrillEndpointKey pinned to
-        // this target's OWN drill endpoint, so its single target (see
-        // buildFoldPlanFromSpec's `targets: [{...}]` literal — it never
-        // returns more than one) IS the spec's resolution of this restricted
-        // endpoint by construction. Matching it back to `target` via
-        // foldTargetDrillIdentity is not just redundant but actively wrong: a
-        // multi-hop drill chain can make the spec's forward walk
-        // (buildFoldPlanFromSpec's computeFoldChain resolution) land on a
-        // different chainTerminalIndex/chainArrayPath than the structural
-        // heuristic did for the exact same restricted endpoint, so the
-        // identity lookup misses and the declared joinFields override is
-        // silently dropped in favor of the heuristic's structural guess.
-        const specTarget = ownSpecPlan.targets[0];
-        return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
-      }
-      // buildFoldPlanFromSpec came back null (or landed on a different
-      // primaryArrayPath) because it couldn't resolve a
-      // primaryMatchedItemIndex for this drill — the join value it names
-      // sits on the drill response but isn't discoverable at that same
-      // literal path on any primary item (a generation-time-only schema-
-      // inference concern; see resolveSpecMatchedPrimaryItemIndexFromResponse).
-      // That failure has nothing to do with whether the declared joinFields
-      // should be trusted at RUNTIME: emitFoldMatchAndMergeLines only ever
-      // reads target.joinFields (a field-name string), never
-      // primaryMatchedItemIndex. Once the declared spec's own endpoint
-      // pattern and resultsPath demonstrably match THIS already
-      // structurally-resolved target, the declared joinFields must win over
-      // the structural guess regardless of whether a representative item
-      // could be picked.
-      // Test against the chain's TERMINAL capture (where the fold array —
-      // and thus the declared identifier field — actually lives), not the
-      // structural heuristic's threading-entry `drillStepIndex`: on a
-      // multi-hop chain the two can diverge (see foldTargetDrillIdentity's
-      // docstring above), and a declared endpointPattern names the call
-      // that holds the array, not whichever earlier hop some other field
-      // happened to be threaded into.
-      const targetMatchesDeclaredEndpoint = matchesDeclaredEndpoint(
-        actions[target.chainTerminalIndex]!.capture
-      );
-      const primaryArrayPathMatchesSpec =
-        JSON.stringify(declaredPrimaryArrayPath) === JSON.stringify(plan.primaryArrayPath);
-      return targetMatchesDeclaredEndpoint && primaryArrayPathMatchesSpec
-        ? { ...target, joinFields: foldReturnSpec.joinFields }
-        : target;
-    });
-    // A spec-declared target the heuristic missed entirely (an independent
-    // drill-down at a NEW endpoint) is still found via the original
-    // unrestricted resolution, which is free to land on any endpoint.
-    const ownSpecPlan = buildFoldPlanFromSpec(
-      actions,
-      foldReturnSpec,
-      primaryIdentityAnchor,
-      plan.primaryStepIndex
-    );
-    const existingDrillIdentities = new Set(
-      plan.targets.map((target) => foldTargetDrillIdentity(actions, target))
-    );
-    const newTargets =
-      ownSpecPlan !== null &&
-      JSON.stringify(ownSpecPlan.primaryArrayPath) === JSON.stringify(plan.primaryArrayPath)
-        ? ownSpecPlan.targets.filter(
-            (target) => !existingDrillIdentities.has(foldTargetDrillIdentity(actions, target))
-          )
-        : [];
-    return { ...plan, targets: [...mergedTargets, ...newTargets] };
-  });
-  const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec, primaryIdentityAnchor);
+        JSON.stringify(ownSpecPlan.primaryArrayPath) ===
+          JSON.stringify(plan.primaryArrayPath)
+          ? ownSpecPlan.targets.filter(
+              (target) =>
+                !existingDrillIdentities.has(
+                  foldTargetDrillIdentity(actions, target),
+                ),
+            )
+          : [];
+      return { ...plan, targets: [...mergedTargets, ...newTargets] };
+    },
+  );
+  const specPlan = buildFoldPlanFromSpec(
+    actions,
+    foldReturnSpec,
+    primaryIdentityAnchor,
+  );
   if (specPlan === null) return structuralPlansWithPerOccurrenceOverrides;
-  const specPrimaryEndpointKey = endpointKey(actions[specPlan.primaryStepIndex]!.capture.url);
+  const specPrimaryEndpointKey = endpointKey(
+    actions[specPlan.primaryStepIndex]!.capture.url,
+  );
   // Deliberately keyed on the RAW primaryStepIndex (not endpoint identity):
   // this branch trusts the structural target's own chain/drillArrayPath and
   // only overrides joinFields, which is only safe when the spec resolved
@@ -16272,7 +17879,8 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   const samePrimaryPlan = structuralPlansWithPerOccurrenceOverrides.find(
     (plan) =>
       plan.primaryStepIndex === specPlan.primaryStepIndex &&
-      JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath)
+      JSON.stringify(plan.primaryArrayPath) ===
+        JSON.stringify(specPlan.primaryArrayPath),
   );
   if (samePrimaryPlan !== undefined) {
     // A structural target serving the SAME drill-down the spec declares
@@ -16303,19 +17911,29 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
     // even when both chains terminate at the exact same logical drill-down
     // call and array.
     const specTargetsByDrillIdentity = new Map(
-      specPlan.targets.map((target) => [foldTargetDrillIdentity(actions, target), target])
+      specPlan.targets.map((target) => [
+        foldTargetDrillIdentity(actions, target),
+        target,
+      ]),
     );
     return structuralPlansWithPerOccurrenceOverrides.map((plan) => {
       if (plan !== samePrimaryPlan) return plan;
       const mergedTargets = plan.targets.map((target) => {
-        const specTarget = specTargetsByDrillIdentity.get(foldTargetDrillIdentity(actions, target));
-        return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
+        const specTarget = specTargetsByDrillIdentity.get(
+          foldTargetDrillIdentity(actions, target),
+        );
+        return specTarget === undefined
+          ? target
+          : { ...target, joinFields: specTarget.joinFields };
       });
       const existingDrillIdentities = new Set(
-        plan.targets.map((target) => foldTargetDrillIdentity(actions, target))
+        plan.targets.map((target) => foldTargetDrillIdentity(actions, target)),
       );
       const newTargets = specPlan.targets.filter(
-        (target) => !existingDrillIdentities.has(foldTargetDrillIdentity(actions, target))
+        (target) =>
+          !existingDrillIdentities.has(
+            foldTargetDrillIdentity(actions, target),
+          ),
       );
       return { ...plan, targets: [...mergedTargets, ...newTargets] };
     });
@@ -16339,21 +17957,23 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // discarded by the mismatched-array-path branch below or partially merged
   // as if the array level matched.
   const specDrillIdentities = new Set(
-    specPlan.targets.map((target) => foldTargetDrillIdentity(actions, target))
+    specPlan.targets.map((target) => foldTargetDrillIdentity(actions, target)),
   );
   const sharedDrillPlan = structuralPlansWithPerOccurrenceOverrides.find(
     (plan) =>
-      endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
+      endpointKey(actions[plan.primaryStepIndex]!.capture.url) ===
+        specPrimaryEndpointKey &&
       plan.targets.some((target) =>
-        specDrillIdentities.has(foldTargetDrillIdentity(actions, target))
-      )
+        specDrillIdentities.has(foldTargetDrillIdentity(actions, target)),
+      ),
   );
   if (sharedDrillPlan !== undefined) {
     const remainingTargets = sharedDrillPlan.targets.filter(
-      (target) => !specDrillIdentities.has(foldTargetDrillIdentity(actions, target))
+      (target) =>
+        !specDrillIdentities.has(foldTargetDrillIdentity(actions, target)),
     );
     const otherPlans = structuralPlansWithPerOccurrenceOverrides.filter(
-      (plan) => plan !== sharedDrillPlan
+      (plan) => plan !== sharedDrillPlan,
     );
     const keptStructuralPlans =
       remainingTargets.length === 0
@@ -16370,15 +17990,17 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // the independence guard below would otherwise do, since a
   // level-correcting spec's own drill indices can look entirely
   // independent) or silently dropped by the mismatched-array-path checks.
-  const supersededShallowerPlan = structuralPlansWithPerOccurrenceOverrides.find(
-    (plan) =>
-      endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
-      isDescendantArrayPath(specPlan.primaryArrayPath, plan.primaryArrayPath)
-  );
+  const supersededShallowerPlan =
+    structuralPlansWithPerOccurrenceOverrides.find(
+      (plan) =>
+        endpointKey(actions[plan.primaryStepIndex]!.capture.url) ===
+          specPrimaryEndpointKey &&
+        isDescendantArrayPath(specPlan.primaryArrayPath, plan.primaryArrayPath),
+    );
   if (supersededShallowerPlan !== undefined) {
     return [
       ...structuralPlansWithPerOccurrenceOverrides.filter(
-        (plan) => plan !== supersededShallowerPlan
+        (plan) => plan !== supersededShallowerPlan,
       ),
       specPlan,
     ];
@@ -16403,11 +18025,15 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // mode this function exists to prevent.
   const consumedPrimarySteps = new Set<string>();
   for (const plan of structuralPlansWithPerOccurrenceOverrides) {
-    const planPrimaryEndpointKey = endpointKey(actions[plan.primaryStepIndex]!.capture.url);
-    consumedPrimarySteps.add(`${planPrimaryEndpointKey}:${JSON.stringify(plan.primaryArrayPath)}`);
+    const planPrimaryEndpointKey = endpointKey(
+      actions[plan.primaryStepIndex]!.capture.url,
+    );
+    consumedPrimarySteps.add(
+      `${planPrimaryEndpointKey}:${JSON.stringify(plan.primaryArrayPath)}`,
+    );
   }
   const specConsumesOnlyItsOwnIndices = !consumedPrimarySteps.has(
-    `${specPrimaryEndpointKey}:${JSON.stringify(specPlan.primaryArrayPath)}`
+    `${specPrimaryEndpointKey}:${JSON.stringify(specPlan.primaryArrayPath)}`,
   );
   if (specConsumesOnlyItsOwnIndices)
     return [...structuralPlansWithPerOccurrenceOverrides, specPlan];
@@ -16427,18 +18053,25 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // primary.
   const sameIdentityPlan = structuralPlansWithPerOccurrenceOverrides.find(
     (plan) =>
-      endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
-      JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath) &&
+      endpointKey(actions[plan.primaryStepIndex]!.capture.url) ===
+        specPrimaryEndpointKey &&
+      JSON.stringify(plan.primaryArrayPath) ===
+        JSON.stringify(specPlan.primaryArrayPath) &&
       specPlan.targets.every(
         (target) =>
           !plan.targets.some(
-            (t) => foldTargetDrillIdentity(actions, t) === foldTargetDrillIdentity(actions, target)
-          )
-      )
+            (t) =>
+              foldTargetDrillIdentity(actions, t) ===
+              foldTargetDrillIdentity(actions, target),
+          ),
+      ),
   );
-  if (sameIdentityPlan === undefined) return [...structuralPlansWithPerOccurrenceOverrides];
+  if (sameIdentityPlan === undefined)
+    return [...structuralPlansWithPerOccurrenceOverrides];
   return structuralPlansWithPerOccurrenceOverrides.map((plan) =>
-    plan === sameIdentityPlan ? { ...plan, targets: [...plan.targets, ...specPlan.targets] } : plan
+    plan === sameIdentityPlan
+      ? { ...plan, targets: [...plan.targets, ...specPlan.targets] }
+      : plan,
   );
 }
 
@@ -16529,7 +18162,10 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
  * header-sourced values keep the pre-existing bare-value match further down
  * in {@link collectDependentDrillDownChainValues} rather than being held to
  * a body-field's name correlation. */
-const responseBodyValuesByKeyCache = new WeakMap<Capture, Map<string, Set<string>>>();
+const responseBodyValuesByKeyCache = new WeakMap<
+  Capture,
+  Map<string, Set<string>>
+>();
 function responseBodyValuesByKey(capture: Capture): Map<string, Set<string>> {
   const cached = responseBodyValuesByKeyCache.get(capture);
   if (cached) return cached;
@@ -16540,7 +18176,8 @@ function responseBodyValuesByKey(capture: Capture): Map<string, Set<string>> {
     byKey.set(key, values);
   };
   for (const { value, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
-    if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
+    if (value !== null && path.length > 0)
+      add(path[path.length - 1]!, String(value));
   }
   responseBodyValuesByKeyCache.set(capture, byKey);
   return byKey;
@@ -16559,8 +18196,13 @@ function responseBodyValuesByKey(capture: Capture): Map<string, Set<string>> {
  * responseBodyValuesByKey}) so a body-sourced response value that a later
  * hop re-sends as a request HEADER under the matching name still
  * correlates. */
-const requestValuesByKeyCache = new WeakMap<Capture, RequestAndResponseValues>();
-function requestValuesByKeyIncludingHeaders(capture: Capture): RequestAndResponseValues {
+const requestValuesByKeyCache = new WeakMap<
+  Capture,
+  RequestAndResponseValues
+>();
+function requestValuesByKeyIncludingHeaders(
+  capture: Capture,
+): RequestAndResponseValues {
   const cached = requestValuesByKeyCache.get(capture);
   if (cached) return cached;
   const byKey = new Map<string, Set<string>>();
@@ -16572,7 +18214,8 @@ function requestValuesByKeyIncludingHeaders(capture: Capture): RequestAndRespons
   };
   try {
     const url = new URL(capture.url);
-    for (const segment of url.pathname.split("/").filter(Boolean)) pathSegments.add(segment);
+    for (const segment of url.pathname.split("/").filter(Boolean))
+      pathSegments.add(segment);
     for (const [key, value] of url.searchParams) add(key, value);
   } catch {
     // Relative/invalid URLs carry no path/query signal to contribute.
@@ -16581,13 +18224,16 @@ function requestValuesByKeyIncludingHeaders(capture: Capture): RequestAndRespons
     try {
       const parsed: unknown = JSON.parse(capture.requestPostData);
       for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
-        if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
+        if (value !== null && path.length > 0)
+          add(path[path.length - 1]!, String(value));
       }
     } catch {
       // A non-JSON body carries no leaf values to contribute.
     }
   }
-  for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
+  for (const [headerName, headerValue] of Object.entries(
+    capture.requestHeaders,
+  )) {
     add(headerName.toLowerCase(), headerValue);
   }
   const result = { byKey, pathSegments };
@@ -16606,11 +18252,23 @@ const ARRAY_INDEX_KEY_PATTERN = /^\d+$/;
 
 function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   actions: readonly T[],
-  foldReturnSpec: FoldReturnSpec | null
+  foldReturnSpec: FoldReturnSpec | null,
 ): Map<string, Set<Capture>> {
-  const structuralPlans = detectDrillDownFoldPlan(actions, null, foldReturnSpec !== null);
-  const specPlan = foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec);
-  const plans = structuralPlans.length > 0 ? structuralPlans : specPlan === null ? [] : [specPlan];
+  const structuralPlans = detectDrillDownFoldPlan(
+    actions,
+    null,
+    compileFoldReturnEndpointMatcher(foldReturnSpec),
+  );
+  const specPlan =
+    foldReturnSpec === null
+      ? null
+      : buildFoldPlanFromSpec(actions, foldReturnSpec);
+  const plans =
+    structuralPlans.length > 0
+      ? structuralPlans
+      : specPlan === null
+        ? []
+        : [specPlan];
   const consumersByValue = new Map<string, Set<Capture>>();
   for (const plan of plans) {
     for (const target of plan.targets) {
@@ -16623,14 +18281,17 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
         // further down, not by name — see {@link responseBodyValuesByKey}'s
         // docstring for why a header/cookie mint doesn't need that
         // correlation to already be a trustworthy threading signal.
-        const priorHeaderValues = new Set(Object.values(priorCapture.responseHeaders));
+        const priorHeaderValues = new Set(
+          Object.values(priorCapture.responseHeaders),
+        );
         const echoedValues = collectRequestValuesIncludingHeaders(priorCapture);
         for (let k = j + 1; k < target.chain.length; k++) {
           const laterCapture = actions[target.chain[k]!]?.capture;
           if (!laterCapture) continue;
           const { byKey: laterRequestByKey, pathSegments: laterPathSegments } =
             requestValuesByKeyIncludingHeaders(laterCapture);
-          const laterRequestValues = collectRequestValuesIncludingHeaders(laterCapture);
+          const laterRequestValues =
+            collectRequestValuesIncludingHeaders(laterCapture);
           // Reverse index (value -> every later-side key it appears under),
           // built once per (priorCapture, laterCapture) pair rather than
           // once per value, so the array-index name-free fallback below
@@ -16662,8 +18323,10 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
               // otherwise a named `sortOrder` could dodge correlation just
               // by coincidentally equaling a value inside an unrelated
               // later-side array (`{"tokens":[7]}`).
-              const arrayIndexMatch = priorKeyIsArrayIndex && laterKeysForValue !== undefined;
-              if (!sameNameMatch && !pathSegmentMatch && !arrayIndexMatch) continue;
+              const arrayIndexMatch =
+                priorKeyIsArrayIndex && laterKeysForValue !== undefined;
+              if (!sameNameMatch && !pathSegmentMatch && !arrayIndexMatch)
+                continue;
               addConsumer(v);
             }
           }
@@ -16700,13 +18363,17 @@ let ambientExtraDrillSpecs: readonly FoldReturnSpec[] = [];
 export function specForTarget(
   target: Pick<FoldTarget, "drillSpecKey">,
   primary: FoldReturnSpec | null,
-  extras: readonly FoldReturnSpec[] = ambientExtraDrillSpecs
+  extras: readonly FoldReturnSpec[] = ambientExtraDrillSpecs,
 ): FoldReturnSpec | null {
   if (target.drillSpecKey === undefined) return primary;
-  return extras.find((s) => s.endpointPattern === target.drillSpecKey) ?? primary;
+  return (
+    extras.find((s) => s.endpointPattern === target.drillSpecKey) ?? primary
+  );
 }
 
-export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
+export function resolveFoldPlan<
+  T extends { capture: Capture; isMultipart: boolean },
+>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null = null,
   // See detectDrillDownFoldPlan's identical parameter — threaded through to
@@ -16716,14 +18383,14 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   // primary one). Each folds onto the same primary as its own target and is
   // invisible to the primary spec's resolution — see
   // {@link maskExtraDrillActions}.
-  extraDrillSpecs: readonly FoldReturnSpec[] = ambientExtraDrillSpecs
+  extraDrillSpecs: readonly FoldReturnSpec[] = ambientExtraDrillSpecs,
 ): FoldPlan[] {
   if (extraDrillSpecs.length > 0) {
     return resolveFoldPlanWithExtraDrills(
       actions,
       foldReturnSpec,
       primaryIdentityAnchor,
-      extraDrillSpecs
+      extraDrillSpecs,
     );
   }
   // A flow that declared no foldReturn has no author intent to fold, so a
@@ -16732,7 +18399,7 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   const structuralPlans = detectDrillDownFoldPlan(
     actions,
     primaryIdentityAnchor,
-    foldReturnSpec !== null
+    compileFoldReturnEndpointMatcher(foldReturnSpec),
   );
   const plans =
     structuralPlans.length > 0
@@ -16740,7 +18407,7 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
           structuralPlans,
           actions,
           foldReturnSpec,
-          primaryIdentityAnchor
+          primaryIdentityAnchor,
         )
       : ((): FoldPlan[] => {
           if (foldReturnSpec === null) return [];
@@ -16756,7 +18423,7 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
             primaryIdentityAnchor,
             null,
             null,
-            true
+            true,
           );
           return specPlan === null ? [] : [specPlan];
         })();
@@ -16765,12 +18432,13 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
     collapseTargetsToDeclaredDrillPath(
       actions,
       plans,
-      foldReturnSpec === null ? [] : [foldReturnSpec]
+      foldReturnSpec === null ? [] : [foldReturnSpec],
     ),
-    foldReturnSpec === null ? [] : [foldReturnSpec]
+    foldReturnSpec === null ? [] : [foldReturnSpec],
   ).flatMap((plan) => {
     const targets = plan.targets.filter(
-      (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
+      (target) =>
+        !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart),
     );
     return targets.length === 0 ? [] : [{ ...plan, targets }];
   });
@@ -16785,7 +18453,7 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
 function collapseTargetsToDeclaredDrillPath<T extends { capture: Capture }>(
   actions: readonly T[],
   plans: readonly FoldPlan[],
-  specs: readonly FoldReturnSpec[]
+  specs: readonly FoldReturnSpec[],
 ): FoldPlan[] {
   return plans.map((plan) => {
     let targets = plan.targets;
@@ -16797,10 +18465,11 @@ function collapseTargetsToDeclaredDrillPath<T extends { capture: Capture }>(
       const declaredPathOf = (t: FoldTarget): string[] =>
         resolveDeclaredArrayPath(
           spec.drillResultsPath!.split("."),
-          actions[t.chainTerminalIndex]!.capture.responseBody
+          actions[t.chainTerminalIndex]!.capture.responseBody,
         );
       const isDeclared = (t: FoldTarget): boolean =>
-        onEndpoint(t) && JSON.stringify(declaredPathOf(t)) === JSON.stringify(t.chainArrayPath);
+        onEndpoint(t) &&
+        JSON.stringify(declaredPathOf(t)) === JSON.stringify(t.chainArrayPath);
       const declared = targets.filter(isDeclared);
       if (declared.length === 0) continue;
       targets = targets.filter((t) => {
@@ -16825,9 +18494,11 @@ function collapseTargetsToDeclaredDrillPath<T extends { capture: Capture }>(
 function stampDeclaredDrillAttributes<T extends { capture: Capture }>(
   actions: readonly T[],
   plans: readonly FoldPlan[],
-  specs: readonly FoldReturnSpec[]
+  specs: readonly FoldReturnSpec[],
 ): FoldPlan[] {
-  const stamped = specs.filter((s) => s.attachAs !== undefined || s.payloadFlag !== undefined);
+  const stamped = specs.filter(
+    (s) => s.attachAs !== undefined || s.payloadFlag !== undefined,
+  );
   if (stamped.length === 0) return [...plans];
   return plans.map((plan) => ({
     ...plan,
@@ -16840,7 +18511,9 @@ function stampDeclaredDrillAttributes<T extends { capture: Capture }>(
       return {
         ...target,
         ...(owner.attachAs !== undefined ? { attachAs: owner.attachAs } : {}),
-        ...(owner.payloadFlag !== undefined ? { payloadFlag: owner.payloadFlag } : {}),
+        ...(owner.payloadFlag !== undefined
+          ? { payloadFlag: owner.payloadFlag }
+          : {}),
       };
     }),
   }));
@@ -16855,11 +18528,12 @@ function stampDeclaredDrillAttributes<T extends { capture: Capture }>(
 function maskExtraDrillActions<T extends { capture: Capture }>(
   actions: readonly T[],
   keepMatchers: readonly ((c: Capture) => boolean)[],
-  maskMatchers: readonly ((c: Capture) => boolean)[]
+  maskMatchers: readonly ((c: Capture) => boolean)[],
 ): T[] {
   return actions.map((action) => {
     const c = action.capture;
-    if (keepMatchers.some((m) => m(c)) || !maskMatchers.some((m) => m(c))) return action;
+    if (keepMatchers.some((m) => m(c)) || !maskMatchers.some((m) => m(c)))
+      return action;
     return {
       ...action,
       capture: {
@@ -16877,13 +18551,17 @@ function maskExtraDrillActions<T extends { capture: Capture }>(
   });
 }
 
-function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipart: boolean }>(
+function resolveFoldPlanWithExtraDrills<
+  T extends { capture: Capture; isMultipart: boolean },
+>(
   actions: readonly T[],
   primarySpec: FoldReturnSpec | null,
   primaryIdentityAnchor: string | null,
-  extraDrillSpecs: readonly FoldReturnSpec[]
+  extraDrillSpecs: readonly FoldReturnSpec[],
 ): FoldPlan[] {
-  const extraMatchers = extraDrillSpecs.map((s) => compileFoldReturnEndpointMatcher(s));
+  const extraMatchers = extraDrillSpecs.map((s) =>
+    compileFoldReturnEndpointMatcher(s),
+  );
   const primaryMatcher = compileFoldReturnEndpointMatcher(primarySpec);
   // 1. Primary plan: extra drills masked out.
   const primaryPlans = resolveFoldPlan(
@@ -16891,7 +18569,7 @@ function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipar
     primarySpec,
     primaryIdentityAnchor,
     // Explicit: the ambient default would re-enter this function forever.
-    []
+    [],
   );
   if (primaryPlans.length === 0) return primaryPlans;
   const result = primaryPlans.map((p) => ({ ...p, targets: [...p.targets] }));
@@ -16904,17 +18582,32 @@ function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipar
     // returned) only threads when that drill stays visible, so retry with
     // only the other EXTRA drills masked.
     for (const others of [[primaryMatcher, ...otherExtras], otherExtras]) {
-      const masked = maskExtraDrillActions(actions, [extraMatchers[i]!], others);
-      const extraPlans = resolveFoldPlan(masked, extra, primaryIdentityAnchor, []);
+      const masked = maskExtraDrillActions(
+        actions,
+        [extraMatchers[i]!],
+        others,
+      );
+      const extraPlans = resolveFoldPlan(
+        masked,
+        extra,
+        primaryIdentityAnchor,
+        [],
+      );
       let added = false;
       for (const extraPlan of extraPlans) {
         const host = result.find(
           (p) =>
             p.primaryStepIndex === extraPlan.primaryStepIndex &&
-            JSON.stringify(p.primaryArrayPath) === JSON.stringify(extraPlan.primaryArrayPath)
+            JSON.stringify(p.primaryArrayPath) ===
+              JSON.stringify(extraPlan.primaryArrayPath),
         );
         const pinned = extraPlan.targets.flatMap((t) => {
-          const own = pinTargetToEndpointStep(actions, t, extra, extraMatchers[i]!);
+          const own = pinTargetToEndpointStep(
+            actions,
+            t,
+            extra,
+            extraMatchers[i]!,
+          );
           return own === null ? [] : [own];
         });
         if (pinned.length === 0) continue;
@@ -16937,9 +18630,11 @@ function pinTargetToEndpointStep<T extends { capture: Capture }>(
   actions: readonly T[],
   target: FoldTarget,
   spec: FoldReturnSpec,
-  matches: (c: Capture) => boolean
+  matches: (c: Capture) => boolean,
 ): FoldTarget | null {
-  const endpointSteps = target.chain.filter((i) => matches(actions[i]!.capture));
+  const endpointSteps = target.chain.filter((i) =>
+    matches(actions[i]!.capture),
+  );
   if (endpointSteps.length === 0) return null;
   const terminal = endpointSteps[endpointSteps.length - 1]!;
   const body = actions[terminal]!.capture.responseBody;
@@ -16949,14 +18644,17 @@ function pinTargetToEndpointStep<T extends { capture: Capture }>(
       : terminal === target.chainTerminalIndex
         ? target.chainArrayPath
         : findObjectArrayFieldOrWholeObject(body)?.path;
-  if (arrayPath === undefined || !objectItemsAtPath(body, arrayPath)) return null;
+  if (arrayPath === undefined || !objectItemsAtPath(body, arrayPath))
+    return null;
   return {
     ...target,
     chain: target.chain.filter((i) => i <= terminal),
     chainTerminalIndex: terminal,
     chainArrayPath: arrayPath,
     ...(spec.attachAs !== undefined ? { attachAs: spec.attachAs } : {}),
-    ...(spec.payloadFlag !== undefined ? { payloadFlag: spec.payloadFlag } : {}),
+    ...(spec.payloadFlag !== undefined
+      ? { payloadFlag: spec.payloadFlag }
+      : {}),
     // Carries this target back to the spec that declared it — see
     // FoldTarget.drillSpecKey. Only extra (non-primary) specs reach here.
     drillSpecKey: spec.endpointPattern,
@@ -16982,14 +18680,16 @@ function pinTargetToEndpointStep<T extends { capture: Capture }>(
  * `primaryStepIndex`) per distinct primaryArrayPath/endpoint before
  * returning, keeping `resolveFoldPlan`'s own multi-plan output untouched.
  */
-export function resolveApplicableFoldPlans<T extends { capture: Capture; isMultipart: boolean }>(
+export function resolveApplicableFoldPlans<
+  T extends { capture: Capture; isMultipart: boolean },
+>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null,
   multiStepBody: string | undefined,
   // See detectDrillDownFoldPlan's identical parameter — threaded through so
   // this function's single-primary output can never diverge from the
   // caller's already-selected emitted primary.
-  primaryIdentityAnchor: string | null = null
+  primaryIdentityAnchor: string | null = null,
 ): FoldPlan[] {
   if (multiStepBody) return [];
   const plans = resolveFoldPlan(actions, foldReturnSpec, primaryIdentityAnchor);
@@ -17004,7 +18704,9 @@ export function resolveApplicableFoldPlans<T extends { capture: Capture; isMulti
     }
   }
   return plans.filter(
-    (plan) => plan.primaryStepIndex === freshestStepIndexByPrimary.get(primaryKey(plan))
+    (plan) =>
+      plan.primaryStepIndex ===
+      freshestStepIndexByPrimary.get(primaryKey(plan)),
   );
 }
 
@@ -17018,15 +18720,20 @@ export function resolveApplicableFoldPlans<T extends { capture: Capture; isMulti
  * {@link findAllObjectArrayFields}/{@link objectItemsAtPath}, both of which
  * only filter) pins down where the fold actually lands, regardless of which
  * group it came from. */
-function replaceByReference(value: unknown, target: object, replacement: unknown): unknown {
+function replaceByReference(
+  value: unknown,
+  target: object,
+  replacement: unknown,
+): unknown {
   if (value === target) return replacement;
-  if (Array.isArray(value)) return value.map((v) => replaceByReference(v, target, replacement));
+  if (Array.isArray(value))
+    return value.map((v) => replaceByReference(v, target, replacement));
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([k, v]) => [
         k,
         replaceByReference(v, target, replacement),
-      ])
+      ]),
     );
   }
   return value;
@@ -17067,7 +18774,7 @@ export function foldOneDrillOccurrence(
   drillItems: readonly Record<string, unknown>[],
   matchedItem: Record<string, unknown>,
   wholeArrayKey: string | null = null,
-  matchAttachKey: string | null = null
+  matchAttachKey: string | null = null,
 ): unknown {
   const primaryItems = objectItemsAtPath(body, primaryArrayPath);
   if (!primaryItems) return body;
@@ -17084,25 +18791,33 @@ export function foldOneDrillOccurrence(
       joinFields.every(
         (f) =>
           String(readValueAtPath(d, f.split("."))) ===
-          String(readValueAtPath(matchedItem, f.split(".")))
-      )
+          String(readValueAtPath(matchedItem, f.split("."))),
+      ),
     ) ?? drillItems[0];
   if (!drillMatch) return body;
   // Mirrors emitFoldMatchAndMergeLines: a declared attach key carries the
   // matched answer as one value instead of flat-merging its fields.
   if (matchAttachKey !== null) {
-    return replaceByReference(body, matchedItem, { [matchAttachKey]: drillMatch, ...matchedItem });
+    return replaceByReference(body, matchedItem, {
+      [matchAttachKey]: drillMatch,
+      ...matchedItem,
+    });
   }
-  return replaceByReference(body, matchedItem, { ...drillMatch, ...matchedItem });
+  return replaceByReference(body, matchedItem, {
+    ...drillMatch,
+    ...matchedItem,
+  });
 }
 
 function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   actionSteps: readonly T[],
   foldPlan: FoldPlan,
-  initialBody: unknown = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody
+  initialBody: unknown = actionSteps[foldPlan.primaryStepIndex]!.capture
+    .responseBody,
 ): unknown {
   return foldPlan.targets.reduce<unknown>((body, target) => {
-    const drillBody = actionSteps[target.chainTerminalIndex]!.capture.responseBody;
+    const drillBody =
+      actionSteps[target.chainTerminalIndex]!.capture.responseBody;
     const primaryItems = objectItemsAtPath(body, foldPlan.primaryArrayPath);
     const drillItems = objectItemsAtPath(drillBody, target.chainArrayPath);
     const matchedItem = primaryItems?.[target.primaryMatchedItemIndex];
@@ -17115,8 +18830,12 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
             target.joinFields,
             drillItems,
             matchedItem,
-            wholeArrayAttachKey(target, drillBody, actionSteps[target.drillStepIndex]!.capture.url),
-            target.attachAs ?? null
+            wholeArrayAttachKey(
+              target,
+              drillBody,
+              actionSteps[target.drillStepIndex]!.capture.url,
+            ),
+            target.attachAs ?? null,
           );
     // Every absorbed occurrence of this SAME endpoint (a repeat raw capture
     // threaded from a DIFFERENT primary item — see FoldPlan.absorbedIndices)
@@ -17127,36 +18846,50 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
     // own REQUEST (mirroring the original structural scan's own matching),
     // not its response, since a drill response commonly never echoes the
     // join field back.
-    const targetEndpointKey = endpointKey(actionSteps[target.drillStepIndex]!.capture.url);
-    return foldPlan.absorbedIndices.reduce<unknown>((innerBody, absorbedIndex) => {
-      const absorbedCapture = actionSteps[absorbedIndex]?.capture;
-      if (!absorbedCapture || endpointKey(absorbedCapture.url) !== targetEndpointKey) {
-        return innerBody;
-      }
-      const absorbedDrillItems = objectItemsAtPath(
-        absorbedCapture.responseBody,
-        target.chainArrayPath
-      );
-      const innerPrimaryItems = objectItemsAtPath(innerBody, foldPlan.primaryArrayPath);
-      const absorbedMatchedItem = innerPrimaryItems?.find(
-        (item) =>
-          findThreadedJoinFields([{ varName: "item", obj: item }], absorbedCapture).length > 0
-      );
-      if (!absorbedDrillItems || !absorbedMatchedItem) return innerBody;
-      return foldOneDrillOccurrence(
-        innerBody,
-        foldPlan.primaryArrayPath,
-        target.joinFields,
-        absorbedDrillItems,
-        absorbedMatchedItem,
-        wholeArrayAttachKey(
-          target,
+    const targetEndpointKey = endpointKey(
+      actionSteps[target.drillStepIndex]!.capture.url,
+    );
+    return foldPlan.absorbedIndices.reduce<unknown>(
+      (innerBody, absorbedIndex) => {
+        const absorbedCapture = actionSteps[absorbedIndex]?.capture;
+        if (
+          !absorbedCapture ||
+          endpointKey(absorbedCapture.url) !== targetEndpointKey
+        ) {
+          return innerBody;
+        }
+        const absorbedDrillItems = objectItemsAtPath(
           absorbedCapture.responseBody,
-          actionSteps[target.drillStepIndex]!.capture.url
-        ),
-        target.attachAs ?? null
-      );
-    }, bodyAfterOwnDrill);
+          target.chainArrayPath,
+        );
+        const innerPrimaryItems = objectItemsAtPath(
+          innerBody,
+          foldPlan.primaryArrayPath,
+        );
+        const absorbedMatchedItem = innerPrimaryItems?.find(
+          (item) =>
+            findThreadedJoinFields(
+              [{ varName: "item", obj: item }],
+              absorbedCapture,
+            ).length > 0,
+        );
+        if (!absorbedDrillItems || !absorbedMatchedItem) return innerBody;
+        return foldOneDrillOccurrence(
+          innerBody,
+          foldPlan.primaryArrayPath,
+          target.joinFields,
+          absorbedDrillItems,
+          absorbedMatchedItem,
+          wholeArrayAttachKey(
+            target,
+            absorbedCapture.responseBody,
+            actionSteps[target.drillStepIndex]!.capture.url,
+          ),
+          target.attachAs ?? null,
+        );
+      },
+      bodyAfterOwnDrill,
+    );
   }, initialBody);
 }
 
@@ -17181,7 +18914,7 @@ interface PaginationSignal {
  */
 function detectPaginationSignalFromSample(
   responseBody: unknown,
-  gqlVariables: unknown
+  gqlVariables: unknown,
 ): PaginationSignal | null {
   const container = findPaginationContainer(gqlVariables);
   if (!container) return null;
@@ -17218,7 +18951,9 @@ function detectPaginationSignalFromSample(
  * numeric values coerced so a `limit=12&offset=0` pair is recognised as the
  * page-size/skip container it is.
  */
-export function captureRequestParams(capture: Capture | null | undefined): unknown {
+export function captureRequestParams(
+  capture: Capture | null | undefined,
+): unknown {
   if (!capture) return null;
   const recorded = capture.variables ?? capture.decodedParams ?? null;
   if (recorded !== null || capture.method !== "GET") return recorded;
@@ -17254,9 +18989,12 @@ export function detectPaginationSignal(
   responseBody: unknown,
   gqlVariables: unknown,
   operationIdentity?: string | null,
-  allCaptures?: readonly Capture[]
+  allCaptures?: readonly Capture[],
 ): PaginationSignal | null {
-  const primarySignal = detectPaginationSignalFromSample(responseBody, gqlVariables);
+  const primarySignal = detectPaginationSignalFromSample(
+    responseBody,
+    gqlVariables,
+  );
   if (primarySignal) return primarySignal;
   if (!operationIdentity || !allCaptures) return null;
   for (const capture of allCaptures) {
@@ -17264,7 +19002,7 @@ export function detectPaginationSignal(
     if (operationGroupKey(capture) !== operationIdentity) continue;
     const siblingSignal = detectPaginationSignalFromSample(
       capture.responseBody,
-      captureRequestParams(capture)
+      captureRequestParams(capture),
     );
     if (siblingSignal) return siblingSignal;
   }
@@ -17275,8 +19013,9 @@ export function detectPaginationSignal(
  * segment that isn't a valid JS identifier. */
 function pathAccessExpr(base: string, path: readonly string[]): string {
   return path.reduce(
-    (acc, key) => acc + (isValidJsIdentifier(key) ? `.${key}` : `[${JSON.stringify(key)}]`),
-    base
+    (acc, key) =>
+      acc + (isValidJsIdentifier(key) ? `.${key}` : `[${JSON.stringify(key)}]`),
+    base,
   );
 }
 
@@ -17294,13 +19033,15 @@ function pathAccessTypeExpr(baseType: string, path: readonly string[]): string {
 function buildNestedSpreadOverride(
   base: string,
   path: readonly string[],
-  leafExpr: string
+  leafExpr: string,
 ): string {
   if (path.length === 0) return leafExpr;
   const [key, ...rest] = path as [string, ...string[]];
   const keyExpr = isValidJsIdentifier(key) ? key : JSON.stringify(key);
   const nested =
-    rest.length === 0 ? leafExpr : buildNestedSpreadOverride(`${base}.${key}`, rest, leafExpr);
+    rest.length === 0
+      ? leafExpr
+      : buildNestedSpreadOverride(`${base}.${key}`, rest, leafExpr);
   return `{ ...${base}, ${keyExpr}: ${nested} }`;
 }
 
@@ -17315,7 +19056,7 @@ function buildNestedSpreadOverride(
 function buildGetRequestUrlExpr(
   endpointPath: string,
   model: GetInputModel,
-  extraParams: ReadonlyArray<readonly [string, string]> = []
+  extraParams: ReadonlyArray<readonly [string, string]> = [],
 ): string {
   const overridden = new Set(extraParams.map(([k]) => k));
   const fieldAccess = (f: string): string => pathAccessExpr("payload", [f]);
@@ -17343,7 +19084,7 @@ function buildGetRequestUrlExpr(
     if (overridden.has(JSON.stringify(pv.queryKey))) continue;
     // Path-twin pair: same payload value / recorded fallback as its path segment.
     pairs.push(
-      `[${JSON.stringify(pv.queryKey)}, String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))})]`
+      `[${JSON.stringify(pv.queryKey)}, String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))})]`,
     );
   }
   for (const { field, queryKey } of model.dynamicFields) {
@@ -17353,22 +19094,22 @@ function buildGetRequestUrlExpr(
     if (recordedList !== undefined) {
       // The payload supplies one value; omitting it replays every recorded pair.
       const recordedPairs = recordedList.map(
-        (v) => `[${JSON.stringify(queryKey)}, ${JSON.stringify(v)}]`
+        (v) => `[${JSON.stringify(queryKey)}, ${JSON.stringify(v)}]`,
       );
       pairs.push(
-        `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [${recordedPairs.join(", ")}])`
+        `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [${recordedPairs.join(", ")}])`,
       );
       continue;
     }
     const recorded = model.recordedQueryValues?.[queryKey];
     if (recorded !== undefined) {
       pairs.push(
-        `[${JSON.stringify(queryKey)}, String(${fieldAccess(field)} ?? ${JSON.stringify(recorded)})]`
+        `[${JSON.stringify(queryKey)}, String(${fieldAccess(field)} ?? ${JSON.stringify(recorded)})]`,
       );
       continue;
     }
     pairs.push(
-      `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
+      `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`,
     );
   }
   for (const [k, v] of extraParams) pairs.push(`[${k}, ${v}]`);
@@ -17417,29 +19158,51 @@ export function buildPaginatedFetchLoopExecuteHttpBody(opts: {
    * size happened to be captured during recon. */
   valueConstraints?: ReconValueConstraints;
 }): string {
-  const { pascal, gqlVariablesExpr, signal, foldMergeLines, fetchCall, valueConstraints } = opts;
-  const { totalPath, arrayPath, containerPath, countKey, skipKey, pageSize, identityField } =
-    signal;
+  const {
+    pascal,
+    gqlVariablesExpr,
+    signal,
+    foldMergeLines,
+    fetchCall,
+    valueConstraints,
+  } = opts;
+  const {
+    totalPath,
+    arrayPath,
+    containerPath,
+    countKey,
+    skipKey,
+    pageSize,
+    identityField,
+  } = signal;
   const declaredMax = valueConstraints?.[countKey]?.max;
   const pageSizeDefault = declaredMax ?? pageSize;
   const pageFetchExpr = (variablesExpr: string): string =>
     fetchCall.kind === "gql"
       ? `getGql(context.baseUrl)(${fetchCall.gqlOperationNameExpr}, ${fetchCall.queryConstName}, ${variablesExpr})`
       : fetchCall.getInputModel
-        ? `httpClient(\`${buildGetRequestUrlExpr(fetchCall.endpointPath, fetchCall.getInputModel, [
-            [JSON.stringify(countKey), "String(PAGE_SIZE)"],
-            [JSON.stringify(skipKey), "String(skip)"],
-          ])}\`, { method: "GET" })`
+        ? `httpClient(\`${buildGetRequestUrlExpr(
+            fetchCall.endpointPath,
+            fetchCall.getInputModel,
+            [
+              [JSON.stringify(countKey), "String(PAGE_SIZE)"],
+              [JSON.stringify(skipKey), "String(skip)"],
+            ],
+          )}\`, { method: "GET" })`
         : `httpClient(\`\${context.baseUrl}${fetchCall.endpointPath}\`, { method: "POST", body: JSON.stringify(${variablesExpr}) })`;
 
-  const countKeyExpr = isValidJsIdentifier(countKey) ? countKey : JSON.stringify(countKey);
-  const skipKeyExpr = isValidJsIdentifier(skipKey) ? skipKey : JSON.stringify(skipKey);
+  const countKeyExpr = isValidJsIdentifier(countKey)
+    ? countKey
+    : JSON.stringify(countKey);
+  const skipKeyExpr = isValidJsIdentifier(skipKey)
+    ? skipKey
+    : JSON.stringify(skipKey);
   const paginationBase = pathAccessExpr("baseVariables", containerPath);
   const paginationOverrideLeaf = `{ ...${paginationBase}, ${countKeyExpr}: PAGE_SIZE, ${skipKeyExpr}: skip }`;
   const variablesForCall = buildNestedSpreadOverride(
     "baseVariables",
     containerPath,
-    paginationOverrideLeaf
+    paginationOverrideLeaf,
   );
 
   const totalAccessExpr = pathAccessExpr("page", totalPath);
@@ -17451,7 +19214,7 @@ export function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   const withItemsOverrideExpr = buildNestedSpreadOverride(
     "lastPage",
     arrayPath,
-    "[...itemsById.values()]"
+    "[...itemsById.values()]",
   );
   // The server's own reported total is left untouched — overwriting it with
   // the delivered count would make a MAX_PAGES-capped fetch indistinguishable
@@ -17536,7 +19299,7 @@ export function detectContractGaps(
   actionSteps: ReadonlyArray<{ capture: Capture; isMultipart: boolean }>,
   submitDeclared: boolean,
   matchesSubmit: (c: Capture) => boolean,
-  emittedBody?: string
+  emittedBody?: string,
 ): ContractGaps {
   const captchaGatedSteps = actionSteps.filter((s) => {
     const raw = s.capture.requestPostData;
@@ -17545,7 +19308,8 @@ export function detectContractGaps(
       : false;
   }).length;
   const bodylessUploadSteps = actionSteps.filter(
-    (s) => s.isMultipart && s.capture.requestPostData === REQUEST_BODY_UNAVAILABLE
+    (s) =>
+      s.isMultipart && s.capture.requestPostData === REQUEST_BODY_UNAVAILABLE,
   ).length;
   const isWrite = (c: Capture): boolean => c.method.toUpperCase() !== "GET";
   const truncatedSequence =
@@ -17555,20 +19319,30 @@ export function detectContractGaps(
   let frozenScreeningAnswers = 0;
   // A body binding answers by non-literal expression (`payload.Answers[key]`) is treated as
   // binding them all; once any answer is bound by its literal name, each select is checked by name.
-  const perNameBinding = emittedBody !== undefined && /payload\.Answers\[["'`]/.test(emittedBody);
-  if (emittedBody !== undefined && (perNameBinding || !emittedBody.includes("payload.Answers["))) {
+  const perNameBinding =
+    emittedBody !== undefined && /payload\.Answers\[["'`]/.test(emittedBody);
+  if (
+    emittedBody !== undefined &&
+    (perNameBinding || !emittedBody.includes("payload.Answers["))
+  ) {
     const selects = new Set<string>();
     for (const s of actionSteps) {
-      for (const name of extractHtmlSelectOptions(s.capture.responseBody).keys()) selects.add(name);
-      for (const name of htmlSelectsForWrite.get(s.capture)?.keys() ?? []) selects.add(name);
+      for (const name of extractHtmlSelectOptions(
+        s.capture.responseBody,
+      ).keys())
+        selects.add(name);
+      for (const name of htmlSelectsForWrite.get(s.capture)?.keys() ?? [])
+        selects.add(name);
     }
     for (const s of actionSteps) {
       const raw = s.capture.requestPostData;
       if (typeof raw !== "string") continue;
       const ctv = Object.entries(s.capture.requestHeaders ?? {}).find(
-        ([k]) => k.toLowerCase() === "content-type"
+        ([k]) => k.toLowerCase() === "content-type",
       )?.[1];
-      const urlencoded = (ctv ?? "").toLowerCase().includes("application/x-www-form-urlencoded");
+      const urlencoded = (ctv ?? "")
+        .toLowerCase()
+        .includes("application/x-www-form-urlencoded");
       const fieldNames = new Set<string>();
       if (urlencoded) {
         for (const pair of raw.split("&")) {
@@ -17581,22 +19355,26 @@ export function detectContractGaps(
         }
       }
       for (const name of selects) {
-        if (emittedBody.includes(`payload.Answers[${JSON.stringify(name)}]`)) continue;
+        if (emittedBody.includes(`payload.Answers[${JSON.stringify(name)}]`))
+          continue;
         if (urlencoded ? fieldNames.has(name) : raw.includes(`name="${name}"`))
           frozenScreeningAnswers++;
       }
     }
   }
   const frozenUploadHandles: string[] = [];
-  const uploadNameRe = /(?:_TEMP|resume|\bcv\b|_cv|cv_|upload|attachment|handle|file)/i;
+  const uploadNameRe =
+    /(?:_TEMP|resume|\bcv\b|_cv|cv_|upload|attachment|handle|file)/i;
   for (const s of actionSteps) {
     const raw = s.capture.requestPostData;
     if (typeof raw !== "string" || raw === REQUEST_BODY_UNAVAILABLE) continue;
     for (const part of parseMultipartTextParts(raw)) {
       const v = part.value;
-      if (!uploadNameRe.test(part.name) || v.length < 12 || /[\s$]/.test(v)) continue;
+      if (!uploadNameRe.test(part.name) || v.length < 12 || /[\s$]/.test(v))
+        continue;
       if (emittedBody !== undefined && !emittedBody.includes(v)) continue;
-      if (!frozenUploadHandles.includes(part.name)) frozenUploadHandles.push(part.name);
+      if (!frozenUploadHandles.includes(part.name))
+        frozenUploadHandles.push(part.name);
     }
   }
   return {
@@ -17613,23 +19391,23 @@ export function contractGapChecklistLines(gaps: ContractGaps): string[] {
   const lines: string[] = [];
   if (gaps.captchaGatedSteps > 0)
     lines.push(
-      `${gaps.captchaGatedSteps} step(s) are captcha-gated — a solved captcha token is single-use and cannot be replayed over HTTP; the browser flow must solve it`
+      `${gaps.captchaGatedSteps} step(s) are captcha-gated — a solved captcha token is single-use and cannot be replayed over HTTP; the browser flow must solve it`,
     );
   if (gaps.truncatedSequence)
     lines.push(
-      "The recorded action sequence stops short of the flow's submit step — no submit request was captured, so executeHttp cannot replay the submission; re-record the flow through the submit"
+      "The recorded action sequence stops short of the flow's submit step — no submit request was captured, so executeHttp cannot replay the submission; re-record the flow through the submit",
     );
   if (gaps.bodylessUploadSteps > 0)
     lines.push(
-      `${gaps.bodylessUploadSteps} upload step(s) had no capturable request body — the form fields sent alongside the file are not bound to payload; verify them by hand`
+      `${gaps.bodylessUploadSteps} upload step(s) had no capturable request body — the form fields sent alongside the file are not bound to payload; verify them by hand`,
     );
   if (gaps.frozenScreeningAnswers > 0)
     lines.push(
-      `${gaps.frozenScreeningAnswers} screening answer(s) are frozen at the recording's values — nothing binds them to payload.Answers; bind them or confirm they are constant`
+      `${gaps.frozenScreeningAnswers} screening answer(s) are frozen at the recording's values — nothing binds them to payload.Answers; bind them or confirm they are constant`,
     );
   if (gaps.frozenUploadHandles && gaps.frozenUploadHandles.length > 0)
     lines.push(
-      `Upload handle field(s) ${gaps.frozenUploadHandles.join(", ")} are frozen at the recording's server-side handle — a replay reuses a stale file reference; upload payload.Resume and thread the returned handle`
+      `Upload handle field(s) ${gaps.frozenUploadHandles.join(", ")} are frozen at the recording's server-side handle — a replay reuses a stale file reference; upload payload.Resume and thread the returned handle`,
     );
   return lines;
 }
@@ -17698,7 +19476,8 @@ interface AccessorShape {
 
 const PAYLOAD_ACCESSOR_CHAIN =
   /\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)((?:!|\??\.[A-Za-z_$][A-Za-z0-9_$]*(?![A-Za-z0-9_$(])|\[(?:"[^"\]]*"|\d+)\])*)/g;
-const PAYLOAD_CHAIN_SEGMENT = /\??\.([A-Za-z_$][A-Za-z0-9_$]*)|\[(?:"[^"\]]*"|\d+)\]/g;
+const PAYLOAD_CHAIN_SEGMENT =
+  /\??\.([A-Za-z_$][A-Za-z0-9_$]*)|\[(?:"[^"\]]*"|\d+)\]/g;
 
 function newAccessorShape(): AccessorShape {
   return { isArray: false, element: null, keys: new Map() };
@@ -17713,7 +19492,7 @@ function renderAccessorShape(shape: AccessorShape): string {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(
       ([key, child]) =>
-        `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${renderAccessorShape(child)}`
+        `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${renderAccessorShape(child)}`,
     );
   return `z.object({ ${entries.join(", ")} })`;
 }
@@ -17753,16 +19532,31 @@ function isStructuredAccessorShape(shape: AccessorShape): boolean {
  * demands (array-ness and each dereferenced key), so a richer structured
  * declaration is kept instead of being narrowed to the accessor-derived one.
  */
-function declaredSchemaCoversAccessorShape(declared: string, shape: AccessorShape): boolean {
+function declaredSchemaCoversAccessorShape(
+  declared: string,
+  shape: AccessorShape,
+): boolean {
   if (shape.isArray && !/\bz\.array\(/.test(declared)) return false;
-  if (!shape.isArray && shape.keys.size > 0 && !/\bz\.(object|record)\(/.test(declared)) {
+  if (
+    !shape.isArray &&
+    shape.keys.size > 0 &&
+    !/\bz\.(object|record)\(/.test(declared)
+  ) {
     return false;
   }
-  const childShapes = [...(shape.element ? [shape.element] : []), ...shape.keys.values()];
+  const childShapes = [
+    ...(shape.element ? [shape.element] : []),
+    ...shape.keys.values(),
+  ];
   return (
     [...shape.keys.keys()].every((key) =>
-      new RegExp(`(?:^|[\\s{,])"?${key.replace(/[$]/g, "\\$&")}"?\\s*:`).test(declared)
-    ) && childShapes.every((child) => declaredSchemaCoversAccessorShape(declared, child))
+      new RegExp(`(?:^|[\\s{,])"?${key.replace(/[$]/g, "\\$&")}"?\\s*:`).test(
+        declared,
+      ),
+    ) &&
+    childShapes.every((child) =>
+      declaredSchemaCoversAccessorShape(declared, child),
+    )
   );
 }
 
@@ -17783,15 +19577,22 @@ const applicantContactFieldNames = new Set([
 ]);
 const baseContractFieldNames = new Set(["Email", "ClickUrl", "Answers"]);
 const applicantContactEvidenceFieldNamesLower = new Set(
-  [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
+  [...applicantContactFieldNames, ...baseContractFieldNames].map((name) =>
+    name.toLowerCase(),
+  ),
 );
 
 const applicantFlowVocabulary =
   /\b(resume|r[ée]sum[ée]|cv|curriculum vitae|cover letter|job application|applicant|apply for)\b/i;
 const applicantOnlyEvidenceFieldNamesLower = new Set(
-  ["FirstName", "LastName", "Resume", "ResumeContentType", "ResumeFilename", "ResumeBase64"].map(
-    (name) => name.toLowerCase()
-  )
+  [
+    "FirstName",
+    "LastName",
+    "Resume",
+    "ResumeContentType",
+    "ResumeFilename",
+    "ResumeBase64",
+  ].map((name) => name.toLowerCase()),
 );
 
 /** Flow evidence that a browser-only submission flow is a job application. */
@@ -17803,11 +19604,16 @@ function browserFlowHasApplicantEvidence(o: {
   for (const step of o.flowSteps ?? []) {
     if (typeof step === "string") {
       if (applicantFlowVocabulary.test(step)) return true;
-    } else if (step.upload === true || applicantFlowVocabulary.test(step.step)) {
+    } else if (
+      step.upload === true ||
+      applicantFlowVocabulary.test(step.step)
+    ) {
       return true;
     }
   }
-  return o.names.some((n) => applicantOnlyEvidenceFieldNamesLower.has(n.toLowerCase()));
+  return o.names.some((n) =>
+    applicantOnlyEvidenceFieldNamesLower.has(n.toLowerCase()),
+  );
 }
 
 /**
@@ -17861,13 +19667,15 @@ export function contractUsesApplicantContactSchema(opts: {
   // path (the browser-flow emitter can't know which the contract will take).
   if (inputBody != null) {
     return [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
-      path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
+      path.some((segment) =>
+        applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()),
+      ),
     );
   }
   return (
     isSubmissionFlow === true &&
     [...(payloadFieldNames ?? []), ...(formBodyFieldNames ?? [])].some((name) =>
-      applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
+      applicantContactEvidenceFieldNamesLower.has(name.toLowerCase()),
     )
   );
 }
@@ -17878,7 +19686,7 @@ export function contractUsesApplicantContactSchema(opts: {
  * ({@link REQUEST_BODY_UNAVAILABLE}) contributes nothing.
  */
 export function collectFormBodyFieldNames(
-  steps: readonly { capture: Capture }[]
+  steps: readonly { capture: Capture }[],
 ): ReadonlySet<string> {
   const names = new Set<string>();
   for (const { capture } of steps) {
@@ -17909,7 +19717,12 @@ export function classifySubmissionFlow(o: {
   isDeclaredPostSearchRead?: boolean;
 }): boolean {
   if (o.noReplayableActionFlow) return true;
-  if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
+  if (
+    o.isReadOnlyGetFlow ||
+    o.isDeclaredPostSearchRead ||
+    o.actionStepCount <= 1
+  )
+    return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
     : // A read flow whose manifest holds only GET captures is not a submission.
@@ -17925,17 +19738,18 @@ export function classifySubmissionFlow(o: {
  * and none is a form/multipart body (a wizard step or upload). */
 export function isDeclaredPostSearchRepeat(
   captures: Capture[],
-  matchesDeclaredSubmit: (c: Capture) => boolean
+  matchesDeclaredSubmit: (c: Capture) => boolean,
 ): boolean {
   const hits = captures.filter(
     (c) =>
       c.method !== "GET" &&
       c.method.toUpperCase() !== "OPTIONS" &&
       !isNoiseUrl(c.url) &&
-      matchesDeclaredSubmit(c)
+      matchesDeclaredSubmit(c),
   );
   if (hits.length < 2) return false;
-  if (new Set(hits.map((c) => `${c.method} ${endpointKey(c.url)}`)).size !== 1) return false;
+  if (new Set(hits.map((c) => `${c.method} ${endpointKey(c.url)}`)).size !== 1)
+    return false;
   const jsonBody = (c: Capture): boolean => {
     const raw = c.requestPostData;
     if (typeof raw !== "string") return false;
@@ -17952,7 +19766,9 @@ export function isDeclaredPostSearchRepeat(
 
 /** Generates a complete contract.ts source string for a plugin — exported so
  * unit tests can drive the emitter directly without spawning the CLI. */
-export function emitContractTs(opts: Parameters<typeof emitContractTsParts>[0]): string {
+export function emitContractTs(
+  opts: Parameters<typeof emitContractTsParts>[0],
+): string {
   return emitContractTsParts(opts).code;
 }
 
@@ -18245,9 +20061,18 @@ export function emitContractTsParts(opts: {
   // measured; with several samples a caller-measured verdict wins, else it is
   // derived from the gathered captures here.
   const leniencyForUnprovenLeaves =
-    singleEntityVerdict(null, isGqlEmission, responseBodySamples.length, null) ||
+    singleEntityVerdict(
+      null,
+      isGqlEmission,
+      responseBodySamples.length,
+      null,
+    ) ||
     (singleEntityEvidence ??
-      singleEntityVerdictFromCaptures(isGqlEmission, responseBodySamples, allCaptures));
+      singleEntityVerdictFromCaptures(
+        isGqlEmission,
+        responseBodySamples,
+        allCaptures,
+      ));
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
@@ -18257,7 +20082,9 @@ export function emitContractTsParts(opts: {
             conditionalFieldNames,
             looseServerResponse: true,
             aggregateUnitBasisFindingsByPath,
-            ...(leniencyForUnprovenLeaves ? { singleEntityEvidence: true } : {}),
+            ...(leniencyForUnprovenLeaves
+              ? { singleEntityEvidence: true }
+              : {}),
           });
   // D10: a flow whose every matched capture is a read (GraphQL query or
   // non-mutating HTTP method) is never a job application, whatever fields the
@@ -18302,15 +20129,19 @@ export function emitContractTsParts(opts: {
     flowSteps: contractFlowSteps,
     hasMultipartStep,
   });
-  const usesApplicantContactSchema = !isReadOnlyQueryFlow && usesApplicantContactSchemaRaw;
+  const usesApplicantContactSchema =
+    !isReadOnlyQueryFlow && usesApplicantContactSchemaRaw;
   const sensitivePolicy = buildSensitiveRedactionPolicy(
     contractFlowSteps,
-    usesApplicantContactSchema
+    usesApplicantContactSchema,
   );
   const sensitiveRedactionLiteral =
-    sensitivePolicy === undefined ? "" : `    redaction: ${JSON.stringify(sensitivePolicy)},\n`;
+    sensitivePolicy === undefined
+      ? ""
+      : `    redaction: ${JSON.stringify(sensitivePolicy)},\n`;
   const isReservedByApplicantContactSchema = (name: string): boolean =>
-    usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
+    usesApplicantContactSchema &&
+    applicantContactFieldNames.has(canonicalPayloadField(name));
   // A resolved drill-down fold plan on the single-primary getGql/httpClient
   // hot path (`multiStepBody` unset — see emitMultiStepExecuteHttp for the
   // multi-step equivalent) folds onto `data` in place, exactly as the
@@ -18335,25 +20166,27 @@ export function emitContractTsParts(opts: {
     gql,
     endpointPath,
     gqlOperationName,
-    gqlQuery
+    gqlQuery,
   );
   const singlePrimaryFoldPlans = resolveApplicableFoldPlans(
     actionSteps,
     foldReturnSpec,
     multiStepBody,
-    emittedPrimaryAnchor
+    emittedPrimaryAnchor,
   );
   // A GraphQL primary with a resolved drill-down fold has no other REST
   // client to issue the drill request(s) with — getGql only ever speaks
   // GraphQL to the primary endpoint.
-  const needsFoldHttpClient = isGqlEmission && singlePrimaryFoldPlans.length > 0;
+  const needsFoldHttpClient =
+    isGqlEmission && singlePrimaryFoldPlans.length > 0;
   // A declared fold's primary that was captured as a GET is a URL-shaped read:
   // its request is rebuilt from the capture's own query/path inputs, never
   // invented as a POST carrying a `{ query }` body the endpoint never took.
   const foldPrimaryCapture =
     gql || multiStepBody || singlePrimaryFoldPlans.length === 0
       ? null
-      : (actionSteps[singlePrimaryFoldPlans[0]!.primaryStepIndex]?.capture ?? null);
+      : (actionSteps[singlePrimaryFoldPlans[0]!.primaryStepIndex]?.capture ??
+        null);
   const derivedGetInputModel: GetInputModel | null =
     suppliedGetInputModel ??
     (foldPrimaryCapture !== null &&
@@ -18361,8 +20194,10 @@ export function emitContractTsParts(opts: {
     getInputsAreUrlShaped(foldPrimaryCapture)
       ? deriveGetInputModel(
           foldPrimaryCapture,
-          allCaptures.length > 0 ? allCaptures : actionSteps.map((s) => s.capture),
-          [...(payloadFieldNames ?? []), ...optionalPayloadFieldNames]
+          allCaptures.length > 0
+            ? allCaptures
+            : actionSteps.map((s) => s.capture),
+          [...(payloadFieldNames ?? []), ...optionalPayloadFieldNames],
         )
       : null);
   // A missing inputBody, or one with no ApplicantContactSchema evidence,
@@ -18377,7 +20212,10 @@ export function emitContractTsParts(opts: {
       : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow) || derivedGetInputModel || postBodyModel
+    : inputBody ||
+        (omitExecuteHttp && isSubmissionFlow) ||
+        derivedGetInputModel ||
+        postBodyModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -18394,7 +20232,12 @@ export function emitContractTsParts(opts: {
     : `${endpointPath}::anonymous`;
   const paginationSignal =
     !multiStepBody && paginationOperationIdentity
-      ? detectPaginationSignal(responseBody, gqlVariables, paginationOperationIdentity, allCaptures)
+      ? detectPaginationSignal(
+          responseBody,
+          gqlVariables,
+          paginationOperationIdentity,
+          allCaptures,
+        )
       : null;
   // The paging loop owns the page-size and skip query keys, so they are not
   // also caller-facing GET inputs (they would be declared in the schema, then
@@ -18429,15 +20272,24 @@ export function emitContractTsParts(opts: {
   // overridable payload field, mirroring how PAGE_SIZE is already sourced
   // from the detected signal.
   if (paginationSignal) {
-    addExtendField("maxPages", "  maxPages: z.number().int().positive().optional(),");
-    addExtendField("pageSize", "  pageSize: z.number().int().positive().optional(),");
+    addExtendField(
+      "maxPages",
+      "  maxPages: z.number().int().positive().optional(),",
+    );
+    addExtendField(
+      "pageSize",
+      "  pageSize: z.number().int().positive().optional(),",
+    );
   }
 
   // The base extend's own keys — job-application submission flows only.
   if (usesApplicantContactSchema) {
     addExtendField("Email", "  Email: z.email(),");
     addExtendField("ClickUrl", "  ClickUrl: z.string().min(1),");
-    addExtendField("Answers", "  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),");
+    addExtendField(
+      "Answers",
+      "  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),",
+    );
   }
 
   // A declared foldReturn.drillParamBindings names drill query params that
@@ -18481,8 +20333,8 @@ export function emitContractTsParts(opts: {
   for (const flag of [
     ...new Set(
       allDeclaredFoldSpecs.flatMap((spec) =>
-        spec.payloadFlag === undefined ? [] : [spec.payloadFlag]
-      )
+        spec.payloadFlag === undefined ? [] : [spec.payloadFlag],
+      ),
     ),
   ].sort()) {
     if (isReservedByApplicantContactSchema(flag)) continue;
@@ -18493,15 +20345,20 @@ export function emitContractTsParts(opts: {
   // `payload[flag]`; the payload schema strips undeclared keys, so without a
   // declaration here the flag is dropped before the hop can ever run.
   const declaredDrillFlags = new Set(
-    (multiStepBody ? resolveFoldPlan(actionSteps, foldReturnSpec) : singlePrimaryFoldPlans)
+    (multiStepBody
+      ? resolveFoldPlan(actionSteps, foldReturnSpec)
+      : singlePrimaryFoldPlans
+    )
       .flatMap((plan) => plan.targets)
-      .flatMap((target) => (target.payloadFlag === undefined ? [] : [target.payloadFlag]))
+      .flatMap((target) =>
+        target.payloadFlag === undefined ? [] : [target.payloadFlag],
+      ),
   );
   for (const flag of [...declaredDrillFlags].sort()) {
     if (isReservedByApplicantContactSchema(flag)) continue;
     addExtendField(
       flag,
-      `  ${isValidJsIdentifier(flag) ? flag : JSON.stringify(flag)}: z.boolean().optional(),`
+      `  ${isValidJsIdentifier(flag) ? flag : JSON.stringify(flag)}: z.boolean().optional(),`,
     );
   }
 
@@ -18524,7 +20381,7 @@ export function emitContractTsParts(opts: {
       if (isReservedByApplicantContactSchema(name)) continue;
       addExtendField(
         name,
-        `  ${isValidJsIdentifier(name) ? name : JSON.stringify(name)}: z.string(),`
+        `  ${isValidJsIdentifier(name) ? name : JSON.stringify(name)}: z.string(),`,
       );
     }
   }
@@ -18541,7 +20398,9 @@ export function emitContractTsParts(opts: {
       const name = canonicaliseNames ? canonicalPayloadField(rawName) : rawName;
       if (isReservedByApplicantContactSchema(name)) continue;
       const zod = name === "Email" ? "z.email()" : "z.string()";
-      const suffix = optionalPayloadFieldNames.has(rawName) ? ".optional()" : "";
+      const suffix = optionalPayloadFieldNames.has(rawName)
+        ? ".optional()"
+        : "";
       const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
       addExtendField(name, `  ${key}: ${zod}${suffix},`);
     }
@@ -18553,20 +20412,26 @@ export function emitContractTsParts(opts: {
   // discoveredOptionFields) get emitted; the rest leave their schema entries
   // unused.
   const emittedOptionMappings: FieldOptionsMapping[] = [];
-  if (fieldOptionsMap && discoveredOptionFields && discoveredOptionFields.size > 0) {
+  if (
+    fieldOptionsMap &&
+    discoveredOptionFields &&
+    discoveredOptionFields.size > 0
+  ) {
     for (const mapping of fieldOptionsMap.values()) {
       if (discoveredOptionFields.has(mapping.semanticName)) {
         emittedOptionMappings.push(mapping);
       }
     }
-    emittedOptionMappings.sort((a, b) => a.semanticName.localeCompare(b.semanticName));
+    emittedOptionMappings.sort((a, b) =>
+      a.semanticName.localeCompare(b.semanticName),
+    );
   }
   const optionDecls = emittedOptionMappings
     .map((mapping) => {
       const entries = mapping.options
         .map(
           ({ value, optionId }) =>
-            `  ${isValidJsIdentifier(value) ? value : JSON.stringify(value)}: ${JSON.stringify(optionId)},`
+            `  ${isValidJsIdentifier(value) ? value : JSON.stringify(value)}: ${JSON.stringify(optionId)},`,
         )
         .join("\n");
       return `\nconst OPT_${mapping.semanticName} = {\n${entries}\n} as const;\n`;
@@ -18576,7 +20441,7 @@ export function emitContractTsParts(opts: {
     if (isReservedByApplicantContactSchema(mapping.semanticName)) continue;
     addExtendField(
       mapping.semanticName,
-      `  ${mapping.semanticName}: z.enum([${mapping.options.map((o) => JSON.stringify(o.value)).join(", ")}]),`
+      `  ${mapping.semanticName}: z.enum([${mapping.options.map((o) => JSON.stringify(o.value)).join(", ")}]),`,
     );
   }
 
@@ -18585,13 +20450,15 @@ export function emitContractTsParts(opts: {
   // option-id UUID directly. The recon-observed UUID is documented in a TSDoc
   // comment so callers have a starting point.
   const sortedRawOptionEntries = discoveredRawOptionFields
-    ? [...discoveredRawOptionFields.entries()].sort(([a], [b]) => a.localeCompare(b))
+    ? [...discoveredRawOptionFields.entries()].sort(([a], [b]) =>
+        a.localeCompare(b),
+      )
     : [];
   for (const [name, reconUuid] of sortedRawOptionEntries) {
     if (isReservedByApplicantContactSchema(name)) continue;
     addExtendField(
       name,
-      `  /** Recon-observed: ${reconUuid}. Caller supplies the option-id UUID for this field. */\n  ${name}: z.string(),`
+      `  /** Recon-observed: ${reconUuid}. Caller supplies the option-id UUID for this field. */\n  ${name}: z.string(),`,
     );
   }
 
@@ -18599,12 +20466,15 @@ export function emitContractTsParts(opts: {
   // an upload step does: the multipart body encodes arrays/objects as
   // JSON-stringified strings, so those fields need the same
   // multipartJsonObject() parsing Answers already gets in basePayloadSchemaExpr.
-  const payloadNeedsMultipart = hasMultipartStep || (discoveredStructuredKeys?.size ?? 0) > 0;
+  const payloadNeedsMultipart =
+    hasMultipartStep || (discoveredStructuredKeys?.size ?? 0) > 0;
 
   // Phase F: additional-body keys (from action POSTs beyond r0). Each gets a
   // payload field of the appropriate Zod type. Site-agnostic.
   const sortedAdditionalKeys = discoveredAdditionalBodyKeys
-    ? [...discoveredAdditionalBodyKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
+    ? [...discoveredAdditionalBodyKeys.entries()].sort(([a], [b]) =>
+        a.localeCompare(b),
+      )
     : [];
   let usesMultipartBoolean = false;
   for (const [name, info] of sortedAdditionalKeys) {
@@ -18640,13 +20510,17 @@ export function emitContractTsParts(opts: {
   // …)) expressions indent cleanly; a leading TSDoc flags eventData's opaque
   // passthrough so callers know its nested volatiles are theirs to mint.
   const sortedStructuredEntries = discoveredStructuredKeys
-    ? [...discoveredStructuredKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
+    ? [...discoveredStructuredKeys.entries()].sort(([a], [b]) =>
+        a.localeCompare(b),
+      )
     : [];
   for (const [name, schema] of sortedStructuredEntries) {
     if (isReservedByApplicantContactSchema(name)) continue;
     if (name === "TrackingUrl") continue;
     const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
-    const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
+    const value = payloadNeedsMultipart
+      ? `multipartJsonObject(${schema})`
+      : schema;
     extendFields.set(name, `  ${key}: ${value},`);
     structuredFieldNames.add(name);
   }
@@ -18697,7 +20571,7 @@ export function emitContractTsParts(opts: {
       const zod = renderAccessorShape(shape);
       addExtendField(
         name,
-        `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`
+        `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`,
       );
     }
   }
@@ -18735,9 +20609,12 @@ export function emitContractTsParts(opts: {
   // unpopulated variable with a matching name (e.g. `$email`) must not
   // downgrade that required base field.
   for (const [fieldName, line] of extendFields) {
-    if (usesApplicantContactSchema && baseContractFieldNames.has(fieldName)) continue;
+    if (usesApplicantContactSchema && baseContractFieldNames.has(fieldName))
+      continue;
     if (
-      unpopulatedDeclaredVariables.some((name) => name.toLowerCase() === fieldName.toLowerCase())
+      unpopulatedDeclaredVariables.some(
+        (name) => name.toLowerCase() === fieldName.toLowerCase(),
+      )
     ) {
       extendFields.set(fieldName, line.replace(/,\s*$/, ".optional(),"));
     }
@@ -18759,7 +20636,9 @@ export function emitContractTsParts(opts: {
     ) {
       continue;
     }
-    const key = isValidJsIdentifier(fieldName) ? fieldName : JSON.stringify(fieldName);
+    const key = isValidJsIdentifier(fieldName)
+      ? fieldName
+      : JSON.stringify(fieldName);
     const zod = constraint.enumValues
       ? `z.enum([${constraint.enumValues.map((v) => JSON.stringify(v)).join(", ")}])`
       : [
@@ -18768,12 +20647,18 @@ export function emitContractTsParts(opts: {
           ...(constraint.max !== undefined ? [`.max(${constraint.max})`] : []),
         ].join("");
     const optional = line.trimEnd().endsWith(".optional(),");
-    extendFields.set(fieldName, `  ${key}: ${zod}${optional ? ".optional()" : ""},`);
+    extendFields.set(
+      fieldName,
+      `  ${key}: ${zod}${optional ? ".optional()" : ""},`,
+    );
   }
   // Read-only GET flow: the caller supplies the derived query/path fields
   // (no recorded `query`), so declare each as an optional string.
   if (getInputModel) {
-    for (const { field } of [...getInputModel.dynamicFields, ...getInputModel.pathVars]) {
+    for (const { field } of [
+      ...getInputModel.dynamicFields,
+      ...getInputModel.pathVars,
+    ]) {
       if (extendFields.has(field)) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: z.string().optional(),`);
@@ -18789,10 +20674,15 @@ export function emitContractTsParts(opts: {
   // Flow-declared extra payload fields: declared type/optionality are
   // authoritative and override a name discovered from captures (one entry per name).
   for (const f of extraPayloadFields) {
-    extendFields.set(f.name, `  ${f.name}: z.${f.type}()${f.optional ? ".optional()" : ""},`);
+    extendFields.set(
+      f.name,
+      `  ${f.name}: z.${f.type}()${f.optional ? ".optional()" : ""},`,
+    );
   }
   const mergedExtension =
-    extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
+    extendFields.size > 0
+      ? `.extend({\n${[...extendFields.values()].join("\n")}\n})`
+      : "";
   // zod strips unknown keys, so without composing it every generated
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
@@ -18801,9 +20691,14 @@ export function emitContractTsParts(opts: {
   // applicant decision) has no job tracking click to carry.
   const nonJobBrowserOnly =
     applicantContract === false ||
-    (omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema);
+    (omitExecuteHttp &&
+      isSubmissionFlow === true &&
+      !usesApplicantContactSchema);
   const mergesTracking =
-    !getInputModel && !readOnlyPostSearch && !isReadOnlyQueryFlow && !nonJobBrowserOnly;
+    !getInputModel &&
+    !readOnlyPostSearch &&
+    !isReadOnlyQueryFlow &&
+    !nonJobBrowserOnly;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
@@ -18815,7 +20710,8 @@ export function emitContractTsParts(opts: {
   // Named imports from the same module are combined into one import statement.
   const zodMultipartNamedImports = [
     ...(usesMultipartBoolean ? ["multipartBoolean"] : []),
-    ...(usesApplicantContactSchema || (payloadNeedsMultipart && sortedStructuredEntries.length > 0)
+    ...(usesApplicantContactSchema ||
+    (payloadNeedsMultipart && sortedStructuredEntries.length > 0)
       ? ["multipartJsonObject"]
       : []),
   ];
@@ -18860,12 +20756,14 @@ export function emitContractTsParts(opts: {
       ([k, v]) =>
         `  ${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${
           UUID_REGEX.test(v) ? `\`${headersUuidGen}\`` : JSON.stringify(v)
-        }`
+        }`,
     )
     .join(",\n");
 
   const fixtureImport =
-    auxFiles.length > 0 ? `// import { loadFixture } from "${ENGINE_PKG}/scraper/fixtures";\n` : "";
+    auxFiles.length > 0
+      ? `// import { loadFixture } from "${ENGINE_PKG}/scraper/fixtures";\n`
+      : "";
 
   // Browser-flow-only plugins have no direct-HTTP hot path, so none of the
   // client-construction machinery below (import, rate limiter, cache/client
@@ -18928,12 +20826,12 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // is the only place a declared facet's kind-suffixed element can be found.
   const navigateToFacets = resolveRecurringNavigateToFacets(
     extractNavigateToFacetOrder(contractFlowSteps, process.env),
-    facetResolutionPool(actionSteps, allCaptures)
+    facetResolutionPool(actionSteps, allCaptures),
   );
   const urlParamVariablePaths = correlateNavigateToParamsWithVariables(
     contractFlowSteps,
     allCaptures,
-    gqlVariables
+    gqlVariables,
   );
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(
@@ -18941,7 +20839,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         payloadFieldNames,
         optionalPayloadFieldNames,
         navigateToFacets,
-        urlParamVariablePaths
+        urlParamVariablePaths,
       )
     : paginationSignal
       ? renderGqlVariablesExpr(
@@ -18949,7 +20847,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           payloadFieldNames,
           optionalPayloadFieldNames,
           navigateToFacets,
-          urlParamVariablePaths
+          urlParamVariablePaths,
         )
       : "{ q: payload.query }";
 
@@ -18978,7 +20876,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
    * residual's OWN ancestor crossings are addressable for threading here. */
   const buildFoldMergeLines = (
     dataVarName: string,
-    itemsOverride?: { expr: string; level: readonly string[] }
+    itemsOverride?: { expr: string; level: readonly string[] },
   ): string[] => {
     const lines: string[] = [];
     for (const [planIndex, foldPlan] of singlePrimaryFoldPlans.entries()) {
@@ -18986,49 +20884,59 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       if (!primaryStep) continue;
       const primaryItemsWithAncestors = objectItemsWithAncestorsAtPath(
         primaryStep.capture.responseBody,
-        foldPlan.primaryArrayPath
+        foldPlan.primaryArrayPath,
       );
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
-      const planSuffix = singlePrimaryFoldPlans.length > 1 ? String(planIndex) : "";
+      const planSuffix =
+        singlePrimaryFoldPlans.length > 1 ? String(planIndex) : "";
       const itemVar = `item${planSuffix}`;
       const residualPath = itemsOverride
         ? (() => {
             const { level } = itemsOverride;
             const levelPrefixesPrimaryArrayPath =
               level.length <= foldPlan.primaryArrayPath.length &&
-              level.every((segment, i) => segment === foldPlan.primaryArrayPath[i]);
+              level.every(
+                (segment, i) => segment === foldPlan.primaryArrayPath[i],
+              );
             if (!levelPrefixesPrimaryArrayPath) {
               throw new Error(
-                `emitContractTs: fold plan primary array path ${foldPlan.primaryArrayPath.join(".")} no longer extends the paginated collection's own array path ${level.join(".")} — the fold plan and this emitter have drifted out of sync`
+                `emitContractTs: fold plan primary array path ${foldPlan.primaryArrayPath.join(".")} no longer extends the paginated collection's own array path ${level.join(".")} — the fold plan and this emitter have drifted out of sync`,
               );
             }
             return foldPlan.primaryArrayPath.slice(level.length);
           })()
         : foldPlan.primaryArrayPath;
-      const { ancestorOpenLines, itemOpenLines, itemCloseLines, ancestorCloseLines, ancestorVars } =
-        itemsOverride
-          ? pathToFoldLoopLines(
-              residualPath.length === 0
-                ? itemsOverride.expr
-                : `(${itemsOverride.expr} as ${pathAccessTypeExpr(`${pascal}Response`, itemsOverride.level)}[number][])`,
-              residualPath,
-              itemVar,
-              "    ",
-              planSuffix
-            )
-          : pathToFoldLoopLines(
-              `(${dataVarName} as ${primaryArrType})`,
-              foldPlan.primaryArrayPath,
-              itemVar,
-              "    ",
-              planSuffix
-            );
+      const {
+        ancestorOpenLines,
+        itemOpenLines,
+        itemCloseLines,
+        ancestorCloseLines,
+        ancestorVars,
+      } = itemsOverride
+        ? pathToFoldLoopLines(
+            residualPath.length === 0
+              ? itemsOverride.expr
+              : `(${itemsOverride.expr} as ${pathAccessTypeExpr(`${pascal}Response`, itemsOverride.level)}[number][])`,
+            residualPath,
+            itemVar,
+            "    ",
+            planSuffix,
+          )
+        : pathToFoldLoopLines(
+            `(${dataVarName} as ${primaryArrType})`,
+            foldPlan.primaryArrayPath,
+            itemVar,
+            "    ",
+            planSuffix,
+          );
       // Ancestor bindings within `itemsOverride.level` (if any) have no
       // runtime loop variable, since the paginated merge already flattened
       // across them — only the trailing `residualPath.length` ancestor
       // crossings correspond to `ancestorVars` above, so slice the
       // design-time ancestor chain to match.
-      const residualAncestorCount = residualPath.filter((s) => s === ARRAY_WILDCARD_SEGMENT).length;
+      const residualAncestorCount = residualPath.filter(
+        (s) => s === ARRAY_WILDCARD_SEGMENT,
+      ).length;
       lines.push(...ancestorOpenLines);
       // Chain fetches for targets whose parameterized URL never interpolates
       // `itemVar` are spliced here, above the item loop but inside the
@@ -19056,16 +20964,22 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       // unknown>)...}` cast wrapper.
       const itemVarRefPattern = new RegExp(`\\b${itemVar}\\b`);
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
-        const matchedPrimaryItem = primaryItemsWithAncestors[target.primaryMatchedItemIndex];
+        const matchedPrimaryItem =
+          primaryItemsWithAncestors[target.primaryMatchedItemIndex];
         if (!matchedPrimaryItem) {
           throw new Error(
-            `emitContractTs: fold plan primary step ${foldPlan.primaryStepIndex} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
+            `emitContractTs: fold plan primary step ${foldPlan.primaryStepIndex} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`,
           );
         }
-        const { item: firstItem, ancestors: fullAncestors } = matchedPrimaryItem;
-        const residualAncestors = fullAncestors.slice(fullAncestors.length - residualAncestorCount);
+        const { item: firstItem, ancestors: fullAncestors } =
+          matchedPrimaryItem;
+        const residualAncestors = fullAncestors.slice(
+          fullAncestors.length - residualAncestorCount,
+        );
         const ancestorObjByVar = new Map(
-          ancestorVars.map((varName, idx) => [varName, residualAncestors[idx]!] as const)
+          ancestorVars.map(
+            (varName, idx) => [varName, residualAncestors[idx]!] as const,
+          ),
         );
         // Searched ancestor-scope-first (outer to inner, then item last):
         // a drill whose value is resolvable from an ancestor binding
@@ -19075,7 +20989,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // instead of pinning it inside for byte-identical ancestor-scoped
         // data. Mirrors emitMultiStepExecuteHttp's identical hoist.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          ...ancestorVars.map((varName) => ({
+            varName,
+            obj: ancestorObjByVar.get(varName)!,
+          })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -19088,9 +21005,12 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           target,
           actionSteps.map((s) => ({ capture: s.capture })),
           primaryItemsWithAncestors,
-          fullAncestors
+          fullAncestors,
         );
-        const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
+        const suffix =
+          foldPlan.targets.length > 1
+            ? `${planSuffix}${targetIndex}`
+            : planSuffix;
         // Only `itemVar` (and fold-match candidates) are `Record<string,
         // unknown>`-typed; an ancestor loop var is typed by the primary-array
         // assertion, which declares only the path below it — see
@@ -19099,12 +21019,20 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // Keyed on the path the loop was actually built from: under
         // itemsOverride the ancestor vars belong to residualPath's own
         // wildcards, not to crossings the paginated merge already flattened.
-        const typedRemainderByAncestor = ancestorTypedRemainders(residualPath, ancestorVars);
+        const typedRemainderByAncestor = ancestorTypedRemainders(
+          residualPath,
+          ancestorVars,
+        );
         const scopedAccessor = (varName: string, field: string): string =>
           varName === itemVar
             ? unknownValueAccessor(varName, field.split("."))
-            : ancestorScopedAccessor(varName, field, typedRemainderByAncestor.get(varName) ?? null);
-        const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
+            : ancestorScopedAccessor(
+                varName,
+                field,
+                typedRemainderByAncestor.get(varName) ?? null,
+              );
+        const joinAccessor = (field: string): string =>
+          scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterizeUrl`
         // call: `actionSteps` never changes across the calls this target's
         // chain steps make, so re-deriving this array on every one of
@@ -19130,11 +21058,18 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // every item would fetch the SAME first-captured URL. Searching
         // ancestor scopes too is what lets a param that only lives on a
         // parent object (e.g. a group id) resolve at all.
-        const parameterizeUrl = (rawUrl: string, chainCapture: Capture): string => {
+        const parameterizeUrl = (
+          rawUrl: string,
+          chainCapture: Capture,
+        ): string => {
           const withBase = substituteOrigin(rawUrl, baseUrl);
           const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
-            ...findThreadedJoinFields(threadingScopes, chainCapture, allCaptures),
+            ...findThreadedJoinFields(
+              threadingScopes,
+              chainCapture,
+              allCaptures,
+            ),
           ]);
           // Mirrors emitMultiStepExecuteHttp's identical rebind — see
           // buildThreadedFieldPairs's doc for why the literal-value search
@@ -19144,7 +21079,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             isAncestorScoped,
             rawThreadedFields,
             itemVar,
-            ancestorScopes
+            ancestorScopes,
           );
           // ONE guarded regex-alternation pass over `withBase` for every
           // threaded field's value, longest first — see substituteThreadedValues's
@@ -19157,7 +21092,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                 valueField.varName === itemVar
                   ? firstItem
                   : ancestorObjByVar.get(valueField.varName)!;
-              const value = readValueAtPath(scopeObj, valueField.field.split("."));
+              const value = readValueAtPath(
+                scopeObj,
+                valueField.field.split("."),
+              );
               const stringValue =
                 typeof value === "string" && value.length > 0
                   ? value
@@ -19174,18 +21112,18 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             })
             .filter(
               (
-                b
+                b,
               ): b is {
                 value: string;
                 replacement: string;
                 isItemBound: boolean;
-              } => b !== null
+              } => b !== null,
             );
           const templateBinding = joinTemplateValueBinding(
             target,
             firstItem,
             itemVar,
-            scopedAccessor
+            scopedAccessor,
           );
           if (templateBinding) valueBindings.push(templateBinding);
           // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
@@ -19193,10 +21131,13 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // see emitMultiStepExecuteHttp's identical `parameterize` guard
           // ({@link isGenuineVaryingQueryValue}) for why this is decided
           // field by field rather than for the whole capture at once.
-          const isProvenInvariant = isZeroVarianceRepeatCapture(chainCapture, allCaptures);
+          const isProvenInvariant = isZeroVarianceRepeatCapture(
+            chainCapture,
+            allCaptures,
+          );
           const filteredValueBindings = isProvenInvariant
             ? valueBindings.filter((b) =>
-                isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures)
+                isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures),
               )
             : valueBindings;
           // Mirrors emitMultiStepExecuteHttp's identical ground-truth hoist
@@ -19213,11 +21154,14 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           if (filteredValueBindings.some((b) => b.isItemBound)) {
             referencesItemVar = true;
           }
-          const result = substituteThreadedValues(withBase, filteredValueBindings);
+          const result = substituteThreadedValues(
+            withBase,
+            filteredValueBindings,
+          );
           const withDrillParamBindings = applyDrillParamBindings(
             specForTarget(target, foldReturnSpec),
             chainCapture,
-            result
+            result,
           );
           // See emitMultiStepExecuteHttp's identical guard: the frozen-
           // varying-param safety net does not apply once the capture is
@@ -19227,7 +21171,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               "emitContractTs",
               chainCapture,
               withDrillParamBindings,
-              allCaptures
+              allCaptures,
             );
           }
           return withDrillParamBindings;
@@ -19270,7 +21214,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // apply.
           const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
           if (itemVarRefPattern.test(url)) referencesItemVar = true;
-          const schemaExpr = inferChainStepResponseSchema(chainStep.capture, allCaptures);
+          const schemaExpr = inferChainStepResponseSchema(
+            chainStep.capture,
+            allCaptures,
+          );
           // This emitter never renders a per-hop `produces` accessor (unlike
           // emitMultiStepExecuteHttp's identical chain loop) — only the
           // chain terminal's response is ever read, via
@@ -19288,61 +21235,71 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             if (p.kind !== "body" || mintedLiterals.has(p.name)) return [];
             const raw = readValueAtPath(chainStep.capture.responseBody, p.path);
             const literal = typeof raw === "string" ? raw : null;
-            if (literal === null || literal.length < MIN_MINTED_LITERAL_LENGTH) return [];
+            if (literal === null || literal.length < MIN_MINTED_LITERAL_LENGTH)
+              return [];
             const used = laterHops.some(
-              (c) => c.url.includes(literal) || (c.requestPostData ?? "").includes(literal)
+              (c) =>
+                c.url.includes(literal) ||
+                (c.requestPostData ?? "").includes(literal),
             );
             return used ? [{ p, literal }] : [];
           });
           // An earlier target of this loop already fetched this hop at item
           // scope and kept its response bound: read the minted value off it
           // instead of issuing the same request a second time.
-          if (itemScopedBoundSteps.has(chainIndex) && chainIndex !== target.chainTerminalIndex) {
+          if (
+            itemScopedBoundSteps.has(chainIndex) &&
+            chainIndex !== target.chainTerminalIndex
+          ) {
             for (const { p, literal } of mintedProduces) {
               mintedLiterals.set(p.name, literal);
               chainLines.push(
-                `      const ${p.name} = (${chainStep.varName} as ${pathToAssertionType(p.path, p.leafType)})${pathToAccessor(p.path, { assertNonNull: false })};`
+                `      const ${p.name} = (${chainStep.varName} as ${pathToAssertionType(p.path, p.leafType)})${pathToAccessor(p.path, { assertNonNull: false })};`,
               );
             }
             continue;
           }
           const bindsChainResponse =
-            chainIndex === target.chainTerminalIndex || mintedProduces.length > 0;
+            chainIndex === target.chainTerminalIndex ||
+            mintedProduces.length > 0;
           chainLines.push(
             bindsChainResponse
               ? `      const ${chainStep.varName} = (await httpClient(\`${threadMinted(url)}\`, {`
               : `      await httpClient(\`${threadMinted(url)}\`, {`,
-            `        method: ${JSON.stringify(chainStep.capture.method)},`
+            `        method: ${JSON.stringify(chainStep.capture.method)},`,
           );
           // A captured POST/PUT/PATCH drill hop must carry its body and
           // content type; drillParamBindings rewrite bound JSON body keys
           // via the same parameterizeUrl pass the URL goes through.
           const hopBody = chainStep.capture.requestPostData;
           if (isMutatingMethod(chainStep.capture.method) && hopBody) {
-            const ctHeader = Object.entries(chainStep.capture.requestHeaders ?? {}).find(
-              ([k]) => k.toLowerCase() === "content-type"
-            );
+            const ctHeader = Object.entries(
+              chainStep.capture.requestHeaders ?? {},
+            ).find(([k]) => k.toLowerCase() === "content-type");
             const ct = ctHeader?.[1] ?? "application/json";
             chainLines.push(
               `        headers: { "content-type": ${JSON.stringify(ct)} },`,
-              `        body: \`${threadMinted(parameterizeUrl(escapeForTemplateLiteral(hopBody), chainStep.capture))}\`,`
+              `        body: \`${threadMinted(parameterizeUrl(escapeForTemplateLiteral(hopBody), chainStep.capture))}\`,`,
             );
           }
           chainLines.push(`        schema: ${schemaExpr},`);
           chainLines.push(
-            bindsChainResponse ? `      })) as Record<string, unknown>;` : `      });`
+            bindsChainResponse
+              ? `      })) as Record<string, unknown>;`
+              : `      });`,
           );
           for (const { p, literal } of mintedProduces) {
             const assertion = pathToAssertionType(p.path, p.leafType);
             mintedLiterals.set(p.name, literal);
             chainLines.push(
-              `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+              `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`,
             );
           }
         }
         const terminalStep = actionSteps[target.chainTerminalIndex];
         if (!terminalStep) continue;
-        const isolated = target.payloadFlag !== undefined || target.attachAs !== undefined;
+        const isolated =
+          target.payloadFlag !== undefined || target.attachAs !== undefined;
         const matchLines = emitFoldMatchAndMergeLines(
           terminalStep,
           target,
@@ -19352,8 +21309,8 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           wholeArrayAttachKey(
             target,
             terminalStep.capture.responseBody,
-            actionSteps[target.drillStepIndex]!.capture.url
-          )
+            actionSteps[target.drillStepIndex]!.capture.url,
+          ),
         );
         // One drill is one hop: a drill endpoint captured once per item
         // resolves one target per capture, and each renders to the same
@@ -19364,11 +21321,16 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           .replace(/\br\d+\b/g, "rN");
         if (emittedHopSignatures.has(renderedSignature)) continue;
         emittedHopSignatures.add(renderedSignature);
-        const drillName = drillLabel(actionSteps[target.drillStepIndex]!.capture.url);
+        const drillName = drillLabel(
+          actionSteps[target.drillStepIndex]!.capture.url,
+        );
         if (isolated && target.chain[0] !== foldPlan.primaryStepIndex) {
           // Fetch and merge travel together so a failure drops only this drill.
           itemScopedLines.push(
-            ...wrapIsolatedDrillLines(target, drillName, itemVar, [...chainLines, ...matchLines])
+            ...wrapIsolatedDrillLines(target, drillName, itemVar, [
+              ...chainLines,
+              ...matchLines,
+            ]),
           );
           if (chainLines.length > 0) hasItemScopedFetch = true;
           if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
@@ -19389,10 +21351,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           itemScopedLines,
           itemCloseLines,
           itemVar,
-          hasItemScopedFetch && !hasItemScopedHeaderThreading
+          hasItemScopedFetch && !hasItemScopedHeaderThreading,
         ),
         ...ancestorCloseLines,
-        ""
+        "",
       );
     }
     return lines;
@@ -19451,7 +21413,7 @@ ${dataFoldMergeBlock}    return { data };`;
           .map(
             (f) =>
               `// ${f.filename} <- ${f.url}\n` +
-              `// const ${sanitizeFixtureIdentifier(f.filename)} = loadFixture(${JSON.stringify(siteId)}, ${JSON.stringify(f.filename)}, z.unknown());`
+              `// const ${sanitizeFixtureIdentifier(f.filename)} = loadFixture(${JSON.stringify(siteId)}, ${JSON.stringify(f.filename)}, z.unknown());`,
           )
           .join("\n") +
         "\n"
@@ -19482,13 +21444,15 @@ export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr}
   // Browser-flow-only plugins need neither Bottleneck (no rate-limited HTTP
   // client) nor BASE_HEADERS (no per-call headers to bake in) — both would
   // sit unreferenced and trip Biome's `noUnusedVariables`.
-  const bottleneckImport = omitExecuteHttp ? "" : `import Bottleneck from "bottleneck";\n`;
+  const bottleneckImport = omitExecuteHttp
+    ? ""
+    : `import Bottleneck from "bottleneck";\n`;
   const credentialTodos = credentialHeadersToObtain
     .map(
       (h) =>
         `// TODO: recon:http proved ${h} restores this API's response shape, but it is a credential or\n` +
         "// conditional header and is not frozen here: send it per call from where the session obtains\n" +
-        "// it (a prior step's response, the caller's payload, or config), never the recon capture's value.\n"
+        "// it (a prior step's response, the caller's payload, or config), never the recon capture's value.\n",
     )
     .join("");
   const baseHeadersBlock = omitExecuteHttp
@@ -19518,7 +21482,9 @@ const limiter = new Bottleneck({ minTime: ${minTime} });
 ${executeHttpBody}
   },
 `;
-  const executeEntryUrlExpr = usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl";
+  const executeEntryUrlExpr = usesApplicantContactSchema
+    ? "payload.ClickUrl"
+    : "context.baseUrl";
   const executeUsesContext = executeEntryUrlExpr.includes("context.");
   const executeContextParam = executeUsesContext
     ? `,\n    context: SitePluginContext`
@@ -19535,7 +21501,8 @@ ${executeHttpBody}
   // Derived here as well as from the caller's flag: a caller that hands over
   // flowSteps but not the browser-flow emitter's signal must not ship a
   // retry-enabled account-creating flow.
-  const accountSignal = createsAccount || contractFlowSteps.some(stepUsesReconPassword);
+  const accountSignal =
+    createsAccount || contractFlowSteps.some(stepUsesReconPassword);
   const contractMaxAttempts = resolveMaxAttempts({
     createsAccount: accountSignal,
     declared: resolvedMaxAttempts,
@@ -19561,7 +21528,8 @@ ${executeHttpBody}
  */`;
 
   const redirectFollowImport =
-    !omitExecuteHttp && /\bfetchFollowingRedirectsPreservingMethod\(/.test(executeHttpBody)
+    !omitExecuteHttp &&
+    /\bfetchFollowingRedirectsPreservingMethod\(/.test(executeHttpBody)
       ? `import { fetchFollowingRedirectsPreservingMethod } from "${ENGINE_PKG}/scraper/redirect-follow";\n`
       : "";
   const code = `/**
@@ -19571,10 +21539,10 @@ ${executeHttpBody}
 ${bottleneckImport}import { z } from "zod/v4";
 
 ${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${redirectFollowImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}${
-  !omitExecuteHttp && /\bgetLogger\(/.test(executeHttpBody)
-    ? `\nimport { getLogger } from "${ENGINE_PKG}/lib/logging";`
-    : ""
-}
+    !omitExecuteHttp && /\bgetLogger\(/.test(executeHttpBody)
+      ? `\nimport { getLogger } from "${ENGINE_PKG}/lib/logging";`
+      : ""
+  }
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { ${sitePluginImports} } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
@@ -19647,13 +21615,15 @@ export { ${camel}Plugin as plugin };
 export function unreferencedRequiredUrlFields(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchemaExpr?: string
+  payloadSchemaExpr?: string,
 ): string[] {
   // Judge only the payload schema: a response schema's required `*Url` leaf is
   // output, not caller input. A contract with no payload-schema declaration has
   // no caller-supplied fields to judge.
-  const span = payloadSchemaExpr === undefined ? payloadSchemaSpan(contractCode) : null;
-  const scanned = payloadSchemaExpr ?? (span ? contractCode.slice(span.start, span.end) : "");
+  const span =
+    payloadSchemaExpr === undefined ? payloadSchemaSpan(contractCode) : null;
+  const scanned =
+    payloadSchemaExpr ?? (span ? contractCode.slice(span.start, span.end) : "");
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
   return payloadUrlFieldEntries(scanned)
     .filter((entry) => !isOptionalFieldEntry(scanned, entry.index))
@@ -19684,11 +21654,17 @@ function isOptionalFieldEntry(schemaText: string, matchStart: number): boolean {
  * follows an opening `{` or a separating `,` (outside strings, comments and
  * regexes) and is assigned a `z.<call>(`, wherever it sits on its line.
  */
-function payloadUrlFieldEntries(schemaText: string): { name: string; index: number }[] {
+function payloadUrlFieldEntries(
+  schemaText: string,
+): { name: string; index: number }[] {
   const entries: { name: string; index: number }[] = [];
   let prev = "";
   walkCode(schemaText, 0, (ch, i) => {
-    if ((prev === "{" || prev === ",") && /\w/.test(ch) && !/\w/.test(schemaText[i - 1] ?? " ")) {
+    if (
+      (prev === "{" || prev === ",") &&
+      /\w/.test(ch) &&
+      !/\w/.test(schemaText[i - 1] ?? " ")
+    ) {
       const re = /(\w*Url\w*)\s*:\s*z\s*\.\s*\w+\(/y;
       re.lastIndex = i;
       const m = re.exec(schemaText);
@@ -19713,13 +21689,15 @@ const URL_FIELD_LINE_PATTERN = /^[ \t]*(\w*Url\w*):\s*z\s*\.\s*\w+\(.*$/gm;
  */
 function payloadSchemaSpan(
   contractCode: string,
-  payloadSchemaExpr?: string
+  payloadSchemaExpr?: string,
 ): { start: number; end: number } | null {
   if (payloadSchemaExpr !== undefined) {
     const at = payloadSchemaExpr ? contractCode.indexOf(payloadSchemaExpr) : -1;
     return at < 0 ? null : { start: at, end: at + payloadSchemaExpr.length };
   }
-  const declaration = /^(?:export\s+)?const\s+\w*PayloadSchema\b[^=\n]*=/m.exec(contractCode);
+  const declaration = /^(?:export\s+)?const\s+\w*PayloadSchema\b[^=\n]*=/m.exec(
+    contractCode,
+  );
   if (!declaration) return null;
   const start = declaration.index + declaration[0].length;
   let end = contractCode.length;
@@ -19731,7 +21709,9 @@ function payloadSchemaSpan(
     if (
       depth === 0 &&
       ch === "\n" &&
-      /^\s*(?:export|const|let|type|function|interface|import)\s/.test(contractCode.slice(i + 1))
+      /^\s*(?:export|const|let|type|function|interface|import)\s/.test(
+        contractCode.slice(i + 1),
+      )
     ) {
       end = i;
       return true;
@@ -19751,7 +21731,7 @@ function payloadSchemaSpan(
 function walkCode(
   code: string,
   start: number,
-  visit: (ch: string, index: number, depth: number) => boolean
+  visit: (ch: string, index: number, depth: number) => boolean,
 ): void {
   let depth = 0;
   let prev = "=";
@@ -19815,11 +21795,12 @@ function skipStringLiteral(code: string, open: number): number {
 export function unreadRelaxedResponseUrlFields(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchemaExpr?: string
+  payloadSchemaExpr?: string,
 ): string[] {
   const span = payloadSchemaSpan(contractCode, payloadSchemaExpr);
   if (!span) return [];
-  const outsidePayload = contractCode.slice(0, span.start) + contractCode.slice(span.end);
+  const outsidePayload =
+    contractCode.slice(0, span.start) + contractCode.slice(span.end);
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
   return [...outsidePayload.matchAll(URL_FIELD_LINE_PATTERN)]
     .filter((match) => match[0].includes(".nullable().optional("))
@@ -19831,17 +21812,17 @@ export function unreadRelaxedResponseUrlFields(
 export function assertRequiredUrlFieldsReferenced(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchemaExpr?: string
+  payloadSchemaExpr?: string,
 ): void {
   const unreferenced = unreferencedRequiredUrlFields(
     contractCode,
     browserFlowCode,
-    payloadSchemaExpr
+    payloadSchemaExpr,
   );
   if (unreferenced.length === 0) return;
   throw new Error(
     `recon-generate: required URL field(s) ${unreferenced.join(", ")} declared on the payload schema ` +
-      `but never referenced by the emitted contract or browser flow — the flow would enter on the wrong page`
+      `but never referenced by the emitted contract or browser flow — the flow would enter on the wrong page`,
   );
 }
 
@@ -19861,7 +21842,8 @@ function stripNonCodeText(code: string): string {
     const ch = code[i];
     const next = code[i + 1];
     const inTemplateText =
-      templateDepths.length > 0 && templateDepths[templateDepths.length - 1] === depth;
+      templateDepths.length > 0 &&
+      templateDepths[templateDepths.length - 1] === depth;
     if (inTemplateText) {
       if (ch === "\\") i += 2;
       else if (ch === "`") {
@@ -19882,7 +21864,8 @@ function stripNonCodeText(code: string): string {
       i = end === -1 ? code.length : end + 2;
     } else if (ch === '"' || ch === "'") {
       i++;
-      while (i < code.length && code[i] !== ch && code[i] !== "\n") i += code[i] === "\\" ? 2 : 1;
+      while (i < code.length && code[i] !== ch && code[i] !== "\n")
+        i += code[i] === "\\" ? 2 : 1;
       i++;
       out.push('""');
     } else if (ch === "`") {
@@ -19892,7 +21875,8 @@ function stripNonCodeText(code: string): string {
       if (ch === "{") depth++;
       if (ch === "}") {
         depth--;
-        if (templateDepths[templateDepths.length - 1] === -(depth + 1)) templateDepths.pop();
+        if (templateDepths[templateDepths.length - 1] === -(depth + 1))
+          templateDepths.pop();
       }
       out.push(ch ?? "");
       i++;
@@ -19914,12 +21898,13 @@ function stripNonCodeText(code: string): string {
 export function unreferencedDeclaredPayloadFields(
   contractCode: string,
   browserFlowCode: string,
-  flowSteps: readonly FlowStepInput[]
+  flowSteps: readonly FlowStepInput[],
 ): string[] {
   const emittedCode = `${stripNonCodeText(contractCode)}\n${stripNonCodeText(browserFlowCode)}`;
   const declared = new Set<string>();
   for (const step of flowSteps) {
-    if (typeof step !== "string" && step.payloadField) declared.add(step.payloadField);
+    if (typeof step !== "string" && step.payloadField)
+      declared.add(step.payloadField);
   }
   const facets = walkNavigateToFacets([...flowSteps], process.env).map(
     (facet): NavigateToFacetBinding => ({
@@ -19928,15 +21913,15 @@ export function unreferencedDeclaredPayloadFields(
       optional: facet.optional,
       kind: facet.kind,
       kindHints: facet.kindHints,
-    })
+    }),
   );
   // An applicant-contract flow splices the canonical name for an explicit
   // vocabulary-row alias, so either spelling counts as a read.
   return [...declared].filter(
     (name) =>
       ![name, canonicalPayloadField(name)].some((candidate) =>
-        new RegExp(`payload\\.${candidate}(?![\\w$])`).test(emittedCode)
-      ) || carriesUnthreadedFacetElement(contractCode, name, facets)
+        new RegExp(`payload\\.${candidate}(?![\\w$])`).test(emittedCode),
+      ) || carriesUnthreadedFacetElement(contractCode, name, facets),
   );
 }
 
@@ -19951,15 +21936,21 @@ export function unreferencedDeclaredPayloadFields(
 function carriesUnthreadedFacetElement(
   contractCode: string,
   field: string,
-  facets: readonly NavigateToFacetBinding[]
+  facets: readonly NavigateToFacetBinding[],
 ): boolean {
   const own = facets.filter((facet) => facet.field === field);
   const elementPattern = /(["'`])((?:(?!\1)[^\n\\])*?;\w+=([\w-]+))\1/g;
   const ownsKind = (kind: string): boolean => {
-    const ownTier = Math.max(0, ...own.map((facet) => kindMatchTier(facet, kind)));
+    const ownTier = Math.max(
+      0,
+      ...own.map((facet) => kindMatchTier(facet, kind)),
+    );
     return (
       ownTier > 0 &&
-      facets.every((facet) => facet.field === field || kindMatchTier(facet, kind) <= ownTier)
+      facets.every(
+        (facet) =>
+          facet.field === field || kindMatchTier(facet, kind) <= ownTier,
+      )
     );
   };
   return contractCode
@@ -19969,8 +21960,8 @@ function carriesUnthreadedFacetElement(
       [...line.matchAll(elementPattern)].some(
         (match) =>
           ownsKind(match[3] ?? "") &&
-          !new RegExp(`payload\\.${field}(?![\\w$])`).test(match[2] ?? "")
-      )
+          !new RegExp(`payload\\.${field}(?![\\w$])`).test(match[2] ?? ""),
+      ),
     );
 }
 
@@ -19984,14 +21975,14 @@ function carriesUnthreadedFacetElement(
 function unreadDeclaredPayloadFields(
   contractCode: string,
   browserFlowCode: string,
-  flowSteps: readonly FlowStepInput[]
+  flowSteps: readonly FlowStepInput[],
 ): Set<string> {
   return new Set(
     unreferencedDeclaredPayloadFields(
       contractCode,
       /\b(httpClient|getGql)\(/.test(contractCode) ? "" : browserFlowCode,
-      flowSteps
-    )
+      flowSteps,
+    ),
   );
 }
 
@@ -20003,21 +21994,27 @@ function unreadDeclaredPayloadFields(
  * Checklist lines for the base applicant-contract payload fields (`Resume`,
  * `Answers`, `ClickUrl`) the emitted contract declares but no request reads.
  */
-export function unreadContractSchemaFieldChecklistLines(contractCode: string): string[] {
+export function unreadContractSchemaFieldChecklistLines(
+  contractCode: string,
+): string[] {
   if (!/\bApplicantContactSchema\b/.test(contractCode)) return [];
   const emitted = stripNonCodeText(contractCode);
   return ["Resume", "Answers", "ClickUrl"]
-    .filter((field) => !new RegExp(`payload\\.${field}(?![\\w$])`).test(emitted))
+    .filter(
+      (field) => !new RegExp(`payload\\.${field}(?![\\w$])`).test(emitted),
+    )
     .map(
       (field) =>
-        `Payload field ${field} is declared by the contract schema but read by no emitted request — the recon's recorded value is sent instead; bind it or confirm it is unused`
+        `Payload field ${field} is declared by the contract schema but read by no emitted request — the recon's recorded value is sent instead; bind it or confirm it is unused`,
     );
 }
 
-export function unreadPayloadFieldChecklistLines(fields: ReadonlySet<string>): string[] {
+export function unreadPayloadFieldChecklistLines(
+  fields: ReadonlySet<string>,
+): string[] {
   return [...fields].map(
     (field) =>
-      `Declared payloadField ${field} is read by no emitted request and was emitted optional — confirm it should affect the request, or drop it`
+      `Declared payloadField ${field} is read by no emitted request and was emitted optional — confirm it should affect the request, or drop it`,
   );
 }
 
@@ -20052,13 +22049,16 @@ type FlowStepInput =
  */
 export function buildSensitiveRedactionPolicy(
   flowSteps: readonly FlowStepInput[],
-  canonicalise = false
+  canonicalise = false,
 ): { digitKeys?: string[]; wordKeys?: string[] } | undefined {
   const digitKeys = new Set<string>();
   const wordKeys = new Set<string>();
   for (const step of flowSteps) {
-    if (typeof step === "string" || !step.sensitive || !step.payloadField) continue;
-    const key = canonicalise ? canonicalPayloadField(step.payloadField) : step.payloadField;
+    if (typeof step === "string" || !step.sensitive || !step.payloadField)
+      continue;
+    const key = canonicalise
+      ? canonicalPayloadField(step.payloadField)
+      : step.payloadField;
     (step.sensitive === "digits" ? digitKeys : wordKeys).add(key);
   }
   if (digitKeys.size === 0 && wordKeys.size === 0) return undefined;
@@ -20075,7 +22075,10 @@ export function buildSensitiveRedactionPolicy(
  * `${payload.X}` splice we insert deliberately.
  */
 function escapeForTemplateLiteral(segment: string): string {
-  return segment.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+  return segment
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
 }
 
 /**
@@ -20092,7 +22095,7 @@ export function buildStepInstructionExpr(
   instruction: string,
   field: string | null,
   capturedFallback = false,
-  knownValue: string | null = null
+  knownValue: string | null = null,
 ): string {
   if (field === null) return JSON.stringify(instruction);
   const site = locateSpliceSite(instruction, knownValue);
@@ -20116,7 +22119,7 @@ function buildCompositeStepInstructionExpr(
   instruction: string,
   fieldA: string,
   fieldB: string,
-  knownValue: string | null = null
+  knownValue: string | null = null,
 ): string {
   const site = locateSpliceSite(instruction, knownValue);
   if (site === null) return JSON.stringify(instruction);
@@ -20158,7 +22161,7 @@ function buildPasswordInstructionExpr(instruction: string): string {
 function buildManifestInstruction(
   instruction: string,
   field: string | null,
-  knownValue: string | null = null
+  knownValue: string | null = null,
 ): string {
   if (field === null) return instruction;
   const site = locateSpliceSite(instruction, knownValue);
@@ -20173,7 +22176,9 @@ function buildManifestInstruction(
  * duplicating {@link inferZodSchema}'s recursive shape inference. `null` and
  * `undefined` fall back to `string`, the safe default for a field a caller fills.
  */
-function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "array" | "object" {
+function jsonSchemaTypeOf(
+  value: unknown,
+): "string" | "number" | "boolean" | "array" | "object" {
   if (Array.isArray(value)) return "array";
   if (value === null || value === undefined) return "string";
   const t = typeof value;
@@ -20194,8 +22199,12 @@ function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
   if (last === undefined) return false;
   // A flow containing a declare-only step was never fully executed by recon, so
   // its trailing step is not a recon-verified submit unless explicitly flagged.
-  const anyDeclareOnly = flowSteps.some((s) => typeof s !== "string" && s.declareOnly === true);
-  const anyExplicitSubmit = flowSteps.some((s) => typeof s !== "string" && s.submitStep === true);
+  const anyDeclareOnly = flowSteps.some(
+    (s) => typeof s !== "string" && s.declareOnly === true,
+  );
+  const anyExplicitSubmit = flowSteps.some(
+    (s) => typeof s !== "string" && s.submitStep === true,
+  );
   if (anyDeclareOnly && !anyExplicitSubmit) return true;
   const isObj = typeof last !== "string";
   // An explicit submitStep:false or a declare-only step (never executed by
@@ -20314,15 +22323,19 @@ export function emitConfigManifest(opts: {
     applicantContract,
     flowSteps,
     hasMultipartStep,
-    payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
-      .payloadFieldNames,
+    payloadFieldNames: computeFlowPayloadFieldNames(
+      flowSteps,
+      vocabulary,
+      env,
+      false,
+    ).payloadFieldNames,
   });
   const payloadFieldNames = new Set<string>();
   const knownFieldValues = buildKnownFieldValues(
     flowSteps,
     vocabulary ?? EMPTY_VOCABULARY,
     env,
-    canonicalise
+    canonicalise,
   );
 
   const steps = flowSteps.map((step) => {
@@ -20342,14 +22355,17 @@ export function emitConfigManifest(opts: {
       const submitStep = isObj ? step.submitStep === true : false;
       const emailStep = isObj ? step.emailStep === true : false;
       const emailStepConfig = isObj ? step.emailStepConfig : undefined;
-      if (!optional && !upload && !submitStep && !emailStep && !frameSelector) return rewritten;
+      if (!optional && !upload && !submitStep && !emailStep && !frameSelector)
+        return rewritten;
       return {
         step: rewritten,
         optional,
         upload,
         submitStep,
         ...(frameSelector ? { frameSelector } : {}),
-        ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
+        ...(emailStep
+          ? { emailStep, emailStepConfig: emailStepConfig ?? {} }
+          : {}),
       };
     }
     const field = resolveStepPayloadField(
@@ -20358,27 +22374,30 @@ export function emitConfigManifest(opts: {
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
       knownFieldValues,
-      canonicalise
+      canonicalise,
     );
     if (field !== null) payloadFieldNames.add(field);
     const rewritten = buildManifestInstruction(
       instruction,
       field,
-      field !== null ? (knownFieldValues.get(field) ?? null) : null
+      field !== null ? (knownFieldValues.get(field) ?? null) : null,
     );
     const optional = isObj ? step.optional === true : false;
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
     const emailStep = isObj ? step.emailStep === true : false;
     const emailStepConfig = isObj ? step.emailStepConfig : undefined;
-    if (!optional && !upload && !submitStep && !emailStep && !frameSelector) return rewritten;
+    if (!optional && !upload && !submitStep && !emailStep && !frameSelector)
+      return rewritten;
     return {
       step: rewritten,
       optional,
       upload,
       submitStep,
       ...(frameSelector ? { frameSelector } : {}),
-      ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
+      ...(emailStep
+        ? { emailStep, emailStepConfig: emailStepConfig ?? {} }
+        : {}),
     };
   });
 
@@ -20388,7 +22407,11 @@ export function emitConfigManifest(opts: {
   // load of this manifest also gates on runHealingFlow's submitStep verification.
   const lastStepIndex = steps.length - 1;
   const lastStep = steps[lastStepIndex];
-  if (isSubmissionFlow && lastStep !== undefined && !lastFlowStepDeclaresNonSubmit(flowSteps)) {
+  if (
+    isSubmissionFlow &&
+    lastStep !== undefined &&
+    !lastFlowStepDeclaresNonSubmit(flowSteps)
+  ) {
     steps[lastStepIndex] =
       typeof lastStep === "string"
         ? { step: lastStep, optional: false, upload: false, submitStep: true }
@@ -20397,7 +22420,9 @@ export function emitConfigManifest(opts: {
             optional: lastStep.optional,
             upload: lastStep.upload,
             submitStep: true,
-            ...(lastStep.frameSelector ? { frameSelector: lastStep.frameSelector } : {}),
+            ...(lastStep.frameSelector
+              ? { frameSelector: lastStep.frameSelector }
+              : {}),
           };
   }
 
@@ -20406,14 +22431,21 @@ export function emitConfigManifest(opts: {
   // and recovered fields are strings (the browser flow fills them as text); a
   // body key keeps its captured type so a caller sends `page: 1`, not `"1"`.
   const requestProperties: Record<string, { type: string }> = {};
-  for (const name of payloadFieldNames) requestProperties[name] = { type: "string" };
-  for (const name of recoveredFields ?? []) requestProperties[name] = { type: "string" };
-  if (inputBody !== null && typeof inputBody === "object" && !Array.isArray(inputBody)) {
+  for (const name of payloadFieldNames)
+    requestProperties[name] = { type: "string" };
+  for (const name of recoveredFields ?? [])
+    requestProperties[name] = { type: "string" };
+  if (
+    inputBody !== null &&
+    typeof inputBody === "object" &&
+    !Array.isArray(inputBody)
+  ) {
     for (const [name, value] of Object.entries(inputBody)) {
       requestProperties[name] = { type: jsonSchemaTypeOf(value) };
     }
   }
-  for (const f of opts.extraPayloadFields ?? []) requestProperties[f.name] = { type: f.type };
+  for (const f of opts.extraPayloadFields ?? [])
+    requestProperties[f.name] = { type: f.type };
   const usesApplicantContactSchema = contractUsesApplicantContactSchema({
     inputBody,
     isSubmissionFlow,
@@ -20428,23 +22460,28 @@ export function emitConfigManifest(opts: {
   // without it would drop the TrackingUrl the engine reads after submission.
   const nonJobBrowserOnly =
     applicantContract === false ||
-    (browserFlowOnly === true && isSubmissionFlow === true && !usesApplicantContactSchema);
-  if (!readOnlyGet && !nonJobBrowserOnly) requestProperties.TrackingUrl ??= { type: "string" };
+    (browserFlowOnly === true &&
+      isSubmissionFlow === true &&
+      !usesApplicantContactSchema);
+  if (!readOnlyGet && !nonJobBrowserOnly)
+    requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
-      .map((name) => [name, requestProperties[name]])
+      .map((name) => [name, requestProperties[name]]),
   );
 
   // Same decision emitBrowserFlowTs makes: only a flow that uploads AND whose
   // contract carries Resume fields is multipart, so buildUploadFixture agrees.
-  const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+  const hasUploadStep = flowSteps.some(
+    (s) => typeof s !== "string" && s.upload === true,
+  );
   const contractCarriesResume = hasMultipartStep || usesApplicantContactSchema;
   const multipart = hasUploadStep && contractCarriesResume;
 
   const sensitiveManifestPolicy = buildSensitiveRedactionPolicy(
     flowSteps,
-    usesApplicantContactSchema
+    usesApplicantContactSchema,
   );
   const manifest = {
     apiVersion: CONFIG_PLUGIN_API_VERSION,
@@ -20467,16 +22504,20 @@ export function emitConfigManifest(opts: {
       request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
-        description: "TODO: declare the fields this site returns (recon leaves this empty).",
+        description:
+          "TODO: declare the fields this site returns (recon leaves this empty).",
         properties: {},
       },
-      ...(sensitiveManifestPolicy !== undefined && { redaction: sensitiveManifestPolicy }),
+      ...(sensitiveManifestPolicy !== undefined && {
+        redaction: sensitiveManifestPolicy,
+      }),
       flow: { steps, ...(isSubmissionFlow ? { submissionFlow: true } : {}) },
       extract: {
         instruction: `extract the confirmation id and status for ${siteId}`,
         schema: {
           type: "object",
-          description: "TODO: declare the fields to extract (empty extracts nothing at runtime).",
+          description:
+            "TODO: declare the fields to extract (empty extracts nothing at runtime).",
           properties: {},
         },
       },
@@ -20506,7 +22547,7 @@ function computeFlowPayloadFieldNames(
   vocabulary: ReconVocabulary | undefined,
   env: NodeJS.ProcessEnv,
   canonicalise = false,
-  explicitFieldHonorsOptional = false
+  explicitFieldHonorsOptional = false,
 ): { payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
   const payloadFieldNames = new Set<string>();
   // Widest wins: a field is only optional if EVERY step that registers it
@@ -20514,7 +22555,8 @@ function computeFlowPayloadFieldNames(
   const optionalPayloadFieldNames = new Set<string>();
   const requiredPayloadFieldNames = new Set<string>();
   const registerFieldOptionality = (field: string, optional: boolean): void => {
-    if (optional && !requiredPayloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
+    if (optional && !requiredPayloadFieldNames.has(field))
+      optionalPayloadFieldNames.add(field);
     if (!optional) {
       requiredPayloadFieldNames.add(field);
       optionalPayloadFieldNames.delete(field);
@@ -20524,7 +22566,7 @@ function computeFlowPayloadFieldNames(
     flowSteps,
     vocabulary ?? EMPTY_VOCABULARY,
     env,
-    canonicalise
+    canonicalise,
   );
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
@@ -20546,7 +22588,7 @@ function computeFlowPayloadFieldNames(
         // semantics (which the browser-flow step record still honors as-is).
         registerFieldOptionality(
           step.payloadField,
-          explicitFieldHonorsOptional && step.optional === true
+          explicitFieldHonorsOptional && step.optional === true,
         );
       }
       continue;
@@ -20559,7 +22601,7 @@ function computeFlowPayloadFieldNames(
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
       knownFieldValues,
-      canonicalise
+      canonicalise,
     );
     const composite =
       field === null && !(isObj && step.payloadFieldNone)
@@ -20572,7 +22614,10 @@ function computeFlowPayloadFieldNames(
       // An explicit payloadField annotation is always required at the
       // schema level; only the vocabulary/composite-persona heuristic falls
       // back to step.optional's execution-skip semantics.
-      registerFieldOptionality(field, explicit && !explicitFieldHonorsOptional ? false : optional);
+      registerFieldOptionality(
+        field,
+        explicit && !explicitFieldHonorsOptional ? false : optional,
+      );
     }
     if (composite !== null) {
       payloadFieldNames.add(composite.fieldA);
@@ -20652,29 +22697,36 @@ export function emitBrowserFlowTs(opts: {
     applicantContract,
     flowSteps,
     hasMultipartStep,
-    payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
-      .payloadFieldNames,
+    payloadFieldNames: computeFlowPayloadFieldNames(
+      flowSteps,
+      vocabulary,
+      env,
+      false,
+    ).payloadFieldNames,
   });
   // A read-only GET flow's declared facets are URL filters: an absent one
   // means "no filter", so an explicit payloadField on an optional step stays
   // optional in the schema instead of being forced required.
-  const { payloadFieldNames, optionalPayloadFieldNames } = computeFlowPayloadFieldNames(
-    flowSteps,
-    vocabulary,
-    env,
-    canonicalise,
-    readOnlyGetFlow
-  );
+  const { payloadFieldNames, optionalPayloadFieldNames } =
+    computeFlowPayloadFieldNames(
+      flowSteps,
+      vocabulary,
+      env,
+      canonicalise,
+      readOnlyGetFlow,
+    );
   for (const field of capturedFallbackFields) {
     if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
   }
-  const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+  const hasUploadStep = flowSteps.some(
+    (s) => typeof s !== "string" && s.upload === true,
+  );
   const contractCarriesResume = hasMultipartStep || canonicalise;
   const knownFieldValues = buildKnownFieldValues(
     flowSteps,
     vocabulary ?? EMPTY_VOCABULARY,
     env,
-    canonicalise
+    canonicalise,
   );
   let usesThrowawayPassword = false;
   let usesEmailStep = false;
@@ -20701,10 +22753,11 @@ export function emitBrowserFlowTs(opts: {
         step.payloadField && !step.payloadFieldNone ? step.payloadField : null,
         navigateBaselineHash,
         optional,
-        readOnlyGetFlow
+        readOnlyGetFlow,
       );
       const hashAt = step.navigateTo.indexOf("#");
-      if (hashAt !== -1) navigateBaselineHash = step.navigateTo.slice(hashAt + 1);
+      if (hashAt !== -1)
+        navigateBaselineHash = step.navigateTo.slice(hashAt + 1);
       return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${navigateToExpr} },`;
     }
     if (isObj && step.emailStep === true) {
@@ -20734,7 +22787,7 @@ export function emitBrowserFlowTs(opts: {
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
       knownFieldValues,
-      canonicalise
+      canonicalise,
     );
     const composite =
       field === null && !(isObj && step.payloadFieldNone)
@@ -20743,12 +22796,16 @@ export function emitBrowserFlowTs(opts: {
     const optional = isObj ? step.optional === true : false;
     const instructionExpr =
       composite !== null
-        ? buildCompositeStepInstructionExpr(instruction, composite.fieldA, composite.fieldB)
+        ? buildCompositeStepInstructionExpr(
+            instruction,
+            composite.fieldA,
+            composite.fieldB,
+          )
         : buildStepInstructionExpr(
             instruction,
             field,
             field !== null && capturedFallbackFields.has(field),
-            field !== null ? (knownFieldValues.get(field) ?? null) : null
+            field !== null ? (knownFieldValues.get(field) ?? null) : null,
           );
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
@@ -20770,7 +22827,7 @@ export function emitBrowserFlowTs(opts: {
     if (flagIdx >= 0) {
       stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
         /^([\s\S]*)submitStep: (true|false)/,
-        "$1submitStep: true"
+        "$1submitStep: true",
       );
     }
   }
@@ -20779,10 +22836,14 @@ export function emitBrowserFlowTs(opts: {
   // `s.frameSelector ?? deps.frameSelector` drives the frame this step names.
   for (let i = 0; i < stepLiterals.length; i++) {
     const st = flowSteps[i];
-    if (st !== undefined && typeof st !== "string" && st.frameSelector !== undefined) {
+    if (
+      st !== undefined &&
+      typeof st !== "string" &&
+      st.frameSelector !== undefined
+    ) {
       stepLiterals[i] = stepLiterals[i]!.replace(
         / \},$/,
-        ` frameSelector: ${JSON.stringify(st.frameSelector)} },`
+        ` frameSelector: ${JSON.stringify(st.frameSelector)} },`,
       );
     }
   }
@@ -20791,7 +22852,9 @@ export function emitBrowserFlowTs(opts: {
   // submitStep:true (runHealingFlow verifies exactly those steps).
   // Judged from the DECLARED steps, not the literals: the last step is
   // force-marked above, which must not by itself count as a declared submit.
-  const hasSubmitStep = flowSteps.some((st) => typeof st !== "string" && st.submitStep === true);
+  const hasSubmitStep = flowSteps.some(
+    (st) => typeof st !== "string" && st.submitStep === true,
+  );
 
   const flowStepsBlock =
     stepLiterals.length > 0
@@ -20951,10 +23014,21 @@ ${flowStepsBlock}
   // answer) is emitted literally by design and is not a leak.
   assertNoLeakedPersonaConstant(
     code,
-    buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env, canonicalise, false),
-    flowSteps
+    buildKnownFieldValues(
+      flowSteps,
+      vocabulary ?? EMPTY_VOCABULARY,
+      env,
+      canonicalise,
+      false,
+    ),
+    flowSteps,
   );
-  return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
+  return {
+    code,
+    payloadFieldNames,
+    optionalPayloadFieldNames,
+    usesThrowawayPassword,
+  };
 }
 
 /**
@@ -20968,7 +23042,7 @@ function buildNavigateToExpr(
   field: string | null,
   baselineHash: string | undefined,
   optional: boolean,
-  rebaseOrigin: boolean
+  rebaseOrigin: boolean,
 ): string {
   const esc = (t: string) => t.replace(/[`\\$]/g, (c) => `\\${c}`);
   let prefix = "";
@@ -20983,9 +23057,13 @@ function buildNavigateToExpr(
       rest = url.slice(m[0].length);
     }
   }
-  const value = field !== null ? extractNavigateToHashFragmentValue(url, baselineHash) : null;
+  const value =
+    field !== null
+      ? extractNavigateToHashFragmentValue(url, baselineHash)
+      : null;
   const hashAt = rest.indexOf("#");
-  const valueAt = value !== null && hashAt !== -1 ? rest.lastIndexOf(value) : -1;
+  const valueAt =
+    value !== null && hashAt !== -1 ? rest.lastIndexOf(value) : -1;
   if (field !== null && value !== null && valueAt > hashAt) {
     const access = isValidJsIdentifier(field)
       ? `payload.${field}`
@@ -21002,7 +23080,9 @@ function buildNavigateToExpr(
 function readOnlyGetExtractPromptExpr(fields: readonly string[]): string {
   if (fields.length === 0) return '"extract the results shown on the page"';
   const parts = fields.map((f) => {
-    const access = isValidJsIdentifier(f) ? `payload.${f}` : `payload[${JSON.stringify(f)}]`;
+    const access = isValidJsIdentifier(f)
+      ? `payload.${f}`
+      : `payload[${JSON.stringify(f)}]`;
     return `${f.replace(/[`\\$]/g, "")}=\${${access} ?? ""}`;
   });
   return `\`extract the results shown on the page for: ${parts.join(", ")}\``;
@@ -21040,7 +23120,7 @@ async function resolveVocabulary(specifier: string): Promise<ReconVocabulary> {
 
   const vocabulary = await loadReconVocabulary(specifier, process.cwd());
   logger.info(
-    `vocabulary: ${specifier === VOCABULARY_NONE ? "none (splicing disabled)" : `${vocabulary.table.length} row(s) from ${specifier}`}`
+    `vocabulary: ${specifier === VOCABULARY_NONE ? "none (splicing disabled)" : `${vocabulary.table.length} row(s) from ${specifier}`}`,
   );
   return vocabulary;
 }
@@ -21054,11 +23134,13 @@ async function resolveVocabulary(specifier: string): Promise<ReconVocabulary> {
  * recovers nothing from ATS-shaped responses — the same "absence means none"
  * discipline `--vocabulary` uses.
  */
-async function resolveFormSchema(specifier: string): Promise<ReconFormSchema | null> {
+async function resolveFormSchema(
+  specifier: string,
+): Promise<ReconFormSchema | null> {
   if (!specifier) return null;
   const formSchema = await loadReconFormSchema(specifier, process.cwd());
   logger.info(
-    `form-schema: ${specifier === FORM_SCHEMA_NONE ? "none (no ATS form recovery)" : `custom keys from ${specifier}`}`
+    `form-schema: ${specifier === FORM_SCHEMA_NONE ? "none (no ATS form recovery)" : `custom keys from ${specifier}`}`,
   );
   return formSchema;
 }
@@ -21071,11 +23153,16 @@ async function resolveFormSchema(specifier: string): Promise<ReconFormSchema | n
  * form-schema fields, structured keys) already inferred — the same "absence
  * means none" discipline `--vocabulary`/`--form-schema` use.
  */
-async function resolveValueConstraints(specifier: string): Promise<ReconValueConstraints> {
+async function resolveValueConstraints(
+  specifier: string,
+): Promise<ReconValueConstraints> {
   if (!specifier) return EMPTY_VALUE_CONSTRAINTS;
-  const valueConstraints = await loadReconValueConstraints(specifier, process.cwd());
+  const valueConstraints = await loadReconValueConstraints(
+    specifier,
+    process.cwd(),
+  );
   logger.info(
-    `value-constraints: ${specifier === VALUE_CONSTRAINTS_NONE ? "none (no field overrides)" : `custom constraints from ${specifier}`}`
+    `value-constraints: ${specifier === VALUE_CONSTRAINTS_NONE ? "none (no field overrides)" : `custom constraints from ${specifier}`}`,
   );
   return valueConstraints;
 }
@@ -21110,7 +23197,9 @@ interface TsGenerationResult {
  * field's sole source turns out to be this capture, the field is genuinely
  * required and the guard must still hard-fail.
  */
-function resolvedPrimaryResponseCapture(result: TsGenerationResult): Capture | null {
+function resolvedPrimaryResponseCapture(
+  result: TsGenerationResult,
+): Capture | null {
   if (!result.isSubmissionFlow) return result.winningCapture;
   return selectReturnAction(result.actionSteps)?.capture ?? null;
 }
@@ -21120,15 +23209,21 @@ function resolvedPrimaryResponseCapture(result: TsGenerationResult): Capture | n
  * schema-inference walk ({@link inferZodSchema}, bounded by
  * {@link DEFAULT_MAX_INFER_DEPTH}) uses to discover fields in the first
  * place, so attribution can't miss a field the inference walk found. */
-function hasOwnFieldAtAnyDepth(value: unknown, fieldName: string, maxDepth: number): boolean {
+function hasOwnFieldAtAnyDepth(
+  value: unknown,
+  fieldName: string,
+  maxDepth: number,
+): boolean {
   if (maxDepth < 0 || typeof value !== "object" || value === null) return false;
   if (Array.isArray(value)) {
-    return value.some((item) => hasOwnFieldAtAnyDepth(item, fieldName, maxDepth - 1));
+    return value.some((item) =>
+      hasOwnFieldAtAnyDepth(item, fieldName, maxDepth - 1),
+    );
   }
   const record = value as Record<string, unknown>;
   if (Object.hasOwn(record, fieldName)) return true;
   return Object.values(record).some((child) =>
-    hasOwnFieldAtAnyDepth(child, fieldName, maxDepth - 1)
+    hasOwnFieldAtAnyDepth(child, fieldName, maxDepth - 1),
   );
 }
 
@@ -21137,8 +23232,15 @@ function hasOwnFieldAtAnyDepth(value: unknown, fieldName: string, maxDepth: numb
  * signal {@link assertRequiredUrlFieldsReferenced} implicitly relies on,
  * applied per capture instead of to the merged emitted code, walked to the
  * same depth the schema-inference walk supports. */
-function captureOwnsTopLevelField(capture: Capture, fieldName: string): boolean {
-  return hasOwnFieldAtAnyDepth(capture.responseBody, fieldName, DEFAULT_MAX_INFER_DEPTH);
+function captureOwnsTopLevelField(
+  capture: Capture,
+  fieldName: string,
+): boolean {
+  return hasOwnFieldAtAnyDepth(
+    capture.responseBody,
+    fieldName,
+    DEFAULT_MAX_INFER_DEPTH,
+  );
 }
 
 /**
@@ -21148,7 +23250,10 @@ function captureOwnsTopLevelField(capture: Capture, fieldName: string): boolean 
  * is what turns that into an actionable "which capture" answer when the
  * narrowing pass can't clear the violation.
  */
-function describeOffendingFieldSources(fields: string[], pool: ActionCapture[]): string {
+function describeOffendingFieldSources(
+  fields: string[],
+  pool: ActionCapture[],
+): string {
   return fields
     .map((fieldName) => {
       const sourceUrls = pool
@@ -21188,13 +23293,14 @@ function describeOffendingFieldSources(fields: string[], pool: ActionCapture[]):
 export function identifyNoiseCapturesForFields(
   offendingFields: readonly string[],
   resolvedPool: readonly ActionCapture[],
-  primaryCapture: Capture | null
+  primaryCapture: Capture | null,
 ): Set<Capture> {
   const noiseCaptures = new Set<Capture>();
   for (const fieldName of offendingFields) {
     for (const { capture } of resolvedPool) {
       if (capture === primaryCapture) continue;
-      if (captureOwnsTopLevelField(capture, fieldName)) noiseCaptures.add(capture);
+      if (captureOwnsTopLevelField(capture, fieldName))
+        noiseCaptures.add(capture);
     }
   }
   const noiseUrls = [...noiseCaptures].map((capture) => ({
@@ -21206,7 +23312,8 @@ export function identifyNoiseCapturesForFields(
     const path = safeUrlPathname(capture.url);
     const hostname = captureHostname(capture.url);
     const isSameHostFamilyMatch = noiseUrls.some(
-      (noise) => noise.hostname === hostname && isSamePathFamily(path, noise.path)
+      (noise) =>
+        noise.hostname === hostname && isSamePathFamily(path, noise.path),
     );
     if (isSameHostFamilyMatch) noiseCaptures.add(capture);
   }
@@ -21228,12 +23335,12 @@ export function identifyNoiseCapturesForFields(
 function healUnreferencedUrlFieldsOnce(
   allCaptures: Capture[],
   firstAttempt: TsGenerationResult,
-  regenerate: (activeCaptures: Capture[]) => TsGenerationResult | null
+  regenerate: (activeCaptures: Capture[]) => TsGenerationResult | null,
 ): TsGenerationResult {
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
     firstAttempt.browserFlow.code,
-    firstAttempt.payloadSchemaExpr
+    firstAttempt.payloadSchemaExpr,
   );
   // Only unread PAYLOAD `*Url` fields attribute noise captures. Response-schema
   // `*Url` leaves are output, never an input the caller must supply, so they
@@ -21245,7 +23352,7 @@ function healUnreferencedUrlFieldsOnce(
   const noiseCaptures = identifyNoiseCapturesForFields(
     attributedFields,
     firstAttempt.resolvedPool,
-    primaryCapture
+    primaryCapture,
   );
 
   if (noiseCaptures.size === 0) {
@@ -21253,14 +23360,14 @@ function healUnreferencedUrlFieldsOnce(
       `recon-generate: required URL field(s) ${describeOffendingFieldSources(offending, firstAttempt.resolvedPool)} ` +
         `declared on the payload schema but never referenced by the emitted contract or browser flow, and no ` +
         `unrelated capture explains them — the field is genuinely required by the resolved submit/primary capture ` +
-        `itself; the flow would enter on the wrong page`
+        `itself; the flow would enter on the wrong page`,
     );
   }
 
   logger.warn(
     `unread URL field(s) ${attributedFields.join(", ")} traced to ${noiseCaptures.size} unrelated capture(s) ` +
       `(${[...noiseCaptures].map((c) => c.url).join(", ")}) not referenced or threaded by the resolved action ` +
-      `sequence — excluding them and re-generating once`
+      `sequence — excluding them and re-generating once`,
   );
   // Excluded by INDEX into allCaptures, not by capture reference: a
   // resolvedPool entry produced by the form-schema-fetch insertion (see
@@ -21272,26 +23379,28 @@ function healUnreferencedUrlFieldsOnce(
   // original captures array, so it survives the clone where the reference
   // doesn't.
   const noiseIndices = new Set(
-    firstAttempt.resolvedPool.filter((a) => noiseCaptures.has(a.capture)).map((a) => a.index)
+    firstAttempt.resolvedPool
+      .filter((a) => noiseCaptures.has(a.capture))
+      .map((a) => a.index),
   );
   const narrowedCaptures = allCaptures.filter((_, i) => !noiseIndices.has(i));
   const retried = regenerate(narrowedCaptures);
   if (retried === null) {
     throw new Error(
-      "recon-generate: narrowed retry unexpectedly resolved to the config-manifest branch"
+      "recon-generate: narrowed retry unexpectedly resolved to the config-manifest branch",
     );
   }
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
     retried.browserFlow.code,
-    retried.payloadSchemaExpr
+    retried.payloadSchemaExpr,
   );
   if (stillOffending.length > 0) {
     throw new Error(
       `recon-generate: required URL field(s) ${describeOffendingFieldSources(stillOffending, retried.resolvedPool)} ` +
         `declared on the payload schema but never referenced by the emitted contract or browser flow, even after ` +
         `excluding unrelated capture(s) (${[...noiseCaptures].map((c) => c.url).join(", ")}) — the flow would ` +
-        `enter on the wrong page`
+        `enter on the wrong page`,
     );
   }
   return retried;
@@ -21308,7 +23417,7 @@ export function singleEntityVerdict(
   winningCapture: { url: string } | null,
   isGraphQL: boolean,
   distinctSampleCount: number,
-  variance: EntityVarianceEvidence | null
+  variance: EntityVarianceEvidence | null,
 ): boolean {
   if (isGraphQL) return false;
   if (distinctSampleCount <= 1) return true;
@@ -21325,7 +23434,7 @@ export function singleEntityVerdict(
 function singleEntityVerdictFromCaptures(
   isGraphQL: boolean,
   samples: readonly unknown[],
-  captures: readonly Capture[]
+  captures: readonly Capture[],
 ): boolean {
   if (isGraphQL || samples.length <= 1) {
     return singleEntityVerdict(null, isGraphQL, samples.length, null);
@@ -21333,22 +23442,27 @@ function singleEntityVerdictFromCaptures(
   const bodies = new Set(samples.map((sample) => JSON.stringify(sample)));
   const source =
     captures.find(
-      (c) => c.status >= 200 && c.status < 300 && bodies.has(JSON.stringify(c.responseBody))
+      (c) =>
+        c.status >= 200 &&
+        c.status < 300 &&
+        bodies.has(JSON.stringify(c.responseBody)),
     ) ?? null;
   return singleEntityVerdict(
     source,
     false,
     samples.length,
-    gatherEntityVarianceEvidence(source, false, captures)
+    gatherEntityVarianceEvidence(source, false, captures),
   );
 }
 
 export function buildSingleEntityWarning(
   winningCapture: { url: string } | null | undefined,
   entityVariance: ReturnType<typeof gatherEntityVarianceEvidence>,
-  distinctSampleCount = 2
+  distinctSampleCount = 2,
 ): string | null {
-  const endpoint = winningCapture ? endpointKey(winningCapture.url) : "the winning endpoint";
+  const endpoint = winningCapture
+    ? endpointKey(winningCapture.url)
+    : "the winning endpoint";
   if (entityVariance.entityParameterized && entityVariance.singleEntity) {
     const shared = Object.entries(entityVariance.params)
       .map(([k, v]) => `${k}=${v}`)
@@ -21371,21 +23485,35 @@ export function evaluateSingleEntityEvidence(
   winningCapture: Capture | null,
   isGraphQLWinner: boolean,
   captures: readonly Capture[],
-  warn: (msg: string) => void
+  warn: (msg: string) => void,
 ): { singleEntityEvidence: boolean } {
-  const entityVariance = gatherEntityVarianceEvidence(winningCapture, isGraphQLWinner, captures);
+  const entityVariance = gatherEntityVarianceEvidence(
+    winningCapture,
+    isGraphQLWinner,
+    captures,
+  );
   // A lone REST observation is evidence of one entity even when the URL names
   // none; GraphQL is typed by its query, and no capture means no evidence.
   const distinctSampleCount =
     winningCapture && !isGraphQLWinner
-      ? gatherResponseBodySamples(winningCapture, isGraphQLWinner, captures).length
+      ? gatherResponseBodySamples(winningCapture, isGraphQLWinner, captures)
+          .length
       : Number.POSITIVE_INFINITY;
-  const warning = buildSingleEntityWarning(winningCapture, entityVariance, distinctSampleCount);
+  const warning = buildSingleEntityWarning(
+    winningCapture,
+    entityVariance,
+    distinctSampleCount,
+  );
   if (warning !== null) warn(warning);
   return {
     singleEntityEvidence:
       winningCapture !== null &&
-      singleEntityVerdict(winningCapture, isGraphQLWinner, distinctSampleCount, entityVariance),
+      singleEntityVerdict(
+        winningCapture,
+        isGraphQLWinner,
+        distinctSampleCount,
+        entityVariance,
+      ),
   };
 }
 
@@ -21396,13 +23524,17 @@ export function evaluateSingleEntityEvidence(
  * parameters that all siblings share (or there is a lone sample), leaves are
  * emitted lenient via the shared singleEntityVerdict.
  */
-const chainEndpointIndex = new WeakMap<readonly Capture[], Map<string, Capture[]>>();
+const chainEndpointIndex = new WeakMap<
+  readonly Capture[],
+  Map<string, Capture[]>
+>();
 
 export function inferChainStepResponseSchema(
   stepCapture: Capture,
-  allCaptures: readonly Capture[]
+  allCaptures: readonly Capture[],
 ): string {
-  const isGraphQL = stepCapture.query != null || stepCapture.operationName != null;
+  const isGraphQL =
+    stepCapture.query != null || stepCapture.operationName != null;
   // REST identity is the endpoint key: narrow to that group via a per-array
   // index so a many-step chain is not quadratic in total captures.
   let captures = allCaptures;
@@ -21424,19 +23556,25 @@ export function inferChainStepResponseSchema(
   const emptySamples = gathered
     .map(emptyArrayOnlySample)
     .filter((x): x is NonNullable<typeof x> => x !== null);
-  const samples = emptySamples.length > 0 ? [...gathered, emptySamples[0]] : gathered;
+  const samples =
+    emptySamples.length > 0 ? [...gathered, emptySamples[0]] : gathered;
   // Same verdict as the primary schema: no proof of more than one entity
   // means lenient leaves.
-  const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
+  const variance = gatherEntityVarianceEvidence(
+    stepCapture,
+    isGraphQL,
+    captures,
+  );
   const singleEntityEvidence = singleEntityVerdict(
     stepCapture,
     isGraphQL,
     gathered.length,
-    variance
+    variance,
   );
   return inferZodSchemaFromSamples(samples, 0, "", {
     looseServerResponse: true,
-    aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath(samples),
+    aggregateUnitBasisFindingsByPath:
+      groupAggregateUnitBasisFindingsByPath(samples),
     ...(singleEntityEvidence ? { singleEntityEvidence: true } : {}),
   });
 }
@@ -21454,8 +23592,10 @@ export async function main(): Promise<void> {
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--site-id" && args[i + 1]) siteId = args[++i]!;
-    else if (args[i] === "--vocabulary" && args[i + 1]) vocabularySpecifier = args[++i]!;
-    else if (args[i] === "--form-schema" && args[i + 1]) formSchemaSpecifier = args[++i]!;
+    else if (args[i] === "--vocabulary" && args[i + 1])
+      vocabularySpecifier = args[++i]!;
+    else if (args[i] === "--form-schema" && args[i + 1])
+      formSchemaSpecifier = args[++i]!;
     else if (args[i] === "--value-constraints" && args[i + 1])
       valueConstraintsSpecifier = args[++i]!;
     else if (args[i] === "--run-dir" && args[i + 1]) runDir = args[++i]!;
@@ -21464,7 +23604,9 @@ export async function main(): Promise<void> {
     else if (args[i] === "--emit" && args[i + 1]) {
       const value = args[++i]!;
       if (value !== "ts" && value !== "config") {
-        logger.error(`--emit must be "ts" or "config", got ${JSON.stringify(value)}`);
+        logger.error(
+          `--emit must be "ts" or "config", got ${JSON.stringify(value)}`,
+        );
         process.exit(1);
       }
       emit = value;
@@ -21479,9 +23621,12 @@ export async function main(): Promise<void> {
   const outDir = `src/sites/${siteId}`;
   const manifestPath = `src/sites/${siteId}/${siteId}.plugin.json`;
 
-  const conflicts = emit === "ts" && !force ? findExistingGeneratedPaths(outDir) : [];
+  const conflicts =
+    emit === "ts" && !force ? findExistingGeneratedPaths(outDir) : [];
   if (conflicts.length > 0) {
-    logger.error(`${conflicts.join(", ")} already exists — pass --force to overwrite`);
+    logger.error(
+      `${conflicts.join(", ")} already exists — pass --force to overwrite`,
+    );
     process.exit(1);
   }
   if (emit === "config" && existsSync(manifestPath) && !force) {
@@ -21504,7 +23649,7 @@ export async function main(): Promise<void> {
   // set — captures is the sole load-bearing signal.
   if (captures.length === 0 && !allowEmptyCapture) {
     logger.error(
-      `recon-generate: run dir ${runRoot} has no captures — nothing to generate a plugin from (did recon-browser run without a --flow?). Pass --allow-empty-capture to override.`
+      `recon-generate: run dir ${runRoot} has no captures — nothing to generate a plugin from (did recon-browser run without a --flow?). Pass --allow-empty-capture to override.`,
     );
     process.exit(1);
   }
@@ -21514,13 +23659,13 @@ export async function main(): Promise<void> {
   ]);
   if (replays.length === 0) {
     logger.warn(
-      `recon-generate: run dir ${runRoot} has an empty replays/ directory — recon:http (rate-limit probe) and replay validation were skipped, so this contract's timing and shape are unvalidated`
+      `recon-generate: run dir ${runRoot} has an empty replays/ directory — recon:http (rate-limit probe) and replay validation were skipped, so this contract's timing and shape are unvalidated`,
     );
   }
   const rateLimits = (() => {
     try {
       return JSON.parse(
-        readFileSync(join(replaysDir, "rate-limit.json"), "utf8")
+        readFileSync(join(replaysDir, "rate-limit.json"), "utf8"),
       ) as RateLimitFinding[];
     } catch {
       return [] as RateLimitFinding[];
@@ -21530,7 +23675,9 @@ export async function main(): Promise<void> {
   const flowFile = `src/sites/${siteId}/recon-flow.json`;
   const auxManifest = (() => {
     try {
-      return JSON.parse(readFileSync(join(auxDir, "aux-manifest.json"), "utf8")) as Array<{
+      return JSON.parse(
+        readFileSync(join(auxDir, "aux-manifest.json"), "utf8"),
+      ) as Array<{
         filename: string;
         hostname: string;
         url: string;
@@ -21560,7 +23707,8 @@ export async function main(): Promise<void> {
     // Parsed off the raw bytes, independently of the steps shape below, so a
     // valid `foldReturn` still resolves when the rest of the flow file is
     // degenerate — the two declarations fail independently.
-    const allFoldSpecs = flowFileContents === null ? null : parseFoldReturnSpecs(flowFileContents);
+    const allFoldSpecs =
+      flowFileContents === null ? null : parseFoldReturnSpecs(flowFileContents);
     const foldReturnSpec = allFoldSpecs === null ? null : allFoldSpecs[0]!;
     ambientExtraDrillSpecs = allFoldSpecs === null ? [] : allFoldSpecs.slice(1);
     // Same independence rule as `foldReturnSpec` above: an empty spec
@@ -21569,7 +23717,8 @@ export async function main(): Promise<void> {
     const fallbackGateSpec: FallbackGateSpec =
       flowFileContents === null ? {} : parseFallbackGateSpec(flowFileContents);
     try {
-      const raw: unknown = flowFileContents === null ? null : JSON.parse(flowFileContents);
+      const raw: unknown =
+        flowFileContents === null ? null : JSON.parse(flowFileContents);
       if (Array.isArray(raw))
         return {
           flowSteps: raw as FlowStepInput[],
@@ -21630,9 +23779,15 @@ export async function main(): Promise<void> {
     }
   })();
 
-  const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
-  const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
-  const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
+  const browserFlowOnlyOptIn = existsSync(flowFile)
+    ? readBrowserFlowOnly(flowFile)
+    : false;
+  const applicantContract = existsSync(flowFile)
+    ? readApplicantContract(flowFile)
+    : undefined;
+  const declaredMaxAttempts = existsSync(flowFile)
+    ? readDeclaredMaxAttempts(flowFile)
+    : null;
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
@@ -21652,7 +23807,9 @@ export async function main(): Promise<void> {
   // Consumer-declared domain facts (enum/min/max) that no captured response
   // leaf exposes a shape for, or EMPTY_VALUE_CONSTRAINTS when absent — see
   // {@link ReconValueConstraints}.
-  const valueConstraints = await resolveValueConstraints(valueConstraintsSpecifier);
+  const valueConstraints = await resolveValueConstraints(
+    valueConstraintsSpecifier,
+  );
 
   const pascal = toPascalCase(siteId);
   // Read the flow's declared own-backend hosts BEFORE deriving baseUrl, so
@@ -21671,10 +23828,12 @@ export async function main(): Promise<void> {
    * derivation logic. Returns null once the config-manifest branch has
    * already written its output and there is nothing left for main() to do.
    */
-  function generateFromCaptures(activeCaptures: Capture[]): TsGenerationResult | null {
+  function generateFromCaptures(
+    activeCaptures: Capture[],
+  ): TsGenerationResult | null {
     if (activeCaptures.length === 0 && !allowEmptyCapture) {
       throw new Error(
-        "empty capture pool: no captures remain to derive a base URL from (a placeholder origin would leak into the contract)"
+        "empty capture pool: no captures remain to derive a base URL from (a placeholder origin would leak into the contract)",
       );
     }
     // An opted-in empty capture has no origin to derive; "" leaves the
@@ -21691,7 +23850,8 @@ export async function main(): Promise<void> {
     // third party's JSON into a generated plugin's fixtures/. A file with no
     // manifest entry is unverifiable provenance, not proven safe, so it is
     // excluded rather than assumed to have passed the write-time filter.
-    const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
+    const fallbackDomain =
+      baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
     const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
     const auxFiles = auxManifest
       .filter((entry) => {
@@ -21699,11 +23859,11 @@ export async function main(): Promise<void> {
           entry.hostname,
           ownBackendHostnames,
           fallbackDomain,
-          primaryHost
+          primaryHost,
         );
         if (!allowed) {
           logger.warn(
-            `excluding aux fixture '${entry.filename}' — host '${entry.hostname}' is not an own-backend host`
+            `excluding aux fixture '${entry.filename}' — host '${entry.hostname}' is not an own-backend host`,
           );
         }
         return allowed;
@@ -21713,11 +23873,16 @@ export async function main(): Promise<void> {
     // A file on disk with no manifest entry predates the write-time provenance
     // record (bugfix-002) or otherwise landed outside probeAuxiliaryEndpoints —
     // its source host is unverifiable, so it is excluded, not assumed safe.
-    const manifestedFilenames = new Set(auxManifest.map((entry) => entry.filename));
+    const manifestedFilenames = new Set(
+      auxManifest.map((entry) => entry.filename),
+    );
     const unmanifestedFiles = (() => {
       try {
         return readdirSync(auxDir).filter(
-          (f) => f.endsWith(".json") && f !== "aux-manifest.json" && !manifestedFilenames.has(f)
+          (f) =>
+            f.endsWith(".json") &&
+            f !== "aux-manifest.json" &&
+            !manifestedFilenames.has(f),
         );
       } catch {
         return [] as string[];
@@ -21725,7 +23890,7 @@ export async function main(): Promise<void> {
     })();
     for (const f of unmanifestedFiles) {
       logger.warn(
-        `excluding aux fixture '${f}' — no aux-manifest.json entry, provenance unverifiable`
+        `excluding aux fixture '${f}' — no aux-manifest.json entry, provenance unverifiable`,
       );
     }
     const baseHeaders = deriveRequestHeaders(
@@ -21735,13 +23900,19 @@ export async function main(): Promise<void> {
       submitPatterns,
       ownBackendHostnames,
       fallbackDomain,
-      primaryHost
+      primaryHost,
     );
     const minTime = deriveMinTime(rateLimits);
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
     const safeRps =
-      rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-    const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain, primaryHost);
+      rateLimits.find((f) => f.safeRps !== null)?.safeRps ??
+      Math.floor(1000 / minTime);
+    const gql = isGraphQL(
+      activeCaptures,
+      ownBackendHostnames,
+      fallbackDomain,
+      primaryHost,
+    );
     // Hoisted so both the primary-operation gate below and rawActionCaptures
     // (further down) read the same computed sequence instead of calling the
     // extractor twice. Computed unfiltered (submitPatterns: null) — a
@@ -21754,7 +23925,7 @@ export async function main(): Promise<void> {
           foldReturnSpec,
           ownBackendHostnames,
           fallbackDomain,
-          primaryHost
+          primaryHost,
         )
       : [];
     // A foldReturn-admitted read/drill capture (see extractGraphQLActionSequence's
@@ -21764,7 +23935,7 @@ export async function main(): Promise<void> {
     // submission flow; an admitted read/drill capture must not, on its own, null
     // out primaryGraphQLOperation below or flip isSubmissionFlow further down.
     const graphqlActionSequenceHasMutation = graphqlActionSequence.some(
-      (a) => a.capture.query !== null && /^\s*mutation\b/.test(a.capture.query)
+      (a) => a.capture.query !== null && /^\s*mutation\b/.test(a.capture.query),
     );
     const primaryGraphQLOperation =
       gql && !graphqlActionSequenceHasMutation
@@ -21776,16 +23947,17 @@ export async function main(): Promise<void> {
             ownBackendHostnames,
             fallbackDomain,
             submitPatterns,
-            primaryHost
+            primaryHost,
           )
         : null;
     if (
       primaryGraphQLOperation &&
       primaryGraphQLOperation.unpopulatedDeclaredVariables.length > 0
     ) {
-      const operationLabel = primaryGraphQLOperation.capture.operationName ?? "(anonymous)";
+      const operationLabel =
+        primaryGraphQLOperation.capture.operationName ?? "(anonymous)";
       logger.warn(
-        `WARN primary GraphQL operation '${operationLabel}' declares filter variable(s) ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} that are never populated in any capture — the generated executeHttp's payload field(s) for ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} have no wiring target and will replay the captured frozen value instead of the caller's input`
+        `WARN primary GraphQL operation '${operationLabel}' declares filter variable(s) ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} that are never populated in any capture — the generated executeHttp's payload field(s) for ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} have no wiring target and will replay the captured frozen value instead of the caller's input`,
       );
     }
     // When there's no primaryGraphQLOperation winner but the flow is still
@@ -21800,11 +23972,13 @@ export async function main(): Promise<void> {
           ownBackendHostnames,
           fallbackDomain,
           submitPatterns,
-          primaryHost
+          primaryHost,
         )
       : null;
     const gqlQuery =
-      primaryGraphQLOperation?.capture.query ?? fallbackGraphQLCapture?.query ?? null;
+      primaryGraphQLOperation?.capture.query ??
+      fallbackGraphQLCapture?.query ??
+      null;
     // A declared drill-down is the flow author's own statement that the
     // capture is a per-item read of the primary, whatever its method: it is
     // neither a sample of the read nor a submission step, and it is never the
@@ -21814,13 +23988,18 @@ export async function main(): Promise<void> {
     const primaryPoolCaptures = ((): Capture[] => {
       if (foldReturnSpec === null) return activeCaptures;
       const holdsResults = compileFoldReturnResultsMatcher(foldReturnSpec);
-      const declaresSubmit = submitPatterns.endpoint !== null || submitPatterns.body !== null;
+      const declaresSubmit =
+        submitPatterns.endpoint !== null || submitPatterns.body !== null;
       const matchesSubmitPattern = compileSubmitMatcher(submitPatterns);
       // A drill the flow also declared as its submit is the submission, not a read.
       const nonDrill = activeCaptures.filter(
-        (c) => !isDeclaredDrillCapture(c) || (declaresSubmit && matchesSubmitPattern(c))
+        (c) =>
+          !isDeclaredDrillCapture(c) ||
+          (declaresSubmit && matchesSubmitPattern(c)),
       );
-      return nonDrill.some((c) => c.status >= 200 && c.status < 300 && holdsResults(c))
+      return nonDrill.some(
+        (c) => c.status >= 200 && c.status < 300 && holdsResults(c),
+      )
         ? nonDrill
         : activeCaptures;
     })();
@@ -21833,7 +24012,7 @@ export async function main(): Promise<void> {
             ownBackendHostnames,
             fallbackDomain,
             submitPatterns,
-            primaryHost
+            primaryHost,
           ));
     // Derived from the primary operation's own Phase-1 capture, never from
     // replay array order -- a replay's body reflects whichever endpoint fired
@@ -21847,7 +24026,7 @@ export async function main(): Promise<void> {
         ownBackendHostnames,
         fallbackDomain,
         submitPatterns,
-        primaryHost
+        primaryHost,
       );
     const responseBody = winningCapture?.responseBody ?? null;
     // Every 2xx capture sharing the winning capture's operation identity, not
@@ -21859,13 +24038,13 @@ export async function main(): Promise<void> {
     const responseBodySamples = gatherResponseBodySamples(
       winningCapture,
       primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
-      activeCaptures
+      activeCaptures,
     );
     const { singleEntityEvidence } = evaluateSingleEntityEvidence(
       winningCapture,
       primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
       activeCaptures,
-      (msg) => logger.warn(msg)
+      (msg) => logger.warn(msg),
     );
 
     // Detect a multi-step submission flow (transactional sites like apply forms,
@@ -21883,7 +24062,10 @@ export async function main(): Promise<void> {
     // submit-pattern matches, only when it isn't missing a declared foldReturn
     // drill-down the heuristic sequence found past the submit step.
     const unfilteredHeuristicActionCaptures = gql
-      ? dedupRedundantSameOperationCaptures(graphqlActionSequence, primaryGraphQLOperation)
+      ? dedupRedundantSameOperationCaptures(
+          graphqlActionSequence,
+          primaryGraphQLOperation,
+        )
       : collapseRedundantSameEndpointCaptures(
           collapseRedundantPatches(
             extractActionSequence(
@@ -21893,9 +24075,9 @@ export async function main(): Promise<void> {
               ownBackendHostnames,
               fallbackDomain,
               true,
-              primaryHost
-            )
-          )
+              primaryHost,
+            ),
+          ),
         );
     // A flow-declared submitEndpointPattern is authoritative: it may match only
     // the final step's URL (the natural way to describe "the button that
@@ -21926,9 +24108,9 @@ export async function main(): Promise<void> {
             foldReturnSpec,
             ownBackendHostnames,
             fallbackDomain,
-            primaryHost
+            primaryHost,
           ),
-          primaryGraphQLOperation
+          primaryGraphQLOperation,
         )
       : collapseRedundantSameEndpointCaptures(
           collapseRedundantPatches(
@@ -21939,13 +24121,15 @@ export async function main(): Promise<void> {
               ownBackendHostnames,
               fallbackDomain,
               false,
-              primaryHost
-            )
+              primaryHost,
+            ),
           ),
           (submitPatterns.endpoint === null && submitPatterns.body === null) ||
-            flowSteps.some((st) => typeof st !== "string" && st.submitStep === true)
+            flowSteps.some(
+              (st) => typeof st !== "string" && st.submitStep === true,
+            )
             ? null
-            : compileSubmitMatcher(submitPatterns)
+            : compileSubmitMatcher(submitPatterns),
         );
     const patternedHeuristicActionCaptures =
       submitPatterns.endpoint === null && submitPatterns.body === null
@@ -21953,10 +24137,11 @@ export async function main(): Promise<void> {
         : truncateActionSequenceAtSubmitPattern(
             patternedExtractedActionCaptures,
             submitPatterns,
-            foldReturnSpec
+            foldReturnSpec,
           );
     const patternUndercounts =
-      patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
+      patternedHeuristicActionCaptures.length <
+      unfilteredHeuristicActionCaptures.length;
     if (patternUndercounts && requireSubmitEndpointMatch) {
       // Distinct wording from the non-required case below: this pattern is never
       // discarded, so a message that says "ignoring"/"undercount" would misstate
@@ -21964,37 +24149,46 @@ export async function main(): Promise<void> {
       // the flow author should know the declared pattern covers fewer activeCaptures
       // than the unfiltered heuristic sequence finds.
       logger.warn(
-        `submission selection: declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`
+        `submission selection: declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`,
       );
     } else if (patternUndercounts) {
       logger.info(
-        `submission selection: using declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) although the unfiltered heuristic action sequence finds ${unfilteredHeuristicActionCaptures.length} capture(s); the unfiltered set would make the generator attempt an HTTP replay that aborts on frozen-varying fields`
+        `submission selection: using declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) although the unfiltered heuristic action sequence finds ${unfilteredHeuristicActionCaptures.length} capture(s); the unfiltered set would make the generator attempt an HTTP replay that aborts on frozen-varying fields`,
       );
     }
     const heuristicActionCaptures = patternedHeuristicActionCaptures;
     if (foldReturnSpec !== null) {
       const isDeclaredDrill = compileFoldReturnEndpointMatcher(foldReturnSpec);
       const sawDrill = activeCaptures.some(
-        (c) => c.status >= 200 && c.status < 300 && isDeclaredDrill(c)
+        (c) => c.status >= 200 && c.status < 300 && isDeclaredDrill(c),
       );
-      if (sawDrill && !heuristicActionCaptures.some((a) => isDeclaredDrill(a.capture))) {
+      if (
+        sawDrill &&
+        !heuristicActionCaptures.some((a) => isDeclaredDrill(a.capture))
+      ) {
         logger.warn(
-          `declared foldReturn drill-down (endpointPattern: ${foldReturnSpec.endpointPattern}) matched captured traffic but is absent from the action sequence`
+          `declared foldReturn drill-down (endpointPattern: ${foldReturnSpec.endpointPattern}) matched captured traffic but is absent from the action sequence`,
         );
       }
     }
-    const resolvedManifestActionCaptures = resolveManifestActionSequence(runRoot, activeCaptures);
+    const resolvedManifestActionCaptures = resolveManifestActionSequence(
+      runRoot,
+      activeCaptures,
+    );
     const manifestActionCaptures =
       resolvedManifestActionCaptures === null
         ? null
-        : filterManifestByDeclaredSubmit(resolvedManifestActionCaptures, submitPatterns);
+        : filterManifestByDeclaredSubmit(
+            resolvedManifestActionCaptures,
+            submitPatterns,
+          );
     if (
       resolvedManifestActionCaptures !== null &&
       manifestActionCaptures !== null &&
       manifestActionCaptures.length < resolvedManifestActionCaptures.length
     ) {
       logger.info(
-        `submission selection: filtered submit-manifest.json from ${resolvedManifestActionCaptures.length} to ${manifestActionCaptures.length} capture(s) matching the declared submit pattern`
+        `submission selection: filtered submit-manifest.json from ${resolvedManifestActionCaptures.length} to ${manifestActionCaptures.length} capture(s) matching the declared submit pattern`,
       );
     }
     // A manifest only ever records submit-pattern matches, so it can never
@@ -22002,10 +24196,13 @@ export async function main(): Promise<void> {
     // past the submit step — and a manifest padded by re-fired submits can
     // still out-count that sequence. Trusting it then would discard the
     // author's declared drill exactly as the pre-fold truncation used to.
-    const matchesDeclaredFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+    const matchesDeclaredFoldReturn =
+      compileFoldReturnEndpointMatcher(foldReturnSpec);
     const manifestLacksDeclaredFoldDrill =
       manifestActionCaptures !== null &&
-      heuristicActionCaptures.some((a) => matchesDeclaredFoldReturn(a.capture)) &&
+      heuristicActionCaptures.some((a) =>
+        matchesDeclaredFoldReturn(a.capture),
+      ) &&
       !manifestActionCaptures.some((a) => matchesDeclaredFoldReturn(a.capture));
     const manifestUndercounts =
       manifestActionCaptures !== null &&
@@ -22013,15 +24210,15 @@ export async function main(): Promise<void> {
         manifestLacksDeclaredFoldDrill);
     if (manifestActionCaptures !== null && manifestLacksDeclaredFoldDrill) {
       logger.info(
-        `submission selection: ignoring submit-manifest.json (${resolvedManifestActionCaptures?.length ?? manifestActionCaptures.length} capture(s)) because it lacks the declared foldReturn drill-down (endpointPattern: ${foldReturnSpec?.endpointPattern}) the heuristic action sequence (${heuristicActionCaptures.length} capture(s)) contains`
+        `submission selection: ignoring submit-manifest.json (${resolvedManifestActionCaptures?.length ?? manifestActionCaptures.length} capture(s)) because it lacks the declared foldReturn drill-down (endpointPattern: ${foldReturnSpec?.endpointPattern}) the heuristic action sequence (${heuristicActionCaptures.length} capture(s)) contains`,
       );
     } else if (manifestActionCaptures !== null && manifestUndercounts) {
       logger.info(
-        `submission selection: ignoring submit-manifest.json (${manifestActionCaptures.length} capture(s)) as an undercount of the heuristic action sequence (${heuristicActionCaptures.length} capture(s))`
+        `submission selection: ignoring submit-manifest.json (${manifestActionCaptures.length} capture(s)) as an undercount of the heuristic action sequence (${heuristicActionCaptures.length} capture(s))`,
       );
     } else if (manifestActionCaptures !== null) {
       logger.info(
-        `submission selection: using submit-manifest.json (${manifestActionCaptures.length} authoritative capture(s))`
+        `submission selection: using submit-manifest.json (${manifestActionCaptures.length} authoritative capture(s))`,
       );
     }
     const rawActionCaptures =
@@ -22032,10 +24229,8 @@ export async function main(): Promise<void> {
     // UUIDs can be shielded from indexing — those UUIDs are stable schema
     // anchors that T2/T3 substitution depends on remaining literal in body
     // templates.
-    const { fieldNameMap, fieldOptionsMap, allSchemaUuids } = detectFormSchemaFieldNames(
-      activeCaptures,
-      formSchema
-    );
+    const { fieldNameMap, fieldOptionsMap, allSchemaUuids } =
+      detectFormSchemaFieldNames(activeCaptures, formSchema);
     // Shield ALL field-id/option-id UUIDs that appear in any schema response, not
     // just the ones that detectFormSchemaFieldNames emits a payload name for.
     // Some fields have names too long for the naming heuristic (>80 chars) and
@@ -22048,7 +24243,12 @@ export async function main(): Promise<void> {
     // recon persona's. Both are site-agnostic: persona mapping comes from the
     // consumer vocabulary, job coordinates from the entry URL's own query keys.
     warnUnmatchedFillSteps(flowSteps, vocabulary, (msg) => logger.warn(msg));
-    const personaBindings = harvestRunPersonaBindings(flowSteps, vocabulary, runRoot, process.env);
+    const personaBindings = harvestRunPersonaBindings(
+      flowSteps,
+      vocabulary,
+      runRoot,
+      process.env,
+    );
     const entryUrlParams = extractEntryUrlParams(activeCaptures[0]?.url ?? "");
     // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
     // action sequence at the position observed during recon, so the existing
@@ -22062,7 +24262,10 @@ export async function main(): Promise<void> {
         ? null
         : detectFormSchemaFetchCapture(activeCaptures, baseUrl, formSchema);
     const schemaFetchCleaned: Capture | null = rawSchemaFetch
-      ? { ...rawSchemaFetch.capture, url: stripCacheBusterParams(rawSchemaFetch.capture.url) }
+      ? {
+          ...rawSchemaFetch.capture,
+          url: stripCacheBusterParams(rawSchemaFetch.capture.url),
+        }
       : null;
     const actionCaptures: ActionCapture[] = (() => {
       if (
@@ -22085,7 +24288,9 @@ export async function main(): Promise<void> {
         ...rawActionCaptures.slice(insertAt),
       ];
     })();
-    const actionCaptureIndices = new Set<number>(actionCaptures.map((a) => a.index));
+    const actionCaptureIndices = new Set<number>(
+      actionCaptures.map((a) => a.index),
+    );
     // Resolved off raw actionCaptures — fold-plan DETECTION depends only on
     // each action's capture, so this runs before compileActionSteps/
     // indexStateValues even exist — so a short numeric join value threaded
@@ -22101,11 +24306,13 @@ export async function main(): Promise<void> {
             activeCaptures,
             shieldedUuids,
             actionCaptureIndices,
-            dependentDrillDownChainValues
+            dependentDrillDownChainValues,
           )
         : new Map<string, StateValue>();
     const compiledActionSteps =
-      actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
+      actionCaptures.length > 1
+        ? compileActionSteps(actionCaptures, stateIndex)
+        : [];
     // A multi-step flow whose declared submit pattern selects no captures has no
     // replayable HTTP sequence, yet is still not a search: treat it as a
     // browser-flow-only submission flow rather than the single-endpoint `{query}` branch.
@@ -22116,41 +24323,54 @@ export async function main(): Promise<void> {
     // same-host non-GET (visit beacon) that merely falls back into the pool.
     const matchesDeclaredSubmit = compileSubmitMatcher(submitPatterns);
     const readFlowCaptures = primaryPoolCaptures.filter(
-      (c) => c.method === "GET" || matchesDeclaredSubmit(c)
+      (c) => c.method === "GET" || matchesDeclaredSubmit(c),
     );
     const readFlowWinner = firstEndpointCapture(
       readFlowCaptures,
       ownBackendHostnames,
       fallbackDomain,
       submitPatterns,
-      primaryHost
+      primaryHost,
     );
     // A declared submit pattern may select several same-route GET reads of the
     // winner as the "action sequence"; those are samples of one read, not steps.
-    const readSiblings = readFlowWinner ? sameRouteGetSiblings(readFlowWinner, activeCaptures) : [];
+    const readSiblings = readFlowWinner
+      ? sameRouteGetSiblings(readFlowWinner, activeCaptures)
+      : [];
     // Recurring beacons (a bot-manager's sensor POSTs) in the action sequence are
     // page chrome, not steps of the flow: they must not turn a read into a submission.
-    const isRecurringReadFlowBeacon = nonGetBeaconPredicate(activeCaptures, submitPatterns);
+    const isRecurringReadFlowBeacon = nonGetBeaconPredicate(
+      activeCaptures,
+      submitPatterns,
+    );
     // A flow that declares its submit endpoint names the only non-GET that can
     // be its submission: a non-GET outside that pattern whose response no later
     // step consumes (a one-off analytics or consent POST) is page chrome, not a
     // step. One whose response feeds a later request (a token mint) still is.
-    const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
+    const declaresSubmitPattern =
+      submitPatterns.endpoint !== null || submitPatterns.body !== null;
     const feedsDeclaredStep = (capture: Capture): boolean =>
-      stepFeedsDeclaredSubmit(capture, compiledActionSteps, matchesDeclaredSubmit);
+      stepFeedsDeclaredSubmit(
+        capture,
+        compiledActionSteps,
+        matchesDeclaredSubmit,
+      );
     const isIncidentalReadFlowPost = (capture: Capture): boolean =>
-      declaresSubmitPattern && !matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
+      declaresSubmitPattern &&
+      !matchesDeclaredSubmit(capture) &&
+      !feedsDeclaredStep(capture);
     const actionSequenceIsReadSamples =
       compiledActionSteps.length === 0 ||
       actionCaptures.every(
         (a) =>
           readSiblings.some(
             (r) =>
-              r === a.capture || (r.url === a.capture.url && r.timestamp === a.capture.timestamp)
+              r === a.capture ||
+              (r.url === a.capture.url && r.timestamp === a.capture.timestamp),
           ) ||
           isRecurringReadFlowBeacon(a.capture) ||
           isIncidentalReadFlowPost(a.capture) ||
-          isDeclaredDrillCapture(a.capture)
+          isDeclaredDrillCapture(a.capture),
       );
     const isReadOnlyGetFlow =
       !gql &&
@@ -22166,7 +24386,8 @@ export async function main(): Promise<void> {
           // only non-GETs matching that pattern can be the submit.
           (foldReturnSpec === null ||
             submitPatterns === null ||
-            (submitPatterns.endpoint === null && submitPatterns.body === null) ||
+            (submitPatterns.endpoint === null &&
+              submitPatterns.body === null) ||
             matchesDeclaredSubmit(c)) &&
           c.status >= 200 &&
           c.status < 300 &&
@@ -22177,25 +24398,32 @@ export async function main(): Promise<void> {
               captureHostname(c.url),
               ownBackendHostnames,
               fallbackDomain,
-              primaryHost
-            ))
+              primaryHost,
+            )),
       ).length === 0 &&
       getInputsAreUrlShaped(readFlowWinner);
     // The read samples are not steps, but a declared drill-down still needs
     // its action step so the fold resolves onto the read.
     const readFlowHasDeclaredDrill =
-      isReadOnlyGetFlow && compiledActionSteps.some((s) => isDeclaredDrillCapture(s.capture));
-    const actionSteps = isReadOnlyGetFlow && !readFlowHasDeclaredDrill ? [] : compiledActionSteps;
+      isReadOnlyGetFlow &&
+      compiledActionSteps.some((s) => isDeclaredDrillCapture(s.capture));
+    const actionSteps =
+      isReadOnlyGetFlow && !readFlowHasDeclaredDrill ? [] : compiledActionSteps;
     const noReplayableActionFlow =
-      !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
+      !gql &&
+      actionSteps.length === 0 &&
+      flowSteps.length > 1 &&
+      !isReadOnlyGetFlow;
     const isDeclaredPostSearchRead =
       !gql &&
       declaresSubmitPattern &&
       // An explicit submitStep means the author declared a submission, not a read.
-      !flowSteps.some((st) => typeof st !== "string" && st.submitStep === true) &&
+      !flowSteps.some(
+        (st) => typeof st !== "string" && st.submitStep === true,
+      ) &&
       isDeclaredPostSearchRepeat(
         actionCaptures.map((a) => a.capture),
-        matchesDeclaredSubmit
+        matchesDeclaredSubmit,
       );
     const isSubmissionFlow = classifySubmissionFlow({
       noReplayableActionFlow,
@@ -22214,9 +24442,12 @@ export async function main(): Promise<void> {
     // are `length <= 1` and never reach here. We do not filter (that would delete the
     // sole search POST of legitimate `--url`-only single-endpoint runs, which is also
     // landing-phase) — we only surface the suspicious shape.
-    if (isSubmissionFlow && actionCaptures.every((a) => a.capture.phase === "home")) {
+    if (
+      isSubmissionFlow &&
+      actionCaptures.every((a) => a.capture.phase === "home")
+    ) {
       logger.warn(
-        `WARN all ${actionCaptures.length} action captures are landing-phase (phase="home") — this may be page-chrome bootstrap misread as a submission flow, not a walked apply wizard; verify the recon --flow actually advanced the form`
+        `WARN all ${actionCaptures.length} action captures are landing-phase (phase="home") — this may be page-chrome bootstrap misread as a submission flow, not a walked apply wizard; verify the recon --flow actually advanced the form`,
       );
     }
 
@@ -22225,7 +24456,9 @@ export async function main(): Promise<void> {
       ? (() => {
           try {
             const payloadAction = selectPayloadAction(actionSteps);
-            return JSON.parse(payloadAction?.capture.requestPostData ?? "null") as unknown;
+            return JSON.parse(
+              payloadAction?.capture.requestPostData ?? "null",
+            ) as unknown;
           } catch {
             return null;
           }
@@ -22238,8 +24471,12 @@ export async function main(): Promise<void> {
         browserFlowOnly: false,
         applicantContract,
         formBodyFieldNames,
-        payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env, false)
-          .payloadFieldNames,
+        payloadFieldNames: computeFlowPayloadFieldNames(
+          flowSteps,
+          vocabulary,
+          process.env,
+          false,
+        ).payloadFieldNames,
       })
     ) {
       addClickUrlPathBindings(activeCaptures[0]?.url ?? "", entryUrlParams);
@@ -22264,20 +24501,25 @@ export async function main(): Promise<void> {
     // Phase F: keys from additional action POST bodies (beyond inputBody/r0)
     // that get parameterized. Recorded with their value type so the contract
     // emitter can add them to the payload schema with appropriate Zod types.
-    const discoveredAdditionalBodyKeys = new Map<string, AdditionalBodyKeyInfo>();
+    const discoveredAdditionalBodyKeys = new Map<
+      string,
+      AdditionalBodyKeyInfo
+    >();
     // Mechanism A: reconcile flow SELECT steps to submitted option codes. The
     // resolutions drive a wire-key-anchored body rewrite (label→code dropdowns);
     // i18n-only dropdowns (labels all templated, e.g. gender) fall through to the
     // existing raw-option channel so their frozen code is still parameterized.
-    const { resolutions: selectResolutions, rawCodeFields } = buildSelectOptionResolutions(
-      flowSteps,
-      activeCaptures,
-      vocabulary,
-      process.env
-    );
+    const { resolutions: selectResolutions, rawCodeFields } =
+      buildSelectOptionResolutions(
+        flowSteps,
+        activeCaptures,
+        vocabulary,
+        process.env,
+      );
     for (const [semanticName, { code }] of rawCodeFields) {
       const fieldName = `${semanticName}Code`;
-      if (!discoveredRawOptionFields.has(fieldName)) discoveredRawOptionFields.set(fieldName, code);
+      if (!discoveredRawOptionFields.has(fieldName))
+        discoveredRawOptionFields.set(fieldName, code);
     }
     // Mechanism B: nested caller structures (experienceData/educationData
     // history, opaque eventData) discovered during the body emit, surfaced to the
@@ -22307,7 +24549,7 @@ export async function main(): Promise<void> {
       firstSubdomain,
       staticBaseHeaders,
       baseUrlDerivedHeaders,
-      tenantSubdomainHeaders
+      tenantSubdomainHeaders,
     );
     // Third branch (browser-flow-only): a multi-action flow (isSubmissionFlow)
     // that crosses hosts mid-sequence (compileActionSteps' isCrossDomain — a
@@ -22328,7 +24570,11 @@ export async function main(): Promise<void> {
       (submitPatterns !== null &&
         (submitPatterns.endpoint !== null || submitPatterns.body !== null)) ||
       flowSteps.some((st) => typeof st === "object" && st.submitStep === true);
-    const preGaps = detectContractGaps(actionSteps, submitDeclared, matchesDeclaredSubmit);
+    const preGaps = detectContractGaps(
+      actionSteps,
+      submitDeclared,
+      matchesDeclaredSubmit,
+    );
     const failClosedReasons: string[] = [];
     // A read-only (all-GET) sequence whose declared submit pattern targets a GET
     // is a read flow, not a write submission cut short — leave it on executeHttp.
@@ -22345,11 +24591,17 @@ export async function main(): Promise<void> {
         activeCaptures.filter(matchesDeclaredSubmit).length >= 3
       )
     )
-      failClosedReasons.push("the action sequence stops short of the flow's submit step");
+      failClosedReasons.push(
+        "the action sequence stops short of the flow's submit step",
+      );
     if (isSubmissionFlow && preGaps.bodylessUploadSteps > 0)
-      failClosedReasons.push("an upload step's request body was unavailable and cannot be bound");
+      failClosedReasons.push(
+        "an upload step's request body was unavailable and cannot be bound",
+      );
     if (failClosedReasons.length > 0)
-      logger.warn(`WARN falling back to a browser-only plugin: ${failClosedReasons.join("; ")}`);
+      logger.warn(
+        `WARN falling back to a browser-only plugin: ${failClosedReasons.join("; ")}`,
+      );
     const mustBeBrowserFlowOnly =
       isSubmissionFlow &&
       (browserFlowOnlyOptIn ||
@@ -22359,13 +24611,15 @@ export async function main(): Promise<void> {
     // emitMultiStepExecuteHttp registers what it binds into these collectors;
     // a body discarded below must leave them as it found them.
     const collectorRestores: Array<() => void> = [
-      ...[discoveredPayloadAccessorFields, discoveredOptionFields].map((set) => {
-        const kept = [...set];
-        return () => {
-          set.clear();
-          for (const v of kept) set.add(v);
-        };
-      }),
+      ...[discoveredPayloadAccessorFields, discoveredOptionFields].map(
+        (set) => {
+          const kept = [...set];
+          return () => {
+            set.clear();
+            for (const v of kept) set.add(v);
+          };
+        },
+      ),
       ...[
         discoveredRawOptionFields as Map<string, unknown>,
         discoveredAdditionalBodyKeys as Map<string, unknown>,
@@ -22405,7 +24659,7 @@ export async function main(): Promise<void> {
             pascal,
             flowSteps,
             vocabulary,
-            applicantContract
+            applicantContract,
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
@@ -22418,16 +24672,17 @@ export async function main(): Promise<void> {
             actionSteps,
             activeCaptures,
             synthesizedMultiStepBody,
-            shieldedUuids
+            shieldedUuids,
           );
     if (untracedTokens.length > 0) {
       for (const restore of collectorRestores) restore();
       logger.warn(
-        `WARN ${untracedTokens.length} per-request token(s) re-sent by the recorded flow could not be traced to a producer step (includes captcha response fields, which are single-use and cannot be replayed) — emitting a browser-only plugin rather than freezing them into executeHttp`
+        `WARN ${untracedTokens.length} per-request token(s) re-sent by the recorded flow could not be traced to a producer step (includes captcha response fields, which are single-use and cannot be replayed) — emitting a browser-only plugin rather than freezing them into executeHttp`,
       );
     }
     const browserFlowOnly = mustBeBrowserFlowOnly || untracedTokens.length > 0;
-    const multiStepBody = untracedTokens.length > 0 ? undefined : synthesizedMultiStepBody;
+    const multiStepBody =
+      untracedTokens.length > 0 ? undefined : synthesizedMultiStepBody;
     // Explicit merge — every field emitMultiStepExecuteHttp registered as a
     // `payload.<field>` accessor (persona, entryUrlParams, tenant-
     // subdomain headers, walkStringLeaves) flows into the same discovered-
@@ -22450,7 +24705,7 @@ export async function main(): Promise<void> {
             parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
         : (fallbackGraphQLCapture?.operationName ??
             parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
-      gqlQuery
+      gqlQuery,
     );
     // Shape inference targets the SAME call executeHttp returns — see
     // selectEffectiveResponseBody — so the two surfaces can't describe different calls.
@@ -22462,7 +24717,7 @@ export async function main(): Promise<void> {
       actionSteps,
       responseBody,
       foldReturnSpec,
-      isSubmissionFlow ? null : emittedPrimaryAnchor
+      isSubmissionFlow ? null : emittedPrimaryAnchor,
     );
 
     // A declared foldReturn that resolves to no plan is a silent no-op otherwise
@@ -22481,12 +24736,12 @@ export async function main(): Promise<void> {
           actionSteps,
           foldReturnSpec,
           multiStepBody,
-          emittedPrimaryAnchor
+          emittedPrimaryAnchor,
         );
     const effectiveFoldPlanCount = effectiveFoldPlans.length;
     if (foldReturnSpec !== null && effectiveFoldPlanCount === 0) {
       logger.warn(
-        `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
+        `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`,
       );
     }
     // The quieter failure: structural plans resolved (so the count above is
@@ -22510,17 +24765,22 @@ export async function main(): Promise<void> {
       effectiveFoldPlans.some((plan) =>
         plan.targets.some(
           (target) =>
-            JSON.stringify(target.joinFields) === JSON.stringify(foldReturnSpec.joinFields)
-        )
+            JSON.stringify(target.joinFields) ===
+            JSON.stringify(foldReturnSpec.joinFields),
+        ),
       );
-    if (foldReturnSpec !== null && effectiveFoldPlanCount > 0 && !declaredJoinFieldsApplied) {
+    if (
+      foldReturnSpec !== null &&
+      effectiveFoldPlanCount > 0 &&
+      !declaredJoinFieldsApplied
+    ) {
       logger.warn(
-        `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but the declared spec resolved no fold plan — only structurally-detected fold plans (with their own guessed join fields) were emitted, so the declared joinFields were not applied; check that the endpointPattern names a capture in the action sequence and resultsPath resolves on the primary response`
+        `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but the declared spec resolved no fold plan — only structurally-detected fold plans (with their own guessed join fields) were emitted, so the declared joinFields were not applied; check that the endpointPattern names a capture in the action sequence and resultsPath resolves on the primary response`,
       );
     }
 
     logger.info(
-      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`,
     );
 
     // Non-GET mutating submit on a browser-flow-only plugin cannot be replayed
@@ -22530,7 +24790,8 @@ export async function main(): Promise<void> {
       !isReadOnlyGetFlow &&
       winningCapture !== null &&
       winningCapture.method !== "GET";
-    const derivedMaxAttempts = declaredMaxAttempts ?? (submitIsIrreversible ? 1 : null);
+    const derivedMaxAttempts =
+      declaredMaxAttempts ?? (submitIsIrreversible ? 1 : null);
 
     if (emit === "config") {
       mkdirSync(outDir, { recursive: true });
@@ -22557,12 +24818,15 @@ export async function main(): Promise<void> {
           // the compiled module rather than silently dropping the direct path.
           // Not set for the browser-flow-only branch — there is no hot path to
           // compile a module for.
-          httpModulePath: isSubmissionFlow && !browserFlowOnly ? `./${siteId}.http.js` : undefined,
-        })
+          httpModulePath:
+            isSubmissionFlow && !browserFlowOnly
+              ? `./${siteId}.http.js`
+              : undefined,
+        }),
       );
       logger.info(`wrote ${manifestPath}`);
       logger.info(
-        `done — review ${manifestPath}, fill in response/extract schemas, then load via BARNACLE_PLUGINS or BARNACLE_PLUGINS_CONFIG_DIR (no compile step)`
+        `done — review ${manifestPath}, fill in response/extract schemas, then load via BARNACLE_PLUGINS or BARNACLE_PLUGINS_CONFIG_DIR (no compile step)`,
       );
       return null;
     }
@@ -22630,7 +24894,8 @@ export async function main(): Promise<void> {
         : effectiveResponseBody !== null &&
             effectiveResponseBody !== undefined &&
             !responseBodySamples.some(
-              (b) => JSON.stringify(b) === JSON.stringify(effectiveResponseBody)
+              (b) =>
+                JSON.stringify(b) === JSON.stringify(effectiveResponseBody),
             )
           ? [...responseBodySamples, effectiveResponseBody]
           : responseBodySamples,
@@ -22641,7 +24906,7 @@ export async function main(): Promise<void> {
             null,
             primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
             1,
-            null
+            null,
           )
         : singleEntityEvidence,
       gql,
@@ -22685,13 +24950,18 @@ export async function main(): Promise<void> {
       payloadFieldNames: browserFlow.payloadFieldNames,
       optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
       headerBindings,
-      unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
+      unpopulatedDeclaredVariables:
+        primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
       fallbackGateSpec,
     };
 
     const firstContract = emitContractTsParts(contractOpts);
     const firstContractCode = firstContract.code;
-    const unread = unreadDeclaredPayloadFields(firstContractCode, browserFlow.code, flowSteps);
+    const unread = unreadDeclaredPayloadFields(
+      firstContractCode,
+      browserFlow.code,
+      flowSteps,
+    );
     // A field no emitted request reads must not be required of callers. The
     // browser fallback keeps splicing it, from the captured value when the
     // caller omits it, so the field still takes effect when supplied.
@@ -22727,7 +24997,12 @@ export async function main(): Promise<void> {
       contractCode: settled.contractCode,
       payloadSchemaExpr: settled.payloadSchemaExpr,
       contractOpts: settled.contractOpts,
-      gaps: detectContractGaps(actionSteps, submitDeclared, matchesDeclaredSubmit, multiStepBody),
+      gaps: detectContractGaps(
+        actionSteps,
+        submitDeclared,
+        matchesDeclaredSubmit,
+        multiStepBody,
+      ),
       browserFlow: settled.browserFlow,
       auxFiles,
       resolvedPool: actionCaptures,
@@ -22739,18 +25014,26 @@ export async function main(): Promise<void> {
 
   const result = generateFromCaptures(captures);
   if (result === null) return; // emit === "config": already written above.
-  const final = healUnreferencedUrlFieldsOnce(captures, result, generateFromCaptures);
+  const final = healUnreferencedUrlFieldsOnce(
+    captures,
+    result,
+    generateFromCaptures,
+  );
 
   const unreferencedEverywhere = new Set(
-    unreferencedDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
+    unreferencedDeclaredPayloadFields(
+      final.contractCode,
+      final.browserFlow.code,
+      flowSteps,
+    ),
   );
   for (const field of unreadDeclaredPayloadFields(
     final.contractCode,
     final.browserFlow.code,
-    flowSteps
+    flowSteps,
   )) {
     logger.warn(
-      `declared payloadField ${field} is read by no emitted request; emitted as optional schema field${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`
+      `declared payloadField ${field} is read by no emitted request; emitted as optional schema field${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`,
     );
   }
 
@@ -22761,12 +25044,16 @@ export async function main(): Promise<void> {
   const checklist = [
     ...buildContractChecklist({ ...final.contractOpts, gaps: final.gaps }),
     ...unreadPayloadFieldChecklistLines(
-      unreadDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
+      unreadDeclaredPayloadFields(
+        final.contractCode,
+        final.browserFlow.code,
+        flowSteps,
+      ),
     ),
     ...unreadContractSchemaFieldChecklistLines(final.contractCode),
   ];
   logger.info(
-    `review checklist for ${outDir}/contract.ts:\n${checklist.map((item) => `  [ ] ${item}`).join("\n")}`
+    `review checklist for ${outDir}/contract.ts:\n${checklist.map((item) => `  [ ] ${item}`).join("\n")}`,
   );
 
   writeFileSync(`${outDir}/flows/browser-flow.ts`, final.browserFlow.code);
@@ -22776,13 +25063,14 @@ export async function main(): Promise<void> {
   logger.info(`wrote ${outDir}/index.ts`);
 
   logger.info(
-    `done — review ${outDir}/, build the package, then point BARNACLE_PLUGINS at the compiled module (no core edits required): BARNACLE_PLUGINS=./dist/sites/${siteId}/index.js pnpm start`
+    `done — review ${outDir}/, build the package, then point BARNACLE_PLUGINS at the compiled module (no core edits required): BARNACLE_PLUGINS=./dist/sites/${siteId}/index.js pnpm start`,
   );
 }
 
 if (
   process.argv[1] !== undefined &&
-  (process.argv[1].endsWith("recon-generate.ts") || process.argv[1].endsWith("recon-generate.js"))
+  (process.argv[1].endsWith("recon-generate.ts") ||
+    process.argv[1].endsWith("recon-generate.js"))
 ) {
   main().catch((err: unknown) => {
     logger.error(`recon-generate failed: ${toErrorMessage(err)}`);
