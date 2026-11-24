@@ -1272,6 +1272,37 @@ export function isServerRenderedFormSubmit(capture: {
   );
 }
 
+/**
+ * True when `capture` is a structured query: a JSON object request body with
+ * at least one nested object/array value (facet filters), answered by a
+ * response carrying a non-empty array of record objects. A beacon's varying
+ * body/response is scalar telemetry; a re-issued search with different filter
+ * values is answered with a collection of records.
+ */
+function isStructuredQueryWithRecordResponse(capture: {
+  requestPostData: string | null;
+  responseBody?: unknown;
+}): boolean {
+  if (!capture.requestPostData) return false;
+  let body: unknown;
+  try {
+    body = JSON.parse(capture.requestPostData);
+  } catch {
+    return false;
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  const hasNested = Object.values(body).some((v) => typeof v === "object" && v !== null);
+  if (!hasNested) return false;
+  const hasRecords = (v: unknown, depth: number): boolean => {
+    if (depth > 3 || typeof v !== "object" || v === null) return false;
+    if (Array.isArray(v)) {
+      return v.some((x) => typeof x === "object" && x !== null && !Array.isArray(x));
+    }
+    return Object.values(v).some((x) => hasRecords(x, depth + 1));
+  };
+  return hasRecords(capture.responseBody, 0);
+}
+
 export function isZeroVarianceRepeatCapture(
   candidate: {
     method: string;
@@ -1356,6 +1387,7 @@ export function isZeroVarianceRepeatCapture(
     if (hasResponseFullyExplainedByOwnRequestPerOccurrence(sameEndpoint)) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
     if (hasStableOperationIdentity(candidate, sameEndpoint)) return false;
+    if (isStructuredQueryWithRecordResponse(candidate)) return false;
     // Unlike the identical-request branch above (where a fixed/degenerate
     // request can never explain response variance, so the dense-repeat floor
     // is a safe shortcut past corroboration), a request that ALSO varies
