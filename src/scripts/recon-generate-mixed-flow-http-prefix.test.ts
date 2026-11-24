@@ -19,7 +19,9 @@ function steps(): MulticallFixtureStep[] {
     method: "GET",
     responseHeaders: { "set-cookie": "sid=sess-value-0123456789; Path=/" },
   });
-  csrf.produces = [{ kind: "body", name: "csrfToken", path: ["csrfToken"], leafType: "string" }];
+  csrf.produces = [
+    { kind: "body", name: "csrfToken", path: ["csrfToken"], leafType: "string" },
+  ] as unknown as typeof csrf.produces;
   const cart = buildStep("r1", {
     url: `${BASE}/api/cart`,
     requestPostData: JSON.stringify({ sku: "widget-sku-0001" }),
