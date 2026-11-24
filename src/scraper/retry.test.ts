@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { UnknownOutcomeError } from "@/api/errors";
 import {
   CaptchaError,
   CdpTransportClosedError,
@@ -437,5 +438,28 @@ describe("scraper/retry", () => {
         expect(classifyScraperError(c.raw)).toBeInstanceOf(c.expected);
       });
     }
+  });
+
+  describe("ApiError passthrough", () => {
+    it("rethrows the identical ApiError after one attempt without callbacks", async () => {
+      const original = new UnknownOutcomeError("x");
+      const task = vi.fn().mockRejectedValue(original);
+      const onSessionRestart = vi.fn();
+      const onRetry = vi.fn();
+      await expect(
+        withScraperRetry(task, { maxAttempts: 3, onSessionRestart, onRetry })
+      ).rejects.toBe(original);
+      expect(task).toHaveBeenCalledTimes(1);
+      expect(onSessionRestart).not.toHaveBeenCalled();
+      expect(onRetry).not.toHaveBeenCalled();
+    });
+
+    it("still wraps and retries a generic Error", async () => {
+      const task = vi.fn().mockRejectedValue(new Error("boom"));
+      await expect(withScraperRetry(task, { maxAttempts: 2 })).rejects.toBeInstanceOf(
+        UnknownScraperError
+      );
+      expect(task).toHaveBeenCalledTimes(2);
+    });
   });
 });
