@@ -53,6 +53,7 @@ const emit = (overrides: Partial<Parameters<typeof emitContractTs>[0]>): string 
   emitContractTs({
     siteId: "test-site",
     pascal: "TestSite",
+    applicantContract: true,
     baseUrl: "https://api.example.com",
     baseHeaders: {},
     minTime: 100,
@@ -155,6 +156,7 @@ describe("emitted applicant contract — canonical keys across every extend-fiel
       flowSteps: FLOW_STEPS,
       isSubmissionFlow: true,
       browserFlowOnly: true,
+      applicantContract: true,
       vocabulary,
     });
     expect([...payloadFieldNames].sort()).toEqual(["AddressLine", "Phone"]);
@@ -179,6 +181,7 @@ describe("emitted applicant contract — forced browserFlowOnly entry", () => {
       flowSteps: FLOW_STEPS,
       isSubmissionFlow: true,
       browserFlowOnly: true,
+      applicantContract: true,
       inputBody,
       vocabulary,
     });

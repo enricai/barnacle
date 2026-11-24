@@ -213,6 +213,12 @@ describe("recon-generate CLI — cross-domain multi-action flow falls back to br
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
 
+    // The fallback no longer implies a job application: declare it.
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({ applicantContract: true, steps: [] })
+    );
+
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
@@ -426,6 +432,7 @@ describe("contractUsesApplicantContactSchema with browserFlowOnly", () => {
         inputBody,
         isSubmissionFlow: true,
         browserFlowOnly: true,
+        applicantContract: true,
       })
     ).toBe(true);
     expect(

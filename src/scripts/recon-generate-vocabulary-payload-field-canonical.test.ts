@@ -73,6 +73,7 @@ describe("resolveStepPayloadField — canonical payload field names", () => {
       multiStepBody: undefined,
       omitExecuteHttp: true,
       isSubmissionFlow: true,
+      applicantContract: true,
       payloadFieldNames: fields,
     });
     const block = source.match(
@@ -112,6 +113,7 @@ describe("emitContractTs — generate and safeParse", () => {
       multiStepBody: undefined,
       omitExecuteHttp: true,
       isSubmissionFlow: true,
+      applicantContract: true,
       payloadFieldNames: fields,
     });
     const block = source.match(
@@ -159,6 +161,7 @@ describe("emitContractTs — TrackingUrl composition", () => {
       multiStepBody: undefined,
       omitExecuteHttp,
       isSubmissionFlow,
+      applicantContract: isSubmissionFlow ? true : undefined,
       payloadFieldNames: new Set<string>(),
     });
 

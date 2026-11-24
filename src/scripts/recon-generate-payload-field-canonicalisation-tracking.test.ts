@@ -50,6 +50,7 @@ function emitContract(fields: Set<string>): string {
     auxFiles: [],
     multiStepBody: undefined,
     omitExecuteHttp: true,
+    applicantContract: true,
     isSubmissionFlow: true,
     payloadFieldNames: fields,
   });
@@ -98,6 +99,7 @@ describe("label-derived payload field canonicalisation", () => {
       baseUrl: "https://example.com",
       isSubmissionFlow: true,
       browserFlowOnly: true,
+      applicantContract: true,
       vocabulary: VOCAB,
       flowSteps: STEPS,
     });
@@ -140,6 +142,7 @@ describe("label-derived payload field canonicalisation", () => {
         baseUrl: "https://apply.acme.example",
         isSubmissionFlow: true,
         browserFlowOnly: true,
+        applicantContract: true,
         vocabulary: VOCAB,
         flowSteps: STEPS,
       } as never)

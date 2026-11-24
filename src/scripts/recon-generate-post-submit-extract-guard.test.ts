@@ -17,7 +17,11 @@ describe("recon-generate — post-submit guardedExtract guard", () => {
     pascal: "ReconSite4",
     baseUrl: "https://careers.example.org",
     isSubmissionFlow: true,
-    flowSteps: ["Click the First Name field and type John", "Click the Submit Application button"],
+    applicantContract: true,
+    flowSteps: [
+      "Click the First Name field and type John",
+      { step: "Click the Submit Application button", submitStep: true },
+    ],
   };
 
   it("wraps the post-submit guardedExtract call in a try/catch for a submission flow", () => {

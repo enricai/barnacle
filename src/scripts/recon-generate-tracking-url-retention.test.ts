@@ -22,6 +22,7 @@ function emit(isSubmissionFlow: boolean): string {
     multiStepBody: undefined,
     omitExecuteHttp: true,
     isSubmissionFlow,
+    applicantContract: isSubmissionFlow ? true : undefined,
     payloadFieldNames: new Set<string>(),
   });
 }
@@ -71,6 +72,7 @@ describe("a discovered TrackingUrl field never shadows JobTrackingSchema", () =>
       auxFiles: [],
       omitExecuteHttp: true,
       isSubmissionFlow: true,
+      applicantContract: true,
       discoveredFormFields: new Set(["TrackingUrl"]),
     });
     expect(source).toContain(".merge(JobTrackingSchema)");

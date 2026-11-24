@@ -71,6 +71,7 @@ import {
   type ExtraPayloadField,
   type RateLimitFinding,
   type ReplayResult,
+  readApplicantContract,
   readBrowserFlowOnly,
   readCaptureDir,
   readDeclaredMaxAttempts,
@@ -159,11 +160,33 @@ function namesAWidgetLabel(instruction: string, span: QuotedSpan): boolean {
  * yield Texas, not the label. Any other step (`Fill`/`Enter`/`Type`) names the
  * field label first and the value last, so it is the LAST quoted span.
  */
-function pickValueSpan(instruction: string, spans: readonly QuotedSpan[]): QuotedSpan {
+function pickValueSpan(
+  instruction: string,
+  spans: readonly QuotedSpan[],
+  knownValue?: string | null
+): QuotedSpan {
+  // Identity match: when the recon-typed value is known, the span carrying it IS the value.
+  if (knownValue) {
+    const want = knownValue.trim().toLowerCase();
+    const hit = spans.find((span) => span.text.trim().toLowerCase() === want);
+    if (hit) return hit;
+  }
   const verb = /\b(select|choose|pick)\b/i.exec(instruction);
   const afterVerb = verb ? spans.filter((span) => span.start >= verb.index + verb[0].length) : [];
   const answer = afterVerb.find((span) => !namesAWidgetLabel(instruction, span)) ?? afterVerb[0];
-  return answer ?? spans[spans.length - 1]!;
+  if (answer) return answer;
+  // Click grammar: the clicked option is named first; later spans describe
+  // the effect ("... so the 'B' panel expands"), never the value.
+  if (/^\s*(?:click|tap|press)\b/i.test(instruction)) {
+    const clicked = spans.find((span) => !namesAWidgetLabel(instruction, span));
+    if (clicked) return clicked;
+  }
+  // Non-select grammar: value last — but a trailing span that names a widget
+  // ("... so a 'players:' list opens") is a label, not the value.
+  for (let i = spans.length - 1; i >= 0; i--) {
+    if (!namesAWidgetLabel(instruction, spans[i]!)) return spans[i]!;
+  }
+  return spans[spans.length - 1]!;
 }
 
 /**
@@ -179,7 +202,8 @@ function pickValueSpan(instruction: string, spans: readonly QuotedSpan[]): Quote
  * @returns null when the instruction carries no spliceable site
  */
 function locateSpliceSite(
-  instruction: string
+  instruction: string,
+  knownValue?: string | null
 ): { before: string; matched: string; after: string } | null {
   const envToken = RESERVED_ENV_TOKEN.exec(instruction);
   if (envToken) {
@@ -191,7 +215,7 @@ function locateSpliceSite(
   }
   const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
-  const span = pickValueSpan(instruction, spans);
+  const span = pickValueSpan(instruction, spans, knownValue);
   return {
     before: instruction.slice(0, span.start + 1),
     matched: instruction.slice(span.start + 1, span.end - 1),
@@ -10289,7 +10313,9 @@ export function emitMultiStepExecuteHttp(
    * already uses, instead of never being decomposed at all. Defaults preserve
    * prior (no facet-splice) output for callers that don't pass a flow. */
   flowSteps: FlowStepInput[] = [],
-  vocabulary: ReconVocabulary | undefined = undefined
+  vocabulary: ReconVocabulary | undefined = undefined,
+  /** Explicit `applicantContract` flow declaration; see {@link contractUsesApplicantContactSchema}. */
+  applicantContract: boolean | undefined = undefined
 ): string {
   interface Rendered {
     url: string;
@@ -10938,6 +10964,7 @@ export function emitMultiStepExecuteHttp(
         isSubmissionFlow: true,
         payloadFieldNames: outDiscoveredFields,
         formBodyFieldNames: collectFormBodyFieldNames(actions),
+        applicantContract,
       })
     ) {
       bodyTemplate = bindMultipartSelectAnswers(bodyTemplate, cap, prior);
@@ -17170,6 +17197,30 @@ const applicantContactEvidenceFieldNamesLower = new Set(
   [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
 );
 
+const applicantFlowVocabulary =
+  /\b(resume|r[ée]sum[ée]|cv|curriculum vitae|cover letter|job application|applicant|apply for)\b/i;
+const applicantOnlyEvidenceFieldNamesLower = new Set(
+  ["FirstName", "LastName", "Resume", "ResumeContentType", "ResumeFilename", "ResumeBase64"].map(
+    (name) => name.toLowerCase()
+  )
+);
+
+/** Flow evidence that a browser-only submission flow is a job application. */
+function browserFlowHasApplicantEvidence(o: {
+  flowSteps?: readonly FlowStepInput[];
+  hasMultipartStep?: boolean;
+  names: readonly string[];
+}): boolean {
+  for (const step of o.flowSteps ?? []) {
+    if (typeof step === "string") {
+      if (applicantFlowVocabulary.test(step)) return true;
+    } else if (step.upload === true || applicantFlowVocabulary.test(step.step)) {
+      return true;
+    }
+  }
+  return o.names.some((n) => applicantOnlyEvidenceFieldNamesLower.has(n.toLowerCase()));
+}
+
 /**
  * Single source of truth for "the contract extends ApplicantContactSchema", so
  * the contract and browser-flow emitters can't disagree about whether the
@@ -17185,13 +17236,37 @@ export function contractUsesApplicantContactSchema(opts: {
    * multipart/urlencoded bodies that carry no JSON `inputBody`, so the names of
    * the fields it submits are the only evidence of what the caller supplies. */
   formBodyFieldNames?: ReadonlySet<string>;
+  /** Explicit `applicantContract` declaration from the flow file; wins over
+   * every inferred signal when set. */
+  applicantContract?: boolean;
+  /** Flow-evidence inputs for the browser-only branch. */
+  flowSteps?: readonly FlowStepInput[];
+  hasMultipartStep?: boolean;
 }): boolean {
-  const { inputBody, isSubmissionFlow, browserFlowOnly, payloadFieldNames, formBodyFieldNames } =
-    opts;
+  const {
+    inputBody,
+    isSubmissionFlow,
+    browserFlowOnly,
+    payloadFieldNames,
+    formBodyFieldNames,
+    applicantContract,
+    flowSteps,
+    hasMultipartStep,
+  } = opts;
+  if (applicantContract !== undefined) return applicantContract;
   // A browser-flow-only submission flow has no HTTP body of its own: whatever
   // inputBody HTTP analysis captured describes a path the plugin won't emit,
   // so it is not evidence about the real caller's shape.
-  if (isSubmissionFlow === true && browserFlowOnly === true) return true;
+  // It is a job application only when the flow itself says so (upload step,
+  // resume/ATS vocabulary, applicant-only payload fields); a plain `email`
+  // field is not evidence.
+  if (isSubmissionFlow === true && browserFlowOnly === true) {
+    return browserFlowHasApplicantEvidence({
+      flowSteps,
+      hasMultipartStep,
+      names: [...(payloadFieldNames ?? []), ...(formBodyFieldNames ?? [])],
+    });
+  }
   // A body-less submission flow has no inputBody to inspect; the payload fields
   // its steps splice are the only evidence, whether or not it also has an HTTP
   // path (the browser-flow emitter can't know which the contract will take).
@@ -17324,6 +17399,8 @@ export function emitContractTsParts(opts: {
    * ships browser-only with the standard candidate payload schema — rather
    * than emitting a fabricated single-call HTTP stub. */
   omitExecuteHttp?: boolean;
+  /** Explicit `applicantContract` flow declaration; wins over inferred evidence. */
+  applicantContract?: boolean;
   /** The flow registers an account (its steps splice `${RECON_PASSWORD}`), so
    * a retry would try to re-register the same address. Emits
    * `meta.maxAttempts: 1`. */
@@ -17457,6 +17534,7 @@ export function emitContractTsParts(opts: {
     auxFiles,
     multiStepBody,
     omitExecuteHttp = false,
+    applicantContract,
     createsAccount = false,
     maxAttempts: resolvedMaxAttempts = null,
     isSubmissionFlow = false,
@@ -17582,6 +17660,9 @@ export function emitContractTsParts(opts: {
     browserFlowOnly: omitExecuteHttp,
     payloadFieldNames,
     formBodyFieldNames: collectFormBodyFieldNames(actionSteps),
+    applicantContract,
+    flowSteps: contractFlowSteps,
+    hasMultipartStep,
   });
   const sensitivePolicy = buildSensitiveRedactionPolicy(
     contractFlowSteps,
@@ -18066,7 +18147,12 @@ export function emitContractTsParts(opts: {
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
   // A read-only GET flow has no submission step, so no tracking click fires.
-  const mergesTracking = !getInputModel;
+  // A browser-only submission flow that is not a job application (per the
+  // applicant decision) has no job tracking click to carry.
+  const nonJobBrowserOnly =
+    applicantContract === false ||
+    (omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema);
+  const mergesTracking = !getInputModel && !nonJobBrowserOnly;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
@@ -19334,10 +19420,11 @@ function escapeForTemplateLiteral(segment: string): string {
 export function buildStepInstructionExpr(
   instruction: string,
   field: string | null,
-  capturedFallback = false
+  capturedFallback = false,
+  knownValue: string | null = null
 ): string {
   if (field === null) return JSON.stringify(instruction);
-  const site = locateSpliceSite(instruction);
+  const site = locateSpliceSite(instruction, knownValue);
   if (site === null) return JSON.stringify(instruction);
   const captured = pickedQuotedValue(instruction);
   const read =
@@ -19357,9 +19444,10 @@ export function buildStepInstructionExpr(
 function buildCompositeStepInstructionExpr(
   instruction: string,
   fieldA: string,
-  fieldB: string
+  fieldB: string,
+  knownValue: string | null = null
 ): string {
-  const site = locateSpliceSite(instruction);
+  const site = locateSpliceSite(instruction, knownValue);
   if (site === null) return JSON.stringify(instruction);
   return `\`${escapeForTemplateLiteral(site.before)}\${payload.${fieldA}} \${payload.${fieldB}}${escapeForTemplateLiteral(site.after)}\``;
 }
@@ -19396,9 +19484,13 @@ function buildPasswordInstructionExpr(instruction: string): string {
  * emitter never lands the splice on a selector's or label's quoted span, the
  * same guarantee {@link buildStepInstructionExpr} makes.
  */
-function buildManifestInstruction(instruction: string, field: string | null): string {
+function buildManifestInstruction(
+  instruction: string,
+  field: string | null,
+  knownValue: string | null = null
+): string {
   if (field === null) return instruction;
-  const site = locateSpliceSite(instruction);
+  const site = locateSpliceSite(instruction, knownValue);
   if (site === null) return instruction;
   return `${site.before}{{ .request.${field} }}${site.after}`;
 }
@@ -19510,6 +19602,8 @@ export function emitConfigManifest(opts: {
   hasMultipartStep?: boolean;
   /** Browser-flow-only emit (no executeHttp); feeds {@link contractUsesApplicantContactSchema}. */
   browserFlowOnly?: boolean;
+  /** Explicit `applicantContract` flow declaration. */
+  applicantContract?: boolean;
   /** Feeds {@link contractUsesApplicantContactSchema}; see {@link collectFormBodyFieldNames}. */
   formBodyFieldNames?: ReadonlySet<string>;
   /** Read-only GET flow: no submission, so the request schema omits TrackingUrl (mirrors the .ts contract). */
@@ -19534,6 +19628,7 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow = false,
     hasMultipartStep = false,
     browserFlowOnly = false,
+    applicantContract,
     formBodyFieldNames,
     readOnlyGet = false,
     env = process.env,
@@ -19545,6 +19640,9 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow,
     browserFlowOnly,
     formBodyFieldNames,
+    applicantContract,
+    flowSteps,
+    hasMultipartStep,
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
@@ -19592,7 +19690,11 @@ export function emitConfigManifest(opts: {
       canonicalise
     );
     if (field !== null) payloadFieldNames.add(field);
-    const rewritten = buildManifestInstruction(instruction, field);
+    const rewritten = buildManifestInstruction(
+      instruction,
+      field,
+      field !== null ? (knownFieldValues.get(field) ?? null) : null
+    );
     const optional = isObj ? step.optional === true : false;
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
@@ -19647,10 +19749,16 @@ export function emitConfigManifest(opts: {
     browserFlowOnly,
     formBodyFieldNames,
     payloadFieldNames,
+    applicantContract,
+    flowSteps,
+    hasMultipartStep,
   });
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
   // without it would drop the TrackingUrl the engine reads after submission.
-  if (!readOnlyGet) requestProperties.TrackingUrl ??= { type: "string" };
+  const nonJobBrowserOnly =
+    applicantContract === false ||
+    (browserFlowOnly === true && isSubmissionFlow === true && !usesApplicantContactSchema);
+  if (!readOnlyGet && !nonJobBrowserOnly) requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
@@ -19813,6 +19921,8 @@ export function emitBrowserFlowTs(opts: {
   isSubmissionFlow: boolean;
   hasMultipartStep?: boolean;
   browserFlowOnly?: boolean;
+  /** Explicit `applicantContract` flow declaration. */
+  applicantContract?: boolean;
   /** Inputs to {@link contractUsesApplicantContactSchema}; the decision is made
    * here, after payload fields are accumulated, to match the contract emitter. */
   inputBody?: unknown;
@@ -19852,6 +19962,7 @@ export function emitBrowserFlowTs(opts: {
     isSubmissionFlow,
     hasMultipartStep = false,
     browserFlowOnly = false,
+    applicantContract,
     inputBody,
     formBodyFieldNames,
     vocabulary,
@@ -19867,6 +19978,9 @@ export function emitBrowserFlowTs(opts: {
     isSubmissionFlow,
     browserFlowOnly,
     formBodyFieldNames,
+    applicantContract,
+    flowSteps,
+    hasMultipartStep,
     payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
       .payloadFieldNames,
   });
@@ -19962,7 +20076,8 @@ export function emitBrowserFlowTs(opts: {
         : buildStepInstructionExpr(
             instruction,
             field,
-            field !== null && capturedFallbackFields.has(field)
+            field !== null && capturedFallbackFields.has(field),
+            field !== null ? (knownFieldValues.get(field) ?? null) : null
           );
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
@@ -19988,8 +20103,6 @@ export function emitBrowserFlowTs(opts: {
       );
     }
   }
-  // Derived from the emitted literals so the tail can never disagree with them.
-  const hasSubmitStep = stepLiterals.some((l) => /submitStep: true/.test(l));
 
   // Per-step frameSelector: emit it on the step object so the runtime's
   // `s.frameSelector ?? deps.frameSelector` drives the frame this step names.
@@ -20002,6 +20115,12 @@ export function emitBrowserFlowTs(opts: {
       );
     }
   }
+
+  // Only claim a verified submission when an emitted step actually carries
+  // submitStep:true (runHealingFlow verifies exactly those steps).
+  // Judged from the DECLARED steps, not the literals: the last step is
+  // force-marked above, which must not by itself count as a declared submit.
+  const hasSubmitStep = flowSteps.some((st) => typeof st !== "string" && st.submitStep === true);
 
   const flowStepsBlock =
     stepLiterals.length > 0
@@ -20841,6 +20960,7 @@ export async function main(): Promise<void> {
   })();
 
   const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
+  const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
   const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
@@ -21418,6 +21538,7 @@ export async function main(): Promise<void> {
         inputBody,
         isSubmissionFlow,
         browserFlowOnly: false,
+        applicantContract,
         formBodyFieldNames,
         payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env, false)
           .payloadFieldNames,
@@ -21585,7 +21706,8 @@ export async function main(): Promise<void> {
             foldReturnSpec,
             pascal,
             flowSteps,
-            vocabulary
+            vocabulary,
+            applicantContract
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
@@ -21727,6 +21849,7 @@ export async function main(): Promise<void> {
           isSubmissionFlow,
           hasMultipartStep,
           browserFlowOnly,
+          applicantContract,
           formBodyFieldNames,
           readOnlyGet: isReadOnlyGetFlow,
           extraPayloadFields: readExtraPayloadFields(flowFile),
@@ -21759,6 +21882,7 @@ export async function main(): Promise<void> {
       isSubmissionFlow,
       hasMultipartStep,
       browserFlowOnly,
+      applicantContract,
       inputBody,
       formBodyFieldNames,
       vocabulary,
@@ -21842,6 +21966,7 @@ export async function main(): Promise<void> {
       auxFiles,
       multiStepBody,
       omitExecuteHttp: browserFlowOnly,
+      applicantContract,
       createsAccount: browserFlow.usesThrowawayPassword,
       maxAttempts: derivedMaxAttempts,
       isSubmissionFlow,
