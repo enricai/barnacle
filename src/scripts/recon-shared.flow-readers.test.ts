@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   readDeclaredEndpointPatterns,
+  readFlowReadOnly,
   readOwnBackendHostnames,
   readSubmitBodyPattern,
   readSubmitEndpointPattern,
@@ -85,5 +86,14 @@ describe("readSubmitBodyPattern", () => {
     expect(readSubmitBodyPattern(flow("b2.json", "{}"))).toBeUndefined();
     expect(readSubmitBodyPattern(flow("b3.json", "[]"))).toBeUndefined();
     expect(readSubmitBodyPattern(flow("b4.json", "{bad"))).toBeUndefined();
+  });
+});
+
+describe("readFlowReadOnly", () => {
+  it("is true only for a literal true", () => {
+    expect(readFlowReadOnly(flow("ro1.json", '{"readOnly":true}'))).toBe(true);
+    expect(readFlowReadOnly(flow("ro2.json", '{"readOnly":"true"}'))).toBe(false);
+    expect(readFlowReadOnly(flow("ro3.json", "{}"))).toBe(false);
+    expect(readFlowReadOnly(flow("ro4.json", "[]"))).toBe(false);
   });
 });

@@ -459,6 +459,17 @@ export function readBrowserFlowOnly(flowFile: string): boolean {
   return (parsed as { browserFlowOnly?: unknown } | null)?.browserFlowOnly === true;
 }
 
+/**
+ * Reads the explicit top-level `readOnly` declaration out of a recon flow
+ * file: true only for a literal `true`; false when absent, non-boolean, or the
+ * legacy bare-array shape.
+ */
+export function readFlowReadOnly(flowFile: string): boolean {
+  const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+  if (Array.isArray(parsed)) return false;
+  return (parsed as { readOnly?: unknown } | null)?.readOnly === true;
+}
+
 /** Mixed-flow declaration: `actions` HTTP-replayed steps, captures tailed from `tailFromStep`. */
 export interface HttpStepsOption {
   actions: number;
