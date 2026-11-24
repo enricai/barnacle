@@ -8060,9 +8060,8 @@ export function actionSequenceIsReadSamplesFor(o: {
   const feedsDeclaredStep = (capture: Capture): boolean =>
     stepFeedsDeclaredSubmit(capture, compiledActionSteps, o.matchesDeclaredSubmit);
   const feedsLaterStep = (capture: Capture): boolean =>
-    compiledActionSteps
-      .find((s) => s.capture === capture)
-      ?.consumers?.some((c) => c !== capture) ?? false;
+    compiledActionSteps.find((s) => s.capture === capture)?.consumers?.some((c) => c !== capture) ??
+    false;
   const isIncidentalReadFlowPost = (capture: Capture): boolean =>
     o.declaresSubmitPattern && !o.matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
   return (
@@ -8070,8 +8069,7 @@ export function actionSequenceIsReadSamplesFor(o: {
     o.actionCaptures.every(
       (a) =>
         o.readSiblings.some(
-          (r) =>
-            r === a.capture || (r.url === a.capture.url && r.timestamp === a.capture.timestamp)
+          (r) => r === a.capture || (r.url === a.capture.url && r.timestamp === a.capture.timestamp)
         ) ||
         o.isRecurringReadFlowBeacon(a.capture) ||
         isIncidentalReadFlowPost(a.capture) ||
