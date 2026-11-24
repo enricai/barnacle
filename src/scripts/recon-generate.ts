@@ -12372,7 +12372,7 @@ export function emitMultiStepExecuteHttp(
       const guardLines = emitErrorSignalGuards(step.varName, urlPath, errorSignals);
       const needsBinding = bindResponse || guardLines.length > 0;
       const retrying = r.headersExpr.includes("await mintBearer(");
-      const retryOpen = retrying ? "withBearerRetry(() => " : "";
+      const retryOpen = retrying ? "withBearerRetry(async () => " : "";
       const retryClose = retrying ? ")" : "";
       if (needsBinding) {
         lines.push(`    const ${step.varName} = (await ${retryOpen}httpClient(\`${r.url}\`, {`);
