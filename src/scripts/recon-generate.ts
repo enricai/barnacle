@@ -75,10 +75,10 @@ import {
   type ReplayResult,
   readApplicantContract,
   readBrowserFlowOnly,
-  readHttpSteps,
   readCaptureDir,
   readDeclaredMaxAttempts,
   readExtraPayloadFields,
+  readHttpSteps,
   readJsonDir,
   readOwnBackendHostnames,
   replayReachable,
@@ -22465,18 +22465,20 @@ export async function main(): Promise<void> {
         problems.push(
           `httpSteps.actions (${httpStepsOpt.actions}) exceeds the ${actionSteps.length} captured action step(s)`
         );
-      if (
-        actionSteps.slice(0, httpStepsOpt.actions).some((s) => s.isCrossDomain)
-      )
+      if (actionSteps.slice(0, httpStepsOpt.actions).some((s) => s.isCrossDomain))
         problems.push("the HTTP prefix crosses hosts and cannot be replayed over plain HTTP");
       if (httpStepsOpt.tailFromStep > flowSteps.length)
         problems.push(
           `httpSteps.tailFromStep (${httpStepsOpt.tailFromStep}) exceeds the ${flowSteps.length} flow step(s)`
         );
       if (emit === "config")
-        problems.push("a mixed flow needs a generated plugin (--emit ts); the config manifest cannot hand cookies to the browser");
+        problems.push(
+          "a mixed flow needs a generated plugin (--emit ts); the config manifest cannot hand cookies to the browser"
+        );
       if (problems.length > 0)
-        throw new Error(`httpSteps declared but the mixed flow cannot be generated: ${problems.join("; ")}`);
+        throw new Error(
+          `httpSteps declared but the mixed flow cannot be generated: ${problems.join("; ")}`
+        );
     }
     const mustBeBrowserFlowOnly =
       isSubmissionFlow &&

@@ -126,7 +126,11 @@ describe("recon-generate CLI — mixed flow (httpSteps)", () => {
 
   it("fails loudly for a config-manifest emit instead of silently dropping the prefix", () => {
     const { result } = generate(
-      { steps: STEPS, submitEndpointPattern: "/place-order", httpSteps: { actions: 2, tailFromStep: 1 } },
+      {
+        steps: STEPS,
+        submitEndpointPattern: "/place-order",
+        httpSteps: { actions: 2, tailFromStep: 1 },
+      },
       "config"
     );
     expect(result.status).not.toBe(0);
