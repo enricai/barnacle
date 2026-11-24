@@ -55,6 +55,7 @@ import {
   extractHtmlSelectOptions,
   type HtmlTokenElement,
   isStateLikeSegment,
+  locateHtmlBearerToken,
   PATH_SEGMENT_MIN_LENGTH,
 } from "@/recon/html-state-producers";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
@@ -5740,11 +5741,123 @@ function isCredentialHeaderName(lower: string): boolean {
 }
 
 /**
- * Template-literal interpolation that throws at call time instead of freezing
- * a captured credential into generated source.
- * TODO(recon): supply a runtime token source (bootstrap + html extractor).
+ * Located runtime source for the bearer token (D7): the captured HTML document
+ * that carries it and the JWT claims used to select it. Set once per run from
+ * {@link deriveRuntimeTokenSource}; null keeps the call-time throw.
+ */
+export interface RuntimeTokenSource {
+  url: string;
+  claims: Record<string, string | boolean>;
+}
+let runtimeTokenSource: RuntimeTokenSource | null = null;
+export function setRuntimeTokenSource(src: RuntimeTokenSource | null): void {
+  runtimeTokenSource = src;
+}
+
+const VOLATILE_CLAIMS = new Set(["iat", "exp", "nbf", "jti", "sub", "sid", "session", "sessionId"]);
+
+/**
+ * Derive the token source from recon-http's `authReplay.tokenSource`: only when
+ * a replay located the bearer in a captured document, find that document again
+ * by the captured token value and keep its stable claims (never the literal).
+ */
+export function deriveRuntimeTokenSource(
+  captures: Capture[],
+  replays: ReplayResult[]
+): RuntimeTokenSource | null {
+  if (!replays.some((r) => r.authReplay?.tokenSource)) return null;
+  const docs = captures.map((c) => (typeof c.responseBody === "string" ? c.responseBody : null));
+  for (const c of captures) {
+    const name = Object.keys(c.requestHeaders ?? {}).find(
+      (k) => k.toLowerCase() === "authorization"
+    );
+    const bearer = name ? /^bearer\s+(.+)$/i.exec(c.requestHeaders[name]!.trim())?.[1] : undefined;
+    if (!bearer) continue;
+    const loc = locateHtmlBearerToken(docs, { value: bearer });
+    if (!loc) continue;
+    const claims: Record<string, string | boolean> = {};
+    for (const [k, v] of Object.entries(loc.claims)) {
+      if (VOLATILE_CLAIMS.has(k)) continue;
+      if (typeof v === "string" || typeof v === "boolean") claims[k] = v;
+    }
+    return { url: captures[loc.document]!.url, claims };
+  }
+  return null;
+}
+
+/** Runtime extractor + cache emitted once into a plugin that threads a bootstrapped bearer. */
+export function emitBearerBootstrapLines(src: RuntimeTokenSource): string[] {
+  return `    const bearerClaims: Record<string, unknown> = ${JSON.stringify(src.claims)};
+    let bearerCache: { token: string; exp: number } | null = null;
+    const readRscTokens = (html: string): string[] => {
+      let stream = "";
+      for (const m of html.matchAll(/push\\(\\s*\\[\\s*1\\s*,\\s*("(?:[^"\\\\]|\\\\.)*")\\s*\\]\\s*\\)/g)) {
+        try {
+          stream += JSON.parse(m[1] as string) as string;
+        } catch {
+          /* skip malformed payload */
+        }
+      }
+      const found: string[] = [];
+      const rowRe = /([0-9a-zA-Z]+):T([0-9a-fA-F]+),/g;
+      for (let m = rowRe.exec(stream); m; m = rowRe.exec(stream)) {
+        const start = m.index + m[0].length;
+        const len = Number.parseInt(m[2] as string, 16);
+        let end = start;
+        for (let used = 0; end < stream.length && used < len; ) {
+          const cp = stream.codePointAt(end) as number;
+          used += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+          end += cp > 0xffff ? 2 : 1;
+        }
+        found.push(...(stream.slice(start, end).match(/eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/g) ?? []));
+        rowRe.lastIndex = end;
+      }
+      found.push(...(html.match(/eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/g) ?? []));
+      return found;
+    };
+    const claimsOf = (token: string): Record<string, unknown> | null => {
+      try {
+        return JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    };
+    const mintBearer = async (force: boolean): Promise<string> => {
+      if (!force && bearerCache && bearerCache.exp * 1000 - Date.now() > 30_000) return bearerCache.token;
+      const res = await fetch(new URL(${JSON.stringify(src.url)}, context.baseUrl).toString());
+      const html = await res.text();
+      for (const token of readRscTokens(html)) {
+        const claims = claimsOf(token);
+        if (!claims || !Object.entries(bearerClaims).every(([k, v]) => claims[k] === v)) continue;
+        bearerCache = { token, exp: typeof claims.exp === "number" ? claims.exp : 0 };
+        return token;
+      }
+      throw new Error("bearer token not found in document (HTTP " + res.status + "); claim-selected extraction failed");
+    };
+    const withBearerRetry = async <T>(run: () => Promise<T>): Promise<T> => {
+      try {
+        return await run();
+      } catch (err) {
+        const status = (err as { status?: number; statusCode?: number }).status ?? (err as { statusCode?: number }).statusCode;
+        if (status !== 401 && !/\\b401\\b/.test(String((err as Error)?.message ?? err))) throw err;
+        await mintBearer(true);
+        return run();
+      }
+    };`
+    .split("\n")
+    .concat([""]);
+}
+
+/**
+ * Template-literal interpolation for a per-session credential header. With a
+ * located token source (and an Authorization header) it awaits the emitted
+ * bootstrap; otherwise it throws at call time instead of freezing the
+ * captured credential into generated source.
  */
 function credentialHeaderThrowExpr(headerName: string): string {
+  if (runtimeTokenSource && headerName.toLowerCase() === "authorization") {
+    return `Bearer \${await mintBearer(false)}`;
+  }
   const msg = JSON.stringify(
     `TODO: ${headerName} requires a runtime credential; none is wired (captured value intentionally not emitted)`
   ).replace(/[`\\]|\$\{/g, (m) => (m === "`" ? "'" : m));
@@ -11508,6 +11621,9 @@ export function emitMultiStepExecuteHttp(
     lines.push(`    const txnId = crypto.randomUUID();`);
     lines.push("");
   }
+  if (runtimeTokenSource && rendered.some((r) => r.headersExpr.includes("await mintBearer("))) {
+    lines.push(...emitBearerBootstrapLines(runtimeTokenSource));
+  }
   // Mint each correlation/conversation-id-shaped header ONCE, same rationale
   // as txnId above — a frozen capture value would replay one recon session's
   // id across every real invocation. Emitted only when actually referenced.
@@ -12255,10 +12371,13 @@ export function emitMultiStepExecuteHttp(
       const urlPath = cap.url.split("/").slice(3).join("/").split("?")[0] ?? "";
       const guardLines = emitErrorSignalGuards(step.varName, urlPath, errorSignals);
       const needsBinding = bindResponse || guardLines.length > 0;
+      const retrying = r.headersExpr.includes("await mintBearer(");
+      const retryOpen = retrying ? "withBearerRetry(() => " : "";
+      const retryClose = retrying ? ")" : "";
       if (needsBinding) {
-        lines.push(`    const ${step.varName} = (await httpClient(\`${r.url}\`, {`);
+        lines.push(`    const ${step.varName} = (await ${retryOpen}httpClient(\`${r.url}\`, {`);
       } else {
-        lines.push(`    await httpClient(\`${r.url}\`, {`);
+        lines.push(`    await ${retryOpen}httpClient(\`${r.url}\`, {`);
       }
       lines.push(`      method: ${JSON.stringify(r.method)},`);
       const joined = [r.headersExpr, r.bodyArg].filter((s) => s !== "").join(" ");
@@ -12267,9 +12386,9 @@ export function emitMultiStepExecuteHttp(
       }
       lines.push(`      schema: ${r.schemaExpr},`);
       if (needsBinding) {
-        lines.push(`    })) as Record<string, unknown>;`);
+        lines.push(`    })${retryClose}) as Record<string, unknown>;`);
       } else {
-        lines.push(`    });`);
+        lines.push(`    })${retryClose};`);
       }
       if (guardLines.length > 0) {
         lines.push(`    if (typeof ${step.varName} === "object" && ${step.varName} !== null) {`);
@@ -21743,6 +21862,7 @@ export async function main(): Promise<void> {
       `recon-generate: run dir ${runRoot} has an empty replays/ directory — recon:http (rate-limit probe) and replay validation were skipped, so this contract's timing and shape are unvalidated`
     );
   }
+  setRuntimeTokenSource(deriveRuntimeTokenSource(captures, replays));
   const rateLimits = (() => {
     try {
       return JSON.parse(
