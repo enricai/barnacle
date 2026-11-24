@@ -462,16 +462,24 @@ export interface HttpStepsOption {
 export function readHttpSteps(flowFile: string): HttpStepsOption | null {
   const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
   if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return null;
-  const { httpSteps: v, browserFlowOnly } = parsed as { httpSteps?: unknown; browserFlowOnly?: unknown };
+  const { httpSteps: v, browserFlowOnly } = parsed as {
+    httpSteps?: unknown;
+    browserFlowOnly?: unknown;
+  };
   if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
   const { actions, tailFromStep, handoverUrl } = v as Record<string, unknown>;
   if (typeof actions !== "number" || !Number.isInteger(actions) || actions < 1) return null;
-  if (typeof tailFromStep !== "number" || !Number.isInteger(tailFromStep) || tailFromStep < 0) return null;
+  if (typeof tailFromStep !== "number" || !Number.isInteger(tailFromStep) || tailFromStep < 0)
+    return null;
   if (handoverUrl !== undefined && typeof handoverUrl !== "string") return null;
   if (browserFlowOnly === true) {
-    throw new Error("Flow file declares both httpSteps and browserFlowOnly:true; they are mutually exclusive");
+    throw new Error(
+      "Flow file declares both httpSteps and browserFlowOnly:true; they are mutually exclusive"
+    );
   }
-  return handoverUrl === undefined ? { actions, tailFromStep } : { actions, tailFromStep, handoverUrl };
+  return handoverUrl === undefined
+    ? { actions, tailFromStep }
+    : { actions, tailFromStep, handoverUrl };
 }
 
 /**

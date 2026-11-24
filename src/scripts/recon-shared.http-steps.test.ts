@@ -17,7 +17,9 @@ function flow(body: string): string {
 describe("readHttpSteps", () => {
   it("parses a valid option", () => {
     expect(
-      readHttpSteps(flow('{"httpSteps":{"actions":2,"tailFromStep":0,"handoverUrl":"https://example.test/x"}}')),
+      readHttpSteps(
+        flow('{"httpSteps":{"actions":2,"tailFromStep":0,"handoverUrl":"https://example.test/x"}}')
+      )
     ).toEqual({ actions: 2, tailFromStep: 0, handoverUrl: "https://example.test/x" });
     expect(readHttpSteps(flow('{"httpSteps":{"actions":1,"tailFromStep":3}}'))).toEqual({
       actions: 1,
@@ -41,7 +43,7 @@ describe("readHttpSteps", () => {
   });
   it("throws with browserFlowOnly:true", () => {
     expect(() =>
-      readHttpSteps(flow('{"browserFlowOnly":true,"httpSteps":{"actions":1,"tailFromStep":0}}')),
+      readHttpSteps(flow('{"browserFlowOnly":true,"httpSteps":{"actions":1,"tailFromStep":0}}'))
     ).toThrow(/browserFlowOnly/);
   });
 });
