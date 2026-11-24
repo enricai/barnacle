@@ -14797,6 +14797,11 @@ export async function executeStepWithHealing(params: {
   // re-render), which would read as a step-start advance — so the last
   // resolved click's disabled veto must also gate the baseline credit.
   let lastClickBlockedByDisabled = false;
+  // The settled page an explicit outcome-judge rejection read. The step-start
+  // credit must not re-credit that same page over the rejection when
+  // blocked-submit markers grew, the rule isMidFlowAdvanceCredited applies at
+  // the judge sites.
+  let judgeRejectedPage: StepSnapshot | null = null;
   // A step whose submit shape is only known from a resolved element got no
   // step-level baseline; the first attempt's pre-click snapshot is the
   // step-start page, so every later verdict site judges against it.
@@ -14843,19 +14848,18 @@ export async function executeStepWithHealing(params: {
     // re-rendered with errors) is not an advance; it needs a changed URL.
     if (!pageAdvanced && settled.url === stepStartSnapshot.url) return false;
     // Validation messages appearing over the same form (invalid markers grew,
-    // the text only grew) are a blocked submit, not a page advance.
+    // the text only grew) are a blocked submit, not a page advance. So is the
+    // very page an explicit judge rejection already read, whatever its length.
     if (stepStartInvalidMarkerCount !== null) {
       const markersNow = await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page)).catch(
         () => 0
       );
       const lenNow = /^(\d+):/.exec(settled.visibleTextSignature ?? "");
       const lenStart = /^(\d+):/.exec(stepStartSnapshot.visibleTextSignature ?? "");
-      if (
-        markersNow > stepStartInvalidMarkerCount &&
-        lenNow &&
-        lenStart &&
-        Number(lenNow[1]) > Number(lenStart[1])
-      ) {
+      const textGrew = !!lenNow && !!lenStart && Number(lenNow[1]) > Number(lenStart[1]);
+      const judgeRejectedThisPage =
+        judgeRejectedPage !== null && !hasVisibleTextChanged(judgeRejectedPage, settled);
+      if (markersNow > stepStartInvalidMarkerCount && (textGrew || judgeRejectedThisPage)) {
         return false;
       }
     }
@@ -17508,6 +17512,7 @@ export async function executeStepWithHealing(params: {
           (record.errorMessage ? "; " : "") +
           `submit-judge-rejected: ${judgeVerdict.reason}`;
         failureReasons.push(`submit-judge-rejected: ${judgeVerdict.reason}`);
+        judgeRejectedPage = post;
 
         // Any-4xx fallback. The judge said failed; surface any captured 4xx
         // body's field-level error JSON for the rephrase prompt downstream
@@ -18300,6 +18305,7 @@ export async function executeStepWithHealing(params: {
             } else {
               retryVerified = false;
               failureReasons.push(`n+16 fallback: submit-judge-rejected: ${judgeVerdict.reason}`);
+              judgeRejectedPage = retryPost;
             }
           }
           const n16TrustedClickFailureSuffix = n16TrustedClickFailure
