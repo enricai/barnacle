@@ -447,6 +447,33 @@ export function readBrowserFlowOnly(flowFile: string): boolean {
   return (parsed as { browserFlowOnly?: unknown } | null)?.browserFlowOnly === true;
 }
 
+/** Mixed-flow declaration: `actions` HTTP-replayed steps, captures tailed from `tailFromStep`. */
+export interface HttpStepsOption {
+  actions: number;
+  tailFromStep: number;
+  handoverUrl?: string;
+}
+
+/**
+ * Reads the top-level `httpSteps` option out of a recon flow file. Null when
+ * absent, legacy bare-array, or invalid in shape. Throws on an unreadable or
+ * malformed file, and when combined with `browserFlowOnly: true`.
+ */
+export function readHttpSteps(flowFile: string): HttpStepsOption | null {
+  const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+  if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return null;
+  const { httpSteps: v, browserFlowOnly } = parsed as { httpSteps?: unknown; browserFlowOnly?: unknown };
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const { actions, tailFromStep, handoverUrl } = v as Record<string, unknown>;
+  if (typeof actions !== "number" || !Number.isInteger(actions) || actions < 1) return null;
+  if (typeof tailFromStep !== "number" || !Number.isInteger(tailFromStep) || tailFromStep < 0) return null;
+  if (handoverUrl !== undefined && typeof handoverUrl !== "string") return null;
+  if (browserFlowOnly === true) {
+    throw new Error("Flow file declares both httpSteps and browserFlowOnly:true; they are mutually exclusive");
+  }
+  return handoverUrl === undefined ? { actions, tailFromStep } : { actions, tailFromStep, handoverUrl };
+}
+
 /**
  * Reads the explicit top-level `applicantContract` declaration out of a recon
  * flow file: true/false when declared as a boolean, undefined when absent,
