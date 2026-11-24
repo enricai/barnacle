@@ -14,7 +14,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function generate(urls: string[]): string {
+function generate(urls: string[], flowExtra: Record<string, unknown> = {}): string {
   const workDir = mkdtempSync(join(tmpdir(), "barnacle-manifest-get-"));
   dirs.push(workDir);
   const runRoot = join(workDir, "run");
@@ -43,7 +43,7 @@ function generate(urls: string[]): string {
   mkdirSync(siteOutDir, { recursive: true });
   writeFileSync(
     join(siteOutDir, "recon-flow.json"),
-    JSON.stringify({ steps: [{ step: "open the page" }, { step: "view the item" }] })
+    JSON.stringify({ steps: [{ step: "open the page" }, { step: "view the item" }], ...flowExtra })
   );
   const result = spawnSync(
     TSX_BIN,
@@ -64,6 +64,22 @@ describe("recon-generate — manifest of 2xx GETs with differing path shapes", (
       "https://api.example.com/orders/tok-9f8e7d6c5b4a/lines",
     ]);
     expect(contract).toContain("async executeHttp(");
+    expect(contract).not.toContain("JobTracking");
+  }, 60_000);
+
+  it("declared submit pattern selecting non-sibling GETs still reads, not a job", () => {
+    const contract = generate(
+      [
+        "https://api.example.com/items/1",
+        "https://api.example.com/catalog/books/featured/list",
+        "https://api.example.com/users/me",
+      ],
+      { submitEndpointPattern: "/(items|catalog|users)/" }
+    );
+    expect(contract).toContain("async executeHttp(");
+    // Read samples replay as a GET against the endpoint, never a POST `{query}` submission.
+    expect(contract).toContain('method: "GET"');
+    expect(contract).not.toContain('method: "POST"');
     expect(contract).not.toContain("JobTracking");
   }, 60_000);
 });
