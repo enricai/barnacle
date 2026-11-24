@@ -3840,10 +3840,7 @@ function issuesTokenReusedLater(
   if (getCapture.responseBody === undefined || getCapture.responseBody === null) return false;
   const tokens = new Set<string>();
   for (const { value } of walkAllPrimitiveLeaves(getCapture.responseBody)) {
-    if (typeof value !== "string") continue;
-    if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
-    if (/\s/.test(value)) continue;
-    if (getCapture.url.includes(value)) continue;
+    if (typeof value !== "string" || !isIssuedTokenLeaf(getCapture, value)) continue;
     tokens.add(value);
   }
   for (const { value } of extractHtmlIssuedTokens(getCapture.responseBody)) {
@@ -3855,19 +3852,31 @@ function issuesTokenReusedLater(
   if (tokens.size === 0) return false;
   for (let j = index + 1; j < captures.length; j++) {
     const later = captures[j]!;
-    if (later.status < 200 || later.status >= 400) continue;
     // A later GET only counts when it is the flow's declared read.
     if (later.method === "GET" && !isDeclaredRead(later)) continue;
-    const haystacks = [
-      later.url,
-      later.requestPostData ?? "",
-      ...Object.values(later.requestHeaders),
-    ];
     for (const token of tokens) {
-      if (haystacks.some((h) => resends(h, token))) return true;
+      if (laterCaptureResends(later, token)) return true;
     }
   }
   return false;
+}
+
+/**
+ * True when a response leaf of `capture` has the shape of a server-issued
+ * token (length band, no whitespace, not already part of the capture's own URL).
+ */
+function isIssuedTokenLeaf(capture: Capture, value: string): boolean {
+  if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) return false;
+  if (/\s/.test(value)) return false;
+  return !capture.url.includes(value);
+}
+
+/** True when a successful (2xx/3xx) `later` capture re-sends `token` in its URL, body or headers. */
+function laterCaptureResends(later: Capture, token: string): boolean {
+  if (later.status < 200 || later.status >= 400) return false;
+  return [later.url, later.requestPostData ?? "", ...Object.values(later.requestHeaders)].some(
+    (h) => resends(h, token)
+  );
 }
 
 /**
@@ -7392,11 +7401,20 @@ export function indexStateValues(
       // legitimate as a UUID anchor, so it must not be dropped just because
       // this hop happens to be a GET rather than every existing fixture's
       // POST.
+      // A GET response leaf shaped like an issued token (a CSRF/session nonce)
+      // that a later request re-sends is the producer of that value too: the
+      // same predicate that admits the GET into the action sequence
+      // (issuesTokenReusedLater) must also let it be threaded.
       if (
         isGet &&
         !UUID_REGEX.test(value) &&
         !chainForceIncludeValues.has(value) &&
-        !forceIncludeValues.has(value)
+        !forceIncludeValues.has(value) &&
+        !(
+          typeof rawValue === "string" &&
+          isIssuedTokenLeaf(c, rawValue) &&
+          captures.slice(i + 1).some((later) => laterCaptureResends(later, rawValue))
+        )
       )
         continue;
       if (!index.has(value)) {
