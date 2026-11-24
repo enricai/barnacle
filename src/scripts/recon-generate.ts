@@ -78,6 +78,7 @@ import {
   readCaptureDir,
   readDeclaredMaxAttempts,
   readExtraPayloadFields,
+  readFlowReadOnly,
   readHttpSteps,
   readJsonDir,
   readOwnBackendHostnames,
@@ -18026,7 +18027,11 @@ export function classifySubmissionFlow(o: {
   graphqlActionSequenceHasMutation: boolean;
   /** A declared submit endpoint re-queried with differing filter bodies. */
   isDeclaredPostSearchRead?: boolean;
+  /** No action sequence resolved, but the flow declares readOnly or its declared
+   * pattern resolves only to read captures (GraphQL query / GET). */
+  isDeclaredReadOnlyFlow?: boolean;
 }): boolean {
+  if (o.isDeclaredReadOnlyFlow) return false;
   if (o.noReplayableActionFlow) return true;
   if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
@@ -18121,6 +18126,8 @@ export function emitContractTsParts(opts: {
   getInputModel?: GetInputModel | null;
   /** A declared read-only POST search: no submission step, so no tracking merge. */
   readOnlyPostSearch?: boolean;
+  /** Declared read-only flow with no action sequence: never an applicant flow. */
+  declaredReadOnlyFlow?: boolean;
   /** operationName recorded on the primary-operation capture selected by
    * {@link selectPrimaryGraphQLOperation} — when set, replaces the
    * `${pascal}Search` placeholder in the single-endpoint getGql() call. */
@@ -18286,6 +18293,7 @@ export function emitContractTsParts(opts: {
     endpointPath,
     getInputModel: suppliedGetInputModel = null,
     readOnlyPostSearch = false,
+    declaredReadOnlyFlow = false,
     gqlOperationName,
     gqlVariables,
     allCaptures = [],
@@ -18404,9 +18412,10 @@ export function emitContractTsParts(opts: {
   // no multipart forcing. A declared submission flow is never read-only.
   const isReadOnlyQueryFlow =
     !isSubmissionFlow &&
-    (actionSteps.length > 0
-      ? actionSteps.every((s) => !isMutationCapture(s.capture))
-      : gql && gqlQuery != null && !/^\s*mutation\b/.test(gqlQuery));
+    (declaredReadOnlyFlow ||
+      (actionSteps.length > 0
+        ? actionSteps.every((s) => !isMutationCapture(s.capture))
+        : gql && gqlQuery != null && !/^\s*mutation\b/.test(gqlQuery)));
   const hasMultipartStep = isReadOnlyQueryFlow ? false : hasMultipartStepRaw;
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
@@ -21850,6 +21859,7 @@ export async function main(): Promise<void> {
   const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
   const httpStepsOpt = existsSync(flowFile) ? readHttpSteps(flowFile) : null;
   const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
+  const declaredFlowReadOnly = existsSync(flowFile) ? readFlowReadOnly(flowFile) : false;
   const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
@@ -22449,6 +22459,16 @@ export async function main(): Promise<void> {
     const actionSteps = isReadOnlyGetFlow && !readFlowHasDeclaredDrill ? [] : compiledActionSteps;
     const noReplayableActionFlow =
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
+    // No action sequence resolved: the flow is still a read when it declares
+    // readOnly, or its declared pattern resolves only to read captures.
+    const declaredPatternCaptures = declaresSubmitPattern
+      ? primaryPoolCaptures.filter(matchesDeclaredSubmit)
+      : [];
+    const isDeclaredReadOnlyFlow =
+      actionSteps.length === 0 &&
+      (declaredFlowReadOnly ||
+        (declaredPatternCaptures.length > 0 &&
+          declaredPatternCaptures.every((c) => !isMutationCapture(c))));
     const isDeclaredPostSearchRead =
       !gql &&
       declaresSubmitPattern &&
@@ -22462,6 +22482,7 @@ export async function main(): Promise<void> {
       noReplayableActionFlow,
       isReadOnlyGetFlow,
       isDeclaredPostSearchRead,
+      isDeclaredReadOnlyFlow,
       actionStepCount: actionSteps.length,
       gql: !!gql,
       actionCaptureMethods: actionCaptures.map((a) => a.capture.method),
@@ -22970,6 +22991,7 @@ export async function main(): Promise<void> {
       endpointPath,
       getInputModel,
       readOnlyPostSearch: isDeclaredPostSearchRead,
+      declaredReadOnlyFlow: isDeclaredReadOnlyFlow && !isSubmissionFlow,
       gqlOperationName: primaryGraphQLOperation
         ? (primaryGraphQLOperation.capture.operationName ??
           parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
