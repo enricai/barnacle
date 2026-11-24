@@ -15,7 +15,7 @@ const SEARCH_URL = `https://${HOST}/caps/pricing/v1/cruises`;
 const DRILL_URL = `https://${HOST}/caps/pricing/v1/cruises/detail`;
 
 const BASE_BOOKING = {
-  bookingAgency: { id: "DIRPB" },
+  bookingAgency: { id: "AGENCY1" },
   currencyCode: "USD",
   guests: [{ country: "US", homeCity: "LAX" }],
   couponCodes: [],
