@@ -86,7 +86,11 @@ describe("compileActionSteps produces for each origin kind", () => {
       buildCapture({
         url: `https://a.example.com/go?csrf=${T3}`,
         requestPostData: `raw=${T1}&t=${T2}`,
-        requestHeaders: { "Content-Type": "text/plain", "X-Price": T2, "X-Sid": T1 },
+        requestHeaders: {
+          "Content-Type": "text/plain",
+          "X-Price": T2,
+          "X-Sid": T1,
+        },
         responseBody: { ok: true },
         timestamp: "2024-01-01T00:00:01Z",
       }),
@@ -101,7 +105,8 @@ describe("compileActionSteps produces for each origin kind", () => {
 });
 
 describe("read-only GET classification inputs: incidental mint GET and beacon POST", () => {
-  const MINT_TOKEN = "mnt_Zk9qXv81T3mWb7LpR2dYc5Hn";
+  // A GET mint hands its token over as a cookie (GET bodies only index UUIDs).
+  const MINT_TOKEN = "Zk9qXv81T3mWb7LpR2dYc5Hn";
   const BEACON_TOKEN = "bcn_Qq8wXv81T3mWb7LpR2dYc5Hn";
   const isDeclaredRead = (c: { url: string }) => c.url.includes("/items/search");
 
@@ -110,12 +115,14 @@ describe("read-only GET classification inputs: incidental mint GET and beacon PO
       url: "https://shop.example.test/session/token",
       requestPostData: null,
       method: "GET",
-      responseBody: { token: MINT_TOKEN },
+      responseBody: {},
+      responseHeaders: { "set-cookie": `sid=${MINT_TOKEN}; Path=/` },
       timestamp: "2024-01-01T00:00:01Z",
     });
     const beacon = buildCapture({
       url: "https://shop.example.test/analytics/beacon",
-      requestPostData: JSON.stringify({ t: MINT_TOKEN }),
+      requestPostData: JSON.stringify({ b: 1 }),
+      requestHeaders: { Cookie: `sid=${MINT_TOKEN}` },
       responseBody: { seq: BEACON_TOKEN },
       timestamp: "2024-01-01T00:00:02Z",
     });
@@ -129,12 +136,14 @@ describe("read-only GET classification inputs: incidental mint GET and beacon PO
       url: "https://shop.example.test/items/search?q=widgets",
       requestPostData: null,
       method: "GET",
-      requestHeaders: readSendsMint ? { "X-Token": MINT_TOKEN } : {},
+      requestHeaders: readSendsMint
+        ? { Cookie: `sid=${MINT_TOKEN}` }
+        : { Accept: "application/json" },
       responseBody: { items: [1, 2, 3] },
       timestamp: "2024-01-01T00:00:04Z",
     });
     const caps = [mint, beacon, events, read];
-    const seq = extractActionSequence(caps);
+    const seq = caps.map((capture, index) => ({ capture, index }));
     const idx = new Set(seq.map((a) => a.index));
     return {
       mint,
