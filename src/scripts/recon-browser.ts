@@ -87,7 +87,12 @@ import {
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
-import { isQualifyingSubmitCapture, isSuccessStatus } from "@/recon/submit-match";
+import { isGraphqlQueryDocument } from "@/recon/replay-safety";
+import {
+  isQualifyingSubmitCapture,
+  isSuccessStatus,
+  matchesSubmitPattern,
+} from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
@@ -248,6 +253,53 @@ export function getBodyUnavailableCount(): number {
   return bodyUnavailableCounter.n;
 }
 
+/**
+ * Whether a capture is a read: GET/HEAD, or a POST whose GraphQL document is a
+ * query. Returns false for a mutation or a non-GraphQL non-GET request.
+ */
+export function isReadCapture(method: string, body: string | null | undefined): boolean {
+  const m = (method || "GET").toUpperCase();
+  if (m === "GET" || m === "HEAD") return true;
+  if (m !== "POST" || typeof body !== "string") return false;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    if (items.length === 0) return false;
+    return items.every((it) => {
+      const q = (it as { query?: unknown } | null)?.query;
+      return typeof q === "string" && isGraphqlQueryDocument(q);
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Tracks the read/write kind of captures matching the declared submit patterns. */
+export interface DeclaredCallTracker {
+  observe(capture: { method: string; url: string; requestPostData?: string | null }): void;
+  /** true: every matched capture is a read; false: some matched is not; undefined: none matched. */
+  isRead(): boolean | undefined;
+}
+
+export function createDeclaredCallTracker(
+  submitEndpointPattern: string | null,
+  submitBodyPattern: string | null
+): DeclaredCallTracker {
+  const endpointRx = submitEndpointPattern === null ? null : new RegExp(submitEndpointPattern);
+  const bodyRx = submitBodyPattern === null ? null : new RegExp(submitBodyPattern);
+  let seen = false;
+  let allRead = true;
+  return {
+    observe(c) {
+      if (endpointRx === null) return;
+      if (!matchesSubmitPattern(c, endpointRx, bodyRx)) return;
+      seen = true;
+      if (!isReadCapture(c.method, c.requestPostData)) allRead = false;
+    },
+    isRead: () => (seen ? allRead : undefined),
+  };
+}
+
 export function wireNetworkCapture(
   page: Page,
   counter: { n: number },
@@ -256,7 +308,8 @@ export function wireNetworkCapture(
   recentCaptureMeta: { method: string; status: number; url: string }[],
   getCurrentPhase: () => string,
   getCurrentPageOrigin: () => string,
-  captureTracker?: CaptureTracker
+  captureTracker?: CaptureTracker,
+  declaredCallTracker?: DeclaredCallTracker
 ): () => void {
   const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
@@ -273,6 +326,7 @@ export function wireNetworkCapture(
       // happy-path doesn't read these files until something else fails.
       if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) bodyUnavailableCounter.n++;
       captureTracker?.observe(capture.url, capture.requestPostData);
+      declaredCallTracker?.observe(capture);
       try {
         writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
@@ -3209,6 +3263,10 @@ async function main(): Promise<void> {
         }
       };
       const captureTracker = createCaptureTracker();
+      const declaredCallTracker = createDeclaredCallTracker(
+        submitEndpointPattern,
+        submitBodyPattern
+      );
       const capture = createCaptureRebinder(page, (target) =>
         wireNetworkCapture(
           target,
@@ -3218,7 +3276,8 @@ async function main(): Promise<void> {
           recentCaptureMeta,
           () => currentPhase,
           currentPageOrigin,
-          captureTracker
+          captureTracker,
+          declaredCallTracker
         )
       );
       const stopCapture = capture.stopAll;
@@ -3384,6 +3443,7 @@ async function main(): Promise<void> {
           submitEndpointPattern,
           requireSubmitEndpointMatch,
           readOnly,
+          declaredCallIsRead: declaredCallTracker.isRead(),
         });
         const midFlowSubmitShaped = isMidFlowSubmitShapedStep({
           step: step.instruction,
@@ -3459,6 +3519,7 @@ async function main(): Promise<void> {
                       submitEndpointPattern,
                       requireSubmitEndpointMatch,
                       readOnly,
+                      declaredCallIsRead: declaredCallTracker.isRead(),
                     }),
                     stepIndex: i,
                     totalSteps: () => plan.length,
@@ -3683,6 +3744,7 @@ async function main(): Promise<void> {
               submitEndpointPattern,
               requireSubmitEndpointMatch,
               readOnly,
+              declaredCallIsRead: declaredCallTracker.isRead(),
             });
             // A dead session throws synchronously here too — fall back to ""
             // rather than let the trailing-grace check itself crash the run.
