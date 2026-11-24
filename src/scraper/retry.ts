@@ -1,5 +1,6 @@
 import pRetry, { AbortError } from "p-retry";
 
+import { ApiError } from "@/api/errors";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import {
@@ -37,7 +38,8 @@ export interface RetryOptions {
  * - CaptchaError + EmptyResultsError + StepVerificationError + SessionLifetimeExceededError → AbortError, no retry.
  * - SessionTimeoutError + CdpTransportClosedError → invoke onSessionRestart before every retry, then retry up to maxAttempts.
  * - SelectorFailureError + UnknownScraperError → retry up to maxAttempts.
- * - Anything non-ScraperError → wrap in UnknownScraperError and retry.
+ * - ApiError (typed client-facing outcome) → AbortError, passed through untouched: never reclassified or retried.
+ * - Anything else non-ScraperError → wrap in UnknownScraperError and retry.
  *
  * We lean on p-retry entirely for backoff, jitter, and attempt counting —
  * this module just supplies the policy.
@@ -53,6 +55,10 @@ export async function withScraperRetry<T>(
       try {
         return await task();
       } catch (raw) {
+        if (raw instanceof ApiError) {
+          logger.warn(`typed ApiError thrown (${raw.name}) — aborting retry: ${raw.message}`);
+          throw new AbortError(raw);
+        }
         const err = classifyScraperError(raw);
 
         if (err instanceof CaptchaError) {
