@@ -3871,6 +3871,36 @@ function isIssuedTokenLeaf(capture: Capture, value: string): boolean {
   return !capture.url.includes(value);
 }
 
+/**
+ * Token values a GET capture's response issues that a LATER capture the flow
+ * declared as its read/submit re-sends, mapped to those declaring consumers.
+ * Handed to {@link indexStateValues} as force-include values so the mint is
+ * threaded into the declared request instead of its recording-session
+ * literal being frozen. A token only an undeclared capture re-sends is not
+ * listed.
+ */
+export function collectDeclaredReadMintedValues(
+  captures: readonly Capture[],
+  isDeclaredRead: (capture: Capture) => boolean
+): Map<string, Set<Capture>> {
+  const minted = new Map<string, Set<Capture>>();
+  captures.forEach((mint, i) => {
+    if (mint.method !== "GET" || mint.status < 200 || mint.status >= 400) return;
+    if (mint.responseBody === undefined || mint.responseBody === null) return;
+    for (const { value } of walkAllPrimitiveLeaves(mint.responseBody)) {
+      if (typeof value !== "string" || !isIssuedTokenLeaf(mint, value)) continue;
+      for (let j = i + 1; j < captures.length; j++) {
+        const later = captures[j]!;
+        if (!isDeclaredRead(later) || !laterCaptureResends(later, value)) continue;
+        const consumers = minted.get(value) ?? new Set<Capture>();
+        consumers.add(later);
+        minted.set(value, consumers);
+      }
+    }
+  });
+  return minted;
+}
+
 /** True when a successful (2xx/3xx) `later` capture re-sends `token` in its URL, body or headers. */
 function laterCaptureResends(later: Capture, token: string): boolean {
   if (later.status < 200 || later.status >= 400) return false;
@@ -7401,20 +7431,11 @@ export function indexStateValues(
       // legitimate as a UUID anchor, so it must not be dropped just because
       // this hop happens to be a GET rather than every existing fixture's
       // POST.
-      // A GET response leaf shaped like an issued token (a CSRF/session nonce)
-      // that a later request re-sends is the producer of that value too: the
-      // same predicate that admits the GET into the action sequence
-      // (issuesTokenReusedLater) must also let it be threaded.
       if (
         isGet &&
         !UUID_REGEX.test(value) &&
         !chainForceIncludeValues.has(value) &&
-        !forceIncludeValues.has(value) &&
-        !(
-          typeof rawValue === "string" &&
-          isIssuedTokenLeaf(c, rawValue) &&
-          captures.slice(i + 1).some((later) => laterCaptureResends(later, rawValue))
-        )
+        !forceIncludeValues.has(value)
       )
         continue;
       if (!index.has(value)) {
@@ -22128,13 +22149,29 @@ export async function main(): Promise<void> {
       actionCaptures.length > 1
         ? collectDependentDrillDownChainValues(actionCaptures, foldReturnSpec)
         : new Map<string, Set<Capture>>();
+    // A GET mint whose token the flow's declared read re-sends is the producer
+    // of that value, so it is threaded into the declared request (not frozen).
+    const matchesDeclaredSubmit = compileSubmitMatcher(submitPatterns);
+    const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
+    const stateForceIncludeValues = new Map(dependentDrillDownChainValues);
+    if (declaresSubmitPattern && actionCaptures.length > 1) {
+      for (const [value, consumers] of collectDeclaredReadMintedValues(
+        activeCaptures,
+        matchesDeclaredSubmit
+      )) {
+        stateForceIncludeValues.set(
+          value,
+          new Set([...(stateForceIncludeValues.get(value) ?? []), ...consumers])
+        );
+      }
+    }
     const stateIndex =
       actionCaptures.length > 1
         ? indexStateValues(
             activeCaptures,
             shieldedUuids,
             actionCaptureIndices,
-            dependentDrillDownChainValues
+            stateForceIncludeValues
           )
         : new Map<string, StateValue>();
     const compiledActionSteps =
@@ -22147,7 +22184,6 @@ export async function main(): Promise<void> {
     // Strict submit-pattern match (no whole-pool fallback): a declared pattern
     // that matches only the GET reads must not be vetoed by an unrelated
     // same-host non-GET (visit beacon) that merely falls back into the pool.
-    const matchesDeclaredSubmit = compileSubmitMatcher(submitPatterns);
     const readFlowCaptures = primaryPoolCaptures.filter(
       (c) => c.method === "GET" || matchesDeclaredSubmit(c)
     );
@@ -22168,7 +22204,6 @@ export async function main(): Promise<void> {
     // be its submission: a non-GET outside that pattern whose response no later
     // step consumes (a one-off analytics or consent POST) is page chrome, not a
     // step. One whose response feeds a later request (a token mint) still is.
-    const declaresSubmitPattern = submitPatterns.endpoint !== null || submitPatterns.body !== null;
     const feedsDeclaredStep = (capture: Capture): boolean =>
       stepFeedsDeclaredSubmit(capture, compiledActionSteps, matchesDeclaredSubmit);
     const isIncidentalReadFlowPost = (capture: Capture): boolean =>
