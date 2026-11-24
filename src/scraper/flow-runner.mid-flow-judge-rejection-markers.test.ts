@@ -35,7 +35,8 @@ const logger = {
   debug() {},
 } as unknown as Logger;
 
-function buildWorld(marker: Marker, opts: { swapText: string }) {
+function buildWorld(marker: Marker, opts: { swapText: string; network?: boolean; popup?: boolean }) {
+  const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
   const window = new Window({ url: URL });
   const document = window.document;
   document.body.innerHTML = `<div id="root"><p id="txt">${BASE}</p>
@@ -45,6 +46,30 @@ function buildWorld(marker: Marker, opts: { swapText: string }) {
   win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
   const go = document.getElementById("go") as unknown as { click: () => void };
   const click = () => {
+    if (opts.popup) {
+      // A select popup opens; the committed value never changes.
+      document
+        .getElementById("root")
+        ?.insertAdjacentHTML(
+          "beforeend",
+          `<ul role="listbox"><li role="option">Alpha</li><li role="option">Beta</li></ul><i data-pad="${"x".repeat(4000)}"></i>`
+        );
+      return;
+    }
+    if (opts.network) {
+      const request = { url: "https://api.example.com/apply/step", method: "POST", headers: {} };
+      void handlers.get("Network.requestWillBeSent")?.({ requestId: "r1", request });
+      void handlers.get("Network.responseReceived")?.({
+        requestId: "r1",
+        response: {
+          url: request.url,
+          status: 200,
+          mimeType: "application/json",
+          headers: { "content-type": "application/json" },
+        },
+      });
+      void handlers.get("Network.loadingFinished")?.({ requestId: "r1" });
+    }
     (document.getElementById("txt") as unknown as { textContent: string }).textContent =
       opts.swapText.slice(0, BASE.length - markerTextLength(marker)) +
       // aria-invalid adds no text node, so the control's own flag is the only growth;
@@ -64,7 +89,10 @@ function buildWorld(marker: Marker, opts: { swapText: string }) {
     singleNodeValue: e.startsWith("//") ? null : document.getElementById("go"),
   });
   void root;
-  const session = { on: () => {}, off: () => {} };
+  const session = {
+    on: (e: string, h: (p: unknown) => void | Promise<void>) => handlers.set(e, h),
+    off: () => {},
+  };
   const page = {
     evaluate: async (expr: unknown) =>
       (
@@ -113,7 +141,7 @@ function buildWorld(marker: Marker, opts: { swapText: string }) {
 
 async function run(
   marker: Marker,
-  opts: { swapText: string; step?: string; judge: boolean }
+  opts: { swapText: string; step?: string; judge: boolean; network?: boolean; popup?: boolean }
 ): Promise<{ outcome: unknown; trajectory: unknown[] }> {
   const w = buildWorld(marker, opts);
   const trajectory: unknown[] = [];
@@ -191,5 +219,21 @@ describe("judge-rejected mid-flow submit with non-Angular validation markers", (
       judge: true,
     });
     expect(outcome).toBe("completed");
+  });
+
+  it("credits a rejected judge on a real network advance with no marker growth", async () => {
+    const { outcome } = await run("none", { swapText: SWAP, judge: true, network: true });
+    expect(outcome).toBe("completed");
+  });
+
+  it("does not credit a select popup that opens with the committed value unchanged", async () => {
+    const { outcome, trajectory } = await run("none", {
+      swapText: SWAP,
+      judge: true,
+      popup: true,
+      step: "In the 'Preferred Contact Method?' prompt selector, select 'Alpha'",
+    });
+    expect(outcome).toBe("threw");
+    expect(trajectory).toEqual([]);
   });
 });
