@@ -434,6 +434,18 @@ export function readSubmitEndpointPattern(flowFile: string): string | undefined 
   }
 }
 
+/** Reads the flow file's `submitBodyPattern` alone (undefined when absent/unreadable). */
+export function readSubmitBodyPattern(flowFile: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return undefined;
+    const v = (parsed as { submitBodyPattern?: unknown }).submitBodyPattern;
+    return typeof v === "string" && v.length > 0 ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Reads the explicit top-level `browserFlowOnly` opt-in out of a recon flow file.
  *
