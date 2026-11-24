@@ -79,6 +79,12 @@ Set `USE_BEDROCK=true` to route Stagehand's LLM calls through AWS Bedrock instea
 | `CACHE_TTL_MS` | `900000` (15 min) | LRU response cache TTL. Cached responses skip the target API entirely. |
 | `CACHE_MAX_ENTRIES` | `1000` | Maximum entries in the LRU cache. |
 
+### Idempotency store
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `IDEMPOTENCY_STORE_DIR` | unset | Directory for the durable idempotency store used by plugins that declare `meta.idempotency` (one JSON file per key). Unset falls back to an in-memory store: records are lost on restart, and an async operation still pending at restart is not recoverable. Set it to a persistent volume in production. Records expire after 6 hours. See [plugin-authoring.md](plugin-authoring.md#idempotency-and-async-mode-metaidempotency). |
+
 ### Rate limiting (inbound)
 
 These limit traffic *to* Barnacle's own API (outbound limits live in each plugin's `contract.ts`).
@@ -129,6 +135,7 @@ pnpm add hot-shots && DD_METRICS_ENABLED=true node dist/server.js
 |----------|---------|---------|
 | `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all NDJSON telemetry writes. |
 | `TELEMETRY_EVENTS_DIR` | `.barnacle/events` | Directory for per-run NDJSON event stream files (`<eventsDir>/<runId>.ndjson`). |
+| `IDEMPOTENCY_STORE_DIR` | _(unset)_ | Directory for the durable idempotency store (one JSON file per key). Unset falls back to the in-memory store. |
 | `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only NDJSON sink for LLM/Stagehand call samples. One line per call; feed to the judge and self-heal skills. |
 | `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for submission envelopes (from `dispatch()`, and from extra routes that declare `submits`) and beacon-fire outcomes. `kind:"submit"` lines (null/`"submit"`-defaulted on legacy lines) capture siteId, requestId, an allowlisted request-body summary (the values of the keys the plugin declares in `meta.redaction.persistKeys`, plus `fieldsPresent` key names for every other key — never their values), status, audit payload, and duration, plus the opaque `joinKeys` bag a plugin's `extractJoinKeys` hook resolved, merged with anything attached mid-run via `context.telemetry.addJoinKeys()` — the durable source-of-truth for "what did we submit for jobId X and did it succeed." `kind:"beacon"` lines record a later (or, for `beaconStatus: "skipped"`, immediate) independent beacon-fire outcome (`beaconStatus`: `fired`/`failed`/`skipped`, truncated `trackingUrl`) for the same `requestId`, so "submitted but the beacon did not fire" is measurable — the `skipped` line is always written by core (`dispatch()`, or for an extra route that declares `submits`), but a plugin managing its own tracking nav can call `context.recordBeaconOutcome` to append a real `fired`/`failed` line for the same `requestId`, which outranks `skipped` when the two are folded (see [Reconciliation join keys](./submission-reconciliation.md)). A reader folds both kinds together by `requestId`, so a plugin can join runs to its own attribution provider's report without re-parsing `inboundPayload`. |
 | `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |

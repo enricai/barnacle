@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { format } from "date-fns";
+import { z } from "zod";
 import { getScriptLogger } from "@/lib/logging";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
 
@@ -309,6 +310,77 @@ export function readOwnBackendHostnames(flowFile: string): string[] {
 }
 
 /**
+ * One caller-supplied payload field the generator adds beyond the recorded
+ * form fields. `sensitive` fields must be strings: the engine registers only
+ * string values for PII scrubbing.
+ */
+export const EXTRA_PAYLOAD_FIELD_SCHEMA = z
+  .object({
+    name: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/, "name must be a valid JS identifier"),
+    type: z.enum(["string", "number", "boolean"]).default("string"),
+    optional: z.boolean().optional(),
+    sensitive: z.boolean().optional(),
+    /** How a sensitive value is matched in output: by digits (phone/ids) or as a word. Defaults to `word`. */
+    redactionKind: z.enum(["digit", "word"]).optional(),
+  })
+  .refine((f) => !f.sensitive || f.type === "string", {
+    message: "a sensitive extraPayloadField must be string-typed",
+    path: ["type"],
+  });
+
+export type ExtraPayloadField = z.infer<typeof EXTRA_PAYLOAD_FIELD_SCHEMA>;
+
+/**
+ * The `meta.redaction` policy for the sensitive declared fields, or null when
+ * none is sensitive (so a flow without them emits nothing). The key kind comes
+ * from the declared `redactionKind`, never from the field name.
+ */
+export function buildExtraFieldRedaction(
+  fields: readonly ExtraPayloadField[]
+): { wordKeys?: string[]; digitKeys?: string[] } | null {
+  const wordKeys = fields
+    .filter((f) => f.sensitive && f.redactionKind !== "digit")
+    .map((f) => f.name);
+  const digitKeys = fields
+    .filter((f) => f.sensitive && f.redactionKind === "digit")
+    .map((f) => f.name);
+  if (wordKeys.length === 0 && digitKeys.length === 0) return null;
+  return {
+    ...(wordKeys.length > 0 && { wordKeys }),
+    ...(digitKeys.length > 0 && { digitKeys }),
+  };
+}
+
+/**
+ * Reads and validates `extraPayloadFields` from a recon flow file.
+ * Tolerant like `readOwnBackendHostnames`: `[]` for bare-array flows, a
+ * missing/unreadable file or an absent key; an invalid declaration throws.
+ */
+export function readExtraPayloadFields(flowFile: string): ExtraPayloadField[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(flowFile, "utf8"));
+  } catch (err) {
+    logger.warn(
+      `flow file '${flowFile}' unreadable for extraPayloadFields: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return [];
+  }
+  if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return [];
+  const raw = (parsed as { extraPayloadFields?: unknown }).extraPayloadFields;
+  if (raw === undefined) return [];
+  const result = z.array(EXTRA_PAYLOAD_FIELD_SCHEMA).safeParse(raw);
+  if (!result.success) {
+    throw new Error(
+      `flow file '${flowFile}' has invalid extraPayloadFields: ${result.error.message}`
+    );
+  }
+  return result.data;
+}
+
+/**
  * Reads the flow file's declared endpoint patterns: `submitEndpointPattern`
  * first, then every `foldReturn` `endpointPattern` (single object or array).
  * Tolerant like `readOwnBackendHostnames`: `[]` for bare-array flows and on
@@ -365,6 +437,30 @@ export function readBrowserFlowOnly(flowFile: string): boolean {
   const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
   if (Array.isArray(parsed)) return false;
   return (parsed as { browserFlowOnly?: unknown } | null)?.browserFlowOnly === true;
+}
+
+/**
+ * Resolves the flow file's retry declaration to one number: `irreversible: true`
+ * yields 1, else a valid declared `maxAttempts` (positive integer), else null.
+ * When both are declared the smaller wins. Null on absent/invalid/legacy-array/unreadable.
+ */
+export function readDeclaredMaxAttempts(flowFile: string): number | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return null;
+    const { maxAttempts, irreversible } = parsed as {
+      maxAttempts?: unknown;
+      irreversible?: unknown;
+    };
+    const declared =
+      typeof maxAttempts === "number" && Number.isInteger(maxAttempts) && maxAttempts > 0
+        ? maxAttempts
+        : null;
+    if (irreversible === true) return declared === null ? 1 : Math.min(1, declared);
+    return declared;
+  } catch {
+    return null;
+  }
 }
 
 /** True when the replay got a 2xx response, whether or not its shape matched the capture. */

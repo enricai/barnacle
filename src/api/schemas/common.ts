@@ -26,6 +26,7 @@ export const ERROR_CODES = {
   VERIFICATION_TRIGGER_FAILED: 2006,
   RESUME_INVALID_OTP: 2007,
   URL_LOCKED: 2008,
+  UNKNOWN_OUTCOME: 2009,
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -53,6 +54,7 @@ export const ERROR_CODE_DESCRIPTIONS: Record<ErrorCode, string> = {
   2006: "VERIFICATION_TRIGGER_FAILED",
   2007: "RESUME_INVALID_OTP",
   2008: "URL_LOCKED",
+  2009: "UNKNOWN_OUTCOME",
 };
 
 /**

@@ -2504,7 +2504,7 @@ export function isSubmitIntentStep(instruction: string | null | undefined): bool
  * "Reserve", "Add to Cart"), or a "proceeds/leads/advances to" phrase naming one.
  */
 const SUBMIT_TARGET_SRC =
-  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|book(?:s|ing)? now|reserv(?:e|es|ing)|add(?:s|ing)? to (?:the |your )?(?:cart|basket|bag)|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
+  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|book(?:s|ing)? now|reserv(?:e|es|ing)|add(?:s|ing)? to (?:the |your )?(?:cart|basket|bag)|(?:enter|type|fill(?: in)?|input|provide|use)(?:s|ing)?\\s+(?:in\\s+)?(?:any\\s+|the\\s+|your\\s+|a\\s+)?(?:\\w+\\s+)?card(?:\\s+(?:number|details|info(?:rmation)?|data))?|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
 
 /**
  * A negation followed, in the same clause, by a submit target ("Do NOT click
@@ -2512,7 +2512,7 @@ const SUBMIT_TARGET_SRC =
  * submit click" / "without submitting" declaration.
  */
 const NEGATED_SUBMIT_CLAUSE = new RegExp(
-  `\\b(?:do not|don't|dont|never|must not|should not|shouldn't|does not|doesn't|avoid|refrain from)\\b[^.;\\n]*?\\b${SUBMIT_TARGET_SRC}\\b[^.;\\n]*|\\b(?:(?:this|that|it)\\s+(?:is|are)\\s+not|is not|isn't|not)\\s+(?:a|an|the)?\\s*(?:final\\s+|actual\\s+)?(?:submit|submission|checkout|payment|purchase)\\b[^.;\\n]*|\\bwithout\\s+(?:${SUBMIT_TARGET_SRC})\\b[^.;\\n]*`,
+  `\\b(?:do not|don't|dont|never|must not|should not|shouldn't|does not|doesn't|avoid|refrain from|not to|under no circumstances|not allowed to|not permitted to|stop before|stop short of)\\b[^.;\\n]*?\\b${SUBMIT_TARGET_SRC}\\b[^.;\\n]*|\\b(?:(?:this|that|it)\\s+(?:is|are)\\s+not|is not|isn't|not)\\s+(?:a|an|the)?\\s*(?:final\\s+|actual\\s+)?(?:submit|submission|checkout|payment|purchase)\\b[^.;\\n]*|\\bwithout\\s+(?:${SUBMIT_TARGET_SRC})\\b[^.;\\n]*`,
   "gi"
 );
 
@@ -2961,13 +2961,19 @@ export function isMidFlowAdvanceCredited(params: {
   networkAdvanced: boolean;
   pageAdvanced: boolean;
   invalidMarkerCount: number;
+  /** Markers after the click minus the pre-click baseline (0 when unknown). */
+  invalidMarkerDelta?: number;
 }): boolean {
   // An explicit judge rejection is not overruled by the view-swap signal
   // alone; it needs a settled page advance or a real network advance too.
+  // Validation markers that grew past the pre-click baseline are blocked-submit
+  // evidence: against an explicit rejection they veto every credit, including a
+  // settled text/header flip (a validation banner is exactly that flip).
+  const markersGrew = (params.invalidMarkerDelta ?? 0) > 0;
   if (
     params.midFlowSubmit &&
     params.signalAdvanced &&
-    (params.judgeUnavailable || params.pageAdvanced || params.networkAdvanced)
+    (params.judgeUnavailable || (!markersGrew && (params.pageAdvanced || params.networkAdvanced)))
   ) {
     return true;
   }
@@ -10948,6 +10954,23 @@ async function tryPromptSelectorPrimitive(params: {
       const vis = widgets.filter((o) => labelOf.get(o) === l && rendered(o) && !layerHost.has(o));
       if (vis.length === 1) collapsed.set(w, vis[0]);
     }
+    // One field rendered as a visible face plus empty shell openers that share
+    // its label (no common wrapper to pair them by): the shells have no face of
+    // their own, so they collapse into the single widget that shows text.
+    const faceText = (e) => (buttonValue(e) || "").trim();
+    const byLabel = new Map();
+    for (const w of widgets) {
+      const l = labelOf.get(w);
+      if (!l || collapsed.has(w) || layerHost.has(w) || unreachable.has(w)) continue;
+      if (!byLabel.has(l)) byLabel.set(l, []);
+      byLabel.get(l).push(w);
+    }
+    for (const group of byLabel.values()) {
+      if (group.length < 2) continue;
+      const faces = group.filter((w) => faceText(w) !== "");
+      if (faces.length !== 1) continue;
+      for (const w of group) if (w !== faces[0]) { collapsed.set(w, faces[0]); layerHost.set(w, faces[0]); }
+    }
     const candidates = [];
     let idx = 0;
     for (const w of widgets) {
@@ -17402,6 +17425,7 @@ export async function executeStepWithHealing(params: {
         networkAdvanced: networkIsRealAdvance,
         pageAdvanced: settledPageAdvanced,
         invalidMarkerCount,
+        invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
         logger.info(
@@ -18198,6 +18222,7 @@ export async function executeStepWithHealing(params: {
               networkAdvanced: retryNetworkFired && retryDestinationPlausible,
               pageAdvanced: retryPageAdvanced,
               invalidMarkerCount,
+              invalidMarkerDelta: invalidMarkerCount - preInvalidMarkerCount,
             });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {
               logger.info(
