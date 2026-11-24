@@ -17935,17 +17935,22 @@ export function classifySubmissionFlow(o: {
   graphqlActionSequenceHasMutation: boolean;
   /** A declared submit endpoint re-queried with differing filter bodies. */
   isDeclaredPostSearchRead?: boolean;
+  /** An earlier action step whose output the declared read consumes (a token mint GET). */
+  hasStepFeedingDeclaredRead?: boolean;
 }): boolean {
   if (o.noReplayableActionFlow) return true;
   if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
-    : // A read flow whose manifest holds only GET captures is not a submission.
-      // OPTIONS preflights are transport, never a submission signal.
-      o.actionCaptureMethods.some((m) => {
-        const u = (m ?? "").toUpperCase();
-        return u !== "GET" && u !== "OPTIONS";
-      });
+    : // A read flow whose manifest holds only GET captures is not a submission,
+      // unless one of those GETs mints a value the declared read consumes: the
+      // read then cannot be replayed without that step. OPTIONS preflights are
+      // transport, never a submission signal.
+      o.hasStepFeedingDeclaredRead === true ||
+        o.actionCaptureMethods.some((m) => {
+          const u = (m ?? "").toUpperCase();
+          return u !== "GET" && u !== "OPTIONS";
+        });
 }
 
 /** True when the declared submit pattern's non-OPTIONS, non-noise captures are
@@ -22229,6 +22234,9 @@ export async function main(): Promise<void> {
       noReplayableActionFlow,
       isReadOnlyGetFlow,
       isDeclaredPostSearchRead,
+      hasStepFeedingDeclaredRead:
+        declaresSubmitPattern &&
+        actionSteps.some((s) => !matchesDeclaredSubmit(s.capture) && feedsDeclaredStep(s.capture)),
       actionStepCount: actionSteps.length,
       gql: !!gql,
       actionCaptureMethods: actionCaptures.map((a) => a.capture.method),
