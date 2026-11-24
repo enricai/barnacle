@@ -38,6 +38,7 @@ describe("read-only flows are not job applications", () => {
       endpointPath: "/apply",
       omitExecuteHttp: true,
       isSubmissionFlow: true,
+      applicantContract: true,
     } as never);
     expect(source).toContain("ApplicantContactSchema");
     expect(source).toContain(".merge(JobTrackingSchema)");

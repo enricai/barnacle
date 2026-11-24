@@ -428,6 +428,18 @@ export function readBrowserFlowOnly(flowFile: string): boolean {
 }
 
 /**
+ * Reads the explicit top-level `applicantContract` declaration out of a recon
+ * flow file: true/false when declared as a boolean, undefined when absent,
+ * non-boolean, or the legacy bare-array shape.
+ */
+export function readApplicantContract(flowFile: string): boolean | undefined {
+  const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+  if (Array.isArray(parsed)) return undefined;
+  const v = (parsed as { applicantContract?: unknown } | null)?.applicantContract;
+  return typeof v === "boolean" ? v : undefined;
+}
+
+/**
  * Resolves the flow file's retry declaration to one number: `irreversible: true`
  * yields 1, else a valid declared `maxAttempts` (positive integer), else null.
  * When both are declared the smaller wins. Null on absent/invalid/legacy-array/unreadable.
