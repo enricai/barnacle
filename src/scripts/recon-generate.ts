@@ -989,7 +989,7 @@ export interface NavigateToFacetBinding {
 export type NavigateToFacetOrigin = "navigateTo" | "step";
 
 /**
- * Hints for navigateTo hashes that name their own field (`#cruiseId=ABC`) on a
+ * Hints for navigateTo hashes that name their own field (`#widgetId=ABC`) on a
  * step declaring no `payloadField`: the `key=` names the caller input, which
  * {@link walkNavigateToFacets} (payloadField-driven) discards.
  */
