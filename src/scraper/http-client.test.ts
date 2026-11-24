@@ -14,7 +14,7 @@ import {
   UnknownScraperError,
 } from "@/scraper/errors";
 import type { HttpResponseBinding, HttpResponseInfo } from "@/scraper/http-client";
-import { createHttpClient } from "@/scraper/http-client";
+import { createHttpClient, tolerateNullScalarMismatch } from "@/scraper/http-client";
 
 const REAL_FETCH = globalThis.fetch;
 
@@ -1349,4 +1349,25 @@ describe("scraper/http-client transport failures", () => {
       expect(isHttpTransportError(err)).toBe(false);
     }
   );
+});
+
+describe("tolerateNullScalarMismatch (exported)", () => {
+  it("accepts null for a string scalar and returns the data with null preserved", () => {
+    const schema = z.object({ name: z.string(), n: z.number() });
+    const body = { name: null, n: 3 };
+    const parsed = schema.safeParse(body);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(tolerateNullScalarMismatch(schema, body, parsed.error.issues)).toEqual({
+      name: null,
+      n: 3,
+    });
+  });
+
+  it("returns undefined for non-null mismatches", () => {
+    const schema = z.object({ name: z.string() });
+    const parsed = schema.safeParse({ name: 5 });
+    if (parsed.success) throw new Error("unexpected");
+    expect(tolerateNullScalarMismatch(schema, { name: 5 }, parsed.error.issues)).toBeUndefined();
+  });
 });

@@ -126,3 +126,114 @@ export function extractHtmlSelectOptions(body: unknown): Map<string, Set<string>
   }
   return out;
 }
+
+export interface HtmlBearerToken {
+  token: string;
+  claims: Record<string, unknown>;
+  source: "rsc-row" | "html";
+  /** RSC row id when source is "rsc-row". */
+  row?: string;
+}
+
+export interface HtmlBearerLocation extends HtmlBearerToken {
+  /** Index into the documents array the token was found in. */
+  document: number;
+}
+
+const JWT_RE = /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+
+function jwtClaims(token: string): Record<string, unknown> | null {
+  try {
+    const p = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
+    return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Concatenate the JS-string-unescaped payloads of `push([1,"..."])` calls. */
+function unescapePushPayloads(html: string): string {
+  let out = "";
+  const re = /push\(\s*\[\s*1\s*,\s*("(?:[^"\\]|\\.)*")\s*\]\s*\)/g;
+  for (let m = re.exec(html); m; m = re.exec(html)) {
+    try {
+      out += JSON.parse(m[1] as string) as string;
+    } catch {
+      /* skip malformed payload */
+    }
+  }
+  return out;
+}
+
+function tokensIn(
+  text: string,
+  source: HtmlBearerToken["source"],
+  row?: string
+): HtmlBearerToken[] {
+  const out: HtmlBearerToken[] = [];
+  for (const m of text.matchAll(JWT_RE)) {
+    const claims = jwtClaims(m[0]);
+    if (claims) out.push({ token: m[0], claims, source, ...(row !== undefined ? { row } : {}) });
+  }
+  return out;
+}
+
+/**
+ * Find JWT-shaped bearer values in an HTML document. RSC text rows
+ * `<id>:T<hex>,<text>` are read at exactly parseInt(hex,16) characters, so a
+ * following row id is never absorbed into the token.
+ */
+export function extractHtmlBearerTokens(body: unknown): HtmlBearerToken[] {
+  if (typeof body !== "string") return [];
+  const stream = unescapePushPayloads(body);
+  const found: HtmlBearerToken[] = [];
+  const seen = new Set<string>();
+  const add = (list: HtmlBearerToken[]) => {
+    for (const t of list) {
+      const k = `${t.row ?? ""}|${t.token}`;
+      if (!seen.has(k)) {
+        seen.add(k);
+        found.push(t);
+      }
+    }
+  };
+  const rowRe = /([0-9a-zA-Z]+):T([0-9a-fA-F]+),/g;
+  for (let m = rowRe.exec(stream); m; m = rowRe.exec(stream)) {
+    const start = m.index + m[0].length;
+    const len = parseInt(m[2] as string, 16);
+    // React counts UTF-8 bytes, not JS characters: walk code points until the byte budget is spent.
+    let end = start;
+    for (let used = 0; end < stream.length && used < len; ) {
+      const cp = stream.codePointAt(end) as number;
+      used += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+      end += cp > 0xffff ? 2 : 1;
+    }
+    add(tokensIn(stream.slice(start, end), "rsc-row", m[1]));
+    // Resume right after the row's text; the next row id may follow directly.
+    rowRe.lastIndex = end;
+  }
+  const rscTokens = new Set(found.map((t) => t.token));
+  const plain = body.replace(/push\(\s*\[\s*1\s*,\s*"(?:[^"\\]|\\.)*"\s*\]\s*\)/g, "");
+  add(tokensIn(plain, "html").filter((t) => !rscTokens.has(t.token)));
+  return found;
+}
+
+/**
+ * Locate a bearer token across documents. `value` matches the exact captured
+ * token; `claims` selects by JWT claim values (all must match) rather than
+ * position. Returns null when nothing matches.
+ */
+export function locateHtmlBearerToken(
+  documents: ReadonlyArray<unknown>,
+  want: { value?: string; claims?: Record<string, unknown> }
+): HtmlBearerLocation | null {
+  for (let i = 0; i < documents.length; i++) {
+    for (const t of extractHtmlBearerTokens(documents[i])) {
+      if (want.value !== undefined && t.token !== want.value) continue;
+      if (want.claims && !Object.entries(want.claims).every(([k, v]) => t.claims[k] === v))
+        continue;
+      return { ...t, document: i };
+    }
+  }
+  return null;
+}

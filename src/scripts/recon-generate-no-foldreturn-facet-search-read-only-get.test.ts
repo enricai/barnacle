@@ -61,7 +61,7 @@ function facetSearchCaptures() {
               {
                 id: "I1",
                 brandCode: "AA",
-                shipCode: "CB",
+                regionCode: "CB",
                 port: "MIA",
                 durdays: 7,
                 size: 7,

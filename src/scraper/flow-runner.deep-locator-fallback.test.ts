@@ -694,9 +694,11 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     expect(result.lastStepIndex).toBe(1);
     // The trusted-click-retry's CDP click on the resolved candidate is what
     // advanced the URL — the phantom attempt-1 click never touched the delegate.
-    // The trailing optional step's focused probe finds 0 candidates, so it skips
-    // without running its act (no extra advance).
-    expect(urls.current).toBe("https://apply.acme.example/onboard/a/3");
+    // The trailing optional step's focused probe finds 0 candidates, but a
+    // zero-candidate focused probe now falls back to the unfocused observe and
+    // treats the step as present (focused observe can under-return), so its
+    // act runs and advances the URL once more.
+    expect(urls.current).toBe("https://apply.acme.example/onboard/a/4");
     const hop = frame.get(hopSelector);
     expect(hop?.elements[0]?.clicks).toBeGreaterThan(0);
   });

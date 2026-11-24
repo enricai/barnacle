@@ -137,6 +137,7 @@ import {
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
+import { buildNavigateSettle, type CaptureTracker, createCaptureTracker } from "@/scraper/navigate";
 import {
   isPassiveNoopInstruction,
   isPlausibleStepDestination,
@@ -254,7 +255,8 @@ export function wireNetworkCapture(
   recentCaptures: string[],
   recentCaptureMeta: { method: string; status: number; url: string }[],
   getCurrentPhase: () => string,
-  getCurrentPageOrigin: () => string
+  getCurrentPageOrigin: () => string,
+  captureTracker?: CaptureTracker
 ): () => void {
   const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
@@ -270,6 +272,7 @@ export function wireNetworkCapture(
       // and let the cascade continue. The capture is forensic-only — the
       // happy-path doesn't read these files until something else fails.
       if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) bodyUnavailableCounter.n++;
+      captureTracker?.observe(capture.url, capture.requestPostData);
       try {
         writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
@@ -753,24 +756,29 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  * fold onto an earlier entry's results); `attachAs`, `payloadFlag` and
  * `drillParamBindings` are generator-read keys that must survive validation.
  */
-const RECON_FOLD_RETURN_ENTRY_SCHEMA = z.object({
-  endpointPattern: z.string().min(1),
-  resultsPath: z.string().min(1).optional(),
-  drillResultsPath: z.string().min(1).optional(),
-  joinFields: z.array(z.string().min(1)).min(1),
-  attachAs: z.string().min(1).optional(),
-  payloadFlag: z.string().min(1).optional(),
-  drillParamBindings: z
-    .record(
-      z.string(),
-      z.object({
-        payloadField: z.string().min(1),
-        type: z.enum(["int", "string", "boolean"]),
-        default: z.union([z.string(), z.number(), z.boolean()]),
-      })
-    )
-    .optional(),
-});
+const RECON_FOLD_RETURN_ENTRY_SCHEMA = z
+  .object({
+    endpointPattern: z.string().min(1),
+    resultsPath: z.string().min(1).optional(),
+    drillResultsPath: z.string().min(1).optional(),
+    joinFields: z.array(z.string().min(1)).min(1).optional(),
+    joinTemplate: z.string().min(1).optional(),
+    attachAs: z.string().min(1).optional(),
+    payloadFlag: z.string().min(1).optional(),
+    drillParamBindings: z
+      .record(
+        z.string(),
+        z.object({
+          payloadField: z.string().min(1),
+          type: z.enum(["int", "string", "boolean"]),
+          default: z.union([z.string(), z.number(), z.boolean()]),
+        })
+      )
+      .optional(),
+  })
+  .refine((e) => e.joinFields !== undefined || e.joinTemplate !== undefined, {
+    message: "foldReturn entry needs joinFields or joinTemplate",
+  });
 
 /**
  * Declared retry budget for the generated plugin: `maxAttempts`, a positive
@@ -841,6 +849,8 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * that genuinely rely on DOM-only verification.
      */
     requireSubmitEndpointMatch: z.boolean().optional(),
+    /** Flow only reads data (GraphQL query / GET): never infer submit semantics from submitEndpointPattern. */
+    readOnly: z.boolean().optional(),
     /**
      * URL path fragments that indicate a successful submit transition.
      * Surfaced to the Haiku verifySubmit judge as evidence — when the page
@@ -2685,6 +2695,7 @@ function parseCli(): {
   submitBodyPattern: string | null;
   submittedStateSelectors: string[];
   requireSubmitEndpointMatch: boolean;
+  readOnly: boolean;
   advanceTransitionBodyPattern: string | null;
   successUrlFragments: string[];
   successPageTitleHints: string[];
@@ -2819,6 +2830,7 @@ function parseCli(): {
       submitBodyPattern: null,
       submittedStateSelectors: [],
       requireSubmitEndpointMatch: false,
+      readOnly: false,
       advanceTransitionBodyPattern: null,
       successUrlFragments: [],
       successPageTitleHints: [],
@@ -2849,6 +2861,7 @@ function parseCli(): {
   const requireSubmitEndpointMatch = Array.isArray(parsed.data)
     ? false
     : (parsed.data.requireSubmitEndpointMatch ?? false);
+  const readOnly = Array.isArray(parsed.data) ? false : (parsed.data.readOnly ?? false);
   const advanceTransitionBodyPattern = Array.isArray(parsed.data)
     ? null
     : (parsed.data.advanceTransitionBodyPattern ?? null);
@@ -2907,6 +2920,7 @@ function parseCli(): {
     submitBodyPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    readOnly,
     advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
@@ -3008,6 +3022,7 @@ async function main(): Promise<void> {
     submitBodyPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    readOnly,
     advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
@@ -3169,6 +3184,7 @@ async function main(): Promise<void> {
           return new URL(url).origin;
         }
       };
+      const captureTracker = createCaptureTracker();
       const capture = createCaptureRebinder(page, (target) =>
         wireNetworkCapture(
           target,
@@ -3177,7 +3193,8 @@ async function main(): Promise<void> {
           recentCaptures,
           recentCaptureMeta,
           () => currentPhase,
-          currentPageOrigin
+          currentPageOrigin,
+          captureTracker
         )
       );
       const stopCapture = capture.stopAll;
@@ -3342,6 +3359,7 @@ async function main(): Promise<void> {
           })),
           submitEndpointPattern,
           requireSubmitEndpointMatch,
+          readOnly,
         });
         const midFlowSubmitShaped = isMidFlowSubmitShapedStep({
           step: step.instruction,
@@ -3385,6 +3403,11 @@ async function main(): Promise<void> {
                     logger,
                     waitUntil: GOTO_WAIT_UNTIL,
                     timeoutMs: GOTO_TIMEOUT_MS,
+                    settle: buildNavigateSettle(
+                      captureTracker,
+                      submitEndpointPattern,
+                      submitBodyPattern
+                    ),
                   })
                 : executeStepWithHealing({
                     stagehand,
@@ -3411,6 +3434,7 @@ async function main(): Promise<void> {
                       })),
                       submitEndpointPattern,
                       requireSubmitEndpointMatch,
+                      readOnly,
                     }),
                     stepIndex: i,
                     totalSteps: () => plan.length,
@@ -3634,6 +3658,7 @@ async function main(): Promise<void> {
               })),
               submitEndpointPattern,
               requireSubmitEndpointMatch,
+              readOnly,
             });
             // A dead session throws synchronously here too — fall back to ""
             // rather than let the trailing-grace check itself crash the run.

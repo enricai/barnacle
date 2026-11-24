@@ -623,6 +623,7 @@ function walkNavigateToFacets(
 ): WalkedNavigateToFacet[] {
   const facets: WalkedNavigateToFacet[] = [];
   let baselineHash: string | undefined;
+  let baselineQuery: Map<string, string> = new Map();
   for (const step of flowSteps) {
     if (typeof step === "string") continue;
     if (step.navigateTo === undefined) {
@@ -641,18 +642,29 @@ function walkNavigateToFacets(
     }
     const hashIndex = step.navigateTo.indexOf("#");
     const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
+    const currentQuery = parseUrlQueryParams(step.navigateTo);
     if (step.payloadField) {
+      const hashValue = extractNavigateToHashFragmentValue(step.navigateTo, baselineHash);
+      // A hashless URL carries its facet in the query string: the one param
+      // whose value changed since the previous navigation. Several changed
+      // params are ambiguous, so none is taken (the facet stays unwired).
+      const changed = [...currentQuery].filter(([key, v]) => baselineQuery.get(key) !== v);
+      const queryValue = hashValue === null && changed.length === 1 ? changed[0]![1] : "";
       facets.push({
-        value: extractNavigateToHashFragmentValue(step.navigateTo, baselineHash),
+        value: hashValue ?? (queryValue.length > 0 ? queryValue : null),
         field: step.payloadField,
         optional: step.optional === true,
         origin: "navigateTo",
-        literals: collectHashFacetLiterals(step.navigateTo, baselineHash),
+        literals:
+          hashValue === null && queryValue.length > 0
+            ? [queryValue]
+            : collectHashFacetLiterals(step.navigateTo, baselineHash),
         kind: deriveFacetKind(step.payloadField),
         kindHints: collectHashFacetKindHints(step.navigateTo, baselineHash),
       });
     }
     if (currentHash !== undefined) baselineHash = currentHash;
+    baselineQuery = currentQuery;
   }
   return facets;
 }
@@ -2340,7 +2352,12 @@ export function deriveRequestHeaders(
     );
     for (const h of r.shapeRestoringHeaders ?? []) {
       const lower = h.toLowerCase();
-      if (IGNORE_REQUEST_HEADERS.has(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower)) continue;
+      if (
+        IGNORE_REQUEST_HEADERS.has(lower) ||
+        CREDENTIAL_REQUEST_HEADERS.has(lower) ||
+        isCredentialHeaderName(lower)
+      )
+        continue;
       loadBearing.add(lower);
       loadBearingSources.set(lower, [...(loadBearingSources.get(lower) ?? []), ...own]);
       if (!counts.has(lower)) counts.set(lower, 0);
@@ -2351,7 +2368,12 @@ export function deriveRequestHeaders(
   const headerSources = relevantCaptures.length > 0 ? relevantCaptures : captures;
   for (const [lower, count] of counts) {
     if (count < relevantCaptures.length && !loadBearing.has(lower)) continue;
-    if (isVolatileHeaderName(lower) || CREDENTIAL_REQUEST_HEADERS.has(lower)) continue;
+    if (
+      isVolatileHeaderName(lower) ||
+      CREDENTIAL_REQUEST_HEADERS.has(lower) ||
+      isCredentialHeaderName(lower)
+    )
+      continue;
     if (Object.keys(baseline).some((k) => k.toLowerCase() === lower)) continue;
     for (const c of loadBearing.has(lower)
       ? (loadBearingSources.get(lower) ?? [])
@@ -2605,6 +2627,10 @@ function declaredOperationVariableNames(query: string): string[] {
  * repeat the same underlying query are recognized as recurring instead of
  * being permanently unjoinable.
  */
+function isGraphQLCapture(capture: Capture): boolean {
+  return capture.query !== null || capture.operationName !== null;
+}
+
 function operationGroupKey(capture: Capture): string {
   const endpointPath = (() => {
     try {
@@ -3489,6 +3515,25 @@ export interface SubmitPatterns {
 }
 
 /**
+ * Shared zero-variance veto for selection callers: a capture the flow
+ * explicitly declared (submit endpoint/body pattern or foldReturn drill) is
+ * authoritative and is never vetoed as request-invariant chrome. Only
+ * undeclared captures fall through to {@link isZeroVarianceRepeatCapture}.
+ */
+function isZeroVarianceUnlessDeclared(
+  capture: Capture,
+  pool: Capture[],
+  submitPatterns: SubmitPatterns | null,
+  matchesFoldReturn: (capture: Capture) => boolean
+): boolean {
+  const hasDeclaredSubmit =
+    submitPatterns !== null && (submitPatterns.endpoint !== null || submitPatterns.body !== null);
+  if (hasDeclaredSubmit && compileSubmitMatcher(submitPatterns)(capture)) return false;
+  if (matchesFoldReturn(capture)) return false;
+  return isZeroVarianceRepeatCapture(capture, pool);
+}
+
+/**
  * Builds the compiled submit-pattern predicate. A flow-declared regex that
  * fails to compile is a broken flow (recon-browser validates it eagerly too),
  * so we let the `RegExp` constructor throw rather than silently reverting to
@@ -3597,6 +3642,25 @@ export function resolveManifestActionSequence(
     resolved.push({ capture, index: entry.index });
   }
   return resolved;
+}
+
+/**
+ * Filters a submit-manifest sequence through the flow's declared submit
+ * patterns so a URL-only manifest (every same-URL capture, page chrome
+ * included) is never authoritative over a declared submitBodyPattern /
+ * submitEndpointPattern. With no declared pattern, or when the pattern matches
+ * nothing in the manifest, the manifest is returned unchanged (never
+ * hard-fails on a pattern that does not apply).
+ */
+export function filterManifestByDeclaredSubmit(
+  manifest: ActionCapture[],
+  submitPatterns: SubmitPatterns | null
+): ActionCapture[] {
+  if (submitPatterns === null || (submitPatterns.endpoint === null && submitPatterns.body === null))
+    return manifest;
+  const matchesSubmit = compileSubmitMatcher(submitPatterns);
+  const matching = manifest.filter((a) => matchesSubmit(a.capture));
+  return matching.length > 0 ? matching : manifest;
 }
 
 /** Shortest string a response leaf must be to count as a server-issued token. */
@@ -3820,7 +3884,10 @@ export function extractActionSequence(
       if ((capture.status < 200 || capture.status >= 300) && !isServerRenderedFormSubmit(capture))
         return false;
       if (isNoiseUrl(capture.url)) return false;
-      if (index !== firstPrimaryIndex && isZeroVarianceRepeatCapture(capture, captures))
+      if (
+        index !== firstPrimaryIndex &&
+        isZeroVarianceUnlessDeclared(capture, captures, submitPatterns, matchesFoldReturn)
+      )
         return false;
       if (index !== firstPrimaryIndex && !matchesSubmit(capture)) return false;
       if (
@@ -4450,7 +4517,15 @@ export function extractGraphQLActionSequence(
     .filter(({ capture }) => {
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
-      if (isZeroVarianceRepeatCapture(capture, captures)) return false;
+      if (
+        isZeroVarianceUnlessDeclared(
+          capture,
+          captures,
+          submitPatterns,
+          (c) => matchesFoldReturn(c) || matchesFoldReturnResults(c)
+        )
+      )
+        return false;
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
@@ -5418,6 +5493,35 @@ function embedsOrigin(value: string, baseUrl: string): boolean {
 function substituteOrigin(value: string, baseUrl: string): string {
   if (baseUrl.length === 0) return value;
   return value.split(baseUrl).join(`$${"{"}context.baseUrl${"}"}`);
+}
+
+/**
+ * True for a request header whose captured value is a per-session credential
+ * (see CREDENTIAL_REQUEST_HEADERS) or a token-bearing custom header
+ * (`api-token`, `x-*-token`, `*-api-token`).
+ */
+function isCredentialHeaderName(lower: string): boolean {
+  // Cache validators share the "never frozen" set but are not credentials: they
+  // keep the old drop-when-unthreaded behaviour instead of throwing per call.
+  if (/^if-(none-match|match|modified-since|unmodified-since|range)$/.test(lower)) return false;
+  return (
+    CREDENTIAL_REQUEST_HEADERS.has(lower) ||
+    lower === "api-token" ||
+    /^x-.*(token|auth|api-key)$/.test(lower) ||
+    /-api-token$/.test(lower)
+  );
+}
+
+/**
+ * Template-literal interpolation that throws at call time instead of freezing
+ * a captured credential into generated source.
+ * TODO(recon): supply a runtime token source (bootstrap + html extractor).
+ */
+function credentialHeaderThrowExpr(headerName: string): string {
+  const msg = JSON.stringify(
+    `TODO: ${headerName} requires a runtime credential; none is wired (captured value intentionally not emitted)`
+  ).replace(/[`\\]|\$\{/g, (m) => (m === "`" ? "'" : m));
+  return `\${(() => { throw new Error(${msg}); })()}`;
 }
 
 /** Sorts recorded base headers into static, origin-derived and tenant-subdomain buckets. */
@@ -10671,6 +10775,12 @@ export function emitMultiStepExecuteHttp(
           else if (typeof value === "number" || typeof value === "boolean")
             joinValues.add(String(value));
         }
+        const templateTokens =
+          target.joinTemplate === undefined ? null : parseJoinTemplate(target.joinTemplate);
+        const composedKey = templateTokens
+          ? evalJoinTemplate(templateTokens, firstItem)
+          : undefined;
+        if (composedKey !== undefined) joinValues.add(composedKey);
         if (joinValues.size > 0) joinFieldValuesByStep.set(stepIndex, joinValues);
       }
     }
@@ -10975,6 +11085,9 @@ export function emitMultiStepExecuteHttp(
     }
 
     const joinCarryingHeaderNames = joinCarryingHeaderNamesByStep.get(i);
+    const boundHeaderNames = new Set(
+      collectHeaderBindings(actions as ActionStep[]).map((b) => b.targetHeader.toLowerCase())
+    );
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
@@ -11016,6 +11129,13 @@ export function emitMultiStepExecuteHttp(
       // a literal BASE_HEADERS entry (or dropped per-call) even when its
       // captured value was a real, already-produced response field.
       if (
+        isCredentialHeaderName(lower) &&
+        interpolated === v &&
+        !joinCarryingHeaderNames?.has(k) &&
+        !boundHeaderNames.has(lower)
+      ) {
+        perCallHeaders[k] = credentialHeaderThrowExpr(k);
+      } else if (
         lower === "api-token" ||
         lower === "authorization" ||
         joinCarryingHeaderNames?.has(k) ||
@@ -11453,8 +11573,21 @@ export function emitMultiStepExecuteHttp(
                   };
             })
             .filter(
-              (b): b is { value: string; replacement: string; isItemBound: boolean } => b !== null
+              (
+                b
+              ): b is {
+                value: string;
+                replacement: string;
+                isItemBound: boolean;
+              } => b !== null
             );
+          const templateBinding = joinTemplateValueBinding(
+            target,
+            firstItem,
+            itemVar,
+            scopedAccessor
+          );
+          if (templateBinding) valueBindings.push(templateBinding);
           // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
           // must never have a COINCIDENTAL threaded value spliced into it —
           // but the invariance verdict is per-capture, not per-field: a
@@ -11822,7 +11955,9 @@ export function emitMultiStepExecuteHttp(
         // recognizes as a prior step's produced state var must thread
         // per-call too, or its custom name freezes into an invariant
         // BASE_HEADERS-equivalent literal.
-        if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
+        if (isCredentialHeaderName(lower) && interpolated === v) {
+          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k)}\``);
+        } else if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
           perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
         }
       }
@@ -12551,6 +12686,62 @@ export function spliceFacetsIntoArrayVariable(
 }
 
 /**
+ * Wires a `navigateTo` step's declared `payloadField` to the GraphQL variable
+ * whose value co-varies with a URL query parameter across the flow. The
+ * correlation is by value, never by name: a URL parameter's value sequence
+ * over the navigateTo steps (consecutive duplicates collapsed) must equal a
+ * variable path's value sequence over the primary's payload-variant captures
+ * (same operation identity, capture order). When several variables co-vary
+ * with the step's parameters, the one whose leaf key names the payloadField
+ * wins; an ambiguity with no such tiebreak leaves the field unwired.
+ */
+export function correlateNavigateToParamsWithVariables(
+  flowSteps: readonly FlowStepInput[],
+  allCaptures: readonly Capture[],
+  primaryVariables: unknown
+): Map<string, string[]> {
+  const wired = new Map<string, string[]>();
+  const primary = allCaptures.find((c) => c.variables === primaryVariables);
+  if (primary === undefined) return wired;
+  const identity = operationGroupKey(primary);
+  const group = allCaptures.filter((c) => c.variables != null && operationGroupKey(c) === identity);
+  if (group.length < 2) return wired;
+  const collapse = (values: string[]): string =>
+    JSON.stringify(values.filter((v, i) => i === 0 || values[i - 1] !== v));
+  const steps = flowSteps.filter(
+    (s): s is Exclude<FlowStepInput, string> => typeof s !== "string" && s.navigateTo !== undefined
+  );
+  const queries = steps.map((s) => parseUrlQueryParams(s.navigateTo!));
+  const varSeq = new Map<string, string>();
+  for (const { path } of walkAllPrimitiveLeaves(primary.variables ?? {})) {
+    const seq = group.map((c) => readValueAtPath(c.variables ?? {}, path));
+    if (seq.some((v) => v === undefined || (v !== null && typeof v === "object"))) continue;
+    varSeq.set(path.join("."), collapse(seq.map(String)));
+  }
+  const paramSeq = new Map<string, string>();
+  for (const key of new Set(queries.flatMap((q) => [...q.keys()]))) {
+    const seq = queries.map((q) => q.get(key)).filter((v): v is string => v !== undefined);
+    if (new Set(seq).size > 1) paramSeq.set(key, collapse(seq));
+  }
+  steps.forEach((step, i) => {
+    const field = step.payloadField;
+    if (!field || step.payloadFieldNone) return;
+    const paths = new Set<string>();
+    for (const [key, value] of queries[i]!) {
+      const seq = paramSeq.get(key);
+      if (seq === undefined || value === undefined) continue;
+      for (const [path, vs] of varSeq) if (vs === seq) paths.add(path);
+    }
+    const leafMatch = [...paths].filter(
+      (p) => p.split(".").pop()!.toLowerCase() === field.toLowerCase()
+    );
+    const chosen = paths.size === 1 ? [...paths] : leafMatch;
+    if (chosen.length === 1 && !wired.has(field)) wired.set(field, chosen[0]!.split("."));
+  });
+  return wired;
+}
+
+/**
  * Renders the variables literal for the primary-operation getGql() call —
  * each key from the selected capture's own recorded variables is bound to
  * `payload.<Field>` when it correlates (case-insensitively) with one of the
@@ -12570,10 +12761,14 @@ export function renderGqlVariablesExpr(
   variables: unknown,
   payloadFieldNames: Set<string> | undefined,
   optionalFieldNames: ReadonlySet<string> = new Set(),
-  navigateToFacets: readonly NavigateToFacetBinding[] = []
+  navigateToFacets: readonly NavigateToFacetBinding[] = [],
+  fieldVariablePaths: ReadonlyMap<string, readonly string[]> = new Map()
 ): string {
   if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
+  const pathToField = new Map<string, string>(
+    [...fieldVariablePaths].map(([field, path]) => [path.join("."), field])
+  );
   const renderValue = (value: unknown): string => {
     const spliced =
       spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
@@ -12584,10 +12779,16 @@ export function renderGqlVariablesExpr(
     if (value !== null && typeof value === "object") return renderObject(value);
     return JSON.stringify(value);
   };
-  const renderObject = (obj: object): string => {
+  const renderObject = (obj: object, prefix: string[] = []): string => {
     const entries = Object.entries(obj).map(([key, value]) => {
-      const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
-      return `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${matchedField ? `payload.${matchedField}` : renderValue(value)}`;
+      const matchedField =
+        pathToField.get([...prefix, key].join(".")) ??
+        fields.find((field) => field.toLowerCase() === key.toLowerCase());
+      const nested =
+        !matchedField && value !== null && typeof value === "object" && !Array.isArray(value)
+          ? renderObject(value, [...prefix, key])
+          : null;
+      return `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${matchedField ? `payload.${matchedField}` : (nested ?? renderValue(value))}`;
     });
     return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
   };
@@ -12848,6 +13049,8 @@ export interface FoldPlan {
  * `drillArrayPath`. */
 export interface FoldTarget {
   joinFields: string[];
+  /** Declared computed composite key (see {@link FoldReturnSpec.joinTemplate}). */
+  joinTemplate?: string;
   drillStepIndex: number;
   drillArrayPath: string[];
   primaryMatchedItemIndex: number;
@@ -13228,7 +13431,14 @@ export function findFrozenVaryingDrillParams(
     }
   })();
   if (parsedBody !== undefined) {
+    // Same-operation GraphQL captures are one request issued with different
+    // inputs (payload variants), never a fold drill; a DIFFERENT operation is
+    // a different request whose body (query text) trivially differs, so it is
+    // no evidence of a frozen value either.
+    const isGraphql = capture.query != null || capture.operationName != null;
+    const ownIdentity = operationGroupKey(capture);
     const otherBodies = sameEndpointCaptures
+      .filter((c) => !isGraphql || operationGroupKey(c) === ownIdentity)
       .map((c) => {
         try {
           return typeof c.requestPostData === "string" && c.requestPostData.length > 0
@@ -13248,6 +13458,9 @@ export function findFrozenVaryingDrillParams(
       const stringValue = String(value);
       if (!isFrozenLiteral(stringValue)) continue;
       const fieldPath = path.join(".");
+      // A GraphQL `variables.*` value differing across same-operation captures
+      // is payload-variant evidence (a caller-supplied field), not a freeze.
+      if (isGraphql && path[0] === "variables") continue;
       const differing = otherBodies
         .map((otherBody) => readComparableBodyLeaf(parsedBody, otherBody, path))
         .find((v) => v !== undefined && String(v) !== stringValue);
@@ -13270,6 +13483,32 @@ export function findFrozenVaryingDrillParams(
     }
   }
   return frozen;
+}
+
+/**
+ * Payload-variant evidence: the dotted `variables` paths whose primitive value
+ * differs across captures sharing `primary`'s operation identity
+ * ({@link operationGroupKey}). Those captures are one request issued with
+ * different inputs, so each differing path is a caller-supplied payload field
+ * (never a fold drill). Order follows the primary's own variables.
+ */
+export function collectPayloadVariantFields(
+  primary: Capture,
+  allCaptures: readonly Capture[]
+): string[] {
+  const identity = operationGroupKey(primary);
+  const siblings = allCaptures.filter((c) => c !== primary && operationGroupKey(c) === identity);
+  const fields: string[] = [];
+  for (const { path, value } of walkAllPrimitiveLeaves(primary.variables ?? {})) {
+    if (
+      siblings.some((c) => {
+        const other = readValueAtPath(c.variables ?? {}, path);
+        return other !== undefined && other !== value;
+      })
+    )
+      fields.push(path.join("."));
+  }
+  return fields;
 }
 
 /** Renders a {@link FoldReturnSpec.drillParamBindings} entry's default value
@@ -13619,7 +13858,7 @@ function isFoldTargetAncestorScoped(
  * threaded field still bound to `itemVar` names a field that also lives on
  * an ancestor object under the SAME trailing path segment (e.g.
  * `itinerary.code` on both the item and, nested differently, on an
- * ancestor's `masterSailing.itinerary.code`) — even though that ancestor
+ * ancestor's `masterItem.itinerary.code`) — even though that ancestor
  * field's own VALUE differs from what was captured, since the ancestor's
  * representative sub-object (its master/lowest-price/etc. child) is not the
  * same runtime object as the loop item. Structural correspondence, not
@@ -14106,7 +14345,17 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // author deliberately recorded. A DECLARED self-fold is unaffected: it
       // comes from buildFoldPlanFromSpec's `allowSelfFold` path, which the
       // structural detector has no equivalent of.
-      if (!allowSelfEndpointDrill && endpointKey(drill.capture.url) === primaryEndpointKey) {
+      // A GraphQL capture's URL is shared by every operation, so endpoint
+      // equality alone would also reject a genuine drill of a DIFFERENT
+      // operation. Same-operation identity (operationGroupKey) is what makes a
+      // capture a payload variant of the primary: it differs only in
+      // variables, is evidence for payload fields, and is never a drill.
+      if (
+        !allowSelfEndpointDrill &&
+        endpointKey(drill.capture.url) === primaryEndpointKey &&
+        (!isGraphQLCapture(primary.capture) ||
+          operationGroupKey(drill.capture) === operationGroupKey(primary.capture))
+      ) {
         continue;
       }
       if (consumedIndices.has(drillIndex)) continue;
@@ -14417,6 +14666,12 @@ export interface FoldReturnSpec {
    * a join key nested under an object, not just a top-level property, can be
    * declared. */
   joinFields: string[];
+  /** Computed composite join key, e.g. `{fieldA}{fieldB|yyMMdd}{fieldC}`:
+   * `{path}` reads a primary-row field (dot path), `{path|fmt}` formats it as a
+   * date (`yyyy yy MM dd HH mm ss` tokens, UTC). Literal text is kept. When
+   * present, a drill request value equal to the template's value on the
+   * captured primary row is emitted as that template evaluated per row. */
+  joinTemplate?: string;
   /** Binds a drill request's query params to fields on the CALLER's payload
    * instead of a primary-response field or a frozen literal — the only two
    * sources {@link findFrozenVaryingDrillParams} otherwise draws from. Keyed
@@ -14436,6 +14691,131 @@ export interface FoldReturnSpec {
   attachAs?: string;
   /** Name of the caller payload flag gating this entry (array form). */
   payloadFlag?: string;
+}
+
+/** One piece of a {@link FoldReturnSpec.joinTemplate}. */
+export type JoinTemplateToken =
+  | { kind: "literal"; text: string }
+  | { kind: "field"; field: string; format?: string };
+
+const JOIN_DATE_FORMAT_RE = /^(?:yyyy|yy|MM|dd|HH|mm|ss|[^A-Za-z])+$/;
+
+/** Parses `{a}{date|yyMMdd}{b}`; `null` for an unbalanced brace, empty
+ * placeholder, template with no placeholder, or an unsupported date format. */
+export function parseJoinTemplate(template: string): JoinTemplateToken[] | null {
+  const tokens: JoinTemplateToken[] = [];
+  let literal = "";
+  let i = 0;
+  while (i < template.length) {
+    const ch = template[i]!;
+    if (ch === "}") return null;
+    if (ch !== "{") {
+      literal += ch;
+      i++;
+      continue;
+    }
+    const close = template.indexOf("}", i);
+    if (close === -1) return null;
+    const inner = template.slice(i + 1, close);
+    const [field, format, ...rest] = inner.split("|");
+    if (rest.length > 0 || field === undefined || field.trim() === "") return null;
+    if (format !== undefined && !JOIN_DATE_FORMAT_RE.test(format)) return null;
+    if (literal !== "") tokens.push({ kind: "literal", text: literal });
+    literal = "";
+    tokens.push({
+      kind: "field",
+      field: field.trim(),
+      ...(format !== undefined ? { format } : {}),
+    });
+    i = close + 1;
+  }
+  if (literal !== "") tokens.push({ kind: "literal", text: literal });
+  return tokens.some((t) => t.kind === "field") ? tokens : null;
+}
+
+/** Distinct primary-row fields a template reads, in order. */
+export function joinTemplateFields(tokens: readonly JoinTemplateToken[]): string[] {
+  const out: string[] = [];
+  for (const t of tokens) if (t.kind === "field" && !out.includes(t.field)) out.push(t.field);
+  return out;
+}
+
+function formatJoinDate(value: unknown, format: string): string | null {
+  const raw = typeof value === "string" || typeof value === "number" ? value : null;
+  if (raw === null) return null;
+  const iso =
+    typeof raw === "string"
+      ? /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2}))?/.exec(raw)
+      : null;
+  let parts: number[];
+  if (iso) parts = [1, 2, 3, 4, 5, 6].map((n) => Number(iso[n] ?? 0));
+  else {
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return null;
+    parts = [
+      d.getUTCFullYear(),
+      d.getUTCMonth() + 1,
+      d.getUTCDate(),
+      d.getUTCHours(),
+      d.getUTCMinutes(),
+      d.getUTCSeconds(),
+    ];
+  }
+  const [y, mo, d, h, mi, s] = parts as [number, number, number, number, number, number];
+  const pad = (n: number, w = 2): string => String(n).padStart(w, "0");
+  return format.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (tok) =>
+    tok === "yyyy"
+      ? pad(y, 4)
+      : tok === "yy"
+        ? pad(y % 100)
+        : tok === "MM"
+          ? pad(mo)
+          : tok === "dd"
+            ? pad(d)
+            : tok === "HH"
+              ? pad(h)
+              : tok === "mm"
+                ? pad(mi)
+                : pad(s)
+  );
+}
+
+/** Evaluates a template against one primary row; `undefined` when any
+ * referenced field is missing or an unusable date. */
+export function evalJoinTemplate(
+  tokens: readonly JoinTemplateToken[],
+  item: unknown
+): string | undefined {
+  let out = "";
+  for (const t of tokens) {
+    if (t.kind === "literal") {
+      out += t.text;
+      continue;
+    }
+    const v = readValueAtPath(item, t.field.split("."));
+    if (t.format !== undefined) {
+      const f = formatJoinDate(v, t.format);
+      if (f === null) return undefined;
+      out += f;
+    } else if (typeof v === "string" && v.length > 0) out += v;
+    else if (typeof v === "number" || typeof v === "boolean") out += String(v);
+    else return undefined;
+  }
+  return out;
+}
+
+/** Emits a TS expression computing the template for `itemVar` at runtime —
+ * the emitted twin of {@link evalJoinTemplate}. `accessor` renders a field read. */
+export function emitJoinTemplateExpr(
+  tokens: readonly JoinTemplateToken[],
+  accessor: (field: string) => string
+): string {
+  const parts = tokens.map((t) => {
+    if (t.kind === "literal") return JSON.stringify(t.text);
+    if (t.format === undefined) return `String(${accessor(t.field)})`;
+    return `((v: unknown) => { const m = typeof v === "string" ? /^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2}):(\\d{2}))?/.exec(v) : null; const d = m ? null : new Date(v as string | number); const p = m ? [1, 2, 3, 4, 5, 6].map((n) => Number(m[n] ?? 0)) : d ? [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()] : []; const z = (n: number | undefined, w = 2) => String(n ?? 0).padStart(w, "0"); return ${JSON.stringify(t.format)}.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (k) => k === "yyyy" ? z(p[0], 4) : k === "yy" ? z((p[0] ?? 0) % 100) : k === "MM" ? z(p[1]) : k === "dd" ? z(p[2]) : k === "HH" ? z(p[3]) : k === "mm" ? z(p[4]) : z(p[5])); })(${accessor(t.field)})`;
+  });
+  return parts.join(" + ");
 }
 
 /**
@@ -14494,7 +14874,8 @@ function parseFoldReturnEntry(
     endpointPattern,
     resultsPath: declaredResultsPath,
     drillResultsPath,
-    joinFields,
+    joinFields: declaredJoinFields,
+    joinTemplate,
     drillParamBindings,
     attachAs,
     payloadFlag,
@@ -14503,10 +14884,22 @@ function parseFoldReturnEntry(
     resultsPath?: unknown;
     drillResultsPath?: unknown;
     joinFields?: unknown;
+    joinTemplate?: unknown;
     drillParamBindings?: unknown;
     attachAs?: unknown;
     payloadFlag?: unknown;
   };
+  const templateTokens =
+    joinTemplate === undefined
+      ? undefined
+      : typeof joinTemplate === "string"
+        ? parseJoinTemplate(joinTemplate)
+        : null;
+  if (templateTokens === null) return null;
+  const joinFields =
+    declaredJoinFields === undefined && templateTokens !== undefined
+      ? joinTemplateFields(templateTokens)
+      : declaredJoinFields;
   const resultsPath =
     declaredResultsPath === undefined ? inheritedResultsPath : declaredResultsPath;
   const optNonEmptyString = (v: unknown): boolean =>
@@ -14531,6 +14924,7 @@ function parseFoldReturnEntry(
     resultsPath,
     ...(drillResultsPath !== undefined ? { drillResultsPath: drillResultsPath as string } : {}),
     joinFields,
+    ...(joinTemplate !== undefined ? { joinTemplate: joinTemplate as string } : {}),
     ...(attachAs !== undefined ? { attachAs: attachAs as string } : {}),
     ...(payloadFlag !== undefined ? { payloadFlag: payloadFlag as string } : {}),
     ...(parsedDrillParamBindings ? { drillParamBindings: parsedDrillParamBindings } : {}),
@@ -14610,7 +15004,11 @@ function parseDrillParamBindings(raw: unknown): FoldReturnSpec["drillParamBindin
   const entries = Object.entries(raw as Record<string, unknown>);
   const parsed: Record<
     string,
-    { payloadField: string; type: "int" | "string" | "boolean"; default: string | number | boolean }
+    {
+      payloadField: string;
+      type: "int" | "string" | "boolean";
+      default: string | number | boolean;
+    }
   > = {};
   for (const [paramName, entry] of entries) {
     if (entry === null || typeof entry !== "object") return null;
@@ -14928,20 +15326,26 @@ export function collectRequestValuesIncludingHeaders(capture: Capture): Set<stri
 function resolveSpecMatchedPrimaryItemIndex(
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
-  drillCapture: Capture
+  drillCapture: Capture,
+  joinTemplate?: string
 ): number | null {
   const requestValues = collectRequestValuesIncludingHeaders(drillCapture);
   if (requestValues.size === 0) return null;
-  const matchedIndex = primaryItems.findIndex((item) =>
-    joinFields.every((field) => {
+  const templateTokens = joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
+  const matchedIndex = primaryItems.findIndex((item) => {
+    // A declared computed key matches on its composed value alone: the drill
+    // never carries the template's constituent fields separately.
+    const composed = templateTokens ? evalJoinTemplate(templateTokens, item) : undefined;
+    if (composed !== undefined && composed !== "" && requestValues.has(composed)) return true;
+    return joinFields.every((field) => {
       const value = readValueAtPath(item, field.split("."));
       return (
         (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
         (typeof value === "number" && requestValues.has(String(value))) ||
         (typeof value === "boolean" && requestValues.has(String(value)))
       );
-    })
-  );
+    });
+  });
   return matchedIndex === -1 ? null : matchedIndex;
 }
 
@@ -14959,20 +15363,26 @@ function resolveSpecMatchedPrimaryItemIndex(
 function resolveSpecMatchedPrimaryItemIndexFromResponse(
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
-  drillCapture: Capture
+  drillCapture: Capture,
+  joinTemplate?: string
 ): number | null {
   const responseValues = collectResponseLeafValues(drillCapture);
   if (responseValues.size === 0) return null;
-  const matchedIndex = primaryItems.findIndex((item) =>
-    joinFields.every((field) => {
+  const templateTokens = joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
+  const matchedIndex = primaryItems.findIndex((item) => {
+    // A declared computed key matches on its composed value alone: the drill
+    // never carries the template's constituent fields separately.
+    const composed = templateTokens ? evalJoinTemplate(templateTokens, item) : undefined;
+    if (composed !== undefined && composed !== "" && responseValues.has(composed)) return true;
+    return joinFields.every((field) => {
       const value = readValueAtPath(item, field.split("."));
       return (
         (typeof value === "string" && value.length > 0 && responseValues.has(value)) ||
         (typeof value === "number" && responseValues.has(String(value))) ||
         (typeof value === "boolean" && responseValues.has(String(value)))
       );
-    })
-  );
+    });
+  });
   return matchedIndex === -1 ? null : matchedIndex;
 }
 
@@ -15001,6 +15411,26 @@ function buildRequestValueIndex<T extends { capture: Capture }>(
   return index;
 }
 
+/** The value binding that swaps a drill request value equal to the captured
+ * row's composed {@link FoldReturnSpec.joinTemplate} for the template
+ * evaluated per row; `null` when the target declares no template. */
+function joinTemplateValueBinding(
+  target: Pick<FoldTarget, "joinTemplate">,
+  firstItem: unknown,
+  itemVar: string,
+  scopedAccessor: (varName: string, field: string) => string
+): { value: string; replacement: string; isItemBound: boolean } | null {
+  if (target.joinTemplate === undefined) return null;
+  const tokens = parseJoinTemplate(target.joinTemplate);
+  const value = tokens ? evalJoinTemplate(tokens, firstItem) : undefined;
+  if (!tokens || value === undefined) return null;
+  return {
+    value,
+    replacement: `\${${emitJoinTemplateExpr(tokens, (f) => scopedAccessor(itemVar, f))}}`,
+    isItemBound: true,
+  };
+}
+
 /** Every string/numeric/boolean {@link FoldReturnSpec.joinFields} value
  * present on any of `primaryItems`, stringified exactly as
  * {@link resolveSpecMatchedPrimaryItemIndex} compares them — the set of
@@ -15010,10 +15440,16 @@ function buildRequestValueIndex<T extends { capture: Capture }>(
  * considering every action index in range. */
 function collectPrimaryJoinValues(
   primaryItems: readonly Record<string, unknown>[],
-  joinFields: readonly string[]
+  joinFields: readonly string[],
+  joinTemplate?: string
 ): Set<string> {
   const values = new Set<string>();
+  const tokens = joinTemplate === undefined ? null : parseJoinTemplate(joinTemplate);
   for (const item of primaryItems) {
+    if (tokens) {
+      const composed = evalJoinTemplate(tokens, item);
+      if (composed !== undefined) values.add(composed);
+    }
     for (const field of joinFields) {
       const value = readValueAtPath(item, field.split("."));
       if (typeof value === "string" && value.length > 0) values.add(value);
@@ -15094,7 +15530,8 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
   // could ever match. Walking this instead of every index down to
   // `primaryStepIndex` is what collapses the backward search from
   // O(actions) to O(occurrences of the actual join value) per candidate.
-  candidateEntryIndicesDescending: readonly number[]
+  candidateEntryIndicesDescending: readonly number[],
+  joinTemplate?: string
 ): { entryIndex: number; primaryMatchedItemIndex: number } | null {
   resolveSpecMatchedPrimaryItemIndexAlongChainCallCount++;
   for (const entryIndex of candidateEntryIndicesDescending) {
@@ -15107,7 +15544,8 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
             const resolved = resolveSpecMatchedPrimaryItemIndex(
               primaryItems,
               joinFields,
-              actions[entryIndex]!.capture
+              actions[entryIndex]!.capture,
+              joinTemplate
             );
             matchedItemIndexCache.set(entryIndex, resolved);
             return resolved;
@@ -15335,7 +15773,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       primaryArrayPath
     );
     if (!primaryItems) continue;
-    const joinValues = collectPrimaryJoinValues(primaryItems, spec.joinFields);
+    const joinValues = collectPrimaryJoinValues(primaryItems, spec.joinFields, spec.joinTemplate);
     const candidateEntryIndicesDescending = collectCandidateEntryIndicesDescending(
       requestValueIndex,
       joinValues,
@@ -15408,7 +15846,8 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         spec.joinFields,
         drillStepIndex,
         matchedItemIndexCache,
-        candidateEntryIndicesDescending
+        candidateEntryIndicesDescending,
+        spec.joinTemplate
       );
       // A request-carried join value (checked above, across this whole
       // primary/drill chain) disambiguates unambiguously; only fall back to
@@ -15420,7 +15859,8 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
           const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndexFromResponse(
             primaryItems,
             spec.joinFields,
-            drill.capture
+            drill.capture,
+            spec.joinTemplate
           );
           return primaryMatchedItemIndex === null
             ? null
@@ -15482,6 +15922,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         targets: [
           {
             joinFields: spec.joinFields,
+            ...(spec.joinTemplate !== undefined ? { joinTemplate: spec.joinTemplate } : {}),
             drillStepIndex: entryIndex,
             drillArrayPath: drillArrayPath ?? [],
             primaryMatchedItemIndex,
@@ -16821,7 +17262,11 @@ export function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   foldMergeLines: string[];
   fetchCall:
     | { kind: "gql"; gqlOperationNameExpr: string; queryConstName: string }
-    | { kind: "rest"; endpointPath: string; getInputModel?: GetInputModel | null };
+    | {
+        kind: "rest";
+        endpointPath: string;
+        getInputModel?: GetInputModel | null;
+      };
   /** Consumer-declared domain facts (see {@link ReconValueConstraints}) — when
    * the detected pagination count-key field has a declared `max`, that real
    * API maximum is used as the `PAGE_SIZE` fallback instead of whatever page
@@ -17539,7 +17984,7 @@ export function emitContractTsParts(opts: {
     maxAttempts: resolvedMaxAttempts = null,
     isSubmissionFlow = false,
     inputBody,
-    hasMultipartStep = false,
+    hasMultipartStep: hasMultipartStepRaw = false,
     actionSteps = [],
     foldReturnSpec = null,
     extraFoldSpecs = ambientExtraDrillSpecs,
@@ -17631,6 +18076,16 @@ export function emitContractTsParts(opts: {
             aggregateUnitBasisFindingsByPath,
             ...(leniencyForUnprovenLeaves ? { singleEntityEvidence: true } : {}),
           });
+  // D10: a flow whose every matched capture is a read (GraphQL query or
+  // non-mutating HTTP method) is never a job application, whatever fields the
+  // captured body happens to carry; it gets no applicant/tracking schema and
+  // no multipart forcing. A declared submission flow is never read-only.
+  const isReadOnlyQueryFlow =
+    !isSubmissionFlow &&
+    (actionSteps.length > 0
+      ? actionSteps.every((s) => !isMutationCapture(s.capture))
+      : gql && gqlQuery != null && !/^\s*mutation\b/.test(gqlQuery));
+  const hasMultipartStep = isReadOnlyQueryFlow ? false : hasMultipartStepRaw;
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -17654,7 +18109,7 @@ export function emitContractTsParts(opts: {
   // one of ApplicantContactSchema's own field names (case-insensitively,
   // checked at any depth via walkAllPrimitiveLeaves) before the template
   // applies (see recon-generate-payload-schema-mismatch.md).
-  const usesApplicantContactSchema = contractUsesApplicantContactSchema({
+  const usesApplicantContactSchemaRaw = contractUsesApplicantContactSchema({
     inputBody,
     isSubmissionFlow,
     browserFlowOnly: omitExecuteHttp,
@@ -17664,6 +18119,7 @@ export function emitContractTsParts(opts: {
     flowSteps: contractFlowSteps,
     hasMultipartStep,
   });
+  const usesApplicantContactSchema = !isReadOnlyQueryFlow && usesApplicantContactSchemaRaw;
   const sensitivePolicy = buildSensitiveRedactionPolicy(
     contractFlowSteps,
     usesApplicantContactSchema
@@ -18152,7 +18608,7 @@ export function emitContractTsParts(opts: {
   const nonJobBrowserOnly =
     applicantContract === false ||
     (omitExecuteHttp && isSubmissionFlow === true && !usesApplicantContactSchema);
-  const mergesTracking = !getInputModel && !nonJobBrowserOnly;
+  const mergesTracking = !getInputModel && !isReadOnlyQueryFlow && !nonJobBrowserOnly;
   const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
@@ -18279,19 +18735,26 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     extractNavigateToFacetOrder(contractFlowSteps, process.env),
     facetResolutionPool(actionSteps, allCaptures)
   );
+  const urlParamVariablePaths = correlateNavigateToParamsWithVariables(
+    contractFlowSteps,
+    allCaptures,
+    gqlVariables
+  );
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(
         gqlVariables,
         payloadFieldNames,
         optionalPayloadFieldNames,
-        navigateToFacets
+        navigateToFacets,
+        urlParamVariablePaths
       )
     : paginationSignal
       ? renderGqlVariablesExpr(
           gqlVariables,
           payloadFieldNames,
           optionalPayloadFieldNames,
-          navigateToFacets
+          navigateToFacets,
+          urlParamVariablePaths
         )
       : "{ q: payload.query }";
 
@@ -18515,8 +18978,21 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                   };
             })
             .filter(
-              (b): b is { value: string; replacement: string; isItemBound: boolean } => b !== null
+              (
+                b
+              ): b is {
+                value: string;
+                replacement: string;
+                isItemBound: boolean;
+              } => b !== null
             );
+          const templateBinding = joinTemplateValueBinding(
+            target,
+            firstItem,
+            itemVar,
+            scopedAccessor
+          );
+          if (templateBinding) valueBindings.push(templateBinding);
           // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
           // must never have a COINCIDENTAL threaded value spliced into it —
           // see emitMultiStepExecuteHttp's identical `parameterize` guard
@@ -20219,7 +20695,7 @@ ${flowStepsBlock}
     logger,
     anthropic: buildAnthropicClient(),
     rephraseModel: buildRephraseModel(),
-    uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}${usesEmailStep ? "\n    allocatedInbox: allocatedInbox," : ""}
+    uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}${usesEmailStep ? "\n    allocatedInbox: allocatedInbox," : ""}${!isSubmissionFlow ? "\n    readOnly: true," : ""}
     sessionProxy,
   });
 
@@ -21308,7 +21784,20 @@ export async function main(): Promise<void> {
         );
       }
     }
-    const manifestActionCaptures = resolveManifestActionSequence(runRoot, activeCaptures);
+    const resolvedManifestActionCaptures = resolveManifestActionSequence(runRoot, activeCaptures);
+    const manifestActionCaptures =
+      resolvedManifestActionCaptures === null
+        ? null
+        : filterManifestByDeclaredSubmit(resolvedManifestActionCaptures, submitPatterns);
+    if (
+      resolvedManifestActionCaptures !== null &&
+      manifestActionCaptures !== null &&
+      manifestActionCaptures.length < resolvedManifestActionCaptures.length
+    ) {
+      logger.info(
+        `submission selection: filtered submit-manifest.json from ${resolvedManifestActionCaptures.length} to ${manifestActionCaptures.length} capture(s) matching the declared submit pattern`
+      );
+    }
     // A manifest only ever records submit-pattern matches, so it can never
     // carry a declared foldReturn drill-down the heuristic sequence found
     // past the submit step — and a manifest padded by re-fired submits can
@@ -21325,7 +21814,7 @@ export async function main(): Promise<void> {
         manifestLacksDeclaredFoldDrill);
     if (manifestActionCaptures !== null && manifestLacksDeclaredFoldDrill) {
       logger.info(
-        `submission selection: ignoring submit-manifest.json (${manifestActionCaptures.length} capture(s)) because it lacks the declared foldReturn drill-down (endpointPattern: ${foldReturnSpec?.endpointPattern}) the heuristic action sequence (${heuristicActionCaptures.length} capture(s)) contains`
+        `submission selection: ignoring submit-manifest.json (${resolvedManifestActionCaptures?.length ?? manifestActionCaptures.length} capture(s)) because it lacks the declared foldReturn drill-down (endpointPattern: ${foldReturnSpec?.endpointPattern}) the heuristic action sequence (${heuristicActionCaptures.length} capture(s)) contains`
       );
     } else if (manifestActionCaptures !== null && manifestUndercounts) {
       logger.info(

@@ -25,3 +25,40 @@ describe("extractHtmlIssuedTokens", () => {
     expect(extractHtmlIssuedTokens({ a: 1 })).toEqual([]);
   });
 });
+
+import { extractHtmlBearerTokens, locateHtmlBearerToken } from "@/recon/html-state-producers";
+
+const jwt = (c: object) =>
+  `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify(c)).toString("base64url")}.sig_abc-123`;
+const userT = jwt({ typ: "userToken" });
+const clientT = jwt({ typ: "clientToken" });
+const page = (rows: string) => `<script>self.__next_f.push([1,${JSON.stringify(rows)}])</script>`;
+
+describe("HTML bearer token locator", () => {
+  it("reads RSC row at exact length when next row id follows", () => {
+    const html = page(`a:T${clientT.length.toString(16)},${clientT}b:["x"]\n`);
+    const r = extractHtmlBearerTokens(html);
+    expect(r).toHaveLength(1);
+    expect(r[0]?.token).toBe(clientT);
+    expect(r[0]?.row).toBe("a");
+  });
+  it("selects by claims, not position", () => {
+    const html = page(
+      `1:T${userT.length.toString(16)},${userT}2:T${clientT.length.toString(16)},${clientT}`
+    );
+    const r = locateHtmlBearerToken(["<p/>", html], { claims: { typ: "clientToken" } });
+    expect(r?.token).toBe(clientT);
+    expect(r?.document).toBe(1);
+    expect(r?.row).toBe("2");
+  });
+  it("locates exact captured value with document and row", () => {
+    const html = page(`7:T${userT.length.toString(16)},${userT}`);
+    expect(locateHtmlBearerToken([html], { value: userT })).toMatchObject({
+      document: 0,
+      row: "7",
+    });
+  });
+  it("returns null when absent", () => {
+    expect(locateHtmlBearerToken(["<p>hi</p>", 5], { value: userT })).toBeNull();
+  });
+});
