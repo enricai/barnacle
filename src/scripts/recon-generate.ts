@@ -14495,9 +14495,18 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // capture a payload variant of the primary: it differs only in
       // variables, is evidence for payload fields, and is never a drill.
       if (
-        !(typeof allowSelfEndpointDrill === "function"
+        (!(typeof allowSelfEndpointDrill === "function"
           ? allowSelfEndpointDrill(drill.capture)
-          : allowSelfEndpointDrill) &&
+          : allowSelfEndpointDrill) ||
+          // A declared pattern that also matches the search URL (unanchored
+          // sub-resource pattern) must not turn a POST search re-queried
+          // with a different body into a drill of itself.
+          (drill.capture.method.toUpperCase() === "POST" &&
+            drill.capture.method === primary.capture.method &&
+            typeof drill.capture.requestPostData === "string" &&
+            typeof primary.capture.requestPostData === "string" &&
+            drill.capture.requestPostData !== primary.capture.requestPostData &&
+            sameJsonKeyShape(drill.capture.requestPostData, primary.capture.requestPostData))) &&
         endpointKey(drill.capture.url) === primaryEndpointKey &&
         (!isGraphQLCapture(primary.capture) ||
           operationGroupKey(drill.capture) === operationGroupKey(primary.capture))
@@ -16595,6 +16604,22 @@ function requestValuesByKeyIncludingHeaders(capture: Capture): RequestAndRespons
   const result = { byKey, pathSegments };
   requestValuesByKeyCache.set(capture, result);
   return result;
+}
+
+/** True when both bodies are JSON objects with the same top-level key set —
+ * the same request re-issued with different values (a facet re-query), as
+ * opposed to a drill whose body carries different parameters. */
+function sameJsonKeyShape(a: string, b: string): boolean {
+  try {
+    const x: unknown = JSON.parse(a);
+    const y: unknown = JSON.parse(b);
+    if (!x || !y || typeof x !== "object" || typeof y !== "object") return false;
+    const kx = Object.keys(x).sort().join("\0");
+    const ky = Object.keys(y).sort().join("\0");
+    return kx === ky;
+  } catch {
+    return false;
+  }
 }
 
 /** Matches a JSON path segment that's a bare array INDEX ("0", "12", ...)
