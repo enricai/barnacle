@@ -14742,13 +14742,11 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
  */
 export type SelfEndpointDrillPolicy = boolean | ((capture: Capture) => boolean);
 
-let ambientDeclaredSubmitMatcher: (capture: Capture) => boolean = () => false;
-
 /** No foldReturn: forbid all; foldReturn + declared submit: forbid submit variants. */
 function selfEndpointDrillPolicyFor(
   foldReturnSpec: FoldReturnSpec | null
 ): SelfEndpointDrillPolicy {
-  return foldReturnSpec === null ? false : ambientDeclaredSubmitMatcher;
+  return foldReturnSpec === null ? false : (foldReturnSpec.isDeclaredSubmit ?? (() => false));
 }
 
 export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
@@ -14924,6 +14922,10 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
  * join (e.g. `accountId` + `region`) can be declared, not just a single field.
  */
 export interface FoldReturnSpec {
+  /** The flow's declared-submit matcher, attached once the flow's submit
+   * patterns are known. A same-endpoint capture it accepts is a payload
+   * variant of the search, never a per-item drill. Absent: accepts nothing. */
+  isDeclaredSubmit?: (capture: Capture) => boolean;
   /** Matches the drill-down call whose response folds onto the primary
    * results (same matching semantics as `submitEndpointPattern`). */
   endpointPattern: string;
@@ -21784,6 +21786,7 @@ export async function main(): Promise<void> {
     }
   })();
 
+  let foldReturnSpecsForSubmit: FoldReturnSpec[] = [];
   const {
     flowSteps,
     frameSelector,
@@ -21807,6 +21810,7 @@ export async function main(): Promise<void> {
     const allFoldSpecs = flowFileContents === null ? null : parseFoldReturnSpecs(flowFileContents);
     const foldReturnSpec = allFoldSpecs === null ? null : allFoldSpecs[0]!;
     ambientExtraDrillSpecs = allFoldSpecs === null ? [] : allFoldSpecs.slice(1);
+    foldReturnSpecsForSubmit = allFoldSpecs ?? [];
     // Same independence rule as `foldReturnSpec` above: an empty spec
     // (missing/malformed declaration) is indistinguishable from "not
     // declared" and preserves today's byte-identical output.
@@ -21886,7 +21890,8 @@ export async function main(): Promise<void> {
     endpoint: submitEndpointPattern,
     body: submitBodyPattern,
   };
-  ambientDeclaredSubmitMatcher = compileDeclaredSubmitMatcher(submitPatterns);
+  const declaredSubmitMatcher = compileDeclaredSubmitMatcher(submitPatterns);
+  for (const spec of foldReturnSpecsForSubmit) spec.isDeclaredSubmit = declaredSubmitMatcher;
 
   // Resolved once and threaded down, never captured into a module const: a
   // module-level const would freeze at import time, so an env var set after
