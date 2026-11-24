@@ -39,7 +39,7 @@ describe("declared selection is honored before the zero-variance veto", () => {
         endpointPattern: "/graphql",
         resultsPath: "data.items",
         joinFields: ["id"],
-      },
+      }
     );
     expect(kept.length).toBe(3);
   });
@@ -65,7 +65,7 @@ describe("zero-variance veto still applies to undeclared captures", () => {
         endpointPattern: "/graphql",
         resultsPath: "data.items",
         joinFields: ["id"],
-      },
+      }
     );
     expect(JSON.stringify(kept).includes("chrome")).toBe(false);
   });
@@ -80,12 +80,9 @@ describe("zero-variance veto still applies to undeclared captures", () => {
       mk("2026-01-01T00:00:02.000Z", s),
       mk("2026-01-01T00:00:03.000Z", s),
     ];
-    const kept = extractActionSequence(
-      caps,
-      { endpoint: "/v1/book", body: null },
-      null,
-      ["api.example.com"],
-    );
+    const kept = extractActionSequence(caps, { endpoint: "/v1/book", body: null }, null, [
+      "api.example.com",
+    ]);
 
     expect(JSON.stringify(kept).includes("/v1/book")).toBe(true);
     expect(JSON.stringify(kept).includes("/v1/chrome")).toBe(false);
@@ -93,17 +90,9 @@ describe("zero-variance veto still applies to undeclared captures", () => {
 });
 
 describe("anonymous search and once-fired drill survive the veto with the search as primary", () => {
-  const ANON =
-    "query ($input: ItemsInput!) { allItems(input: $input) { itemId } }";
-  const DRILL =
-    "query ItemDetail($itemId: ID!) { itemDetail(id: $itemId) { itemId } }";
-  const mk = (
-    ts: string,
-    query: string,
-    variables: unknown,
-    name: string | null,
-    body: unknown,
-  ) =>
+  const ANON = "query ($input: ItemsInput!) { allItems(input: $input) { itemId } }";
+  const DRILL = "query ItemDetail($itemId: ID!) { itemDetail(id: $itemId) { itemId } }";
+  const mk = (ts: string, query: string, variables: unknown, name: string | null, body: unknown) =>
     ({
       ...read(ts, "x", body),
       requestPostData: JSON.stringify({
@@ -123,50 +112,14 @@ describe("anonymous search and once-fired drill survive the veto with the search
       },
     };
     const caps = [
-      mk(
-        "2026-01-01T00:00:00.000Z",
-        "query Nav { menu { id } }",
-        {},
-        "Nav",
-        {},
-      ),
-      mk(
-        "2026-01-01T00:00:01.000Z",
-        "query Nav { menu { id } }",
-        {},
-        "Nav",
-        {},
-      ),
-      mk(
-        "2026-01-01T00:00:02.000Z",
-        "query Nav { menu { id } }",
-        {},
-        "Nav",
-        {},
-      ),
-      mk(
-        "2026-01-01T00:00:04.000Z",
-        ANON,
-        { input: { currency: "USD" } },
-        null,
-        rows,
-      ),
-      mk(
-        "2026-01-01T00:00:05.000Z",
-        ANON,
-        { input: { currency: "GBP" } },
-        null,
-        rows,
-      ),
-      mk(
-        "2026-01-01T00:00:06.000Z",
-        DRILL,
-        { itemId: "item-bbb-222" },
-        "ItemDetail",
-        {
-          data: { itemDetail: { itemId: "item-bbb-222" } },
-        },
-      ),
+      mk("2026-01-01T00:00:00.000Z", "query Nav { menu { id } }", {}, "Nav", {}),
+      mk("2026-01-01T00:00:01.000Z", "query Nav { menu { id } }", {}, "Nav", {}),
+      mk("2026-01-01T00:00:02.000Z", "query Nav { menu { id } }", {}, "Nav", {}),
+      mk("2026-01-01T00:00:04.000Z", ANON, { input: { currency: "USD" } }, null, rows),
+      mk("2026-01-01T00:00:05.000Z", ANON, { input: { currency: "GBP" } }, null, rows),
+      mk("2026-01-01T00:00:06.000Z", DRILL, { itemId: "item-bbb-222" }, "ItemDetail", {
+        data: { itemDetail: { itemId: "item-bbb-222" } },
+      }),
     ];
     const kept = extractGraphQLActionSequence(
       caps,
@@ -175,7 +128,7 @@ describe("anonymous search and once-fired drill survive the veto with the search
         endpointPattern: "/graphql",
         resultsPath: "data.allItems",
         joinFields: ["itemId"],
-      },
+      }
     );
     const queries = kept.map((a) => a.capture.query);
     expect(queries).toContain(DRILL);
@@ -184,12 +137,10 @@ describe("anonymous search and once-fired drill survive the veto with the search
     const plans = resolveFoldPlan(
       kept.map((a) => ({ ...a, isMultipart: false })),
       null,
-      "/graphql::allItems",
+      "/graphql::allItems"
     );
     expect(plans).toHaveLength(1);
     expect(kept[plans[0]!.primaryStepIndex]!.capture.query).toBe(ANON);
-    expect(kept[plans[0]!.targets[0]!.drillStepIndex]!.capture.query).toBe(
-      DRILL,
-    );
+    expect(kept[plans[0]!.targets[0]!.drillStepIndex]!.capture.query).toBe(DRILL);
   });
 });
