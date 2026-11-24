@@ -17103,8 +17103,10 @@ export async function executeStepWithHealing(params: {
       actSucceeded: record.actResultSuccess === true,
       contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
       resolvedElementNamesStepTarget: resolvedTargetNamesStep,
+      // A shrunk page is a new page; an equal-length or grown one with grown
+      // markers is the same form showing validation.
       blockedSubmitShape:
-        (visibleTextLengthOfSignature(post.visibleTextSignature) ?? 0) >
+        (visibleTextLengthOfSignature(post.visibleTextSignature) ?? 0) >=
         (visibleTextLengthOfSignature(advanceBaseline.visibleTextSignature) ?? 0),
     });
     if (
@@ -17438,7 +17440,9 @@ export async function executeStepWithHealing(params: {
         networkAdvanced: networkIsRealAdvance,
         pageAdvanced: settledPageAdvanced,
         invalidMarkerCount,
-        invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
+        // Markers that rendered after the settled read still count as growth.
+        invalidMarkerDelta:
+          Math.max(postInvalidMarkerCount, invalidMarkerCount) - preInvalidMarkerCount,
       });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
         logger.info(
