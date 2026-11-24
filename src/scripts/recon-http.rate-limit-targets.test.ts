@@ -63,7 +63,8 @@ describe("selectRateLimitTargets — declared submit endpoint via replayed auth"
 
 describe("selectRateLimitTargets — declared body on a multiplexed endpoint", () => {
   const url = "https://api.example.com/graphql";
-  const chrome = () => replay(url, { method: "POST", requestBody: '{"query":"query Chrome { a }"}' });
+  const chrome = () =>
+    replay(url, { method: "POST", requestBody: '{"query":"query Chrome { a }"}' });
   const declared = () =>
     replay(url, {
       method: "POST",
@@ -87,7 +88,11 @@ describe("selectRateLimitTargets — declared body on a multiplexed endpoint", (
       "Search"
     );
     expect([...targets.values()]).toEqual([
-      { method: "POST", body: '{"query":"query Search { b }"}', headers: { authorization: "Bearer t" } },
+      {
+        method: "POST",
+        body: '{"query":"query Search { b }"}',
+        headers: { authorization: "Bearer t" },
+      },
     ]);
   });
 
