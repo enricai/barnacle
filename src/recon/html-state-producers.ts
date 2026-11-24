@@ -237,3 +237,75 @@ export function locateHtmlBearerToken(
   }
   return null;
 }
+
+export interface BearerBootstrapSpec {
+  /** URL of the HTML document that carried the token. */
+  documentUrl: string;
+  /** JWT claims (as observed on the captured token) used to pick the token. Never the token itself. */
+  claims: Record<string, string | number | boolean>;
+  /** Name of the emitted async function. */
+  fnName?: string;
+}
+
+/** Keep only primitive, non-secret-shaped claim values suitable for selection. */
+export function selectionClaims(claims: Record<string, unknown>): BearerBootstrapSpec["claims"] {
+  const out: BearerBootstrapSpec["claims"] = {};
+  for (const [k, v] of Object.entries(claims)) {
+    if (k === "exp" || k === "iat" || k === "nbf" || k === "jti") continue;
+    if (typeof v === "string" && v.length <= 64 && !v.startsWith("eyJ")) out[k] = v;
+    else if (typeof v === "boolean") out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Emit TypeScript source for a runtime token bootstrap: fetches the located
+ * document, extracts JWTs (RSC text rows read at exactly parseInt(hex,16)
+ * bytes), selects by claim, caches, and re-mints on demand (`force`) so the
+ * caller can retry once on a 401. The captured token literal is never emitted.
+ */
+export function emitBearerBootstrapSource(spec: BearerBootstrapSpec): string {
+  const fn = spec.fnName ?? "mintBearerToken";
+  return `let ${fn}Cache: string | undefined;
+async function ${fn}(force = false): Promise<string> {
+  if (!force && ${fn}Cache) return ${fn}Cache;
+  const want: Record<string, unknown> = ${JSON.stringify(spec.claims)};
+  const res = await fetch(${JSON.stringify(spec.documentUrl)});
+  const html = await res.text();
+  let stream = "";
+  for (const m of html.matchAll(/push\\(\\s*\\[\\s*1\\s*,\\s*("(?:[^"\\\\]|\\\\.)*")\\s*\\]\\s*\\)/g)) {
+    try { stream += JSON.parse(m[1] as string) as string; } catch { /* skip */ }
+  }
+  const claimsOf = (t: string): Record<string, unknown> | null => {
+    try {
+      const p = JSON.parse(Buffer.from(t.split(".")[1] ?? "", "base64url").toString("utf8"));
+      return p && typeof p === "object" ? (p as Record<string, unknown>) : null;
+    } catch { return null; }
+  };
+  const pick = (text: string): string | undefined => {
+    for (const m of text.matchAll(/eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/g)) {
+      const c = claimsOf(m[0]);
+      if (c && Object.entries(want).every(([k, v]) => c[k] === v)) return m[0];
+    }
+    return undefined;
+  };
+  const rowRe = /([0-9a-zA-Z]+):T([0-9a-fA-F]+),/g;
+  for (let m = rowRe.exec(stream); m; m = rowRe.exec(stream)) {
+    const start = m.index + m[0].length;
+    const len = parseInt(m[2] as string, 16);
+    let end = start;
+    for (let used = 0; end < stream.length && used < len; ) {
+      const cp = stream.codePointAt(end) as number;
+      used += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+      end += cp > 0xffff ? 2 : 1;
+    }
+    const t = pick(stream.slice(start, end));
+    if (t) return (${fn}Cache = t);
+    rowRe.lastIndex = end;
+  }
+  const t = pick(html.replace(/push\\(\\s*\\[\\s*1\\s*,\\s*"(?:[^"\\\\]|\\\\.)*"\\s*\\]\\s*\\)/g, ""));
+  if (!t) throw new Error("bearer token not found in " + ${JSON.stringify(spec.documentUrl)});
+  return (${fn}Cache = t);
+}
+`;
+}

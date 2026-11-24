@@ -62,3 +62,27 @@ describe("HTML bearer token locator", () => {
     expect(locateHtmlBearerToken(["<p>hi</p>", 5], { value: userT })).toBeNull();
   });
 });
+
+describe("emitBearerBootstrapSource", () => {
+  it("emits no literal and extracts exact-length claim-selected token", async () => {
+    const { emitBearerBootstrapSource, selectionClaims } = await import(
+      "./html-state-producers.js"
+    );
+    const src = emitBearerBootstrapSource({
+      documentUrl: "https://x.test/",
+      claims: selectionClaims({ typ: "clientToken", exp: 1 }),
+    });
+    expect(src).not.toContain(clientT);
+    expect(src).not.toContain("eyJhbGci");
+    const html = page(
+      `1:T${userT.length.toString(16)},${userT}2:T${clientT.length.toString(16)},${clientT}3:["x"]\n`
+    );
+    const { stripTypeScriptTypes } = await import("node:module");
+    const js = stripTypeScriptTypes(src);
+    const f = new Function("fetch", "Buffer", `${js}; return mintBearerToken;`)(
+      async () => ({ text: async () => html }),
+      Buffer
+    );
+    expect(await f()).toBe(clientT);
+  });
+});
