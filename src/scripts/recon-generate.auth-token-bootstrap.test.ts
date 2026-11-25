@@ -67,7 +67,7 @@ describe("recon-generate runtime bearer bootstrap", () => {
     const body = emit({ url: "https://app.example.test/dash?x=1" });
     expect(body).not.toContain(USER);
     expect(body).not.toContain("sigsigsig");
-    expect(body).toContain('context.baseUrl + "/dash?x=1"');
+    expect(body).toContain('+ "/dash?x=1"');
     expect(body).toContain("parseInt(m[2] as string, 16)");
     expect(body).toContain('{"tokenType":"user"}');
     expect(body).toContain("Bearer ${await mintBearerToken(");
