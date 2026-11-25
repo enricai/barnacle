@@ -10695,9 +10695,13 @@ export function emitMultiStepExecuteHttp(
    * session cookies they established instead of a parsed response. `undefined`
    * (default) leaves full-flow output byte-identical.
    */
-  httpPrefixCount: number | undefined = undefined
+  httpPrefixCount: number | undefined = undefined,
+  /** The flow's declared submit patterns; a declared search is never judged
+   * request-invariant by {@link isZeroVarianceRepeatCapture}. */
+  submitPatterns: SubmitPatterns | null = null
 ): string {
   if (httpPrefixCount !== undefined) actions = actions.slice(0, httpPrefixCount);
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   interface Rendered {
     url: string;
     method: string;
@@ -11105,7 +11109,7 @@ export function emitMultiStepExecuteHttp(
     // isGet UUID-only floor) and for the fold/drill per-item pass. Rendering
     // its exact literal URL makes this hold even when a value's own
     // length/chain-eligibility scoping doesn't happen to catch the coincidence.
-    const url = isZeroVarianceRepeatCapture(cap, allCaptures, () => false)
+    const url = isZeroVarianceRepeatCapture(cap, allCaptures, isDeclaredSubmit)
       ? cap.url
       : interpolateStateValues(
           cap.url,
@@ -11761,7 +11765,7 @@ export function emitMultiStepExecuteHttp(
         const isProvenInvariantFor = (chainCapture: Capture): boolean => {
           const cached = isProvenInvariantMemo.get(chainCapture);
           if (cached !== undefined) return cached;
-          const computed = isZeroVarianceRepeatCapture(chainCapture, allCaptures, () => false);
+          const computed = isZeroVarianceRepeatCapture(chainCapture, allCaptures, isDeclaredSubmit);
           isProvenInvariantMemo.set(chainCapture, computed);
           return computed;
         };
@@ -18311,6 +18315,9 @@ export function emitContractTsParts(opts: {
    * output byte-for-byte: no `browserFallbackGate` meta field, and
    * `createHttpClient(...)` unchanged. */
   fallbackGateSpec?: FallbackGateSpec;
+  /** The flow's declared submit patterns, so declared searches are never
+   * judged request-invariant by the emitter's zero-variance guards. */
+  submitPatterns?: SubmitPatterns | null;
 }): { code: string; payloadSchemaExpr: string } {
   const {
     siteId,
@@ -19400,7 +19407,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           const isProvenInvariant = isZeroVarianceRepeatCapture(
             chainCapture,
             allCaptures,
-            () => false
+            compileDeclaredSubmitMatcher(opts.submitPatterns ?? null)
           );
           const filteredValueBindings = isProvenInvariant
             ? valueBindings.filter((b) =>
@@ -22739,7 +22746,8 @@ export async function main(): Promise<void> {
             flowSteps,
             vocabulary,
             applicantContract,
-            httpStepsOpt?.actions
+            httpStepsOpt?.actions,
+            submitPatterns
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
@@ -23045,6 +23053,7 @@ export async function main(): Promise<void> {
       headerBindings,
       unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
       fallbackGateSpec,
+      submitPatterns,
     };
 
     const firstContract = emitContractTsParts(contractOpts);
