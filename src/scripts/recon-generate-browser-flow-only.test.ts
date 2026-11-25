@@ -474,6 +474,53 @@ describe("emitContractTs — forced browser-flow-only with a non-evidence inputB
   });
 });
 
+describe("emitContractTs — non-applicant browser-only booking submission flow", () => {
+  const emit = (extra: Record<string, unknown>) =>
+    emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://booking.example.com",
+      baseHeaders: {},
+      minTime: 100,
+      safeRps: 10,
+      responseBody: {},
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/reserve",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      isSubmissionFlow: true,
+      inputBody: { time: "19:00", players: 2, name: "Pat", email: "pat@example.com" },
+      payloadFieldNames: new Set(["time", "players", "name", "email"]),
+      ...extra,
+    } as Parameters<typeof emitContractTs>[0]);
+  const notApplicant = (source: string) => {
+    for (const t of [
+      "ApplicantContactSchema",
+      "Resume",
+      "ClickUrl",
+      "Answers",
+      "JobTrackingSchema",
+      "TrackingUrl",
+    ]) {
+      expect(source).not.toContain(t);
+    }
+    expect(source).toContain("context.baseUrl");
+  };
+  it("emits no applicant surface with no evidence", () => {
+    notApplicant(emit({}));
+  });
+  it("applicantContract:false overrides applicant evidence", () => {
+    notApplicant(emit({ applicantContract: false, flowSteps: ["Attach your resume"] }));
+  });
+  it("applicantContract:true forces the applicant contract without evidence", () => {
+    const source = emit({ applicantContract: true });
+    expect(source).toContain("ApplicantContactSchema");
+    expect(source).toContain("ClickUrl");
+  });
+});
+
 describe("emitContractTs — account-creation retry policy and execute() context", () => {
   const base = {
     siteId: "test-site",

@@ -178,16 +178,20 @@ function pickValueSpan(
   const afterVerb = verb ? spans.filter((span) => span.start >= verb.index + verb[0].length) : [];
   const answer = afterVerb.find((span) => !namesAWidgetLabel(instruction, span)) ?? afterVerb[0];
   if (answer) return answer;
-  // Click grammar: the clicked option is named first; later spans describe
-  // the effect ("... so the 'B' panel expands"), never the value.
+  // Effect clause: spans after "... so (that) ..." describe what the action
+  // causes ("... so the 'B' panel expands"), never the value it carries.
+  const effect = /\bso\b/i.exec(instruction);
+  const acted = effect ? spans.filter((span) => span.start < effect.index) : [];
+  const candidates = acted.length > 0 ? acted : spans;
+  // Click grammar: the clicked option is named first.
   if (/^\s*(?:click|tap|press)\b/i.test(instruction)) {
-    const clicked = spans.find((span) => !namesAWidgetLabel(instruction, span));
+    const clicked = candidates.find((span) => !namesAWidgetLabel(instruction, span));
     if (clicked) return clicked;
   }
   // Non-select grammar: value last — but a trailing span that names a widget
   // ("... so a 'players:' list opens") is a label, not the value.
-  for (let i = spans.length - 1; i >= 0; i--) {
-    if (!namesAWidgetLabel(instruction, spans[i]!)) return spans[i]!;
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    if (!namesAWidgetLabel(instruction, candidates[i]!)) return candidates[i]!;
   }
   return spans[spans.length - 1]!;
 }
