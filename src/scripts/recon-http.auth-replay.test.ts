@@ -34,7 +34,7 @@ function stub(okWithAuth: boolean) {
         status: ok ? 200 : 401,
         headers: { "content-type": "application/json" },
       });
-    }),
+    })
   );
   return seen;
 }
@@ -86,9 +86,7 @@ describe("recon-http 401 auth replay", () => {
       htmlDocuments: ["<html></html>"],
     });
     expect(
-      loggerStub.warn.mock.calls.some((c) =>
-        String(c[0]).includes("build refresh strategy"),
-      ),
+      loggerStub.warn.mock.calls.some((c) => String(c[0]).includes("build refresh strategy"))
     ).toBe(true);
   });
 

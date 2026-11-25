@@ -111,9 +111,7 @@ interface AuxManifestEntry {
   hostname: string;
 }
 
-function loadCaptures(
-  dir: string,
-): Array<{ filename: string; capture: Capture }> {
+function loadCaptures(dir: string): Array<{ filename: string; capture: Capture }> {
   let files: string[];
   try {
     files = readdirSync(dir).filter(isRawCaptureFilename).sort();
@@ -134,17 +132,14 @@ function loadCaptures(
       capture: {
         ...capture,
         query: typeof capture.query === "string" ? capture.query : null,
-        operationName:
-          typeof capture.operationName === "string"
-            ? capture.operationName
-            : null,
+        operationName: typeof capture.operationName === "string" ? capture.operationName : null,
       },
     };
   });
 }
 
 export function deduplicateCaptures(
-  captures: Array<{ filename: string; capture: Capture }>,
+  captures: Array<{ filename: string; capture: Capture }>
 ): Array<{ filename: string; capture: Capture }> {
   const seen = new Set<string>();
   return captures.filter(({ capture }) => {
@@ -161,9 +156,7 @@ export function deduplicateCaptures(
 }
 
 /** Parses a comma-separated `--methods` value (e.g. "GET,HEAD") into an upper-cased set; null = no filter. */
-export function parseMethodsFilter(
-  raw: string | undefined,
-): Set<string> | null {
+export function parseMethodsFilter(raw: string | undefined): Set<string> | null {
   const parts = (raw ?? "")
     .split(",")
     .map((m) => m.trim().toUpperCase())
@@ -199,10 +192,7 @@ export function inflectionKey(key: string): string {
  * both bodies so equal paths get equal numbers. Iterative, and linear in the
  * body's size whatever its depth.
  */
-function keysByPath(
-  root: object,
-  pathIds: Map<string, number>,
-): Map<number, Set<string>> {
+function keysByPath(root: object, pathIds: Map<string, number>): Map<number, Set<string>> {
   const step = (parent: number, s: string): number => {
     const k = `${parent}:${s}`;
     let id = pathIds.get(k);
@@ -273,9 +263,7 @@ function topLevelKeys(v: object): { array: boolean; keys: Set<string> | null } {
   return {
     array: true,
     keys: new Set(
-      v.flatMap((e) =>
-        e && typeof e === "object" && !Array.isArray(e) ? Object.keys(e) : [],
-      ),
+      v.flatMap((e) => (e && typeof e === "object" && !Array.isArray(e) ? Object.keys(e) : []))
     ),
   };
 }
@@ -304,10 +292,7 @@ function topLevelKeysDiffer(a: object, b: object): boolean {
  * fields, id-keyed maps), not shape. At the top level they are shape, so an
  * optional top-level key or a top-level id-keyed map that changes is flagged.
  */
-export function responseShapeDiffers(
-  captured: unknown,
-  replayed: unknown,
-): boolean {
+export function responseShapeDiffers(captured: unknown, replayed: unknown): boolean {
   const a = parseBody(captured);
   if (!a || typeof a !== "object" || replayed == null) return false;
   const b = parseBody(replayed);
@@ -336,16 +321,14 @@ export function responseShapeDiffers(
  */
 export function bodyTypeDiffers(captured: unknown, replayed: unknown): boolean {
   if (captured == null || replayed == null) return false;
-  return (
-    (parseBody(captured) !== undefined) !== (parseBody(replayed) !== undefined)
-  );
+  return (parseBody(captured) !== undefined) !== (parseBody(replayed) !== undefined);
 }
 
 /** Captured request header names (lowercased) the replay did not send. */
 export function omittedHeaders(
   captured: Record<string, string> | undefined,
   sent: Record<string, string>,
-  keepCase = false,
+  keepCase = false
 ): string[] {
   const have = new Set(Object.keys(sent).map((k) => k.toLowerCase()));
   return Object.keys(captured ?? {})
@@ -357,7 +340,7 @@ export function omittedHeaders(
 async function sendReplay(
   capture: Capture,
   headers: Record<string, string>,
-  requestBody: string | null,
+  requestBody: string | null
 ): Promise<{ response: Response; body: unknown }> {
   const response = await fetchFollowingRedirectsPreservingMethod(capture.url, {
     method: capture.method,
@@ -387,11 +370,7 @@ async function sendReplay(
  * top-level array does not come back empty), and carry, at its path, every
  * captured key that `diverged` had re-inflected.
  */
-function restoresShape(
-  captured: unknown,
-  diverged: unknown,
-  restored: unknown,
-): boolean {
+function restoresShape(captured: unknown, diverged: unknown, restored: unknown): boolean {
   const a = parseBody(captured);
   const r = parseBody(restored);
   if (!a || typeof a !== "object" || !r || typeof r !== "object") return false;
@@ -406,9 +385,7 @@ function restoresShape(
   for (const [path, keys] of capturedKeys) {
     const other = divergedKeys.get(path);
     if (!other) continue;
-    const reinflected = new Set(
-      [...other].filter((k) => !keys.has(k)).map(inflectionKey),
-    );
+    const reinflected = new Set([...other].filter((k) => !keys.has(k)).map(inflectionKey));
     for (const k of keys) {
       if (other.has(k) || !reinflected.has(inflectionKey(k))) continue;
       if (!restoredKeys.get(path)?.has(k)) return false;
@@ -422,16 +399,14 @@ async function replayRestoresShape(
   capture: Capture,
   diverged: unknown,
   headers: Record<string, string>,
-  requestBody: string | null,
+  requestBody: string | null
 ): Promise<boolean> {
   try {
     const { response, body } = await sendReplay(capture, headers, requestBody);
     const statusOk = response.status >= 200 && response.status < 300;
     return statusOk && restoresShape(capture.responseBody, diverged, body);
   } catch (err) {
-    logger.warn(
-      `re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`,
-    );
+    logger.warn(`re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`);
     return false;
   }
 }
@@ -473,17 +448,12 @@ async function findShapeRestoringHeaders(
   diverged: unknown,
   headers: Record<string, string>,
   requestBody: string | null,
-  omitted: string[],
+  omitted: string[]
 ): Promise<{ headers: string[]; reproduced: boolean }> {
   const seen = new Set<string>();
   const candidates = omitted.filter((h) => {
     const lower = h.toLowerCase();
-    if (
-      h.startsWith(":") ||
-      TRANSPORT_REQUEST_HEADERS.has(lower) ||
-      seen.has(lower)
-    )
-      return false;
+    if (h.startsWith(":") || TRANSPORT_REQUEST_HEADERS.has(lower) || seen.has(lower)) return false;
     seen.add(lower);
     return true;
   });
@@ -499,8 +469,7 @@ async function findShapeRestoringHeaders(
   for (const h of candidates) {
     if (await restores([h])) alone.push(h);
   }
-  if (alone.length > 0 || candidates.length < 2)
-    return { headers: alone, reproduced: true };
+  if (alone.length > 0 || candidates.length < 2) return { headers: alone, reproduced: true };
   if (!(await restores(candidates))) return { headers: [], reproduced: true };
   let kept = candidates;
   for (const h of candidates) {
@@ -523,18 +492,14 @@ export async function replayCapture(
     methods?: Set<string> | null;
     htmlDocuments?: ReadonlyArray<unknown>;
     htmlDocumentUrls?: ReadonlyArray<string | undefined>;
-  } = {},
+  } = {}
 ): Promise<ReplayResult | null> {
   if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) {
-    logger.warn(
-      `skip ${capture.method} ${capture.url}: request body unavailable at capture time`,
-    );
+    logger.warn(`skip ${capture.method} ${capture.url}: request body unavailable at capture time`);
     return null;
   }
   if (opts.methods && !opts.methods.has(capture.method.toUpperCase())) {
-    logger.info(
-      `skip ${capture.method} ${capture.url}: method not in --methods filter`,
-    );
+    logger.info(`skip ${capture.method} ${capture.url}: method not in --methods filter`);
     return null;
   }
   const origin = new URL(capture.url).origin;
@@ -551,19 +516,12 @@ export async function replayCapture(
       query: capture.query,
       variables: capture.variables ?? {},
     });
-  } else if (
-    capture.requestPostData &&
-    capture.requestPostData !== REQUEST_BODY_UNAVAILABLE
-  ) {
+  } else if (capture.requestPostData && capture.requestPostData !== REQUEST_BODY_UNAVAILABLE) {
     requestBody = capture.requestPostData;
   }
 
   try {
-    const { response, body: replayBody } = await sendReplay(
-      capture,
-      headers,
-      requestBody,
-    );
+    const { response, body: replayBody } = await sendReplay(capture, headers, requestBody);
 
     const replayHeaders: Record<string, string> = {};
     response.headers.forEach((v, k) => {
@@ -579,7 +537,7 @@ export async function replayCapture(
     // replay-safe requests) to separate needs-token from needs-browser.
     let authReplay: ReplayResult["authReplay"];
     const authName = Object.keys(capture.requestHeaders ?? {}).find(
-      (k) => k.toLowerCase() === "authorization",
+      (k) => k.toLowerCase() === "authorization"
     );
     let sentHeaders = headers;
     if (
@@ -595,8 +553,7 @@ export async function replayCapture(
       const authHeaders = { ...headers, [authName]: authValue };
       try {
         const retry = await sendReplay(capture, authHeaders, requestBody);
-        const replayable =
-          retry.response.status >= 200 && retry.response.status < 300;
+        const replayable = retry.response.status >= 200 && retry.response.status < 300;
         sentHeaders = authHeaders;
         const bearer = /^bearer\s+(.+)$/i.exec(authValue.trim())?.[1];
         const loc =
@@ -618,23 +575,16 @@ export async function replayCapture(
             : null,
         };
         logger.info(
-          `[${capture.method}] ${capture.url} 401 → ${retry.response.status} with captured authorization (${replayable ? "token-replayable" : "needs-browser"})`,
+          `[${capture.method}] ${capture.url} 401 → ${retry.response.status} with captured authorization (${replayable ? "token-replayable" : "needs-browser"})`
         );
       } catch (err) {
         logger.warn(
-          `auth re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`,
+          `auth re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`
         );
       }
     }
-    const omittedCaptureHeaders = omittedHeaders(
-      capture.requestHeaders,
-      sentHeaders,
-    );
-    const omittedAsCaptured = omittedHeaders(
-      capture.requestHeaders,
-      sentHeaders,
-      true,
-    );
+    const omittedCaptureHeaders = omittedHeaders(capture.requestHeaders, sentHeaders);
+    const omittedAsCaptured = omittedHeaders(capture.requestHeaders, sentHeaders, true);
     // A replay passes only when its response matches the capture's shape; a 2xx
     // with a different shape may mean a request header it omitted is load-bearing,
     // and re-replaying with each one added back proves which (if any).
@@ -645,7 +595,7 @@ export async function replayCapture(
           replayBody,
           headers,
           requestBody,
-          omittedAsCaptured,
+          omittedAsCaptured
         )
       : { headers: [], reproduced: true };
     const shapeRestoringHeaders = proof.headers;
@@ -658,27 +608,27 @@ export async function replayCapture(
 
     if (shapeDiffers) {
       logger.warn(
-        `[${response.status}] ${capture.method} ${capture.url} response shape differs from the browser capture; a request header may be load-bearing: ${omittedCaptureHeaders.join(", ") || "(none omitted)"}; ${restoredBy}`,
+        `[${response.status}] ${capture.method} ${capture.url} response shape differs from the browser capture; a request header may be load-bearing: ${omittedCaptureHeaders.join(", ") || "(none omitted)"}; ${restoredBy}`
       );
     } else if (!success) {
       logger.warn(`[${response.status}] ${capture.method} ${capture.url}`);
       if (response.status === 403)
         logger.warn(
-          "  → 403: try adding more headers; if persistent, accept Stagehand-only production",
+          "  → 403: try adding more headers; if persistent, accept Stagehand-only production"
         );
       if (response.status === 401) {
         const ts = authReplay?.tokenSource;
         logger.warn(
           ts
             ? `  → 401: endpoint requires auth — bearer token is served in ${ts.url ?? `captured document #${ts.document}`} (${ts.source}${ts.row ? `, row ${ts.row}` : ""}); fetch that document to mint it`
-            : "  → 401: endpoint requires auth — capture token, determine lifetime, build refresh strategy",
+            : "  → 401: endpoint requires auth — capture token, determine lifetime, build refresh strategy"
         );
       }
     } else {
       const bodyStr = JSON.stringify(replayBody);
       if (bodyStr === "{}" || bodyStr === "[]" || bodyStr === "null")
         logger.warn(
-          `[${response.status}] ${capture.method} ${capture.url} (empty body — check Origin/Referer)`,
+          `[${response.status}] ${capture.method} ${capture.url} (empty body — check Origin/Referer)`
         );
       else logger.info(`[${response.status}] ${capture.method} ${capture.url}`);
     }
@@ -700,9 +650,7 @@ export async function replayCapture(
       error: shapeDiffers ? shapeMessage : null,
     };
   } catch (err) {
-    logger.error(
-      `[ERR] ${capture.method} ${capture.url}: ${toErrorMessage(err)}`,
-    );
+    logger.error(`[ERR] ${capture.method} ${capture.url}: ${toErrorMessage(err)}`);
     return {
       sourceCapture: filename,
       url: capture.url,
@@ -718,10 +666,7 @@ export async function replayCapture(
   }
 }
 
-export async function probeIntrospection(
-  endpoint: string,
-  replaysDir: string,
-): Promise<void> {
+export async function probeIntrospection(endpoint: string, replaysDir: string): Promise<void> {
   logger.info(`introspection probe: ${endpoint}`);
   const origin = new URL(endpoint).origin;
   const headers: Record<string, string> = {
@@ -738,14 +683,9 @@ export async function probeIntrospection(
     const body = (await response.json()) as Record<string, unknown>;
     if (body.data) {
       logger.info("  → introspection ENABLED — full schema available");
-      writeFileSync(
-        join(replaysDir, "introspection-schema.json"),
-        JSON.stringify(body, null, 2),
-      );
+      writeFileSync(join(replaysDir, "introspection-schema.json"), JSON.stringify(body, null, 2));
     } else {
-      logger.info(
-        "  → introspection DISABLED — write Zod schemas by hand from captured JSON",
-      );
+      logger.info("  → introspection DISABLED — write Zod schemas by hand from captured JSON");
     }
   } catch (err) {
     logger.error(`  → introspection error: ${toErrorMessage(err)}`);
@@ -757,10 +697,7 @@ export async function probeIntrospection(
  * selector and the rate-limit target selector. A bare `.json` suffix is NOT
  * enough — real REST endpoints end in `.json` too.
  */
-export function isStaticFixturePath(
-  pathname: string,
-  includeLocaleDictionaries = false,
-): boolean {
+export function isStaticFixturePath(pathname: string, includeLocaleDictionaries = false): boolean {
   const segs = includeLocaleDictionaries
     ? "markets|currencies|labels|config|dictionaries|locales|i18n"
     : "markets|currencies|labels|config";
@@ -803,7 +740,7 @@ function isReplayResultSafe(r: ReplayResult): boolean {
 export function selectAuxFixtureCandidates(
   replays: ReplayResult[],
   ownBackendHostnames: string[],
-  fallbackHost: string | null,
+  fallbackHost: string | null
 ): ReplayResult[] {
   const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
 
@@ -818,11 +755,7 @@ export function selectAuxFixtureCandidates(
     }
     const pathname = parsed.pathname.toLowerCase();
     if (!isStaticFixturePath(pathname)) return false;
-    return isAllowedFixtureHost(
-      parsed.hostname,
-      ownBackendHostnames,
-      fallbackDomain,
-    );
+    return isAllowedFixtureHost(parsed.hostname, ownBackendHostnames, fallbackDomain);
   });
 }
 
@@ -836,17 +769,13 @@ export async function probeAuxiliaryEndpoints(
   replays: ReplayResult[],
   auxDir: string,
   ownBackendHostnames: string[],
-  fallbackHost: string | null,
+  fallbackHost: string | null
 ): Promise<void> {
   mkdirSync(auxDir, { recursive: true });
   const writtenInRun = new Set<string>();
   const manifestEntries: AuxManifestEntry[] = [];
 
-  const candidates = selectAuxFixtureCandidates(
-    replays,
-    ownBackendHostnames,
-    fallbackHost,
-  );
+  const candidates = selectAuxFixtureCandidates(replays, ownBackendHostnames, fallbackHost);
 
   if (candidates.length === 0) {
     logger.info("no auxiliary endpoints detected");
@@ -861,26 +790,19 @@ export async function probeAuxiliaryEndpoints(
       Referer: `${origin}/`,
     };
     try {
-      const response = await fetchFollowingRedirectsPreservingMethod(
-        candidate.url,
-        {
-          method: candidate.method,
-          headers,
-        },
-      );
+      const response = await fetchFollowingRedirectsPreservingMethod(candidate.url, {
+        method: candidate.method,
+        headers,
+      });
       if (!response.ok) {
-        logger.warn(
-          `[aux skip] ${candidate.url}: ${response.status} — not a fixture`,
-        );
+        logger.warn(`[aux skip] ${candidate.url}: ${response.status} — not a fixture`);
         continue;
       }
       const body = (await response.json()) as unknown;
       const parsed = new URL(candidate.url);
       const rawBase = parsed.pathname.split("/").pop() ?? "aux";
       const base = rawBase.endsWith(".json") ? rawBase : `${rawBase}.json`;
-      const filename = writtenInRun.has(base)
-        ? `${parsed.hostname}-${base}`
-        : base;
+      const filename = writtenInRun.has(base) ? `${parsed.hostname}-${base}` : base;
       writeFileSync(join(auxDir, filename), JSON.stringify(body, null, 2));
       writtenInRun.add(base);
       manifestEntries.push({
@@ -888,19 +810,14 @@ export async function probeAuxiliaryEndpoints(
         url: candidate.url,
         hostname: parsed.hostname,
       });
-      logger.info(
-        `[fixture] ${candidate.url} → ${auxDir}/${filename} — commit as static fixture`,
-      );
+      logger.info(`[fixture] ${candidate.url} → ${auxDir}/${filename} — commit as static fixture`);
     } catch (err) {
       logger.error(`[aux err] ${candidate.url}: ${toErrorMessage(err)}`);
     }
   }
 
   if (manifestEntries.length > 0) {
-    writeFileSync(
-      join(auxDir, "aux-manifest.json"),
-      JSON.stringify(manifestEntries, null, 2),
-    );
+    writeFileSync(join(auxDir, "aux-manifest.json"), JSON.stringify(manifestEntries, null, 2));
   }
 }
 
@@ -908,7 +825,7 @@ async function probeRateLimit(
   endpoint: string,
   method: string,
   body: string | null,
-  extraHeaders: Record<string, string> = {},
+  extraHeaders: Record<string, string> = {}
 ): Promise<RateLimitFinding> {
   logger.info(`rate-limit probe: ${endpoint} (1→3→5 rps, stops at 429/403)`);
   const origin = new URL(endpoint).origin;
@@ -938,14 +855,11 @@ async function probeRateLimit(
     for (let i = 0; i < requestsPerLevel; i++) {
       const before = Date.now();
       try {
-        const response = await fetchFollowingRedirectsPreservingMethod(
-          endpoint,
-          {
-            method,
-            headers,
-            body: body ?? undefined,
-          },
-        );
+        const response = await fetchFollowingRedirectsPreservingMethod(endpoint, {
+          method,
+          headers,
+          body: body ?? undefined,
+        });
 
         const respHeaders: Record<string, string> = {};
         response.headers.forEach((v, k) => {
@@ -973,7 +887,7 @@ async function probeRateLimit(
           finding.retryAfter = response.headers.get("retry-after");
           triggered = true;
           logger.warn(
-            `  → triggered ${response.status} at ${rps} rps (request ${i + 1}/${requestsPerLevel})`,
+            `  → triggered ${response.status} at ${rps} rps (request ${i + 1}/${requestsPerLevel})`
           );
           break;
         }
@@ -992,10 +906,9 @@ async function probeRateLimit(
   }
 
   if (finding.triggerRps !== null) {
-    finding.safeRps =
-      rpsCeilings[rpsCeilings.indexOf(finding.triggerRps) - 1] ?? null;
+    finding.safeRps = rpsCeilings[rpsCeilings.indexOf(finding.triggerRps) - 1] ?? null;
     logger.info(
-      `  → safe ceiling: ${finding.safeRps ?? "unknown"} rps (triggered at ${finding.triggerRps} rps)`,
+      `  → safe ceiling: ${finding.safeRps ?? "unknown"} rps (triggered at ${finding.triggerRps} rps)`
     );
   }
 
@@ -1034,20 +947,15 @@ export function isLoopbackOrLinkLocalHost(hostname: string): boolean {
 export function isOwnBackendTarget(
   url: string,
   ownBackendHostnames: string[],
-  fallbackHost: string | null,
+  fallbackHost: string | null
 ): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
     if (isLoopbackOrLinkLocalHost(host)) return false;
     const own = ownBackendHostnames.map((h) => h.toLowerCase());
-    if (own.length > 0)
-      return own.some((o) => host === o || host.endsWith(`.${o}`));
-    const fallbackDomain = fallbackHost
-      ? registrableDomain(fallbackHost)
-      : null;
-    return (
-      fallbackDomain !== null && registrableDomain(host) === fallbackDomain
-    );
+    if (own.length > 0) return own.some((o) => host === o || host.endsWith(`.${o}`));
+    const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
+    return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
   } catch {
     return false;
   }
@@ -1059,14 +967,9 @@ export function selectRateLimitTargets(
   fallbackHost: string | null = null,
   declaredEndpointPatterns: readonly string[] = [],
   submitEndpointPattern?: string,
-  captureHeadersFor?: (
-    replay: ReplayResult,
-  ) => Record<string, string> | undefined,
+  captureHeadersFor?: (replay: ReplayResult) => Record<string, string> | undefined
 ): {
-  targets: Map<
-    string,
-    { method: string; body: string | null; headers?: Record<string, string> }
-  >;
+  targets: Map<string, { method: string; body: string | null; headers?: Record<string, string> }>;
   skipped: number;
 } {
   const collected = new Map<
@@ -1091,8 +994,7 @@ export function selectRateLimitTargets(
   for (const replay of replays) {
     // A 401 replay that succeeded once re-sent with the captured authorization
     // is reachable via replayed auth; its probe must carry that header.
-    const viaAuth =
-      !replayReachable(replay) && replay.authReplay?.tokenReplayable === true;
+    const viaAuth = !replayReachable(replay) && replay.authReplay?.tokenReplayable === true;
     if (!replayReachable(replay) && !viaAuth) continue;
     if (!isReplayResultSafe(replay)) continue;
     if (isNoiseUrl(replay.url)) {
@@ -1117,7 +1019,7 @@ export function selectRateLimitTargets(
       if (!seenEndpoints.has(endpointKey)) {
         seenEndpoints.add(endpointKey);
         const ct = Object.entries(replay.replayHeaders ?? {}).find(
-          ([k]) => k.toLowerCase() === "content-type",
+          ([k]) => k.toLowerCase() === "content-type"
         )?.[1];
         const isJson = /json/i.test(String(ct ?? ""));
         let tier = isJson ? 2 : 3;
@@ -1130,8 +1032,7 @@ export function selectRateLimitTargets(
               declaredEndpointPatterns[i] === submitEndpointPattern
                 ? 0
                 : 1;
-            declaredTier =
-              declaredTier === null ? t : Math.min(declaredTier, t);
+            declaredTier = declaredTier === null ? t : Math.min(declaredTier, t);
           }
         }
         if (declaredTier !== null) tier = declaredTier;
@@ -1141,9 +1042,7 @@ export function selectRateLimitTargets(
           .filter((h) => captured[h] !== undefined)
           .map((h) => [h, captured[h]!] as const);
         const authEntries = viaAuth
-          ? Object.entries(captured).filter(
-              ([k]) => k.toLowerCase() === "authorization",
-            )
+          ? Object.entries(captured).filter(([k]) => k.toLowerCase() === "authorization")
           : [];
         const merged = Object.fromEntries([...provenEntries, ...authEntries]);
         const proven = Object.keys(merged).length > 0 ? merged : undefined;
@@ -1163,9 +1062,7 @@ export function selectRateLimitTargets(
     string,
     { method: string; body: string | null; headers?: Record<string, string> }
   >();
-  const ordered = [...collected.entries()].sort(
-    (a, b) => a[1].tier - b[1].tier,
-  );
+  const ordered = [...collected.entries()].sort((a, b) => a[1].tier - b[1].tier);
   for (const [k, { method, body, headers }] of ordered)
     targets.set(k, { method, body, ...(headers ? { headers } : {}) });
   return { targets, skipped };
@@ -1177,12 +1074,10 @@ export function selectRateLimitTargets(
  * `includeUnsafe` is set or the method is explicitly listed in `optInMethods`
  * (the `--methods` flag).
  */
-export function selectReplayCaptures<
-  T extends { filename: string; capture: Capture },
->(
+export function selectReplayCaptures<T extends { filename: string; capture: Capture }>(
   captures: T[],
   includeUnsafe: boolean,
-  optInMethods: Set<string> | null = null,
+  optInMethods: Set<string> | null = null
 ): {
   selected: T[];
   skipped: Array<{ filename: string; url: string; reason: string }>;
@@ -1192,10 +1087,8 @@ export function selectReplayCaptures<
   for (const item of captures) {
     const { capture, filename } = item;
     const noise = noiseReason(capture.url);
-    const optedIn =
-      optInMethods?.has((capture.method || "GET").toUpperCase()) ?? false;
-    const unsafe =
-      includeUnsafe || optedIn ? null : unsafeReplayReason(capture);
+    const optedIn = optInMethods?.has((capture.method || "GET").toUpperCase()) ?? false;
+    const unsafe = includeUnsafe || optedIn ? null : unsafeReplayReason(capture);
     const reason = noise ?? unsafe;
     if (reason) skipped.push({ filename, url: capture.url, reason });
     else selected.push(item);
@@ -1204,9 +1097,7 @@ export function selectReplayCaptures<
 }
 
 /** Fetches /robots.txt once per origin; missing/unreachable means no rules. */
-async function fetchRobotsByOrigin(
-  urls: string[],
-): Promise<Map<string, RobotsRule[]>> {
+async function fetchRobotsByOrigin(urls: string[]): Promise<Map<string, RobotsRule[]>> {
   const out = new Map<string, RobotsRule[]>();
   for (const url of urls) {
     let origin: string;
@@ -1233,7 +1124,7 @@ async function fetchRobotsByOrigin(
 /** Splits captures into allowed and robots-disallowed (with the rule). */
 export function applyRobots<T extends { capture: Capture }>(
   items: T[],
-  robots: Map<string, RobotsRule[]>,
+  robots: Map<string, RobotsRule[]>
 ): { allowed: T[]; blocked: Array<{ url: string; rule: string }> } {
   const allowed: T[] = [];
   const blocked: Array<{ url: string; rule: string }> = [];
@@ -1241,10 +1132,7 @@ export function applyRobots<T extends { capture: Capture }>(
     let rule: string | null = null;
     try {
       const u = new URL(item.capture.url);
-      rule = matchingDisallow(
-        robots.get(u.origin) ?? [],
-        u.pathname + u.search,
-      );
+      rule = matchingDisallow(robots.get(u.origin) ?? [], u.pathname + u.search);
     } catch {
       // unparseable URL: leave to existing handling
     }
@@ -1258,8 +1146,7 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let runDirArg: string | undefined;
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--out-dir" && args[i + 1])
-      process.env.RECON_OUT_DIR = args[++i]!;
+    if (args[i] === "--out-dir" && args[i + 1]) process.env.RECON_OUT_DIR = args[++i]!;
     else if (args[i] === "--run-dir" && args[i + 1]) runDirArg = args[++i]!;
   }
 
@@ -1272,8 +1159,7 @@ async function main(): Promise<void> {
   let methods: Set<string> | null = null;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--captures-dir" && args[i + 1]) capturesDir = args[++i]!;
-    else if (args[i] === "--methods" && args[i + 1])
-      methods = parseMethodsFilter(args[++i]);
+    else if (args[i] === "--methods" && args[i + 1]) methods = parseMethodsFilter(args[++i]);
     else if (args[i] === "--flow-file" && args[i + 1]) flowFile = args[++i]!;
   }
   const ownBackendHostnames = flowFile ? readOwnBackendHostnames(flowFile) : [];
@@ -1284,7 +1170,7 @@ async function main(): Promise<void> {
   const all = loadCaptures(capturesDir);
   if (all.length === 0) {
     logger.error(
-      `recon-http: ${capturesDir} has no captures — nothing to replay (did recon-browser run first? pass --run-dir <path> to pick a run)`,
+      `recon-http: ${capturesDir} has no captures — nothing to replay (did recon-browser run first? pass --run-dir <path> to pick a run)`
     );
     process.exit(1);
   }
@@ -1295,35 +1181,25 @@ async function main(): Promise<void> {
   // endpoint that matters. The count is logged so a skipped endpoint is never
   // silently mistaken for "nothing captured it."
   const includeUnsafe = args.includes("--include-unsafe-methods");
-  const { selected: preRobots, skipped } = selectReplayCaptures(
-    unique,
-    includeUnsafe,
-    methods,
-  );
+  const { selected: preRobots, skipped } = selectReplayCaptures(unique, includeUnsafe, methods);
   const robots = await fetchRobotsByOrigin(preRobots.map((p) => p.capture.url));
   const { allowed: robotsAllowed, blocked } = applyRobots(preRobots, robots);
   const scopeHost = ((): string | null => {
     try {
-      return robotsAllowed[0]
-        ? new URL(robotsAllowed[0].capture.url).hostname
-        : null;
+      return robotsAllowed[0] ? new URL(robotsAllowed[0].capture.url).hostname : null;
     } catch {
       return null;
     }
   })();
   const probeworthy = robotsAllowed.filter(({ capture }) => {
     const ok = isOwnBackendTarget(capture.url, ownBackendHostnames, scopeHost);
-    if (!ok)
-      logger.info(
-        `skipped ${capture.url}: outside own-backend scope or loopback`,
-      );
+    if (!ok) logger.info(`skipped ${capture.url}: outside own-backend scope or loopback`);
     return ok;
   });
-  for (const b of blocked)
-    logger.info(`skipped ${b.url}: robots.txt Disallow: ${b.rule}`);
+  for (const b of blocked) logger.info(`skipped ${b.url}: robots.txt Disallow: ${b.rule}`);
   logger.info(
     `found ${all.length} captures, ${unique.length} unique, ${probeworthy.length} probeworthy` +
-      (skipped.length > 0 ? ` (${skipped.length} skipped)` : ""),
+      (skipped.length > 0 ? ` (${skipped.length} skipped)` : "")
   );
   for (const sk of skipped) logger.info(`skipped ${sk.url}: ${sk.reason}`);
 
@@ -1332,10 +1208,7 @@ async function main(): Promise<void> {
       body: c.capture.responseBody,
       url: c.capture.url as string | undefined,
     }))
-    .filter(
-      (e): e is { body: string; url: string | undefined } =>
-        typeof e.body === "string",
-    );
+    .filter((e): e is { body: string; url: string | undefined } => typeof e.body === "string");
   const htmlDocuments = htmlEntries.map((e) => e.body);
   const htmlDocumentUrls = htmlEntries.map((e) => e.url);
   const replays: ReplayResult[] = [];
@@ -1347,10 +1220,7 @@ async function main(): Promise<void> {
     });
     if (result === null) continue;
     replays.push(result);
-    writeFileSync(
-      join(runDir.replaysDir, filename),
-      JSON.stringify(result, null, 2),
-    );
+    writeFileSync(join(runDir.replaysDir, filename), JSON.stringify(result, null, 2));
   }
 
   const passed = replays.filter(replayPassed).length;
@@ -1368,7 +1238,7 @@ async function main(): Promise<void> {
         } catch {
           return r.url;
         }
-      }),
+      })
   );
   if (graphqlEndpoints.size === 0) {
     logger.info("no GraphQL endpoints found in captures");
@@ -1389,31 +1259,21 @@ async function main(): Promise<void> {
       return null;
     }
   })();
-  await probeAuxiliaryEndpoints(
-    replays,
-    runDir.auxDir,
-    ownBackendHostnames,
-    fallbackHost,
-  );
+  await probeAuxiliaryEndpoints(replays, runDir.auxDir, ownBackendHostnames, fallbackHost);
 
   // Rate-limit probe — runs last
-  logger.info(
-    "=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===",
+  logger.info("=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===");
+  const { targets: probeTargets, skipped: skippedAsNoise } = selectRateLimitTargets(
+    replays,
+    ownBackendHostnames,
+    fallbackHost,
+    flowFile ? readDeclaredEndpointPatterns(flowFile) : [],
+    flowFile ? readSubmitEndpointPattern(flowFile) : undefined,
+    (r) => probeworthy.find((p) => p.filename === r.sourceCapture)?.capture.requestHeaders
   );
-  const { targets: probeTargets, skipped: skippedAsNoise } =
-    selectRateLimitTargets(
-      replays,
-      ownBackendHostnames,
-      fallbackHost,
-      flowFile ? readDeclaredEndpointPatterns(flowFile) : [],
-      flowFile ? readSubmitEndpointPattern(flowFile) : undefined,
-      (r) =>
-        probeworthy.find((p) => p.filename === r.sourceCapture)?.capture
-          .requestHeaders,
-    );
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +
-      (skippedAsNoise > 0 ? ` (${skippedAsNoise} skipped as noise)` : ""),
+      (skippedAsNoise > 0 ? ` (${skippedAsNoise} skipped as noise)` : "")
   );
 
   const rateLimitFindings: RateLimitFinding[] = [];
@@ -1424,7 +1284,7 @@ async function main(): Promise<void> {
 
   writeFileSync(
     join(runDir.replaysDir, "rate-limit.json"),
-    JSON.stringify(rateLimitFindings, null, 2),
+    JSON.stringify(rateLimitFindings, null, 2)
   );
 
   logger.info(`recon-http complete — replays in ${runDir.replaysDir}`);
@@ -1432,8 +1292,7 @@ async function main(): Promise<void> {
 
 if (
   process.argv[1] !== undefined &&
-  (process.argv[1].endsWith("recon-http.ts") ||
-    process.argv[1].endsWith("recon-http.js"))
+  (process.argv[1].endsWith("recon-http.ts") || process.argv[1].endsWith("recon-http.js"))
 ) {
   main().catch((err) => {
     logger.error(`recon-http failed: ${toErrorMessage(err)}`);

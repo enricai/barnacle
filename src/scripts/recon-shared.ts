@@ -209,7 +209,12 @@ export interface ReplayResult {
     /** True when the authorization-carrying retry returned 2xx (needs-token, not needs-browser). */
     tokenReplayable: boolean;
     /** Which captured HTML document carries the bearer value, when found. */
-    tokenSource: { document: number; url?: string; source: "rsc-row" | "html"; row?: string } | null;
+    tokenSource: {
+      document: number;
+      url?: string;
+      source: "rsc-row" | "html";
+      row?: string;
+    } | null;
   };
 }
 
