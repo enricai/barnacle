@@ -248,6 +248,21 @@ export function getBodyUnavailableCount(): number {
   return bodyUnavailableCounter.n;
 }
 
+/**
+ * Builds the capture observer that records method + GraphQL document of every
+ * capture whose URL matches the declared submitEndpointPattern, for
+ * flowHasSubmitSemantics. A null/empty pattern observes nothing.
+ */
+export function createSubmitPatternObserver(
+  submitEndpointPattern: string | null | undefined,
+  sink: Array<{ method: string; query?: string | null }>
+): (capture: { url: string; method: string; query?: string | null }) => void {
+  const rx = submitEndpointPattern ? new RegExp(submitEndpointPattern) : null;
+  return (c) => {
+    if (rx?.test(c.url)) sink.push({ method: c.method, query: c.query });
+  };
+}
+
 export function wireNetworkCapture(
   page: Page,
   counter: { n: number },
@@ -3214,7 +3229,10 @@ async function main(): Promise<void> {
       // Kind evidence of captures the declared submitEndpointPattern matched,
       // so flowHasSubmitSemantics can tell a read data call from a submission.
       const patternMatchedCaptures: Array<{ method: string; query?: string | null }> = [];
-      const submitPatternRx = submitEndpointPattern ? new RegExp(submitEndpointPattern) : null;
+      const observePatternMatch = createSubmitPatternObserver(
+        submitEndpointPattern,
+        patternMatchedCaptures
+      );
       const capture = createCaptureRebinder(page, (target) =>
         wireNetworkCapture(
           target,
@@ -3225,11 +3243,7 @@ async function main(): Promise<void> {
           () => currentPhase,
           currentPageOrigin,
           captureTracker,
-          (c) => {
-            if (submitPatternRx?.test(c.url)) {
-              patternMatchedCaptures.push({ method: c.method, query: c.query });
-            }
-          }
+          observePatternMatch
         )
       );
       const stopCapture = capture.stopAll;
