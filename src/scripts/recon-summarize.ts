@@ -24,6 +24,7 @@ import { getScriptLogger } from "@/lib/logging";
 import {
   type Capture,
   CREDENTIAL_REQUEST_HEADERS,
+  hasProvenHeaders,
   type RateLimitFinding,
   type ReplayResult,
   readCaptureDir,
@@ -225,7 +226,7 @@ async function main(): Promise<void> {
           .join("\n");
 
   const headerCounts = tallyShapeRestoringHeaders(replays);
-  const divergedCount = replays.filter((r) => r.shapeDiffers).length;
+  const divergedCount = replays.filter(hasProvenHeaders).length;
 
   const lines: string[] = [
     `# Target Recon Findings`,
@@ -260,7 +261,11 @@ async function main(): Promise<void> {
       ? "_None confirmed — all replays failed. Check §Hazards._"
       : replays
           .filter(replayReachable)
-          .map((r) => `- \`${r.url}\` — **public** (replayed ${r.replayStatus})`)
+          .map((r) =>
+            r.headerReplay
+              ? `- \`${r.url}\` — **public with headers** (replayed ${r.replayStatus}, ${r.headerReplay.status} with ${(r.shapeRestoringHeaders ?? []).join(", ")})`
+              : `- \`${r.url}\` — **public** (replayed ${r.replayStatus})`
+          )
           .join("\n"),
     ``,
     `## Auth Required`,
@@ -280,14 +285,14 @@ async function main(): Promise<void> {
     ``,
     headerCounts.size === 0
       ? divergedCount === 0
-        ? "_No request headers implicated — no replay diverged in response shape from its capture._"
+        ? "_No request headers implicated — no replay diverged in response shape from its capture or was lifted from a refusal by a captured header._"
         : `_No request headers implicated — ${divergedCount} replay(s) diverged in response shape, but no captured header they omitted was proven to restore it._`
       : [
-          `_Captured request headers that, re-sent, restored the response shape of a replay that diverged_`,
+          `_Captured request headers that, re-sent, restored a replay that was refused or diverged in shape_`,
           `_from its capture: proven load-bearing. Commit them as \`BASE_HEADERS\` in \`src/sites/<id>/contract.ts\`,_`,
           `_except credentials and conditionals, which are obtained per call, never committed._`,
           ``,
-          `| Header | Shape-diverging replays it restored (of ${divergedCount}) | Load-bearing? |`,
+          `| Header | Diverging or refused replays it restored (of ${divergedCount}) | Load-bearing? |`,
           `|--------|-----------------------------------------------|---------------|`,
           ...[...headerCounts.entries()]
             .sort((a, b) => b[1] - a[1])

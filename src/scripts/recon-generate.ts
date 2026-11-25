@@ -71,6 +71,7 @@ import {
   CREDENTIAL_REQUEST_HEADERS,
   compareCaptureFilenames,
   type ExtraPayloadField,
+  hasProvenHeaders,
   type RateLimitFinding,
   type ReplayResult,
   readApplicantContract,
@@ -2276,7 +2277,7 @@ const VOLATILE_HEADER_NAME_FRAGMENTS = ["correlation-id", "conversation-id"];
 
 /**
  * Credential/conditional headers (as captured) that recon:http's re-replay proved
- * restore a shape-diverging replay's response shape. They stay out of
+ * restore a shape-diverging or refused replay. They stay out of
  * BASE_HEADERS; the generated contract carries a TODO to obtain each per call.
  */
 export function shapeRestoringCredentialHeaders(replays: ReplayResult[]): string[] {
@@ -2284,7 +2285,8 @@ export function shapeRestoringCredentialHeaders(replays: ReplayResult[]): string
   for (const r of replays) {
     for (const h of r.shapeRestoringHeaders ?? []) {
       const lower = h.toLowerCase();
-      if (CREDENTIAL_REQUEST_HEADERS.has(lower) && !names.has(lower)) names.set(lower, h);
+      const perCall = CREDENTIAL_REQUEST_HEADERS.has(lower) || isCredentialHeaderName(lower);
+      if (perCall && !names.has(lower)) names.set(lower, h);
     }
   }
   return [...names.values()];
@@ -2380,7 +2382,7 @@ export function deriveRequestHeaders(
   // Per load-bearing header, the captures whose replay it restored.
   const loadBearingSources = new Map<string, Capture[]>();
   for (const r of replays) {
-    if (!r.shapeDiffers) continue;
+    if (!hasProvenHeaders(r)) continue;
     const own = captures.filter(
       (c) =>
         c.url === r.url &&
