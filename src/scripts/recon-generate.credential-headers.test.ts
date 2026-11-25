@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bearerKindKey,
   compileActionSteps,
   emitMultiStepExecuteHttp,
   indexStateValues,
@@ -145,7 +146,7 @@ describe("recon-generate credential headers", () => {
   describe("runtime token bootstrap", () => {
     const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
     const USER = `eyJhbGciOiJIUzI1NiJ9.${b64({ tokenType: "user", sub: "u1" })}.sigsigsig`;
-    const emitWith = (tokenSource: { url: string } | null) =>
+    const emitWith = (tokenUrl: string | null) =>
       emitMultiStepExecuteHttp(
         [
           step(
@@ -190,7 +191,7 @@ describe("recon-generate credential headers", () => {
         undefined,
         undefined,
         undefined,
-        tokenSource
+        tokenUrl === null ? new Map() : new Map([[bearerKindKey(`Bearer ${USER}`) ?? "", tokenUrl]])
       );
 
     const noLiterals = (body: string) => {
@@ -200,11 +201,10 @@ describe("recon-generate credential headers", () => {
       expect(body).not.toContain("csrfvalue987654321");
     };
 
-    it("with a token source: fetches the document, reads RSC rows by hex length, selects by claims, no literal", async () => {
-      const body = emitWith({ url: "https://app.example.test/dash" });
+    it("with a token source: mints from the document by claims, no literal", async () => {
+      const body = emitWith("https://app.example.test/dash");
       noLiterals(body);
-      expect(body).toContain('context.baseUrl + "/dash"');
-      expect(body).toContain("parseInt(m[2] as string, 16)");
+      expect(body).toContain('mintBearerToken("https://app.example.test/dash"');
       expect(body).toContain('{"tokenType":"user"}');
       expect(body).toContain("Bearer ${await mintBearerToken(");
       expect(body).not.toContain("TODO: Authorization");

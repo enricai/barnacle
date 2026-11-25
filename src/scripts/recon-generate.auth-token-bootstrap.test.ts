@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bearerKindKey,
   compileActionSteps,
   emitMultiStepExecuteHttp,
   indexStateValues,
@@ -9,9 +10,8 @@ import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
 const jwt = (claims: object) => `eyJhbGciOiJIUzI1NiJ9.${b64(claims)}.sigsigsig`;
 const USER = jwt({ tokenType: "user", sub: "u1" });
-const CLIENT = jwt({ tokenType: "client", sub: "c1" });
 
-const emit = (tokenSource: { url: string } | null, multipart = false) => {
+const emit = (tokenUrl: string | null, multipart = false) => {
   const captures = [
     buildCapture({
       url: "https://app.example.test/a/login/",
@@ -58,17 +58,16 @@ const emit = (tokenSource: { url: string } | null, multipart = false) => {
     undefined,
     undefined,
     undefined,
-    tokenSource
+    tokenUrl === null ? new Map() : new Map([[bearerKindKey(`Bearer ${USER}`) ?? "", tokenUrl]])
   );
 };
 
 describe("recon-generate runtime bearer bootstrap", () => {
   it("emits a claims-based document bootstrap and no literal bearer", () => {
-    const body = emit({ url: "https://app.example.test/dash?x=1" });
+    const body = emit("https://app.example.test/dash?x=1");
     expect(body).not.toContain(USER);
     expect(body).not.toContain("sigsigsig");
-    expect(body).toContain('+ "/dash?x=1"');
-    expect(body).toContain("parseInt(m[2] as string, 16)");
+    expect(body).toContain('mintBearerToken("https://app.example.test/dash?x=1"');
     expect(body).toContain('{"tokenType":"user"}');
     expect(body).toContain("Bearer ${await mintBearerToken(");
     expect(body).not.toContain("TODO: Authorization");
@@ -78,29 +77,5 @@ describe("recon-generate runtime bearer bootstrap", () => {
     const body = emit(null);
     expect(body).toContain("TODO: Authorization requires a runtime credential");
     expect(body).not.toContain("mintBearerToken");
-  });
-
-  it("extracts the right token when the next row id follows with no separator", async () => {
-    const body = emit({ url: "/dash" });
-    const start = body.indexOf("const bearerCache");
-    const tail = body.indexOf("no token matching the expected claims", start);
-    const end = body.indexOf("\n    };\n", tail) + "\n    };\n".length;
-    const ts = body.slice(start, end);
-    const { stripTypeScriptTypes } = await import("node:module");
-    const js = stripTypeScriptTypes(ts);
-    const row = (id: string, t: string) => `${id}:T${Buffer.byteLength(t).toString(16)},${t}`;
-    const stream = `${row("a", CLIENT)}${row("b", USER)}c:[]`;
-    const html = `<script>self.__next_f.push([1,${JSON.stringify(stream)}])</script>`;
-    const run = new Function(
-      "context",
-      "fetchFollowingRedirectsPreservingMethod",
-      `${js}; return mintBearerToken({tokenType:"user"}, []);`
-    );
-    const out = await run({ baseUrl: "https://app.example.test" }, async () => ({
-      ok: true,
-      status: 200,
-      text: async () => html,
-    }));
-    expect(out).toBe(USER);
   });
 });

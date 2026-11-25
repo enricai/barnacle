@@ -2829,11 +2829,7 @@ export function gatherEntityVarianceEvidence(
       break;
     }
   }
-  return {
-    entityParameterized: Object.keys(params).length > 0,
-    params,
-    singleEntity,
-  };
+  return { entityParameterized: Object.keys(params).length > 0, params, singleEntity };
 }
 
 /**
@@ -3015,11 +3011,7 @@ export function selectPrimaryGraphQLOperation(
       )
   );
 
-  return {
-    capture: winner.capture,
-    endpointPath,
-    unpopulatedDeclaredVariables,
-  };
+  return { capture: winner.capture, endpointPath, unpopulatedDeclaredVariables };
 }
 
 /**
@@ -3152,11 +3144,7 @@ interface PostBodyBinding {
  * stay literal. Returns null when no body varies or bodies are not JSON objects.
  */
 function derivePostBodyModel(
-  captures: readonly {
-    method?: string;
-    url: string;
-    requestPostData?: string | null;
-  }[],
+  captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
   endpointPath: string
 ): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
   const bodies: Record<string, unknown>[] = [];
@@ -3241,12 +3229,7 @@ export interface GetInputModel {
   /** Recorded values (queryKey -> ordered values) of a repeated query key (`ids[]=1&ids[]=2`), replayed as one pair each when the payload omits the input. */
   recordedQueryLists?: Record<string, string[]>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
-  pathVars: Array<{
-    field: string;
-    segmentIndex: number;
-    queryKey: string;
-    suffix?: string;
-  }>;
+  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string; suffix?: string }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
   pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
   /** Declared composite payload fields (`a_b`) whose parts bind separate path segments: `partField` (a pathVars field) takes part `index` of `field` when the caller supplies `field`. */
@@ -3487,11 +3470,7 @@ export function deriveGetInputModel(
     const boundField = boundSegments.get(segIdx);
     if (segIdx >= 0 && boundField !== undefined) {
       // Another query key repeating an already-bound path segment follows the same caller input.
-      pathTwins.push({
-        field: boundField,
-        segmentIndex: segIdx,
-        queryKey: key,
-      });
+      pathTwins.push({ field: boundField, segmentIndex: segIdx, queryKey: key });
     } else if (segIdx >= 0) {
       const field = nameFor(key);
       boundSegments.set(segIdx, field);
@@ -5343,10 +5322,7 @@ function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): Act
     arrayField.path,
     mergedItems
   );
-  return {
-    ...representative,
-    capture: { ...representative.capture, responseBody: mergedBody },
-  };
+  return { ...representative, capture: { ...representative.capture, responseBody: mergedBody } };
 }
 
 /**
@@ -5766,19 +5742,36 @@ function isCredentialHeaderName(lower: string): boolean {
   );
 }
 
-/** First replay whose 401 re-replay located the bearer in a captured document. */
-function locatedTokenSource(replays: ReplayResult[]): TokenBootstrapSource | null {
+/** Document URLs serving a bearer, by {@link bearerKindKey} of the bearer each one serves. */
+export type BearerSources = ReadonlyMap<string, string>;
+
+/**
+ * Documents that replays proved serve a bearer. Keyed by the token's kind, so a
+ * document located for one endpoint's token is never used for another's.
+ */
+export function locateBearerSources(captures: Capture[], replays: ReplayResult[]): BearerSources {
+  const sources = new Map<string, string>();
   for (const r of replays) {
-    const ts = r.authReplay?.tokenSource;
-    if (r.authReplay?.tokenReplayable && ts?.url) return { url: ts.url };
+    const url = r.authReplay?.tokenReplayable ? r.authReplay.tokenSource?.url : undefined;
+    if (!url) continue;
+    for (const c of captures) {
+      if (endpointKey(c.url) !== endpointKey(r.url)) continue;
+      const header = authorizationOf(c);
+      const kind = header && bearerKindKey(header[1]);
+      if (kind && !sources.has(kind)) sources.set(kind, url);
+    }
   }
-  return null;
+  return sources;
 }
 
-/** Where the plugin can mint a bearer at call time: the located HTML document. */
-export interface TokenBootstrapSource {
-  /** Document URL (absolute or context-relative); only its path+query is emitted. */
-  url: string;
+function authorizationOf(c: Capture): [string, string] | undefined {
+  return Object.entries(c.requestHeaders).find(([k]) => k.toLowerCase() === "authorization");
+}
+
+/** Identity of a captured JWT's kind (never its value); null when it is not a JWT. */
+export function bearerKindKey(value: string): string | null {
+  const jwt = stableJwtClaims(value);
+  return jwt && JSON.stringify([Object.entries(jwt.want).sort(), jwt.keys]);
 }
 
 // Only claims that name the token's kind select it; per-mint values
@@ -5821,99 +5814,56 @@ function stableJwtClaims(
   }
 }
 
-/** Runtime helper source that fetches the document and extracts the bearer by claims. */
-function tokenBootstrapHelperLines(src: TokenBootstrapSource, recordedBaseUrl = ""): string[] {
-  let path: string;
-  let origin = "";
-  try {
-    const u = new URL(src.url, "http://x.invalid");
-    path = u.pathname + u.search;
-    // An absolute document URL keeps its own origin: the token page may not
-    // live on the plugin's baseUrl host.
-    if (/^https?:\/\//i.test(src.url)) origin = u.origin;
-  } catch {
-    path = "/";
-  }
-  // Same host as the plugin's base URL (tenant-resolved at runtime) -> baseUrl;
-  // a different host -> the captured origin.
-  let recordedHost = "";
-  try {
-    recordedHost = new URL(recordedBaseUrl).host;
-  } catch {
-    // no recorded base URL
-  }
-  const base =
-    origin && new URL(origin).host !== recordedHost
-      ? `(new URL(context.baseUrl).host === ${JSON.stringify(new URL(origin).host)} ? context.baseUrl : ${JSON.stringify(origin)})`
-      : "context.baseUrl";
+/** Multi-step preamble binding the engine's bearer mint to this call's base URL. */
+function tokenBootstrapHelperLines(recordedBaseUrl: string): string[] {
   return [
-    "    // Runtime bearer: fetched from the page that serves it; the captured value is never emitted.",
-    "    const bearerCache = new Map<string, Promise<string>>();",
-    "    const mintBearerToken = (want: Record<string, unknown>, keys: string[]): Promise<string> => {",
-    "      const cacheKey = JSON.stringify([want, keys]);",
-    "      const hit = bearerCache.get(cacheKey);",
-    "      if (hit) return hit;",
-    "      const minted = mintBearerTokenUncached(want, keys);",
-    "      bearerCache.set(cacheKey, minted);",
-    "      minted.catch(() => bearerCache.delete(cacheKey));",
-    "      return minted;",
-    "    };",
-    "    const mintBearerTokenUncached = async (want: Record<string, unknown>, keys: string[]): Promise<string> => {",
-    `      const res = await fetchFollowingRedirectsPreservingMethod(${base} + ${JSON.stringify(path)}, { method: "GET", headers: { accept: "text/html" } });`,
-    '      if (!res.ok) throw new Error("bearer bootstrap: document fetch failed: HTTP " + res.status);',
-    "      const html = await res.text();",
-    "      const claimsOf = (t: string): Record<string, unknown> | null => {",
-    "        try {",
-    '          const p = JSON.parse(Buffer.from(t.split(".")[1] ?? "", "base64url").toString("utf8"));',
-    '          return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : null;',
-    "        } catch {",
-    "          return null;",
-    "        }",
-    "      };",
-    "      const accepts = (c: Record<string, unknown>): boolean => {",
-    "        const entries = Object.entries(want);",
-    "        if (entries.length > 0) return entries.every(([k, v]) => c[k] === v);",
-    '        return Object.keys(c).sort().join(",") === keys.join(",");',
-    "      };",
-    "      const jwtRe = /eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/g;",
-    "      const pick = (text: string): string | null => {",
-    "        for (const m of text.matchAll(jwtRe)) {",
-    "          const c = claimsOf(m[0]);",
-    "          if (c && accepts(c)) return m[0];",
-    "        }",
-    "        return null;",
-    "      };",
-    '      let stream = "";',
-    '      const pushRe = /push\\(\\s*\\[\\s*1\\s*,\\s*("(?:[^"\\\\]|\\\\.)*")\\s*\\]\\s*\\)/g;',
-    "      for (const m of html.matchAll(pushRe)) {",
-    "        try {",
-    "          stream += JSON.parse(m[1] as string) as string;",
-    "        } catch {",
-    "          // skip malformed payload",
-    "        }",
-    "      }",
-    "      // RSC text rows `<id>:T<hex>,<text>`: the text is exactly parseInt(hex,16) UTF-8 bytes,",
-    "      // so the next row id that follows with no separator is never absorbed.",
-    "      const rowRe = /([0-9a-zA-Z]+):T([0-9a-fA-F]+),/g;",
-    "      for (let m = rowRe.exec(stream); m; m = rowRe.exec(stream)) {",
-    "        const start = m.index + m[0].length;",
-    "        const len = parseInt(m[2] as string, 16);",
-    "        let end = start;",
-    "        for (let used = 0; end < stream.length && used < len; ) {",
-    "          const cp = stream.codePointAt(end) as number;",
-    "          used += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;",
-    "          end += cp > 0xffff ? 2 : 1;",
-    "        }",
-    "        const found = pick(stream.slice(start, end));",
-    "        if (found) return found;",
-    "        rowRe.lastIndex = end;",
-    "      }",
-    `      const plain = pick(html.replace(pushRe, ""));`,
-    "      if (plain) return plain;",
-    '      throw new Error("bearer bootstrap: no token matching the expected claims in the document");',
-    "    };",
+    "    // Bearer minted from the page that serves it; the recorded value is never emitted.",
+    "    const mintBearerToken = (documentUrl: string, claims: Record<string, unknown>, claimNames: string[]): Promise<string> =>",
+    `      mintBearerFromDocument({ documentUrl, recordedBaseUrl: ${JSON.stringify(recordedBaseUrl)}, claims, claimNames, bottleneck: limiter }, context.baseUrl);`,
     "",
   ];
+}
+
+/** Call-time bearer for a read flow's clients; `document` null means none was located. */
+export interface ReadFlowBearer {
+  document: string | null;
+  headerName: string;
+  prefix: string;
+  claims: Record<string, string | boolean>;
+  claimNames: string[];
+  bearerHosts: string[];
+  otherHosts: string[];
+}
+
+/**
+ * The bearer a read flow must obtain per call: proven by a replay on `endpoint`
+ * that was refused without it and answered with it. Null when no replay proved one.
+ */
+export function deriveReadFlowBearer(
+  captures: Capture[],
+  replays: ReplayResult[],
+  endpoint: string
+): ReadFlowBearer | null {
+  const key = endpointKey(endpoint);
+  if (!replays.some((r) => r.authReplay?.tokenReplayable && endpointKey(r.url) === key))
+    return null;
+  const sample = captures.find((c) => endpointKey(c.url) === key && authorizationOf(c));
+  const header = sample && authorizationOf(sample);
+  if (!header) return null;
+  const jwt = stableJwtClaims(header[1]);
+  const hosts = (cs: Capture[]): string[] => [
+    ...new Set(cs.filter((c) => URL.canParse(c.url)).map((c) => new URL(c.url).host)),
+  ];
+  const bearerHosts = hosts(captures.filter((c) => authorizationOf(c) !== undefined));
+  return {
+    document: locateBearerSources(captures, replays).get(bearerKindKey(header[1]) ?? "") ?? null,
+    headerName: header[0],
+    prefix: /^bearer\s/i.test(header[1].trim()) ? "Bearer " : "",
+    claims: jwt?.want ?? {},
+    claimNames: jwt?.keys ?? [],
+    bearerHosts,
+    otherHosts: hosts(captures).filter((h) => !bearerHosts.includes(h)),
+  };
 }
 
 /**
@@ -5925,14 +5875,15 @@ function tokenBootstrapHelperLines(src: TokenBootstrapSource, recordedBaseUrl = 
 function credentialHeaderThrowExpr(
   headerName: string,
   capturedValue?: string,
-  bootstrap?: { source: TokenBootstrapSource | null; used: { value: boolean } }
+  bootstrap?: { sources: BearerSources; used: { value: boolean } }
 ): string {
-  if (bootstrap?.source && capturedValue !== undefined) {
+  if (bootstrap && capturedValue !== undefined) {
     const c = stableJwtClaims(capturedValue);
-    if (c) {
+    const url = bootstrap.sources.get(bearerKindKey(capturedValue) ?? "");
+    if (c && url !== undefined) {
       bootstrap.used.value = true;
       const prefix = /^bearer\s/i.test(capturedValue.trim()) ? "Bearer " : "";
-      return `${prefix}\${await mintBearerToken(${JSON.stringify(c.want)}, ${JSON.stringify(c.keys)})}`;
+      return `${prefix}\${await mintBearerToken(${JSON.stringify(url)}, ${JSON.stringify(c.want)}, ${JSON.stringify(c.keys)})}`;
     }
   }
   const msg = JSON.stringify(
@@ -6011,9 +5962,7 @@ function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
 
     for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
       if (KNOWN_TOP_LEVEL_ERROR_KEYS.has(k.toLowerCase())) {
-        const existing = candidateTopLevelKeys.get(k) ?? {
-          presentInSuccess: false,
-        };
+        const existing = candidateTopLevelKeys.get(k) ?? { presentInSuccess: false };
         if (typeof v === "string" && v.length > 0) existing.presentInSuccess = true;
         candidateTopLevelKeys.set(k, existing);
       }
@@ -6032,10 +5981,7 @@ function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
   const nestedErrorPaths: ErrorSignals["nestedErrorPaths"] = [];
   for (const info of candidateNestedPaths.values()) {
     if (!info.presentInSuccess) {
-      nestedErrorPaths.push({
-        parentPath: info.parentPath,
-        errorKey: info.errorKey,
-      });
+      nestedErrorPaths.push({ parentPath: info.parentPath, errorKey: info.errorKey });
     }
   }
 
@@ -6801,10 +6747,7 @@ export function buildSelectOptionResolutions(
       // channel emits a caller-supplied default.
       if (usableOptions.length === 0 && schema.codes.length > 0) {
         const fallbackIdx = idx >= 0 ? idx : schema.codes.length - 1;
-        rawCodeFields.set(semanticName, {
-          wireKey,
-          code: schema.codes[fallbackIdx]!,
-        });
+        rawCodeFields.set(semanticName, { wireKey, code: schema.codes[fallbackIdx]! });
         seenWireKeys.add(wireKey);
       }
       continue;
@@ -6828,13 +6771,7 @@ export function buildSelectOptionResolutions(
     // The {label,value} map only reliably yields the one answered label→code
     // pair here; emit a single-choice enum so the field still binds (the caller
     // can widen it). Co-located labels aren't safely attributable to this field.
-    resolutions.push({
-      wireKey,
-      semanticName,
-      code,
-      label,
-      options: [{ label, code }],
-    });
+    resolutions.push({ wireKey, semanticName, code, label, options: [{ label, code }] });
     seenWireKeys.add(wireKey);
   }
   return { resolutions, rawCodeFields };
@@ -7817,9 +7754,7 @@ function payloadAccessorForPath(path: string[]): {
   }
   const objectPath = path.slice(0, arrayIndexPos);
   const field = objectPath.length > 0 ? pathToPayloadFieldName(objectPath) : (path[0] ?? "");
-  const suffix = pathToAccessor(path.slice(arrayIndexPos), {
-    assertNonNull: true,
-  });
+  const suffix = pathToAccessor(path.slice(arrayIndexPos), { assertNonNull: true });
   return {
     accessor: `payload.${field}${suffix}`,
     field,
@@ -9212,11 +9147,7 @@ export function deriveProducerBoundaryBindings(
       // higher-priority accessor is a real declared field, so only veto the
       // sentinel when the name came from `p.name`.
       if (existing === undefined && field === "value") continue;
-      bindings.set(value, {
-        accessor: `payload.${field}`,
-        field,
-        producerIndex: i,
-      });
+      bindings.set(value, { accessor: `payload.${field}`, field, producerIndex: i });
     }
   }
   // Drop per-step position constants: a field bound to ≥2 distinct values across
@@ -10902,11 +10833,11 @@ export function emitMultiStepExecuteHttp(
    * (default) leaves full-flow output byte-identical.
    */
   httpPrefixCount: number | undefined = undefined,
-  /** Located HTML document serving the bearer (replay `authReplay.tokenSource`). */
-  tokenSource: TokenBootstrapSource | null = null
+  /** Documents proven to serve the steps' bearers ({@link locateBearerSources}). */
+  bearerSources: BearerSources = new Map()
 ): string {
   if (httpPrefixCount !== undefined) actions = actions.slice(0, httpPrefixCount);
-  const tokenBootstrap = { source: tokenSource, used: { value: false } };
+  const tokenBootstrap = { sources: bearerSources, used: { value: false } };
   interface Rendered {
     url: string;
     method: string;
@@ -10959,11 +10890,7 @@ export function emitMultiStepExecuteHttp(
       if (isInsideOwnedArray(path, facetArrayPathKeys)) continue;
       // A leaf recurring as a declared facet literal binds to that facet's
       // payloadField via the persona pass, not to a by-index accessor.
-      if (
-        matchFacetRecurrence(value, navigateToFacetOrder, {
-          allowDelimiterSuffix: true,
-        })
-      ) {
+      if (matchFacetRecurrence(value, navigateToFacetOrder, { allowDelimiterSuffix: true })) {
         continue;
       }
       const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
@@ -11699,13 +11626,7 @@ export function emitMultiStepExecuteHttp(
     // contract would enforce that narrowed shape on every call in the chain.
     const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
-    rendered.push({
-      url,
-      method: cap.method,
-      headersExpr,
-      bodyArg,
-      schemaExpr,
-    });
+    rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
   }
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
@@ -11930,10 +11851,7 @@ export function emitMultiStepExecuteHttp(
         // (below) can lift the fetch above the per-item loop instead of
         // pinning it inside for byte-identical ancestor-scoped data.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({
-            varName,
-            obj: ancestorObjByVar.get(varName)!,
-          })),
+          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -12092,7 +12010,7 @@ export function emitMultiStepExecuteHttp(
                 }
               }
             } catch {
-              // non-JSON body: nothing to rebind
+              // A non-JSON body has no top-level keys to rebind.
             }
           }
           // Literal-value substitution: ONE guarded regex-alternation pass over
@@ -12629,8 +12547,8 @@ export function emitMultiStepExecuteHttp(
     lines.push(`    return { data: ${castToResponseType(returnVar)} };`);
   }
 
-  if (tokenBootstrap.used.value && tokenSource)
-    lines.splice(bootstrapInsertAt, 0, ...tokenBootstrapHelperLines(tokenSource, baseUrl));
+  if (tokenBootstrap.used.value)
+    lines.splice(bootstrapInsertAt, 0, ...tokenBootstrapHelperLines(baseUrl));
   const renderedMultiStepBody = lines.join("\n");
   assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
   return renderedMultiStepBody;
@@ -13159,9 +13077,7 @@ function spliceFacetRecurrenceIntoScalarVariable(
 ): string | null {
   if (facets.length === 0) return null;
   if (typeof value === "string" || typeof value === "number") {
-    const facet = matchFacetRecurrence(String(value), facets, {
-      allowDelimiterSuffix: false,
-    });
+    const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
     if (facet !== undefined) {
       const rendered = renderFacetPayloadValue(String(value), facet);
       return rendered === `\${${facetPayloadExpression(facet)}}`
@@ -14541,10 +14457,7 @@ function buildThreadedFieldPairs(
   ancestorScopes: readonly { varName: string; obj: Record<string, unknown> }[]
 ): { valueField: ThreadedField; accessorField: ThreadedField }[] {
   if (!isAncestorScoped) {
-    return rawThreadedFields.map((tf) => ({
-      valueField: tf,
-      accessorField: tf,
-    }));
+    return rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
   }
   return rawThreadedFields.map((tf) => ({
     valueField: tf,
@@ -14943,12 +14856,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       );
       if (primaryMatchedItemIndex === -1) continue;
       const joinFields = findThreadedJoinFields(
-        [
-          {
-            varName: "item",
-            obj: primaryArray.items[primaryMatchedItemIndex]!,
-          },
-        ],
+        [{ varName: "item", obj: primaryArray.items[primaryMatchedItemIndex]! }],
         drill.capture
       ).map((f) => f.field);
 
@@ -15050,11 +14958,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
     }
 
     if (targets.length > 0) {
-      groups.push({
-        primaryArrayPath: primaryArray.path,
-        targets,
-        absorbedIndices,
-      });
+      groups.push({ primaryArrayPath: primaryArray.path, targets, absorbedIndices });
     }
   }
 
@@ -15396,7 +15300,7 @@ export function emitJoinTemplateExpr(
   const parts = tokens.map((t) => {
     if (t.kind === "literal") return JSON.stringify(t.text);
     if (t.format === undefined) return `String(${accessor(t.field)})`;
-    return `[${accessor(t.field)}].map((v) => { const m = typeof v === "string" ? /^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2}):(\\d{2}))?/.exec(v) : null; const d = m ? null : new Date(typeof v === "number" ? v : String(v)); const q = (m ? [1, 2, 3, 4, 5, 6].map((n) => Number(m[n] ?? 0)) : d ? [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()] : []).map((n) => n); const s = q.map((n) => String(n).padStart(2, "0")); return ${JSON.stringify(t.format)}.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (k) => k === "yyyy" ? String(q[0] ?? 0).padStart(4, "0") : k === "yy" ? String((q[0] ?? 0) % 100).padStart(2, "0") : k === "MM" ? (s[1] ?? "00") : k === "dd" ? (s[2] ?? "00") : k === "HH" ? (s[3] ?? "00") : k === "mm" ? (s[4] ?? "00") : (s[5] ?? "00")); }).join("")`;
+    return `[${accessor(t.field)}].map((v) => { const m = typeof v === "string" ? /^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2}):(\\d{2}))?/.exec(v) : null; const d = m ? null : new Date(typeof v === "number" ? v : String(v)); const q = (m ? [1, 2, 3, 4, 5, 6].map((n) => Number(m[n] ?? 0)) : d ? [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()] : []); const s = q.map((n) => String(n).padStart(2, "0")); return ${JSON.stringify(t.format)}.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (k) => k === "yyyy" ? String(q[0] ?? 0).padStart(4, "0") : k === "yy" ? String((q[0] ?? 0) % 100).padStart(2, "0") : k === "MM" ? (s[1] ?? "00") : k === "dd" ? (s[2] ?? "00") : k === "HH" ? (s[3] ?? "00") : k === "mm" ? (s[4] ?? "00") : (s[5] ?? "00")); }).join("")`;
   });
   return parts.join(" + ");
 }
@@ -15612,11 +15516,7 @@ function parseDrillParamBindings(raw: unknown): FoldReturnSpec["drillParamBindin
     ) {
       return null;
     }
-    parsed[paramName] = {
-      payloadField,
-      type,
-      default: defaultValue as string | number | boolean,
-    };
+    parsed[paramName] = { payloadField, type, default: defaultValue as string | number | boolean };
   }
   return parsed;
 }
@@ -17534,15 +17434,9 @@ export function foldOneDrillOccurrence(
   // Mirrors emitFoldMatchAndMergeLines: a declared attach key carries the
   // matched answer as one value instead of flat-merging its fields.
   if (matchAttachKey !== null) {
-    return replaceByReference(body, matchedItem, {
-      [matchAttachKey]: drillMatch,
-      ...matchedItem,
-    });
+    return replaceByReference(body, matchedItem, { [matchAttachKey]: drillMatch, ...matchedItem });
   }
-  return replaceByReference(body, matchedItem, {
-    ...drillMatch,
-    ...matchedItem,
-  });
+  return replaceByReference(body, matchedItem, { ...drillMatch, ...matchedItem });
 }
 
 function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
@@ -18367,6 +18261,8 @@ export function classifySubmissionFlow(o: {
   graphqlActionSequenceHasMutation: boolean;
   /** A declared submit endpoint re-queried with differing filter bodies. */
   isDeclaredPostSearchRead?: boolean;
+  /** The author marked a step as the submit, so a reads-only recording is still a submission. */
+  declaresSubmitStep?: boolean;
 }): boolean {
   const readsOnly =
     o.actionCaptureMethods.length > 0 &&
@@ -18376,7 +18272,7 @@ export function classifySubmissionFlow(o: {
           const u = (m ?? "").toUpperCase();
           return u === "GET" || u === "OPTIONS";
         }));
-  if (o.noReplayableActionFlow) return !readsOnly;
+  if (o.noReplayableActionFlow) return o.declaresSubmitStep === true || !readsOnly;
   if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
@@ -18616,6 +18512,8 @@ export function emitContractTsParts(opts: {
    * output byte-for-byte: no `browserFallbackGate` meta field, and
    * `createHttpClient(...)` unchanged. */
   fallbackGateSpec?: FallbackGateSpec;
+  /** Bearer the read-flow clients obtain per call ({@link deriveReadFlowBearer}). */
+  readFlowBearer?: ReadFlowBearer | null;
 }): { code: string; payloadSchemaExpr: string } {
   const {
     siteId,
@@ -18666,6 +18564,7 @@ export function emitContractTsParts(opts: {
     headerBindings = [],
     unpopulatedDeclaredVariables = [],
     fallbackGateSpec = {},
+    readFlowBearer = null,
   } = opts;
   if (mixedHttpPrefix !== (mixedHandoverOpt !== undefined)) {
     throw new Error(
@@ -19390,6 +19289,15 @@ export function emitContractTsParts(opts: {
       ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${escapeForTemplateLiteral(gqlQuery!.trim())}\`;\n`
       : "";
 
+  const usesReadFlowBearer =
+    readFlowBearer !== null && !omitExecuteHttp && !mixedHttpPrefix && !multiStepBody;
+  const resolveHeadersOption = usesReadFlowBearer ? ", resolveHeaders: resolveAuthHeaders" : "";
+  const readFlowBearerBlock = !usesReadFlowBearer
+    ? ""
+    : `
+const resolveAuthHeaders = createBearerHeaderResolver({ documentUrl: ${JSON.stringify(readFlowBearer.document)}, recordedBaseUrl: ${JSON.stringify(baseUrl)}, claims: ${JSON.stringify(readFlowBearer.claims)}, claimNames: ${JSON.stringify(readFlowBearer.claimNames)}, bottleneck: limiter, headerName: ${JSON.stringify(readFlowBearer.headerName)}, prefix: ${JSON.stringify(readFlowBearer.prefix)}, bearerHosts: ${JSON.stringify(readFlowBearer.bearerHosts)}, otherHosts: ${JSON.stringify(readFlowBearer.otherHosts)} });
+`;
+
   const gqlCacheBlock =
     omitExecuteHttp || mixedHttpPrefix
       ? ""
@@ -19406,7 +19314,7 @@ function getGql(baseUrl: string): GqlFn {
       schema: ${pascal}ResponseSchema,
       bottleneck: limiter,
       baseHeaders: BASE_HEADERS,
-      endpoint: \`\${baseUrl}${endpointPath}\`,
+      endpoint: \`\${baseUrl}${endpointPath}\`,${usesReadFlowBearer ? "\n      resolveHeaders: resolveAuthHeaders," : ""}
     });
     gqlCache.set(baseUrl, client);
   }
@@ -19418,12 +19326,12 @@ ${
   // GraphQL to the primary endpoint.
   needsFoldHttpClient
     ? `
-const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
+const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption}${resolveHeadersOption} });
 `
     : ""
 }`
         : `
-const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
+const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption}${resolveHeadersOption} });
 `;
 
   const gqlOperationNameExpr = gqlOperationName
@@ -19584,10 +19492,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // instead of pinning it inside for byte-identical ancestor-scoped
         // data. Mirrors emitMultiStepExecuteHttp's identical hoist.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({
-            varName,
-            obj: ancestorObjByVar.get(varName)!,
-          })),
+          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -20099,6 +20004,18 @@ ${executeHttpBody}
  * Stagehand automatically on schema drift or bot challenge.
  */`;
 
+  const bearerImports = [
+    ...(readFlowBearerBlock.includes("createBearerHeaderResolver(")
+      ? ["createBearerHeaderResolver"]
+      : []),
+    ...(!omitExecuteHttp && executeHttpBody.includes("mintBearerFromDocument(")
+      ? ["mintBearerFromDocument"]
+      : []),
+  ];
+  const bearerImport =
+    bearerImports.length > 0
+      ? `import { ${bearerImports.join(", ")} } from "${ENGINE_PKG}/scraper/bearer-token-source";\n`
+      : "";
   const redirectFollowImport =
     !omitExecuteHttp && /\bfetchFollowingRedirectsPreservingMethod\(/.test(executeHttpBody)
       ? `import { fetchFollowingRedirectsPreservingMethod } from "${ENGINE_PKG}/scraper/redirect-follow";\n`
@@ -20109,7 +20026,7 @@ ${executeHttpBody}
 
 ${bottleneckImport}import { z } from "zod/v4";
 
-${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${redirectFollowImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}${
+${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${bearerImport}${redirectFollowImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}${
   !omitExecuteHttp && /\bgetLogger\(/.test(executeHttpBody)
     ? `\nimport { getLogger } from "${ENGINE_PKG}/lib/logging";`
     : ""
@@ -20127,7 +20044,7 @@ ${optionDecls}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
-${internalRequestReferenceBlock}${queryConst}${gqlCacheBlock}${httpPrefixBlock}${fixtureComments}
+${internalRequestReferenceBlock}${queryConst}${readFlowBearerBlock}${gqlCacheBlock}${httpPrefixBlock}${fixtureComments}
 ${pluginDocComment}
 export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
   meta: {
@@ -21009,9 +20926,7 @@ export function emitConfigManifest(opts: {
         description: "TODO: declare the fields this site returns (recon leaves this empty).",
         properties: {},
       },
-      ...(sensitiveManifestPolicy !== undefined && {
-        redaction: sensitiveManifestPolicy,
-      }),
+      ...(sensitiveManifestPolicy !== undefined && { redaction: sensitiveManifestPolicy }),
       flow: { steps, ...(isSubmissionFlow ? { submissionFlow: true } : {}) },
       extract: {
         instruction: `extract the confirmation id and status for ${siteId}`,
@@ -21525,12 +21440,7 @@ ${flowStepsBlock}
     buildKnownFieldValues(allFlowSteps, vocabulary ?? EMPTY_VOCABULARY, env, canonicalise, false),
     flowSteps
   );
-  return {
-    code,
-    payloadFieldNames,
-    optionalPayloadFieldNames,
-    usesThrowawayPassword,
-  };
+  return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
 }
 
 /**
@@ -22670,10 +22580,7 @@ export async function main(): Promise<void> {
         ? null
         : detectFormSchemaFetchCapture(activeCaptures, baseUrl, formSchema);
     const schemaFetchCleaned: Capture | null = rawSchemaFetch
-      ? {
-          ...rawSchemaFetch.capture,
-          url: stripCacheBusterParams(rawSchemaFetch.capture.url),
-        }
+      ? { ...rawSchemaFetch.capture, url: stripCacheBusterParams(rawSchemaFetch.capture.url) }
       : null;
     const actionCaptures: ActionCapture[] = (() => {
       if (
@@ -22809,6 +22716,7 @@ export async function main(): Promise<void> {
       gql: !!gql,
       actionCaptureMethods: actionCaptures.map((a) => a.capture.method),
       graphqlActionSequenceHasMutation,
+      declaresSubmitStep: flowSteps.some((st) => typeof st !== "string" && st.submitStep === true),
     });
 
     // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
@@ -23048,7 +22956,7 @@ export async function main(): Promise<void> {
             vocabulary,
             applicantContract,
             httpStepsOpt?.actions,
-            locatedTokenSource(replays)
+            locateBearerSources(activeCaptures, replays)
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
@@ -23352,6 +23260,9 @@ export async function main(): Promise<void> {
       payloadFieldNames: browserFlow.payloadFieldNames,
       optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
       headerBindings,
+      readFlowBearer: isSubmissionFlow
+        ? null
+        : deriveReadFlowBearer(activeCaptures, replays, `${baseUrl}${endpointPath}`),
       unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
       fallbackGateSpec,
     };

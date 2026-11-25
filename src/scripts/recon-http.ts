@@ -974,12 +974,7 @@ export function selectRateLimitTargets(
 } {
   const collected = new Map<
     string,
-    {
-      method: string;
-      body: string | null;
-      tier: number;
-      headers?: Record<string, string>;
-    }
+    { method: string; body: string | null; tier: number; headers?: Record<string, string> }
   >();
   const seenEndpoints = new Set<string>();
   let skipped = 0;

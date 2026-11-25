@@ -66,6 +66,8 @@ const flowSchema = z.object({
   submissionFlow: z.boolean().optional(),
   frameSelector: z.string().min(1).optional(),
   submitEndpointPattern: z.string().nullish(),
+  /** The endpoint pattern names the data call, so it never implies a submission. */
+  readOnly: z.boolean().optional(),
   submittedStateSelectors: z.array(z.string()).optional(),
   requireSubmitEndpointMatch: z.boolean().optional(),
   advanceTransitionBodyPattern: z.string().nullish(),
@@ -403,6 +405,7 @@ export async function buildConfigPlugin(
         uploadFixture: buildUploadFixture(payload, hasUploadStep, spec.multipart ?? false),
         frameSelector: spec.flow.frameSelector,
         submitEndpointPattern: spec.flow.submitEndpointPattern ?? null,
+        readOnly: spec.flow.readOnly ?? false,
         submittedStateSelectors: spec.flow.submittedStateSelectors ?? [],
         requireSubmitEndpointMatch: spec.flow.requireSubmitEndpointMatch ?? false,
         advanceTransitionBodyPattern: spec.flow.advanceTransitionBodyPattern ?? null,
