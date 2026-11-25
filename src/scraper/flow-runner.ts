@@ -130,6 +130,7 @@ import {
   hasSettledPageAdvanced,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
+  isPopupOnlyChange,
   isVisibleTextShrunk,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
@@ -1724,7 +1725,7 @@ export const STEP_WATCHDOG_MS = 120_000;
  * Review dump had 0 ng-invalid but 18 `Mui-error` + 12 `aria-invalid`.
  */
 const INVALID_MARKER_CLASS_SOURCE =
-  "ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid|Mui-error";
+  "ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid|Mui-error|has-error";
 /**
  * Browser-context predicate string: given an element `el` in scope, is it a
  * required-unfilled / invalid control? Covers the class markers above AND the
@@ -1736,23 +1737,31 @@ const INVALID_MARKER_EL_EXPR = `((el) => {
   const rx = /(${INVALID_MARKER_CLASS_SOURCE})/;
   const cls = (el.getAttribute && el.getAttribute("class")) || "";
   if (rx.test(cls)) return true;
-  if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
-  // Non-class error-node markers: a visible, non-empty error-message / error-banner
-  // node (error hook in data-automation-id / data-testid / data-test-id, or a
-  // role=alert container carrying an error hook). Empty templates don't count.
-  if (el.getAttribute) {
-    const hook = ["data-automation-id", "data-testid", "data-test-id"]
-      .map((a) => el.getAttribute(a) || "").join(" ");
-    const isErrHook = /(^|[-_\\s])(error|errors|errormessage|error-message|errorbanner|error-banner)([-_\\s]|$)|error(message|banner|summary)/i.test(hook);
-    const isAlertErr = el.getAttribute("role") === "alert" &&
-      /error|danger/i.test(cls + " " + hook);
-    if (isErrHook || isAlertErr) {
-      const txt = (el.textContent || "").trim();
-      const hidden = el.hidden === true || el.getAttribute("aria-hidden") === "true";
-      if (txt.length > 0 && !hidden) return true;
+  if (!el.getAttribute) return false;
+  if (el.getAttribute("aria-invalid") === "true") return true;
+  // Non-class error markers all need rendered message text: an empty template
+  // or a hidden node is not a validation message the user can see.
+  const shown = (n) => !!n && (n.textContent || "").trim().length > 0 &&
+    n.hidden !== true && n.getAttribute("aria-hidden") !== "true" &&
+    !(n.style && n.style.display === "none");
+  // An element whose aria-errormessage target is a rendered, non-empty node.
+  const errTarget = el.getAttribute("aria-errormessage");
+  if (errTarget && el.ownerDocument) {
+    for (const id of errTarget.split(/\\s+/).filter(Boolean)) {
+      if (shown(el.ownerDocument.getElementById(id))) return true;
     }
   }
-  return false;
+  // An error-message / error-banner / error-heading node, however the page
+  // spells it: a hook (data-automation-id / data-testid / data-test-id) or a
+  // class whose camelCase/kebab/snake words include one starting "error"
+  // (inputError, errorHeading, error-message, field_errors).
+  const hook = ["data-automation-id", "data-testid", "data-test-id"]
+    .map((a) => el.getAttribute(a) || "").join(" ");
+  const words = (hook + " " + cls).replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()
+    .split(/[^a-z0-9]+/).filter(Boolean);
+  const isErrNode = words.some((w) => w.startsWith("error"));
+  const isAlertErr = el.getAttribute("role") === "alert" && /error|danger/i.test(cls + " " + hook);
+  return (isErrNode || isAlertErr) && shown(el);
 })`;
 /**
  * Browser-context predicate string: given an element `el` in scope, is it
@@ -1818,6 +1827,8 @@ interface StepSnapshot {
    * movement. Optional so literal snapshots built elsewhere keep compiling.
    */
   visibleTextDigest?: string;
+  /** Whole visible text without open transient popups, so a popup closing is not read as the page moving. */
+  contentText?: string;
   /**
    * Set by the post-click re-settle when the visible text held still through the
    * whole re-settle budget, so a header-only flip can be judged as the final page.
@@ -2000,7 +2011,45 @@ function ariaCheckedReadExpr(elVar: string): string {
 /** Bound on {@link StepSnapshot.visibleText}, keeping a pathological page from bloating snapshots. */
 const VISIBLE_TEXT_EXCERPT_CHARS = 3000;
 
-const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "", full: "", digest: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; const norm = t.replace(/\\s+/g, " ").trim(); let th = 2166136261; for (let tk = 0; tk < norm.length; tk++) { th ^= norm.charCodeAt(tk); th = Math.imul(th, 16777619); } return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state, full: norm.slice(0, ${VISIBLE_TEXT_EXCERPT_CHARS}), digest: (th >>> 0).toString(36) + ":" + norm.length }; })()`;
+/**
+ * Page text with open transient popups left out, for {@link StepSnapshot.contentText}.
+ * Popup roles alone also mark inline content, so an element counts only when it
+ * floats, or sits alone in a floating portal wrapper: an absolutely positioned
+ * application shell or an inline accordion panel is the page itself.
+ */
+export const CONTENT_TEXT_EXPR = `(() => {
+  const body = document.body;
+  if (!body) return "";
+  const textOf = (el) => (el.innerText || "").replace(/\\s+/g, " ").trim();
+  const owned = Array.from(document.querySelectorAll('[aria-expanded="true"]')).flatMap((t) =>
+    ((t.getAttribute("aria-controls") || "") + " " + (t.getAttribute("aria-owns") || ""))
+      .split(/\\s+/)
+      .map((id) => (id ? document.getElementById(id) : null))
+      .filter(Boolean)
+  );
+  const floats = (el) => {
+    const own = textOf(el);
+    for (let a = el; a && a !== body; a = a.parentElement) {
+      if (a !== el && textOf(a) !== own) return false;
+      if (/^(absolute|fixed)$/.test(getComputedStyle(a).position)) return true;
+    }
+    return false;
+  };
+  const roles = Array.from(body.querySelectorAll("[role=listbox],[role=menu],[role=tooltip]"));
+  const open = Array.from(body.querySelectorAll("[popover]")).filter((el) => {
+    try { return el.matches(":popover-open"); } catch { return false; }
+  });
+  const isPage = (el) => el.matches("main,form,dialog,[role=dialog]") || el.querySelector("main,form");
+  const popups = [...new Set([...roles, ...owned])]
+    .filter((el) => el.getClientRects().length > 0 && !isPage(el) && floats(el))
+    .concat(open);
+  let text = textOf(body);
+  for (const el of popups.filter((el) => !popups.some((o) => o !== el && o.contains(el)))) {
+    text = text.replace(textOf(el), " ");
+  }
+  return text.replace(/\\s+/g, " ").trim();
+})()`;
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "", full: "", digest: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; const norm = t.replace(/\\s+/g, " ").trim(); let th = 2166136261; for (let tk = 0; tk < norm.length; tk++) { th ^= norm.charCodeAt(tk); th = Math.imul(th, 16777619); } let content; try { content = ${CONTENT_TEXT_EXPR}; } catch {} return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state, full: norm.slice(0, ${VISIBLE_TEXT_EXCERPT_CHARS}), digest: (th >>> 0).toString(36) + ":" + norm.length, content }; })()`;
 
 /** One form control's live accessible-name/value pair at step-failure time. */
 export interface FieldValueAtFailure {
@@ -2154,6 +2203,7 @@ export async function snapshotPage(
   let visibleTextSignature = "";
   let visibleText = "";
   let visibleTextDigest = "";
+  let contentText: string | undefined;
   let formValueSignature = "";
   let selectionStateSignature = "";
   try {
@@ -2172,6 +2222,8 @@ export async function snapshotPage(
       visibleText = typeof rawFull === "string" ? rawFull : "";
       const rawDigest = (result as Record<string, unknown>).digest;
       visibleTextDigest = typeof rawDigest === "string" ? rawDigest : "";
+      const rawContent = (result as Record<string, unknown>).content;
+      contentText = typeof rawContent === "string" ? rawContent : undefined;
       const rawValues = (result as Record<string, unknown>).values;
       formValueSignature = typeof rawValues === "string" ? rawValues : "";
       const rawState = (result as Record<string, unknown>).state;
@@ -2209,6 +2261,7 @@ export async function snapshotPage(
   const url = page ? await readCurrentFrameUrl(page, target) : await target.url();
   return {
     networkCount: signalCounter.n,
+    contentText,
     url,
     bodyHtmlLength,
     visibleTextSignature,
@@ -2466,6 +2519,36 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
   if (!instruction) return false;
   const haystack = instruction.toLowerCase();
   return ADVANCE_STEP_PHRASES.some((p) => haystack.includes(p));
+}
+
+const PAGE_TRANSITION_RX =
+  /\b(?:continu(?:e|es|ing)|proceed(?:s|ing)?|advanc(?:e|es|ing))\s+(?:on\s+)?to\s+\w/i;
+
+/**
+ * Whether the step's own outcome is leaving for another page ("the button that
+ * continues to the checkout page"). A step that also enters or chooses a value
+ * is judged on that value instead, and an outcome clause alone ("so the salary
+ * field appears") is not a transition: an option click can say that.
+ */
+export function declaresPageTransition(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  const positive = instruction.replace(NEGATED_ACTION_CLAUSE, " ");
+  return PAGE_TRANSITION_RX.test(positive) && !DATA_ENTRY_WORDING.test(positive);
+}
+
+/**
+ * A declared page transition is proven by a request, a URL change or a changed
+ * page. The clicked control's own state is not evidence: a button flips to a
+ * loading or active class whether or not it leads anywhere.
+ */
+export function lacksTransitionEvidence(params: {
+  step: string;
+  networkAdvanced: boolean;
+  urlChanged: boolean;
+  pageAdvanced: boolean;
+}): boolean {
+  const { step, networkAdvanced, urlChanged, pageAdvanced } = params;
+  return declaresPageTransition(step) && !networkAdvanced && !urlChanged && !pageAdvanced;
 }
 
 /**
@@ -3174,6 +3257,8 @@ export function isClickViewSwapVerified(params: {
    * text swap is not a page advance.
    */
   blockedSubmitShape?: boolean;
+  /** Nothing but a transient popup moved, which no mid-flow submit counts as its advance. */
+  popupOnlyChange?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -3195,10 +3280,12 @@ export function isClickViewSwapVerified(params: {
     contentRemoved = false,
     resolvedElementNamesStepTarget = true,
     blockedSubmitShape = false,
+    popupOnlyChange = false,
   } = params;
   // A click on a control unrelated to the step's quoted target is not the
   // step's success, whatever the DOM did afterwards.
   if (!resolvedElementNamesStepTarget) return false;
+  if (midFlowSubmit && popupOnlyChange && networkDelta === 0) return false;
   if (midFlowSubmit && blockedSubmitShape && networkDelta === 0 && invalidMarkerDelta > 0) {
     return false;
   }
@@ -3344,7 +3431,7 @@ export async function countNgInvalidContainers(target: FrameTarget): Promise<num
       seen.add(el);
       if (isInvalid(el)) n++;
     }
-    for (const el of document.querySelectorAll("[data-automation-id],[data-testid],[data-test-id],[role=alert]")) {
+    for (const el of document.querySelectorAll("[data-automation-id],[data-testid],[data-test-id],[role=alert],[aria-errormessage]")) {
       if (!seen.has(el) && isInvalid(el)) n++;
     }
     return n;
@@ -5367,7 +5454,10 @@ export async function verifyPromptSelectorCommitted(
   requestedOption?: string | null,
   selectStep = false
 ): Promise<VerifyPromptSelectorCommittedResult | null> {
-  const xpath = xpathBodyForEvaluate(selector, target);
+  // A resolved action may carry a CSS selector rather than an xpath; both
+  // name the same element, so neither form may leave the commit unread.
+  const css = selector.startsWith("css=") ? selector.slice("css=".length) : null;
+  const xpath = css === null ? xpathBodyForEvaluate(selector, target) : "";
   if (xpath === null) return null;
   const expr = `(() => {
     const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
@@ -5379,9 +5469,14 @@ export async function verifyPromptSelectorCommitted(
     const want = ${JSON.stringify(requestedOption ?? "")};
     const selectStep = ${JSON.stringify(selectStep)};
     const xpath = ${JSON.stringify(xpath)};
-    const result = ${SHADOW_XPATH_FIRST_NODE}(xpath);
-    let el = result;
-    if (!el && typeof document.evaluate !== "function") {
+    const css = ${JSON.stringify(css)};
+    let el = null;
+    if (css !== null) {
+      try { el = document.querySelector(css); } catch { el = null; }
+    } else {
+      el = ${SHADOW_XPATH_FIRST_NODE}(xpath);
+    }
+    if (css === null && !el && typeof document.evaluate !== "function") {
       // A document with no native xpath support: resolve the plain
       // id-anchored shape ("//tag[@id='x']") directly.
       const idm = /^\\/\\/(?:[A-Za-z][\\w-]*|\\*)\\[@id=(['"])([^'"]+)\\1\\]$/.exec(xpath);
@@ -5427,14 +5522,19 @@ export async function verifyPromptSelectorCommitted(
           }
         }
       }
-      if (!field && selectStep && el.tagName && want && !/^(BUTTON|A|LABEL|INPUT|SELECT|TEXTAREA)$/.test(el.tagName) && el.getAttribute("role") !== "button") {
-        // A non-button custom dropdown display with no backing control: its
-        // own text is the committed value, so an opener still showing a
-        // placeholder/count (popup merely opened) is not a commit.
+      if (!field && selectStep && el.tagName && !/^(A|LABEL|INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) {
         const own = (el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+        // A running "N items selected" opener states its own commit count,
+        // whatever element renders it (a button included): zero means the
+        // popup merely opened and nothing was chosen.
         const count = /^(\\d+)\\s+items?\\s+selected\\b/.exec(own);
         if (count) return { isPromptWidget: true, committed: Number(count[1]) > 0 };
-        return { isPromptWidget: true, committed: own !== "" && namesOption(own, want) };
+        // A non-button custom dropdown display with no backing control: its
+        // own text is the committed value, so an opener still showing a
+        // placeholder (popup merely opened) is not a commit.
+        if (want && !/^BUTTON$/.test(el.tagName) && el.getAttribute("role") !== "button") {
+          return { isPromptWidget: true, committed: own !== "" && namesOption(own, want) };
+        }
       }
       if (!field) return { isPromptWidget: false, committed: false };
       let fv = "";
@@ -5443,6 +5543,13 @@ export async function verifyPromptSelectorCommitted(
         fv = so && (so.value || "") !== "" ? (so.textContent || "") : "";
       } else {
         fv = field.value || "";
+      }
+      // A searchable select keeps an empty search input beside the value it
+      // displays; a closed one's displayed text is the committed value.
+      if (selectStep && want && field !== el && field.tagName === "INPUT" && fv === "" && el.contains(field) && !el.matches('[aria-expanded="true"]') && !el.querySelector('[aria-expanded="true"]')) {
+        const shown = el.cloneNode(true);
+        for (const n of Array.from(shown.querySelectorAll("[role=listbox],[role=option],[role=menu],ul"))) n.remove();
+        fv = shown.textContent || "";
       }
       fv = fv.replace(/\\s+/g, " ").trim().toLowerCase();
       return { isPromptWidget: true, committed: fv !== "" && (!want || namesOption(fv, want)) };
@@ -5785,8 +5892,8 @@ async function promptSelectorReadbackRejects(
   const readback = await verifyPromptSelectorCommitted(
     target,
     selector,
-    parsePromptSelectorStep(step)?.option,
-    parseSelectStep(step) !== null
+    parsePromptSelectorStep(step)?.option ?? chosenOptionOfStep(step),
+    isSelectionIntentStep(step)
   );
   return readback?.isPromptWidget === true && readback.committed === false;
 }
@@ -7325,6 +7432,41 @@ export function parseSelectStep(
   // or "'…' prompt selector". See `pickQuestionLabel`.
   const questionLabel = pickQuestionLabel(instruction, option);
   return { option, questionLabel };
+}
+
+/**
+ * Whether a step's intent is to CHOOSE a value in a dropdown-style control, in
+ * any of the verbs flow authors use ("select", "choose", "pick"). The committed
+ * value of the target is the success evidence for such a step, so the guard that
+ * reads it must not depend on which of these verbs the author happened to write.
+ * Catch-all steps ("any remaining …") have no single target and are excluded,
+ * as in {@link parseSelectStep}.
+ */
+export function isSelectionIntentStep(instruction: string): boolean {
+  return chosenOptionOfStep(instruction) !== null;
+}
+
+/**
+ * The option a choose-a-value step names — the quoted string after "select",
+ * "choose" or "pick" (allowing a short filler such as "the option") — or `null`
+ * when the step is not a selection or is a catch-all.
+ */
+function chosenOptionOfStep(instruction: string): string | null {
+  const selected = parseSelectStep(instruction);
+  if (selected) return selected.option;
+  if (/\bany\s+remaining\b/i.test(instruction)) return null;
+  const phrase = matchQuotedAfter(
+    instruction,
+    /\b(?:choose|pick)\s+(?:the\s+(?:\S+\s+)?)?(?=')/i
+  )?.phrase;
+  if (phrase) return phrase.text.trim();
+  // Only a step naming its dropdown: "click the option" alone also words a radio answer.
+  if (!/\b(?:dropdown|combobox|listbox|select menu)\b/i.test(instruction)) return null;
+  const clicked = matchQuotedAfter(
+    instruction,
+    /\bclick\s+(?:on\s+)?(?:the\s+)?(?:\S+\s+)?option\s+(?=')/i
+  )?.phrase;
+  return clicked ? clicked.text.trim() : null;
 }
 
 /**
@@ -17099,6 +17241,7 @@ export async function executeStepWithHealing(params: {
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausibleForPost,
       midFlowSubmit,
+      popupOnlyChange: isPopupOnlyChange(advanceBaseline, post),
       pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
       contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
@@ -17310,6 +17453,21 @@ export async function executeStepWithHealing(params: {
       (!datepickerRejected &&
         !promptSelectorRejected &&
         (clickViewSwapVerified || formValueVerified));
+
+    if (
+      verified &&
+      lacksTransitionEvidence({
+        step,
+        networkAdvanced: networkIsRealAdvance,
+        urlChanged,
+        pageAdvanced: settledPageAdvanced || clickViewSwapVerified,
+      })
+    ) {
+      verified = false;
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} declared page transition made no network, url or page change; not treating as verified`
+      );
+    }
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -17966,6 +18124,7 @@ export async function executeStepWithHealing(params: {
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
+            !(retryMidFlowSubmit && isPopupOnlyChange(retryDomBaseline, retryPost)) &&
             ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
@@ -18066,13 +18225,26 @@ export async function executeStepWithHealing(params: {
                 weakDomSignalsAllowed &&
                 retryDestinationPlausible &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
+          const retryPageTextChanged =
+            weakDomSignalsAllowed && retryTextChanged && !isPopupOnlyChange(pre, retryPost);
+          if (
+            retryVerified &&
+            lacksTransitionEvidence({
+              step,
+              networkAdvanced: retryNetworkFired && retryDestinationPlausible,
+              urlChanged: retryUrlChanged,
+              pageAdvanced: retryPageAdvanced || retryRemovalCredited || retryPageTextChanged,
+            })
+          ) {
+            retryVerified = false;
+          }
           // Same committed-value guard as the primary path: weak signals must
           // not credit a select step whose target value never committed.
           if (
             retryVerified &&
             !retryNetworkIsRealAdvance &&
             !retryUrlChanged &&
-            parseSelectStep(step) !== null
+            isSelectionIntentStep(step)
           ) {
             const fbSelector =
               resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
