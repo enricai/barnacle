@@ -5742,12 +5742,144 @@ function isCredentialHeaderName(lower: string): boolean {
   );
 }
 
+/** First replay whose 401 re-replay located the bearer in a captured document. */
+function locatedTokenSource(replays: ReplayResult[]): TokenBootstrapSource | null {
+  for (const r of replays) {
+    const ts = r.authReplay?.tokenSource;
+    if (ts?.url) return { url: ts.url };
+  }
+  return null;
+}
+
+/** Where the plugin can mint a bearer at call time: the located HTML document. */
+export interface TokenBootstrapSource {
+  /** Document URL (absolute or context-relative); only its path+query is emitted. */
+  url: string;
+}
+
+const VOLATILE_JWT_CLAIMS = new Set([
+  "exp",
+  "iat",
+  "nbf",
+  "jti",
+  "sub",
+  "sid",
+  "nonce",
+  "auth_time",
+  "session",
+]);
+
 /**
- * Template-literal interpolation that throws at call time instead of freezing
- * a captured credential into generated source.
- * TODO(recon): supply a runtime token source (bootstrap + html extractor).
+ * Stable claims of a captured JWT (never its value) used to pick the right
+ * token among several in the document. Null when `value` is not a JWT.
  */
-function credentialHeaderThrowExpr(headerName: string): string {
+function stableJwtClaims(
+  value: string
+): { want: Record<string, string | boolean>; keys: string[] } | null {
+  const tok = /^bearer\s+(.+)$/i.exec(value.trim())?.[1] ?? value.trim();
+  if (!/^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(tok)) return null;
+  try {
+    const p = JSON.parse(Buffer.from(tok.split(".")[1] ?? "", "base64url").toString("utf8"));
+    if (!p || typeof p !== "object" || Array.isArray(p)) return null;
+    const want: Record<string, string | boolean> = {};
+    for (const [k, v] of Object.entries(p as Record<string, unknown>)) {
+      if (VOLATILE_JWT_CLAIMS.has(k)) continue;
+      if (typeof v === "string" || typeof v === "boolean") want[k] = v;
+    }
+    return { want, keys: Object.keys(p as object).sort() };
+  } catch {
+    return null;
+  }
+}
+
+/** Runtime helper source that fetches the document and extracts the bearer by claims. */
+function tokenBootstrapHelperLines(src: TokenBootstrapSource): string[] {
+  let path: string;
+  try {
+    const u = new URL(src.url, "http://x.invalid");
+    path = u.pathname + u.search;
+  } catch {
+    path = "/";
+  }
+  return [
+    "    // Runtime bearer: fetched from the page that serves it; the captured value is never emitted.",
+    "    const mintBearerToken = async (want: Record<string, unknown>, keys: string[]): Promise<string> => {",
+    `      const res = await fetch(context.baseUrl + ${JSON.stringify(path)}, { headers: { accept: "text/html" } });`,
+    '      if (!res.ok) throw new Error("bearer bootstrap: document fetch failed: HTTP " + res.status);',
+    "      const html = await res.text();",
+    "      const claimsOf = (t: string): Record<string, unknown> | null => {",
+    "        try {",
+    '          const p = JSON.parse(Buffer.from(t.split(".")[1] ?? "", "base64url").toString("utf8"));',
+    '          return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : null;',
+    "        } catch {",
+    "          return null;",
+    "        }",
+    "      };",
+    "      const accepts = (c: Record<string, unknown>): boolean => {",
+    "        const entries = Object.entries(want);",
+    "        if (entries.length > 0) return entries.every(([k, v]) => c[k] === v);",
+    '        return Object.keys(c).sort().join(",") === keys.join(",");',
+    "      };",
+    "      const jwtRe = /eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/g;",
+    "      const pick = (text: string): string | null => {",
+    "        for (const m of text.matchAll(jwtRe)) {",
+    "          const c = claimsOf(m[0]);",
+    "          if (c && accepts(c)) return m[0];",
+    "        }",
+    "        return null;",
+    "      };",
+    '      let stream = "";',
+    '      const pushRe = /push\\(\\s*\\[\\s*1\\s*,\\s*("(?:[^"\\\\]|\\\\.)*")\\s*\\]\\s*\\)/g;',
+    "      for (const m of html.matchAll(pushRe)) {",
+    "        try {",
+    "          stream += JSON.parse(m[1] as string) as string;",
+    "        } catch {",
+    "          // skip malformed payload",
+    "        }",
+    "      }",
+    "      // RSC text rows `<id>:T<hex>,<text>`: the text is exactly parseInt(hex,16) UTF-8 bytes,",
+    "      // so the next row id that follows with no separator is never absorbed.",
+    "      const rowRe = /([0-9a-zA-Z]+):T([0-9a-fA-F]+),/g;",
+    "      for (let m = rowRe.exec(stream); m; m = rowRe.exec(stream)) {",
+    "        const start = m.index + m[0].length;",
+    "        const len = parseInt(m[2] as string, 16);",
+    "        let end = start;",
+    "        for (let used = 0; end < stream.length && used < len; ) {",
+    "          const cp = stream.codePointAt(end) as number;",
+    "          used += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;",
+    "          end += cp > 0xffff ? 2 : 1;",
+    "        }",
+    "        const found = pick(stream.slice(start, end));",
+    "        if (found) return found;",
+    "        rowRe.lastIndex = end;",
+    "      }",
+    `      const plain = pick(html.replace(pushRe, ""));`,
+    "      if (plain) return plain;",
+    '      throw new Error("bearer bootstrap: no token matching the expected claims in the document");',
+    "    };",
+    "",
+  ];
+}
+
+/**
+ * Template-literal interpolation for a credential header. With a located
+ * token source and a JWT-shaped captured value it mints the bearer at call
+ * time from the HTML document (claims-selected); otherwise it throws at call
+ * time instead of freezing a captured credential into generated source.
+ */
+function credentialHeaderThrowExpr(
+  headerName: string,
+  capturedValue?: string,
+  bootstrap?: { source: TokenBootstrapSource | null; used: { value: boolean } }
+): string {
+  if (bootstrap?.source && capturedValue !== undefined) {
+    const c = stableJwtClaims(capturedValue);
+    if (c) {
+      bootstrap.used.value = true;
+      const prefix = /^bearer\s/i.test(capturedValue.trim()) ? "Bearer " : "";
+      return `${prefix}\${await mintBearerToken(${JSON.stringify(c.want)}, ${JSON.stringify(c.keys)})}`;
+    }
+  }
   const msg = JSON.stringify(
     `TODO: ${headerName} requires a runtime credential; none is wired (captured value intentionally not emitted)`
   ).replace(/[`\\]|\$\{/g, (m) => (m === "`" ? "'" : m));
@@ -10694,9 +10826,12 @@ export function emitMultiStepExecuteHttp(
    * session cookies they established instead of a parsed response. `undefined`
    * (default) leaves full-flow output byte-identical.
    */
-  httpPrefixCount: number | undefined = undefined
+  httpPrefixCount: number | undefined = undefined,
+  /** Located HTML document serving the bearer (replay `authReplay.tokenSource`). */
+  tokenSource: TokenBootstrapSource | null = null
 ): string {
   if (httpPrefixCount !== undefined) actions = actions.slice(0, httpPrefixCount);
+  const tokenBootstrap = { source: tokenSource, used: { value: false } };
   interface Rendered {
     url: string;
     method: string;
@@ -11411,7 +11546,7 @@ export function emitMultiStepExecuteHttp(
         !joinCarryingHeaderNames?.has(k) &&
         !boundHeaderNames.has(lower)
       ) {
-        perCallHeaders[k] = credentialHeaderThrowExpr(k);
+        perCallHeaders[k] = credentialHeaderThrowExpr(k, v, tokenBootstrap);
       } else if (
         lower === "api-token" ||
         lower === "authorization" ||
@@ -11565,6 +11700,7 @@ export function emitMultiStepExecuteHttp(
       `    // TODO: unbound captured literal(s) — verify these carry caller data, not the recon capture's: ${[...unboundLiteralKeys].join(", ")}`
     );
   }
+  const bootstrapInsertAt = lines.length;
   const declaredNames = new Set<string>();
   // Every non-terminal chain step past the drill step is folded into the SAME
   // per-item loop the drill step itself emits (see below) — it must not also
@@ -12249,7 +12385,9 @@ export function emitMultiStepExecuteHttp(
         // per-call too, or its custom name freezes into an invariant
         // BASE_HEADERS-equivalent literal.
         if (isCredentialHeaderName(lower) && interpolated === v) {
-          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k)}\``);
+          perCallHeaderEntries.push(
+            `${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k, v, tokenBootstrap)}\``
+          );
         } else if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
           perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
         }
@@ -12372,6 +12510,8 @@ export function emitMultiStepExecuteHttp(
     lines.push(`    return { data: ${castToResponseType(returnVar)} };`);
   }
 
+  if (tokenBootstrap.used.value && tokenSource)
+    lines.splice(bootstrapInsertAt, 0, ...tokenBootstrapHelperLines(tokenSource));
   const renderedMultiStepBody = lines.join("\n");
   assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
   return renderedMultiStepBody;
@@ -22728,7 +22868,8 @@ export async function main(): Promise<void> {
             flowSteps,
             vocabulary,
             applicantContract,
-            httpStepsOpt?.actions
+            httpStepsOpt?.actions,
+            locatedTokenSource(replays)
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
