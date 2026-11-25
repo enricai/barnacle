@@ -19,13 +19,13 @@ const SEARCHES: Array<{ filters: Record<string, unknown>; guests: number }> = [
   { filters: { ...BASE, trades: ["C"] }, guests: 2 },
   { filters: { ...BASE, trades: ["C"], zones: ["CE"] }, guests: 2 },
   { filters: { ...BASE, trades: ["C"], ships: ["SU"] }, guests: 2 },
-  { filters: { ...BASE, trades: ["C"], ports: ["FLL"] }, guests: 2 },
+  { filters: { ...BASE, trades: ["C"], ports: ["PQR"] }, guests: 2 },
   { filters: { ...BASE, trades: ["C"], length: [{ start: "6", end: "8" }] }, guests: 2 },
   {
     filters: {
       ...BASE,
       trades: ["C"],
-      ports: ["FLL"],
+      ports: ["PQR"],
       ships: ["SU"],
       zones: ["CE"],
       length: [{ start: "6", end: "8" }],
@@ -34,9 +34,9 @@ const SEARCHES: Array<{ filters: Record<string, unknown>; guests: number }> = [
   },
   { filters: { ...BASE, trades: ["A"] }, guests: 2 },
   { filters: { ...BASE, trades: ["E"], length: [{ start: "9", end: "15" }] }, guests: 2 },
-  { filters: { ...BASE, trades: ["C"], ports: ["FLL"], ships: ["SU"] }, guests: 2 },
+  { filters: { ...BASE, trades: ["C"], ports: ["PQR"], ships: ["SU"] }, guests: 2 },
   {
-    filters: { ...BASE, availability: ["Y", "B"], trades: ["C"], ports: ["FLL"], ships: ["SU"] },
+    filters: { ...BASE, availability: ["Y", "B"], trades: ["C"], ports: ["PQR"], ships: ["SU"] },
     guests: 3,
   },
   {
@@ -45,7 +45,7 @@ const SEARCHES: Array<{ filters: Record<string, unknown>; guests: number }> = [
       availability: ["Y", "B"],
       meta: "B",
       trades: ["C"],
-      ports: ["FLL"],
+      ports: ["PQR"],
       ships: ["SU"],
     },
     guests: 3,
@@ -108,7 +108,7 @@ async function generate(): Promise<string> {
           products: [
             {
               id: `P${i}`,
-              cruises: tripsOf(i).map((id, j) => ({ id, fare: 500 + i * 37 + j * 11 })),
+              offers: tripsOf(i).map((id, j) => ({ id, fare: 500 + i * 37 + j * 11 })),
             },
           ],
         },
@@ -119,9 +119,9 @@ async function generate(): Promise<string> {
     caps.push(
       cap({
         method: "GET",
-        url: `${DRILL}?cruises=${ids.join(",")}`,
+        url: `${DRILL}?offers=${ids.join(",")}`,
         timestamp: at(),
-        responseBody: { cruises: ids.map((id) => ({ id, days: [{ day: 1, port: `P-${id}` }] })) },
+        responseBody: { offers: ids.map((id) => ({ id, days: [{ day: 1, port: `P-${id}` }] })) },
       })
     );
   });
@@ -142,9 +142,9 @@ async function generate(): Promise<string> {
       requireSubmitEndpointMatch: true,
       foldReturn: [
         {
-          endpointPattern: "ref/v1/itineraries\\?cruises=",
-          resultsPath: "products.*.cruises",
-          drillResultsPath: "cruises",
+          endpointPattern: "ref/v1/itineraries\\?offers=",
+          resultsPath: "products.*.offers",
+          drillResultsPath: "offers",
           joinFields: ["id"],
           attachAs: "itinerary",
           payloadFlag: "includeItinerary",
@@ -231,14 +231,14 @@ describe("recon-generate: faceted POST search with a GET drill", () => {
       vi.fn(async (url: string | URL, init?: RequestInit) => {
         const body = init?.body ? (JSON.parse(String(init.body)) as unknown) : null;
         sent.push({ url: String(url), body });
-        const id = new URL(String(url)).searchParams.get("cruises");
+        const id = new URL(String(url)).searchParams.get("offers");
         const answer = id
-          ? { cruises: [{ id, days: [{ day: 1, port: `P-${id}` }] }] }
+          ? { offers: [{ id, days: [{ day: 1, port: `P-${id}` }] }] }
           : {
               products: [
                 {
                   id: "P1",
-                  cruises: [
+                  offers: [
                     { id: "X100", fare: 1 },
                     { id: "X200", fare: 2 },
                   ],
@@ -287,7 +287,7 @@ describe("recon-generate: faceted POST search with a GET drill", () => {
         .map((r) => r.url)
         .slice(1)
         .sort()
-    ).toEqual([`${DRILL}?cruises=X100`, `${DRILL}?cruises=X200`]);
+    ).toEqual([`${DRILL}?offers=X100`, `${DRILL}?offers=X200`]);
     expect(JSON.stringify(drilled.result.data)).toContain('"port":"P-X200"');
   }, 120_000);
 });
