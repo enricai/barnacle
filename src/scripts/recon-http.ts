@@ -557,7 +557,7 @@ export async function replayCapture(
         sentHeaders = authHeaders;
         const bearer = /^bearer\s+(.+)$/i.exec(authValue.trim())?.[1];
         const loc =
-          replayable && bearer && opts.htmlDocuments
+          bearer && opts.htmlDocuments
             ? locateHtmlBearerToken(opts.htmlDocuments, { value: bearer })
             : null;
         authReplay = {
