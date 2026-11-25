@@ -3067,6 +3067,49 @@ function nonGetBeaconPredicate(
 }
 
 /**
+ * Fewest DISTINCT request bodies an endpoint must have answered with one and
+ * the same response before a hop AHEAD of the declared submit is read as
+ * chrome. Two differing requests sharing an acknowledgement is ambiguous: a
+ * genuine chain step (a facet re-query, a quote refresh) can answer a bare
+ * `{ ok: true }` to both. Three or more is a pattern: the endpoint ignores what
+ * it is sent, which is what a telemetry/logging beacon does.
+ */
+const PRE_SUBMIT_BEACON_MIN_DISTINCT_REQUESTS = 3;
+
+/**
+ * Stricter sibling of {@link nonGetBeaconPredicate} for hops before the first
+ * declared submit match, where a capture is presumed to be part of the chain
+ * the submit depends on. A non-GET capture counts as a beacon only when its
+ * endpoint (method + {@link endpointKey}) received at least
+ * {@link PRE_SUBMIT_BEACON_MIN_DISTINCT_REQUESTS} distinct request bodies and
+ * answered every one of them identically (judged over body-bearing responses,
+ * as {@link nonGetBeaconPredicate} does). Byte-identical repeats contribute
+ * one distinct body, so a polled endpoint re-sending the same request is not
+ * caught here.
+ */
+function preSubmitBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
+  const occurrences = new Map<string, Capture[]>();
+  for (const c of pool) {
+    if (c.method === "GET" || c.method?.toUpperCase() === "OPTIONS") continue;
+    const key = `${c.method} ${endpointKey(c.url)}`;
+    const list = occurrences.get(key);
+    if (list) list.push(c);
+    else occurrences.set(key, [c]);
+  }
+  const beaconKeys = new Set<string>();
+  for (const [key, list] of occurrences) {
+    const distinctRequests = new Set(list.map((c) => c.requestPostData ?? "")).size;
+    if (distinctRequests < PRE_SUBMIT_BEACON_MIN_DISTINCT_REQUESTS) continue;
+    const bodied = list.filter((c) => c.responseBody != null && c.responseBody !== "");
+    const judged = bodied.length > 0 ? bodied : list;
+    if (new Set(judged.map((c) => JSON.stringify(c.responseBody ?? null))).size === 1) {
+      beaconKeys.add(key);
+    }
+  }
+  return (c) => beaconKeys.has(`${c.method} ${endpointKey(c.url)}`);
+}
+
+/**
  * Resolves the same primary-endpoint capture that {@link firstEndpointPath}
  * derives a path string from, so non-GraphQL flows can also read that
  * capture's own `.responseBody` instead of an array-order-first replay.
@@ -3813,24 +3856,27 @@ export function truncateActionSequenceAtSubmitPattern(
   // the request) between the submit and the drill is page chrome, not a hop whose
   // state the drill threads: its varying body fields would otherwise be frozen
   // into the drill sequence. A declared submit/fold match is never dropped.
-  const isBeacon = nonGetBeaconPredicate(
-    sequence.map((a) => a.capture),
-    submitPatterns
-  );
+  const pool = sequence.map((a) => a.capture);
+  const isBeacon = nonGetBeaconPredicate(pool, submitPatterns);
+  // Ahead of the first submit match the hop is presumed to be chain the submit
+  // depends on, so only the stronger evidence of an endpoint answering many
+  // distinct requests identically marks it as a beacon there.
+  const isPreSubmitBeacon = preSubmitBeaconPredicate(pool);
   return sequence
     .slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1)
     .map((step, idx) => ({ step, idx }))
     .filter(({ step }) => step.capture.method?.toUpperCase() !== "OPTIONS")
     .filter(({ step, idx }) => {
-      // Only hops after the FIRST submit match are candidates: the pre-submit
-      // chain (e.g. repeated wizard section saves) must survive, while chrome
-      // recurring between repeated submit/drill cycles is dropped.
-      if (idx <= firstSubmitIndex) return true;
-      return (
-        matchesSubmit(step.capture) ||
-        matchesFoldReturn(step.capture) ||
-        !(submitPatterns?.endpoint != null && isBeacon(step.capture))
-      );
+      if (idx === firstSubmitIndex) return true;
+      if (matchesSubmit(step.capture) || matchesFoldReturn(step.capture)) return true;
+      if (submitPatterns?.endpoint == null) return true;
+      // Before the FIRST submit match, the pre-submit chain (e.g. a pair of
+      // facet re-queries) must survive while a recurring telemetry POST that
+      // ignores its request is dropped; after it, chrome recurring between
+      // repeated submit/drill cycles is dropped on the weaker evidence.
+      return idx < firstSubmitIndex
+        ? !isPreSubmitBeacon(step.capture)
+        : !isBeacon(step.capture);
     })
     .map(({ step }) => step);
 }
