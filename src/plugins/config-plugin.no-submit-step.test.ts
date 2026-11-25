@@ -71,6 +71,21 @@ describe("submission flow without a submitStep", () => {
     await expect(plugin.execute({}, session, context)).resolves.toBeDefined();
   });
 
+  it("passes a flow's readOnly through to the runner", async () => {
+    const read = manifest(["click search"]);
+    const spec = read.spec as { flow: Record<string, unknown> };
+    spec.flow.readOnly = true;
+    for (const [m, expected] of [
+      [read, true],
+      [manifest(["click search"]), false],
+    ] as const) {
+      const plugin = await buildConfigPlugin(m);
+      const { session, context } = deps();
+      await plugin.execute({}, session, context);
+      expect(mockRunHealingFlow.mock.calls.at(-1)?.[0]).toMatchObject({ readOnly: expected });
+    }
+  });
+
   it("emitter marks submission flows", () => {
     const json = JSON.parse(
       emitConfigManifest({

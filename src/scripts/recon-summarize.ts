@@ -39,6 +39,17 @@ const logger = getScriptLogger("recon-summarize");
 const DEFAULT_OUT = "docs/target-recon.md";
 const PLACEHOLDER_ID = "<id>";
 
+/** One Auth Required bullet: the recorded authReplay outcome, else the generic advice. */
+export function formatAuthRequiredLine(r: ReplayResult): string {
+  const a = r.authReplay;
+  if (!a) return `- \`${r.url}\` — 401. Capture token, determine lifetime, build refresh strategy.`;
+  const src = a.tokenSource;
+  const where = src
+    ? `token source: document ${src.document}${src.url ? ` (${src.url})` : ""}, ${src.source}${src.row ? `, row ${src.row}` : ""}`
+    : "token source: not located";
+  return `- \`${r.url}\` — 401. Authorized retry: ${a.status}; token ${a.tokenReplayable ? "replayable" : "not replayable"}; ${where}.`;
+}
+
 /** Renders an ISO timestamp as a UTC medium-date/short-time string for the findings doc. */
 export function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("en-US", {
@@ -257,10 +268,7 @@ async function main(): Promise<void> {
     has401
       ? replays
           .filter((r) => r.replayStatus === 401)
-          .map(
-            (r) =>
-              `- \`${r.url}\` — 401. Capture token, determine lifetime, build refresh strategy.`
-          )
+          .map(formatAuthRequiredLine)
           .join("\n")
       : "_No authenticated endpoints detected._",
     ``,

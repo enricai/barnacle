@@ -251,6 +251,12 @@ export interface HttpClientOptions<TResponse> {
    * present, so either firing aborts the call.
    */
   defaultTimeoutMs?: number;
+  /**
+   * Headers that must be obtained at call time (a minted bearer). Awaited before
+   * the call takes a limiter slot, so a resolver may use the same limiter
+   * without deadlocking a single-slot one. Per-call headers still win.
+   */
+  resolveHeaders?: (url: string) => Promise<Record<string, string>>;
 }
 
 /**
@@ -491,6 +497,44 @@ async function readBodyOrThrow(response: Response, url: string): Promise<string>
 }
 
 /**
+ * Compose the caller's signal (if any) with a default timeout (if configured)
+ * so either firing aborts the call — mirrors `createTimeoutFetch` in
+ * `src/scraper/session-shared.ts`.
+ */
+function composeSignal(
+  signal: AbortSignal | undefined,
+  timeoutMs: number | undefined
+): AbortSignal | undefined {
+  if (timeoutMs === undefined) return signal;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+/**
+ * Stops waiting when `signal` fires. The work itself is shared between calls
+ * (one mint serves them all), so one caller aborting must not cancel it.
+ */
+async function settleOrAbort<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  const stop = new AbortController();
+  const aborted = new Promise<never>((_, reject) => {
+    const fail = (): void =>
+      reject(
+        new HttpTransportError(`header resolution aborted: ${errorDetail(signal.reason)}`, {
+          cause: signal.reason,
+        })
+      );
+    if (signal.aborted) fail();
+    else signal.addEventListener("abort", fail, { once: true, signal: stop.signal });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    stop.abort();
+  }
+}
+
+/**
  * Runs the retry loop and converts the caller's own signal firing between
  * attempts into an {@link HttpTransportError}. p-retry rejects with the
  * signal's raw `reason` there, which is not a ScraperError, so without this a
@@ -550,6 +594,7 @@ export function createHttpClient<TResponse>(
     bind = [],
     classifyResponseBody,
     defaultTimeoutMs,
+    resolveHeaders,
   } = options;
   // Values bound from prior responses (e.g. a minted auth cookie), keyed by
   // targetHeader. Lives for the lifetime of this client instance so a later
@@ -577,6 +622,9 @@ export function createHttpClient<TResponse>(
     // call only — see HttpRequestInit.schema for why a multi-call chain with
     // heterogeneous response shapes needs this escape hatch.
     const activeSchema = init.schema ?? (schema as unknown as ZodType<TOverride>);
+    const resolvedHeaders = resolveHeaders
+      ? await settleOrAbort(resolveHeaders(url), composeSignal(init.signal, defaultTimeoutMs))
+      : {};
     const attempt = (): Promise<TOverride> =>
       pRetry(
         async () => {
@@ -585,6 +633,7 @@ export function createHttpClient<TResponse>(
           const mergedCookie = mergeCookieHeader(baseHeaders, boundHeaders, initHeaders);
           const headers: Record<string, string> = {
             ...baseHeaders,
+            ...resolvedHeaders,
             ...boundHeaders,
             ...initHeaders,
           };
@@ -594,16 +643,7 @@ export function createHttpClient<TResponse>(
             headers[cookieKey] = mergedCookie;
           }
 
-          // Compose the caller's signal (if any) with a default timeout (if
-          // configured) so either firing aborts the call — mirrors
-          // `createTimeoutFetch` in `src/scraper/session-shared.ts`.
-          const signal =
-            init.signal && defaultTimeoutMs !== undefined
-              ? AbortSignal.any([init.signal, AbortSignal.timeout(defaultTimeoutMs)])
-              : (init.signal ??
-                (defaultTimeoutMs !== undefined
-                  ? AbortSignal.timeout(defaultTimeoutMs)
-                  : undefined));
+          const signal = composeSignal(init.signal, defaultTimeoutMs);
 
           // Observed for EVERY response in the chain, redirect hops included,
           // not just the final one. A site that mints its session cookie on a
