@@ -3830,6 +3830,14 @@ function isBareAcknowledgement(body: unknown): boolean {
   );
 }
 
+/** True for a flat object of scalars only (`{status:"ok",id:7}`): no data payload. */
+function isFlatScalarAnswer(body: unknown): boolean {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  return Object.values(body as Record<string, unknown>).every(
+    (v) => v === null || ["boolean", "number", "string"].includes(typeof v)
+  );
+}
+
 /**
  * Truncates a host-gated action sequence at the LAST capture matching the
  * flow's declared submit pattern, keeping every capture up to and including
@@ -3881,6 +3889,12 @@ export function truncateActionSequenceAtSubmitPattern(
   // distinct requests identically marks it as a beacon there.
   const isPreSubmitBeacon = preSubmitBeaconPredicate(pool);
   const submitOrigin = originOf(sequence[firstSubmitIndex]!.capture.url);
+  const endpointCounts = new Map<string, number>();
+  for (const a of sequence) {
+    const k = `${a.capture.method} ${endpointKey(a.capture.url)}`;
+    endpointCounts.set(k, (endpointCounts.get(k) ?? 0) + 1);
+  }
+  const recurringEndpoints = new Set([...endpointCounts].filter(([, n]) => n >= 2).map(([k]) => k));
   const laterEndpoints = new Set(
     sequence
       .slice(firstSubmitIndex + 1)
@@ -3900,7 +3914,9 @@ export function truncateActionSequenceAtSubmitPattern(
         m !== "GET" &&
         submitOrigin !== null &&
         originOf(step.capture.url) !== submitOrigin &&
-        isBareAcknowledgement(step.capture.responseBody)
+        (isBareAcknowledgement(step.capture.responseBody) ||
+          (recurringEndpoints.has(`${step.capture.method} ${endpointKey(step.capture.url)}`) &&
+            isFlatScalarAnswer(step.capture.responseBody)))
       ) {
         return false;
       }
