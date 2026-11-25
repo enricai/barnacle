@@ -181,6 +181,7 @@ import {
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import type { Capture } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
+import { isSafeToReplay } from "@/recon/replay-safety";
 import type { Logger } from "@/types/logging";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 import {
@@ -2693,12 +2694,26 @@ export function flowHasSubmitSemantics(params: {
   requireSubmitEndpointMatch: boolean;
   /** Flow declares itself read-only: the pattern alone never implies a submit. */
   readOnly?: boolean;
+  /**
+   * Captures whose URL matched `submitEndpointPattern` so far. When there are
+   * some and every one is a read (GET, or a GraphQL query document), the
+   * pattern names "the data call", so no submit is inferred. Any mutation,
+   * non-GET request, or absent evidence keeps the inference unchanged.
+   */
+  matchedCaptures?: ReadonlyArray<{ method: string; query?: string | null }>;
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
   const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
   if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
   if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
   if (params.readOnly === true) return false;
+  if (
+    params.matchedCaptures !== undefined &&
+    params.matchedCaptures.length > 0 &&
+    params.matchedCaptures.every((c) => isSafeToReplay({ method: c.method, query: c.query }))
+  ) {
+    return false;
+  }
   // A flow whose every step is worded as plain navigation/reading (no data
   // entry, advance, or submit wording) supplies nothing to submit, so the
   // endpoint pattern alone must not make its final step a submission.
@@ -18876,6 +18891,10 @@ async function runHealingFlowScoped(
   // Seeded so the first step does not re-gate; the initial gate lives with the caller's goto.
   let lastOrigin = liveOriginOf(activePage);
 
+  // Kind evidence (method + GraphQL document) of captures the declared
+  // submitEndpointPattern matched, fed to flowHasSubmitSemantics.
+  const patternMatchedCaptures: Array<{ method: string; query?: string | null }> = [];
+  const submitPatternRx = deps.submitEndpointPattern ? new RegExp(deps.submitEndpointPattern) : null;
   const wireCapture = (target: Page): (() => void) =>
     wireSignalCapture(target, {
       counter,
@@ -18883,7 +18902,12 @@ async function runHealingFlowScoped(
       recentCaptures,
       recentCaptureMeta,
       getCurrentPhase: () => "flow",
-      onCapture: (capture, filename) => recordRuntimeCapture(store, filename, capture),
+      onCapture: (capture, filename) => {
+        if (submitPatternRx?.test(capture.url)) {
+          patternMatchedCaptures.push({ method: capture.method, query: capture.query });
+        }
+        recordRuntimeCapture(store, filename, capture);
+      },
       getCurrentPageOrigin: () => {
         try {
           return new URL(activePage.url()).origin;
@@ -18903,6 +18927,7 @@ async function runHealingFlowScoped(
       submitEndpointPattern: deps.submitEndpointPattern ?? null,
       requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
       readOnly: deps.readOnly ?? false,
+      matchedCaptures: patternMatchedCaptures,
     });
   let flowHasSubmitSemanticsFlag = computeSubmitSemantics();
 
