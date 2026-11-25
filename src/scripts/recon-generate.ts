@@ -3805,9 +3805,23 @@ export function truncateActionSequenceAtSubmitPattern(
   }
   if (lastSubmitIndex === -1) return [];
   // Preflights are not emitted as steps (the runtime issues them itself).
+  // A recurring telemetry/analytics POST (same endpoint, answer independent of
+  // the request) between the submit and the drill is page chrome, not a hop whose
+  // state the drill threads: its varying body fields would otherwise be frozen
+  // into the drill sequence. A declared submit/fold match is never dropped.
+  const isBeacon = nonGetBeaconPredicate(
+    sequence.map((a) => a.capture),
+    submitPatterns
+  );
   return sequence
     .slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1)
-    .filter((step) => step.capture.method?.toUpperCase() !== "OPTIONS");
+    .filter((step) => step.capture.method?.toUpperCase() !== "OPTIONS")
+    .filter(
+      (step) =>
+        matchesSubmit(step.capture) ||
+        matchesFoldReturn(step.capture) ||
+        !(submitPatterns?.endpoint != null && isBeacon(step.capture))
+    );
 }
 
 /**
