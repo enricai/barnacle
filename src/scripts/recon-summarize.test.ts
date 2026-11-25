@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Capture, RateLimitFinding, ReplayResult } from "@/scripts/recon-shared";
 import { replayPassed, tallyShapeRestoringHeaders } from "@/scripts/recon-shared";
-import { buildUniqueEndpoints, detectHazards, formatDate } from "@/scripts/recon-summarize";
+import {
+  buildUniqueEndpoints,
+  detectHazards,
+  formatAuthRequiredLine,
+  formatDate,
+} from "@/scripts/recon-summarize";
 
 function makeCapture(overrides: Partial<Capture>): Capture {
   return {
@@ -137,5 +142,32 @@ describe("shape-aware pass counts and load-bearing headers", () => {
     expect(replayPassed(ok)).toBe(true);
     expect(replayPassed(bad)).toBe(false);
     expect([...tallyShapeRestoringHeaders([ok, bad])]).toEqual([["key-inflection", 1]]);
+  });
+});
+
+describe("formatAuthRequiredLine", () => {
+  it("prints status, replayability and token source from authReplay", () => {
+    const r = makeReplay({
+      replayStatus: 401,
+      authReplay: {
+        status: 200,
+        tokenReplayable: true,
+        tokenSource: { document: 3, url: "https://x.test/", source: "rsc-row", row: "1a" },
+      },
+    });
+    const line = formatAuthRequiredLine(r);
+    expect(line).toContain("Authorized retry: 200");
+    expect(line).toContain("token replayable");
+    expect(line).toContain("document 3 (https://x.test/), rsc-row, row 1a");
+  });
+  it("reports unlocated source, and falls back to old advice without authReplay", () => {
+    const a = makeReplay({
+      replayStatus: 401,
+      authReplay: { status: 401, tokenReplayable: false, tokenSource: null },
+    });
+    expect(formatAuthRequiredLine(a)).toContain("not replayable; token source: not located");
+    expect(formatAuthRequiredLine(makeReplay({ replayStatus: 401 }))).toContain(
+      "Capture token, determine lifetime"
+    );
   });
 });
