@@ -270,13 +270,32 @@ describe("isSamePathFamily", () => {
   });
 });
 
+describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
+  const url = "https://api.example-shop.test/v1/search";
+  const mk = (trades: string) => ({
+    method: "POST",
+    url,
+    requestPostData: JSON.stringify({
+      booking: { bookingAgency: { id: "X" } },
+      filters: { cruiseType: "C", trades: [trades] },
+    }),
+    responseBody: { items: [{ id: trades }] },
+  });
+  const pool = [mk("C"), mk("A"), mk("B")];
+  const declared = (c: { method: string; url: string }) => c.url === url;
+
+  it("is not zero-variance when the declared predicate matches", () => {
+    for (const c of pool) expect(isZeroVarianceRepeatCapture(c, pool, declared)).toBe(false);
+  });
+});
+
 describe("isZeroVarianceRepeatCapture", () => {
   const beaconUrl = "https://apply.acme.example/auth/responder.html?clientId=X&environment=PROD";
 
   it("flags a same-host, fixed-query beacon with a byte-identical body across occurrences", () => {
     const first = { method: "GET", url: beaconUrl, requestPostData: null };
     const occurrences = [first, { method: "GET", url: beaconUrl, requestPostData: null }];
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(true);
   });
 
   it("flags a same-host, fixed-query beacon whose body varies per call but whose response carries no business state", () => {
@@ -297,7 +316,7 @@ describe("isZeroVarianceRepeatCapture", () => {
         responseBody: "<html></html>",
       },
     ];
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(true);
   });
 
   it("does not flag a legitimately-polled own endpoint whose response carries real JSON business state", () => {
@@ -318,7 +337,7 @@ describe("isZeroVarianceRepeatCapture", () => {
         responseBody: { enabled: true, variant: "control" },
       },
     ];
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(false);
   });
 
   it("flags a same-host, fixed-query beacon whose body varies per call and whose JSON response only echoes its own fixed query", () => {
@@ -339,7 +358,7 @@ describe("isZeroVarianceRepeatCapture", () => {
         responseBody: { clientId: "X", environment: "PROD" },
       },
     ];
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(true);
   });
 
   it("flags a same-host, fixed-query beacon whose request body varies every call and whose business-looking JSON response also differs almost every occurrence", () => {
@@ -355,9 +374,12 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: beaconUrl,
       requestPostData: `fingerprint=${i}`,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences], () => false)).toBe(true);
   });
 
   it("flags a same-host, fixed-query beacon whose business-looking JSON response varies per call even when it only repeats 7 times (below the old absolute-count floor)", () => {
@@ -373,9 +395,12 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: beaconUrl,
       requestPostData: `fingerprint=${i}`,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences], () => false)).toBe(true);
   });
 
   it("does not flag a genuine closed-set toggle poll cycling between 2 states across only 6 occurrences", () => {
@@ -393,7 +418,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { enabled: i % 2 === 0 },
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences], () => false)).toBe(false);
   });
 
   it("does not flag a candidate with no fixed query string", () => {
@@ -404,9 +429,13 @@ describe("isZeroVarianceRepeatCapture", () => {
     };
     const occurrences = [
       first,
-      { method: "GET", url: "https://apply.acme.example/health", requestPostData: null },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/health",
+        requestPostData: null,
+      },
     ];
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(false);
   });
 
   it("flags a query-less candidate densely repeated with no business-relevant response state", () => {
@@ -424,7 +453,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "text/plain" },
       responseBody: "ok",
     }));
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(true);
   });
 
   it("flags a query-less candidate densely repeated whose business-looking JSON response never once shows a second value", () => {
@@ -442,7 +471,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { enabled: true, variant: "control" },
     }));
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(true);
   });
 
   it("does not flag a query-less candidate whose JSON response never shows a second value below the dense-repeat threshold — a genuinely-polled toggle that simply has not flipped yet in this archive produces the exact same shape at that scale", () => {
@@ -460,7 +489,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { enabled: true, variant: "control" },
     }));
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(false);
   });
 
   it("does not flag a query-less candidate whose JSON response cycles between two states rather than never repeating", () => {
@@ -472,7 +501,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseBody: { enabled: i % 2 === 0, variant: "control" },
     }));
     for (const occurrence of occurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, occurrences)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, occurrences, () => false)).toBe(false);
     }
   });
 
@@ -489,12 +518,15 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
     for (const occurrence of occurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, occurrences)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(occurrence, occurrences, () => false)).toBe(true);
     }
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences], () => false)).toBe(true);
   });
 
   it("does not flag a query-less, densely-repeated POST with a varying body and no explicit content-type header", () => {
@@ -508,7 +540,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/graphql",
       requestPostData: `{"op":"mutation${i}"}`,
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences], () => false)).toBe(false);
   });
 
   it("flags a query-less, densely-repeated POST with a varying body when the candidate supplies an explicit content-type header with no business-relevant response state", () => {
@@ -526,7 +558,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "text/plain" },
       responseBody: "ok",
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences], () => false)).toBe(true);
   });
 
   it("flags a query-less, densely-repeated POST whose request body varies every call and whose business-looking JSON response also differs almost every occurrence", () => {
@@ -542,9 +574,12 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/beacon",
       requestPostData: `fingerprint=${i}`,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences], () => false)).toBe(true);
   });
 
   it("does not flag a query-less, densely-repeated POST with a varying body and varying JSON response when the candidate's operationName recurs as a strict majority across occurrences — a real re-issued operation, not a widget", () => {
@@ -561,10 +596,13 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/beacon",
       requestPostData: `fingerprint=${i}`,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
       operationName: "getViewer",
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences], () => false)).toBe(false);
   });
 
   it("flags a query-less, densely-repeated POST with a varying body and varying JSON response when operationName is present but does not recur as a strict majority", () => {
@@ -581,10 +619,13 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/beacon",
       requestPostData: `fingerprint=${i}`,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
       operationName: `op${i}`,
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences], () => false)).toBe(true);
   });
 
   it("does not flag a query-less, densely-repeated POST whose operationName recurs as the largest (but not majority) group among 3+ distinct operationName groups sharing the endpoint", () => {
@@ -604,7 +645,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       ...Array.from({ length: 2 }, (_, i) => buildOccurrence(i + 9, "orderHistory")),
     ];
     expect(occurrences.length).toBe(11);
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(false);
   });
 
   it("does not flag a query-less, densely-repeated POST whose operationName recurs at least twice even when a DIFFERENT operation multiplexed on the same endpoint recurs MORE often — not merely 'largest but not majority', not the largest at all", () => {
@@ -623,7 +664,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       ...Array.from({ length: 40 }, (_, i) => buildOccurrence(i + 5, "typeahead")),
     ];
     expect(occurrences.length).toBe(45);
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(false);
   });
 
   it("does not flag a query-less, densely-repeated POST whose operationName field is null but whose query text names the operation, recurring as a plurality among 3+ distinct query-text-named groups sharing the endpoint", () => {
@@ -647,7 +688,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       ...Array.from({ length: 2 }, (_, i) => buildOccurrence(i + 9, "OrderHistory")),
     ];
     expect(occurrences.length).toBe(11);
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(false);
   });
 
   it("flags a query-less candidate whose response never varies at only 7 occurrences when it is structurally isolated from every other endpoint in the capture run", () => {
@@ -660,15 +701,25 @@ describe("isZeroVarianceRepeatCapture", () => {
     };
     const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
     const realFlow = [
-      { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/booking/create",
+        requestPostData: "{}",
+      },
       {
         method: "GET",
         url: "https://apply.acme.example/booking/sections/name",
         requestPostData: null,
       },
-      { method: "POST", url: "https://apply.acme.example/booking/submit", requestPostData: "{}" },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/booking/submit",
+        requestPostData: "{}",
+      },
     ];
-    expect(isZeroVarianceRepeatCapture(first, [...occurrences, ...realFlow])).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, ...realFlow], () => false)).toBe(
+      true
+    );
   });
 
   it("does not flag a query-less candidate whose response never varies at 7 occurrences when a structurally related sibling endpoint corroborates it as part of the real flow", () => {
@@ -685,7 +736,9 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/promo/item-detail-vas/state",
       requestPostData: null,
     };
-    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling], () => false)).toBe(
+      false
+    );
   });
 
   it("does not flag a query-less candidate at 7 occurrences when a sibling endpoint shares an abbreviated/pluralized stem of its compound-segment token rather than an exact token", () => {
@@ -702,7 +755,9 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/catalog/available-products/list",
       requestPostData: null,
     };
-    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling], () => false)).toBe(
+      false
+    );
   });
 
   it("does not flag a query-less candidate with a compound segment at 7 occurrences when a sibling endpoint shares only a raw non-compound segment, not a token", () => {
@@ -719,7 +774,9 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/catalog/listing",
       requestPostData: null,
     };
-    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling], () => false)).toBe(
+      false
+    );
   });
 
   it("does not flag a query-less candidate with only plain-word (non-compound) path segments at 7 occurrences when a sibling endpoint shares a raw path segment with it", () => {
@@ -736,7 +793,9 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/user/profile/edit",
       requestPostData: null,
     };
-    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling], () => false)).toBe(
+      false
+    );
   });
 
   it("still flags two distinct, structurally-unrelated noise endpoints as noise when they share only a raw path segment (neither self-referential) and cannot mutually vouch for each other via that shared segment", () => {
@@ -757,8 +816,8 @@ describe("isZeroVarianceRepeatCapture", () => {
     };
     const tickerOccurrences = Array.from({ length: 5 }, () => ({ ...ticker }));
     const all = [...bannerOccurrences, ...tickerOccurrences];
-    expect(isZeroVarianceRepeatCapture(banner, all)).toBe(true);
-    expect(isZeroVarianceRepeatCapture(ticker, all)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(banner, all, () => false)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(ticker, all, () => false)).toBe(true);
   });
 
   it("flags a query-less POST whose request body and response both vary every call at only 7 occurrences when structurally isolated from every other endpoint in the run", () => {
@@ -774,17 +833,26 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/pulse/api/v1/urgency",
       requestPostData: `seed=${i}`,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
     const realFlow = [
-      { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/booking/create",
+        requestPostData: "{}",
+      },
       {
         method: "GET",
         url: "https://apply.acme.example/booking/sections/name",
         requestPostData: null,
       },
     ];
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
+    expect(
+      isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow], () => false)
+    ).toBe(true);
   });
 
   it.each([7, 12])(
@@ -802,17 +870,26 @@ describe("isZeroVarianceRepeatCapture", () => {
         url: "https://apply.acme.example/pulse/api/v1/urgency",
         requestPostData: `seed=${i}`,
         responseHeaders: { "content-type": "application/json" },
-        responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+        responseBody: {
+          viewCount: 4000 + i,
+          greeting: `Welcome back, guest ${i}!`,
+        },
       }));
       const realFlow = [
-        { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+        {
+          method: "POST",
+          url: "https://apply.acme.example/booking/create",
+          requestPostData: "{}",
+        },
         {
           method: "GET",
           url: "https://apply.acme.example/booking/sections/name",
           requestPostData: null,
         },
       ];
-      expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
+      expect(
+        isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow], () => false)
+      ).toBe(true);
     }
   );
 
@@ -829,14 +906,19 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/promo/listing-avail-vas/state",
       requestPostData: `seed=${i}`,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
     const relatedSibling = {
       method: "GET",
       url: "https://apply.acme.example/promo/item-detail-vas/state",
       requestPostData: null,
     };
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, relatedSibling])).toBe(false);
+    expect(
+      isZeroVarianceRepeatCapture(first, [first, ...occurrences, relatedSibling], () => false)
+    ).toBe(false);
   });
 
   it("flags a query-less POST whose request body ALSO varies every call below the dense-repeat threshold, when its response leaves are not derivable from the request and it is structurally isolated from every other endpoint in the run", () => {
@@ -852,17 +934,26 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/beacon",
       requestPostData: `fingerprint=${i}`,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
     const realFlow = [
-      { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/booking/create",
+        requestPostData: "{}",
+      },
       {
         method: "GET",
         url: "https://apply.acme.example/booking/sections/name",
         requestPostData: null,
       },
     ];
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
+    expect(
+      isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow], () => false)
+    ).toBe(true);
   });
 
   it("does not flag a query-less, structurally-isolated POST drill whose per-call response leaves are entirely derivable from that same call's own request body, at a low occurrence count below the old dense-repeat floor", () => {
@@ -881,11 +972,15 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseBody: { itemId: `${1001 + i}` },
     }));
     const unrelatedFlow = [
-      { method: "GET", url: "https://apply.acme.example/auth/session", requestPostData: null },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/auth/session",
+        requestPostData: null,
+      },
     ];
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...unrelatedFlow])).toBe(
-      false
-    );
+    expect(
+      isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...unrelatedFlow], () => false)
+    ).toBe(false);
   });
 
   it("flags a query-less, structurally-isolated widget at 7 occurrences and never flags any real endpoint in a realistically diverse pool of endpoint families", () => {
@@ -898,14 +993,26 @@ describe("isZeroVarianceRepeatCapture", () => {
     };
     const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
     const diversePool = [
-      { method: "GET", url: "https://apply.acme.example/booking/search", requestPostData: null },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/booking/search",
+        requestPostData: null,
+      },
       {
         method: "GET",
         url: "https://apply.acme.example/booking/sections/name",
         requestPostData: null,
       },
-      { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
-      { method: "POST", url: "https://apply.acme.example/booking/submit", requestPostData: "{}" },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/booking/create",
+        requestPostData: "{}",
+      },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/booking/submit",
+        requestPostData: "{}",
+      },
       {
         method: "GET",
         url: "https://apply.acme.example/catalog/item-detail-vas",
@@ -936,8 +1043,16 @@ describe("isZeroVarianceRepeatCapture", () => {
         url: "https://apply.acme.example/feature-toggles/catalog",
         requestPostData: null,
       },
-      { method: "GET", url: "https://apply.acme.example/catalog/listing", requestPostData: null },
-      { method: "GET", url: "https://apply.acme.example/user/profile", requestPostData: null },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/catalog/listing",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/user/profile",
+        requestPostData: null,
+      },
       {
         method: "GET",
         url: "https://apply.acme.example/user/profile/edit",
@@ -948,8 +1063,16 @@ describe("isZeroVarianceRepeatCapture", () => {
         url: "https://apply.acme.example/catalog/item/lookup",
         requestPostData: '{"itemId":"1000"}',
       },
-      { method: "GET", url: "https://apply.acme.example/auth/session", requestPostData: null },
-      { method: "GET", url: "https://apply.acme.example/widget/ping", requestPostData: null },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/auth/session",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/widget/ping",
+        requestPostData: null,
+      },
       {
         method: "POST",
         url: "https://apply.acme.example/widget/beacon",
@@ -1002,9 +1125,9 @@ describe("isZeroVarianceRepeatCapture", () => {
       },
     ];
     const allCaptures = [...occurrences, ...diversePool];
-    expect(isZeroVarianceRepeatCapture(first, allCaptures)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, allCaptures, () => false)).toBe(true);
     for (const realEndpoint of diversePool) {
-      expect(isZeroVarianceRepeatCapture(realEndpoint, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(realEndpoint, allCaptures, () => false)).toBe(false);
     }
   });
 
@@ -1026,12 +1149,12 @@ describe("isZeroVarianceRepeatCapture", () => {
         responseBody: "ok",
       },
     ];
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(false);
   });
 
   it("does not flag a fixed-query capture that never recurs", () => {
     const first = { method: "GET", url: beaconUrl, requestPostData: null };
-    expect(isZeroVarianceRepeatCapture(first, [first])).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, [first], () => false)).toBe(false);
   });
 
   it("flags a same-host beacon whose fixed clientId/environment recur alongside one incidental varying query key", () => {
@@ -1048,7 +1171,7 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: null,
       },
     ];
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(true);
   });
 
   it("flags a fixed-query beacon fired 14 times against 38 total captures, even though one earlier same-endpoint occurrence carries a different value for every key", () => {
@@ -1079,7 +1202,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       ...unrelatedFlowCaptures,
     ];
     expect(allCaptures.length).toBe(38);
-    expect(isZeroVarianceRepeatCapture(candidate, allCaptures)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(candidate, allCaptures, () => false)).toBe(true);
   });
 
   it("does not flag a query key matching in exactly half of same-endpoint occurrences (a true 50/50 tie)", () => {
@@ -1106,7 +1229,7 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: null,
       },
     ];
-    expect(isZeroVarianceRepeatCapture(candidate, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(candidate, occurrences, () => false)).toBe(false);
   });
 
   it("flags a query key matching in a bare majority (one more than a 50/50 tie) of same-endpoint occurrences", () => {
@@ -1133,7 +1256,7 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: null,
       },
     ];
-    expect(isZeroVarianceRepeatCapture(candidate, occurrences)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(candidate, occurrences, () => false)).toBe(true);
   });
 
   it("admits a dense archive of mixed noise (fixed-query third-party beacon, queryless bot-sensor pixel, repeated own-domain widget with per-load-varying values) while refusing the real search+drill pair", () => {
@@ -1166,7 +1289,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
     const allCaptures = [
       searchCapture,
@@ -1177,16 +1303,16 @@ describe("isZeroVarianceRepeatCapture", () => {
     ];
     expect(allCaptures.length).toBe(48);
     for (const beacon of thirdPartyBeacon) {
-      expect(isZeroVarianceRepeatCapture(beacon, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(beacon, allCaptures, () => false)).toBe(true);
     }
     for (const pixel of botSensorPixel) {
-      expect(isZeroVarianceRepeatCapture(pixel, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(pixel, allCaptures, () => false)).toBe(true);
     }
     for (const widgetCall of widgetOccurrences) {
-      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures, () => false)).toBe(true);
     }
-    expect(isZeroVarianceRepeatCapture(searchCapture, allCaptures)).toBe(false);
-    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(searchCapture, allCaptures, () => false)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures, () => false)).toBe(false);
   });
 
   it("admits a combined archive of all four previously-excluded noise shapes while retaining a densely-repeated real search+drill pair", () => {
@@ -1195,7 +1321,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/graphql",
       requestPostData: JSON.stringify({
         operationName: "catalogSearch",
-        variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+        variables: {
+          destination: `region-${i}`,
+          month: `2026-${(i % 12) + 1}`,
+        },
       }),
       responseHeaders: { "content-type": "application/json" },
       responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1223,7 +1352,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
     const allCaptures = [
       ...searchOccurrences,
@@ -1233,18 +1365,18 @@ describe("isZeroVarianceRepeatCapture", () => {
       ...freelyVaryingWidget,
     ];
     for (const beacon of fixedQueryBeacon) {
-      expect(isZeroVarianceRepeatCapture(beacon, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(beacon, allCaptures, () => false)).toBe(true);
     }
     for (const pixel of querylessBotPixel) {
-      expect(isZeroVarianceRepeatCapture(pixel, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(pixel, allCaptures, () => false)).toBe(true);
     }
     for (const widgetCall of freelyVaryingWidget) {
-      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures, () => false)).toBe(true);
     }
     for (const searchCall of searchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures, () => false)).toBe(false);
   });
 
   it("admits a combined archive of all four previously-excluded noise shapes plus a query-text-only GraphQL primary while retaining both real search+drill pairs", () => {
@@ -1253,7 +1385,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/graphql",
       requestPostData: JSON.stringify({
         operationName: "catalogSearch",
-        variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+        variables: {
+          destination: `region-${i}`,
+          month: `2026-${(i % 12) + 1}`,
+        },
       }),
       responseHeaders: { "content-type": "application/json" },
       responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1281,7 +1416,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
     const queryTextSearchOccurrences = Array.from({ length: 19 }, (_, i) => {
       const query = `query catalogSearch($destination: String!, $month: String!) { search(destination: $destination, month: $month) { id price } }`;
@@ -1291,7 +1429,10 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: JSON.stringify({
           query,
           operationName: null,
-          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+          variables: {
+            destination: `region-${i}`,
+            month: `2026-${(i % 12) + 1}`,
+          },
         }),
         responseHeaders: { "content-type": "application/json" },
         responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1316,22 +1457,24 @@ describe("isZeroVarianceRepeatCapture", () => {
       queryTextDrillCapture,
     ];
     for (const beacon of fixedQueryBeacon) {
-      expect(isZeroVarianceRepeatCapture(beacon, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(beacon, allCaptures, () => false)).toBe(true);
     }
     for (const pixel of querylessBotPixel) {
-      expect(isZeroVarianceRepeatCapture(pixel, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(pixel, allCaptures, () => false)).toBe(true);
     }
     for (const widgetCall of freelyVaryingWidget) {
-      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures, () => false)).toBe(true);
     }
     for (const searchCall of searchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures, () => false)).toBe(false);
     for (const occurrence of queryTextSearchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(queryTextDrillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(queryTextDrillCapture, allCaptures, () => false)).toBe(
+      false
+    );
   });
 
   it("admits a combined archive of all four previously-excluded noise shapes plus a query-text-only GraphQL primary while retaining a densely re-issued named search primary with a later Automatic-Persisted-Query re-issue and its drill", () => {
@@ -1340,7 +1483,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/graphql",
       requestPostData: JSON.stringify({
         operationName: "catalogSearch",
-        variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+        variables: {
+          destination: `region-${i}`,
+          month: `2026-${(i % 12) + 1}`,
+        },
       }),
       responseHeaders: { "content-type": "application/json" },
       responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1368,7 +1514,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
     const queryTextSearchOccurrences = Array.from({ length: 19 }, (_, i) => {
       const query = `query catalogSearch($destination: String!, $month: String!) { search(destination: $destination, month: $month) { id price } }`;
@@ -1378,7 +1527,10 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: JSON.stringify({
           query,
           operationName: null,
-          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+          variables: {
+            destination: `region-${i}`,
+            month: `2026-${(i % 12) + 1}`,
+          },
         }),
         responseHeaders: { "content-type": "application/json" },
         responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1402,7 +1554,10 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: JSON.stringify({
           operationName: isApqReissue ? null : "catalogSearch",
           query: isApqReissue ? "" : undefined,
-          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+          variables: {
+            destination: `region-${i}`,
+            month: `2026-${(i % 12) + 1}`,
+          },
         }),
         responseHeaders: { "content-type": "application/json" },
         responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1429,26 +1584,28 @@ describe("isZeroVarianceRepeatCapture", () => {
       apqDrillCapture,
     ];
     for (const beacon of fixedQueryBeacon) {
-      expect(isZeroVarianceRepeatCapture(beacon, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(beacon, allCaptures, () => false)).toBe(true);
     }
     for (const pixel of querylessBotPixel) {
-      expect(isZeroVarianceRepeatCapture(pixel, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(pixel, allCaptures, () => false)).toBe(true);
     }
     for (const widgetCall of freelyVaryingWidget) {
-      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures, () => false)).toBe(true);
     }
     for (const searchCall of searchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures, () => false)).toBe(false);
     for (const occurrence of queryTextSearchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(queryTextDrillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(queryTextDrillCapture, allCaptures, () => false)).toBe(
+      false
+    );
     for (const occurrence of apqSearchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(apqDrillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(apqDrillCapture, allCaptures, () => false)).toBe(false);
   });
 
   it("admits a combined archive of all four previously-excluded noise shapes plus a query-text-only GraphQL primary and an APQ-reissued primary while retaining a production-scale multi-operation real primary sharing its endpoint with hundreds of one-off operations, including one that outfires it", () => {
@@ -1457,7 +1614,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/graphql",
       requestPostData: JSON.stringify({
         operationName: "catalogSearch",
-        variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+        variables: {
+          destination: `region-${i}`,
+          month: `2026-${(i % 12) + 1}`,
+        },
       }),
       responseHeaders: { "content-type": "application/json" },
       responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1485,7 +1645,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      responseBody: {
+        viewCount: 4000 + i,
+        greeting: `Welcome back, guest ${i}!`,
+      },
     }));
     const queryTextSearchOccurrences = Array.from({ length: 19 }, (_, i) => {
       const query = `query catalogSearch($destination: String!, $month: String!) { search(destination: $destination, month: $month) { id price } }`;
@@ -1495,7 +1658,10 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: JSON.stringify({
           query,
           operationName: null,
-          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+          variables: {
+            destination: `region-${i}`,
+            month: `2026-${(i % 12) + 1}`,
+          },
         }),
         responseHeaders: { "content-type": "application/json" },
         responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1519,7 +1685,10 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: JSON.stringify({
           operationName: isApqReissue ? null : "catalogSearch",
           query: isApqReissue ? "" : undefined,
-          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+          variables: {
+            destination: `region-${i}`,
+            month: `2026-${(i % 12) + 1}`,
+          },
         }),
         responseHeaders: { "content-type": "application/json" },
         responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1563,7 +1732,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       Array.from({ length: count }, (_, i) => ({
         method: "POST",
         url: multiOpEndpoint,
-        requestPostData: JSON.stringify({ operationName, variables: { occurrence: i } }),
+        requestPostData: JSON.stringify({
+          operationName,
+          variables: { occurrence: i },
+        }),
         responseHeaders: { "content-type": "application/json" },
         responseBody: { [operationName]: { id: `${operationName}-${i}` } },
         operationName,
@@ -1588,30 +1760,32 @@ describe("isZeroVarianceRepeatCapture", () => {
       ...outMultiplyingOperation,
     ];
     for (const beacon of fixedQueryBeacon) {
-      expect(isZeroVarianceRepeatCapture(beacon, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(beacon, allCaptures, () => false)).toBe(true);
     }
     for (const pixel of querylessBotPixel) {
-      expect(isZeroVarianceRepeatCapture(pixel, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(pixel, allCaptures, () => false)).toBe(true);
     }
     for (const widgetCall of freelyVaryingWidget) {
-      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures)).toBe(true);
+      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures, () => false)).toBe(true);
     }
     for (const searchCall of searchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures, () => false)).toBe(false);
     for (const occurrence of queryTextSearchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(queryTextDrillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(queryTextDrillCapture, allCaptures, () => false)).toBe(
+      false
+    );
     for (const occurrence of apqSearchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(apqDrillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(apqDrillCapture, allCaptures, () => false)).toBe(false);
     for (const occurrence of multiOpSearchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(multiOpDrillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(multiOpDrillCapture, allCaptures, () => false)).toBe(false);
   });
 
   it("does not flag a query-less, explicit-json POST search primary re-issued 19 times with a stable operationName, varying variables, and a genuinely varying business response, nor its drill", () => {
@@ -1620,7 +1794,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/graphql",
       requestPostData: JSON.stringify({
         operationName: "catalogSearch",
-        variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+        variables: {
+          destination: `region-${i}`,
+          month: `2026-${(i % 12) + 1}`,
+        },
       }),
       responseHeaders: { "content-type": "application/json" },
       responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1635,9 +1812,9 @@ describe("isZeroVarianceRepeatCapture", () => {
     };
     const allCaptures = [...searchOccurrences, drillCapture];
     for (const occurrence of searchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures, () => false)).toBe(false);
   });
 
   it("does not flag a query-less, explicit-json POST search primary re-issued 19 times whose operationName field is null but whose query text names the operation as a strict majority, with varying variables and a genuinely varying business response, nor its drill", () => {
@@ -1649,7 +1826,10 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: JSON.stringify({
           query,
           operationName: null,
-          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+          variables: {
+            destination: `region-${i}`,
+            month: `2026-${(i % 12) + 1}`,
+          },
         }),
         responseHeaders: { "content-type": "application/json" },
         responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1666,9 +1846,9 @@ describe("isZeroVarianceRepeatCapture", () => {
     };
     const allCaptures = [...searchOccurrences, drillCapture];
     for (const occurrence of searchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures, () => false)).toBe(false);
     }
-    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures, () => false)).toBe(false);
   });
 
   it("does not flag a query-less, densely re-issued named GraphQL search operation, including a later Automatic-Persisted-Query re-issue with null operationName and no query text corroborated only by shared endpoint and response shape, interleaved with many distinct one-off operations at the same endpoint", () => {
@@ -1681,7 +1861,10 @@ describe("isZeroVarianceRepeatCapture", () => {
         requestPostData: JSON.stringify({
           operationName: isApqReissue ? null : "catalogSearch",
           query: isApqReissue ? "" : undefined,
-          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+          variables: {
+            destination: `region-${i}`,
+            month: `2026-${(i % 12) + 1}`,
+          },
         }),
         responseHeaders: { "content-type": "application/json" },
         responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
@@ -1692,14 +1875,17 @@ describe("isZeroVarianceRepeatCapture", () => {
     const oneOffOperations = Array.from({ length: 8 }, (_, i) => ({
       method: "POST",
       url: "https://apply.acme.example/graphql",
-      requestPostData: JSON.stringify({ operationName: `oneOff${i}`, variables: { i } }),
+      requestPostData: JSON.stringify({
+        operationName: `oneOff${i}`,
+        variables: { i },
+      }),
       responseHeaders: { "content-type": "application/json" },
       responseBody: { widget: { id: i } },
       operationName: `oneOff${i}`,
     }));
     const allCaptures = [...searchOccurrences, ...oneOffOperations];
     for (const occurrence of searchOccurrences) {
-      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures, () => false)).toBe(false);
     }
   });
 
@@ -1720,7 +1906,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       ...Array.from({ length: 2 }, (_, i) => buildOccurrence(i + 9, "orderHistory")),
     ];
     expect(occurrences.length).toBe(11);
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(false);
   });
 
   it("does not flag a fixed-query-string GraphQL candidate whose operationName recurs at least twice even when a DIFFERENT operation multiplexed on the same endpoint recurs MORE often — not merely 'largest but not majority', not the largest at all", () => {
@@ -1739,7 +1925,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       ...Array.from({ length: 40 }, (_, i) => buildOccurrence(i + 5, "typeahead")),
     ];
     expect(occurrences.length).toBe(45);
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(false);
   });
 
   it("flags a fixed-query-string GraphQL candidate whose operationName occurs only once among many distinct one-off operationName groups sharing the endpoint", () => {
@@ -1757,7 +1943,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       ...Array.from({ length: 10 }, (_, i) => buildOccurrence(i + 1, `op${i}`)),
     ];
     expect(occurrences.length).toBe(11);
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, occurrences, () => false)).toBe(true);
   });
 });
 
@@ -1782,7 +1968,10 @@ describe("isZeroVarianceRepeatCapture — per-array-reference index cache", () =
       requestPostData: JSON.stringify({ fixed: true }),
       responseHeaders: { "content-type": "application/json" },
       responseBody: { results: [{ id: `item-${i}` }] },
-    })).map((c) => ({ ...c, url: "https://apply.acme.example/listing-avail-vas/results" }));
+    })).map((c) => ({
+      ...c,
+      url: "https://apply.acme.example/listing-avail-vas/results",
+    }));
     const archive = [
       ...candidates,
       ...Array.from({ length: otherEndpoints }, (_, i) => ({
@@ -1806,13 +1995,13 @@ describe("isZeroVarianceRepeatCapture — per-array-reference index cache", () =
     let subsequentCallsConstructions = 0;
     try {
       // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds (candidates has 5 entries)
-      isZeroVarianceRepeatCapture(archive[0]!, archive);
+      isZeroVarianceRepeatCapture(archive[0]!, archive, () => false);
       firstCallConstructions = constructions;
       constructions = 0;
       const repeatCalls = 20;
       for (let i = 0; i < repeatCalls; i += 1) {
         // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds (modulo candidates.length)
-        isZeroVarianceRepeatCapture(archive[i % candidates.length]!, archive);
+        isZeroVarianceRepeatCapture(archive[i % candidates.length]!, archive, () => false);
       }
       subsequentCallsConstructions = constructions;
     } finally {
@@ -1843,9 +2032,9 @@ describe("isZeroVarianceRepeatCapture — per-array-reference index cache", () =
       },
     ];
     // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds
-    const first = isZeroVarianceRepeatCapture(archive[0]!, archive);
+    const first = isZeroVarianceRepeatCapture(archive[0]!, archive, () => false);
     // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds
-    const second = isZeroVarianceRepeatCapture(archive[0]!, archive);
+    const second = isZeroVarianceRepeatCapture(archive[0]!, archive, () => false);
     expect(second).toBe(first);
   });
 });
@@ -1879,9 +2068,9 @@ describe("isZeroVarianceRepeatCapture — index cache isolation across distinct 
   const archiveB = [businessStateCapture, businessStateCapture, businessStateCapture];
 
   it("never leaks a verdict from one array reference to another sharing the same method+endpoint identity", () => {
-    expect(isZeroVarianceRepeatCapture(noStateCapture, archiveA)).toBe(true);
-    expect(isZeroVarianceRepeatCapture(businessStateCapture, archiveB)).toBe(false);
-    expect(isZeroVarianceRepeatCapture(noStateCapture, archiveA)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(noStateCapture, archiveA, () => false)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(businessStateCapture, archiveB, () => false)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(noStateCapture, archiveA, () => false)).toBe(true);
   });
 });
 
@@ -1909,7 +2098,7 @@ describe("isZeroVarianceRepeatCapture — full-scan-per-call regression guard", 
 
   function timeFullPassMs(archive: ReturnType<typeof buildScaleArchive>): number {
     const start = performance.now();
-    for (const candidate of archive) isZeroVarianceRepeatCapture(candidate, archive);
+    for (const candidate of archive) isZeroVarianceRepeatCapture(candidate, archive, () => false);
     return performance.now() - start;
   }
 
@@ -2017,7 +2206,7 @@ describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
   ];
   it("is a beacon without the matcher, kept with it", () => {
     const first = posts[0] as (typeof posts)[number];
-    expect(isZeroVarianceRepeatCapture(first, all)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first, all, () => false)).toBe(true);
     expect(isZeroVarianceRepeatCapture(first, all, (c) => /\/v1\/items$/.test(c.url))).toBe(false);
   });
 });

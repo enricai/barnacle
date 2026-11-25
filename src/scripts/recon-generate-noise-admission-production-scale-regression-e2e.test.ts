@@ -139,8 +139,8 @@ describe("recon noise admission at production scale: mixed third-party + same-or
     // `hasFreelyVaryingResponseAcrossOccurrences` branch. The real search
     // capture, which shares nothing in its (fixed) response shape, must not
     // be swept in merely for repeating on the same host.
-    expect(isZeroVarianceRepeatCapture(sameOriginNoise[0]!, allCaptures)).toBe(true);
-    expect(isZeroVarianceRepeatCapture(search, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(sameOriginNoise[0]!, allCaptures, () => false)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(search, allCaptures, () => false)).toBe(false);
 
     writeRunDir(runRoot, allCaptures);
 

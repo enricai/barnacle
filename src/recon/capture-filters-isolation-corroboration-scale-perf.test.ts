@@ -48,7 +48,7 @@ describe("isZeroVarianceRepeatCapture — queryless isolation-corroboration bran
 
     const start = performance.now();
     const verdicts = candidates.map((candidate) =>
-      isZeroVarianceRepeatCapture(candidate, allCaptures)
+      isZeroVarianceRepeatCapture(candidate, allCaptures, () => false)
     );
     const elapsedMs = performance.now() - start;
 

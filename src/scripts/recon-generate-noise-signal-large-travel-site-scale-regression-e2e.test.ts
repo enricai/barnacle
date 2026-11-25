@@ -115,8 +115,8 @@ describe("recon noise admission at production scale: structurally-isolated same-
     // Pin the predicate directly at the reported scale before running the
     // full pipeline: the noise widget must be excluded, and the real search
     // capture must not be swept in merely for sharing a host.
-    expect(isZeroVarianceRepeatCapture(sameOriginNoise[0]!, allCaptures)).toBe(true);
-    expect(isZeroVarianceRepeatCapture(search, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(sameOriginNoise[0]!, allCaptures, () => false)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(search, allCaptures, () => false)).toBe(false);
 
     writeRunDir(runRoot, allCaptures);
 
