@@ -41,6 +41,24 @@ describe("bearer sources", () => {
     expect(bearer?.document).toBe("https://a.test:8443/right");
   });
 
+  it("carries the source kind and RSC row of the located document", () => {
+    const rsc = [
+      {
+        url: "https://a.test:8443/gql",
+        authReplay: {
+          status: 200,
+          tokenReplayable: true,
+          tokenSource: { document: 0, url: "https://a.test:8443/r", source: "rsc", row: "1a" },
+        },
+      } as unknown as ReplayResult,
+    ];
+    const located = [...locateBearerSources(captures, rsc).values()];
+    expect(located).toEqual([{ url: "https://a.test:8443/r", source: "rsc", row: "1a" }]);
+    const bearer = deriveReadFlowBearer(captures, rsc, "https://a.test:8443/gql");
+    expect(bearer?.source).toBe("rsc");
+    expect(bearer?.row).toBe("1a");
+  });
+
   it("keeps ports, so hosts compare equal to the runtime's", () => {
     const bearer = deriveReadFlowBearer(captures, replays, "https://a.test:8443/gql");
     expect(bearer?.bearerHosts).toEqual(["a.test:8443", "z.test"]);
