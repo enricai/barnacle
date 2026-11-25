@@ -3141,6 +3141,22 @@ interface PostBodyBinding {
 }
 
 /**
+ * Schema of one caller-controlled body value, from every recorded value of it: a
+ * value the first capture left out or empty is still typed by a later one, and
+ * a mixed or object value is accepted as it is.
+ */
+function postBodyValueZod(seen: readonly unknown[]): string {
+  if (seen.length > 0 && seen.every(Array.isArray)) {
+    return `z.array(${postBodyValueZod((seen as unknown[][]).flat())})`;
+  }
+  const kinds = new Set(seen.map((v) => (Array.isArray(v) ? "array" : typeof v)));
+  const kind = kinds.size === 1 ? [...kinds][0] : undefined;
+  if (kind === "number") return "z.coerce.number()";
+  if (kind === "boolean") return "z.coerce.boolean()";
+  return kind === "string" ? "z.string()" : "z.unknown()";
+}
+
+/**
  * Body model for a declared read-only POST search whose captures re-issue the
  * endpoint with different JSON bodies. Every leaf (scalar or array) whose
  * value differs between captures becomes a defaulted payload field and the
@@ -3193,18 +3209,11 @@ function derivePostBodyModel(
     for (let n = 2; used.has(field); n++) field = `${base}${n}`;
     used.add(field);
     const def = JSON.stringify(first ?? null);
-    const sample = Array.isArray(first) ? first[0] : first;
-    const elem =
-      typeof sample === "number"
-        ? "z.coerce.number()"
-        : typeof sample === "boolean"
-          ? "z.coerce.boolean()"
-          : "z.string()";
-    const zod = Array.isArray(first)
-      ? `z.array(${elem}).optional().default(${def})`
-      : first === null || first === undefined
-        ? "z.unknown().optional()"
-        : `${elem}.optional().default(${def})`;
+    const seen = values.filter((v) => v !== null && v !== undefined);
+    const zod =
+      first === null || first === undefined
+        ? `${postBodyValueZod(seen)}.optional()`
+        : `${postBodyValueZod(seen)}.optional().default(${def})`;
     bindings.push({ field, zod });
     return `payload.${field}`;
   };
@@ -14683,10 +14692,31 @@ function isMintedDependencyValue(value: string): boolean {
   return true;
 }
 
+/**
+ * Recognizes a re-issue of the primary: the same operation answering with its
+ * list at the same path. Such a request can name an id the drill returned (a
+ * search narrowed to one result), but it lists items anew rather than fetching
+ * more about one, so it is no hop of the drill's chain. A drill declared on the
+ * primary's own operation is left alone.
+ */
+function primaryRepeatMatcher(
+  primary: Capture,
+  primaryArrayPath: readonly string[],
+  drill: Capture
+): (capture: Capture) => boolean {
+  const identity = (c: Capture): string => `${c.method} ${operationGroupKey(c)}`;
+  const primaryIdentity = identity(primary);
+  if (primaryArrayPath.length === 0 || identity(drill) === primaryIdentity) return () => false;
+  return (capture) =>
+    identity(capture) === primaryIdentity &&
+    objectItemsAtPath(capture.responseBody, primaryArrayPath) !== null;
+}
+
 export function computeFoldChain<T extends { capture: Capture }>(
   actions: readonly T[],
   drillStepIndex: number,
-  drillArrayPath: string[]
+  drillArrayPath: string[],
+  isPrimaryRepeat: (capture: Capture) => boolean = () => false
 ): { chain: number[]; chainArrayPath: string[]; chainTerminalIndex: number } {
   const chain = [drillStepIndex];
   let chainArrayPath = drillArrayPath;
@@ -14698,6 +14728,7 @@ export function computeFoldChain<T extends { capture: Capture }>(
   );
   for (let i = drillStepIndex + 1; i < actions.length; i++) {
     const candidate = actions[i]!;
+    if (isPrimaryRepeat(candidate.capture)) continue;
     const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
     const dependsOnChain = chain.some((chainIndex) => {
       const chainStepCapture = actions[chainIndex]!.capture;
@@ -14999,7 +15030,8 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         drillIndex,
-        drillArrayPath
+        drillArrayPath,
+        primaryRepeatMatcher(primary.capture, primaryArray.path, drill.capture)
       );
 
       const chainTerminalItems = objectItemsAtPath(
@@ -16483,7 +16515,12 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         entryIndex,
-        drillArrayPath ?? []
+        drillArrayPath ?? [],
+        primaryRepeatMatcher(
+          actions[primaryStepIndex]!.capture,
+          primaryArrayPath,
+          actions[entryIndex]!.capture
+        )
       );
       // The chain's resolved terminal must actually hold foldable data —
       // an intermediate drill step with neither its own candidate NOR a
