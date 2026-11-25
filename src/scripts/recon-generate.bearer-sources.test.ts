@@ -14,7 +14,8 @@ import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { ReplayResult } from "@/scripts/recon-shared";
 
 const b64 = (o: object): string => Buffer.from(JSON.stringify(o)).toString("base64url");
-const jwt = (tokenType: string): string => `eyJhbGciOiJIUzI1NiJ9.${b64({ tokenType })}.sigsigsig`;
+const jwt = (claims: string | object): string =>
+  `eyJhbGciOiJIUzI1NiJ9.${b64(typeof claims === "string" ? { tokenType: claims } : claims)}.sigsigsig`;
 const call = (url: string, tokenType?: string) =>
   buildCapture({
     url,
