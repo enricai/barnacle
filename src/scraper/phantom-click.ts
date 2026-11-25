@@ -18,6 +18,8 @@ export interface PhantomClickSnapshot {
   visibleText?: string;
   /** Digest of the whole normalised visible text, so a change beyond the head or excerpt is still seen. */
   visibleTextDigest?: string;
+  /** Visible text without open transient popups (see flow-runner's StepSnapshot). */
+  contentText?: string;
   /**
    * True when this snapshot was re-read after the re-settle rounds and the visible
    * text held still across the last of them, so a header flip that has not been followed by
@@ -516,6 +518,16 @@ export function hasPageBodySwapped(pre: PhantomClickSnapshot, post: PhantomClick
 }
 
 /**
+ * Whether visible text moved while the page's own text, open transient popups
+ * left out, stayed the same: the movement was a popup opening or closing.
+ */
+export function isPopupOnlyChange(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): boolean {
+  return (
+    !!pre.contentText && pre.contentText === post.contentText && hasVisibleTextChanged(pre, post)
+  );
+}
+
+/**
  * Decides whether a mid-flow submit's page advanced, judged on the settled
  * page: a replaced body always counts, and a replaced header counts once the
  * text has held still across the whole re-settle budget, because by then nothing is left
@@ -527,6 +539,7 @@ export function hasSettledPageAdvanced(
   pre: PhantomClickSnapshot,
   post: PhantomClickSnapshot
 ): boolean {
+  if (isPopupOnlyChange(pre, post)) return false;
   return hasPageBodySwapped(pre, post) || (post.settled === true && hasPageAdvanced(pre, post));
 }
 

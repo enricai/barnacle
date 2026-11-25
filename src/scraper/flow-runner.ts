@@ -130,6 +130,7 @@ import {
   hasSettledPageAdvanced,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
+  isPopupOnlyChange,
   isVisibleTextShrunk,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
@@ -1826,6 +1827,8 @@ interface StepSnapshot {
    * movement. Optional so literal snapshots built elsewhere keep compiling.
    */
   visibleTextDigest?: string;
+  /** Whole visible text without open transient popups, so a popup closing is not read as the page moving. */
+  contentText?: string;
   /**
    * Set by the post-click re-settle when the visible text held still through the
    * whole re-settle budget, so a header-only flip can be judged as the final page.
@@ -2008,7 +2011,45 @@ function ariaCheckedReadExpr(elVar: string): string {
 /** Bound on {@link StepSnapshot.visibleText}, keeping a pathological page from bloating snapshots. */
 const VISIBLE_TEXT_EXCERPT_CHARS = 3000;
 
-const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "", full: "", digest: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; const norm = t.replace(/\\s+/g, " ").trim(); let th = 2166136261; for (let tk = 0; tk < norm.length; tk++) { th ^= norm.charCodeAt(tk); th = Math.imul(th, 16777619); } return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state, full: norm.slice(0, ${VISIBLE_TEXT_EXCERPT_CHARS}), digest: (th >>> 0).toString(36) + ":" + norm.length }; })()`;
+/**
+ * Page text with open transient popups left out, for {@link StepSnapshot.contentText}.
+ * Popup roles alone also mark inline content, so an element counts only when it
+ * floats, or sits alone in a floating portal wrapper: an absolutely positioned
+ * application shell or an inline accordion panel is the page itself.
+ */
+export const CONTENT_TEXT_EXPR = `(() => {
+  const body = document.body;
+  if (!body) return "";
+  const textOf = (el) => (el.innerText || "").replace(/\\s+/g, " ").trim();
+  const owned = Array.from(document.querySelectorAll('[aria-expanded="true"]')).flatMap((t) =>
+    ((t.getAttribute("aria-controls") || "") + " " + (t.getAttribute("aria-owns") || ""))
+      .split(/\\s+/)
+      .map((id) => (id ? document.getElementById(id) : null))
+      .filter(Boolean)
+  );
+  const floats = (el) => {
+    const own = textOf(el);
+    for (let a = el; a && a !== body; a = a.parentElement) {
+      if (a !== el && textOf(a) !== own) return false;
+      if (/^(absolute|fixed)$/.test(getComputedStyle(a).position)) return true;
+    }
+    return false;
+  };
+  const roles = Array.from(body.querySelectorAll("[role=listbox],[role=menu],[role=tooltip]"));
+  const open = Array.from(body.querySelectorAll("[popover]")).filter((el) => {
+    try { return el.matches(":popover-open"); } catch { return false; }
+  });
+  const isPage = (el) => el.matches("main,form,dialog,[role=dialog]") || el.querySelector("main,form");
+  const popups = [...new Set([...roles, ...owned])]
+    .filter((el) => el.getClientRects().length > 0 && !isPage(el) && floats(el))
+    .concat(open);
+  let text = textOf(body);
+  for (const el of popups.filter((el) => !popups.some((o) => o !== el && o.contains(el)))) {
+    text = text.replace(textOf(el), " ");
+  }
+  return text.replace(/\\s+/g, " ").trim();
+})()`;
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "", full: "", digest: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; const norm = t.replace(/\\s+/g, " ").trim(); let th = 2166136261; for (let tk = 0; tk < norm.length; tk++) { th ^= norm.charCodeAt(tk); th = Math.imul(th, 16777619); } let content; try { content = ${CONTENT_TEXT_EXPR}; } catch {} return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state, full: norm.slice(0, ${VISIBLE_TEXT_EXCERPT_CHARS}), digest: (th >>> 0).toString(36) + ":" + norm.length, content }; })()`;
 
 /** One form control's live accessible-name/value pair at step-failure time. */
 export interface FieldValueAtFailure {
@@ -2162,6 +2203,7 @@ export async function snapshotPage(
   let visibleTextSignature = "";
   let visibleText = "";
   let visibleTextDigest = "";
+  let contentText: string | undefined;
   let formValueSignature = "";
   let selectionStateSignature = "";
   try {
@@ -2180,6 +2222,8 @@ export async function snapshotPage(
       visibleText = typeof rawFull === "string" ? rawFull : "";
       const rawDigest = (result as Record<string, unknown>).digest;
       visibleTextDigest = typeof rawDigest === "string" ? rawDigest : "";
+      const rawContent = (result as Record<string, unknown>).content;
+      contentText = typeof rawContent === "string" ? rawContent : undefined;
       const rawValues = (result as Record<string, unknown>).values;
       formValueSignature = typeof rawValues === "string" ? rawValues : "";
       const rawState = (result as Record<string, unknown>).state;
@@ -2217,6 +2261,7 @@ export async function snapshotPage(
   const url = page ? await readCurrentFrameUrl(page, target) : await target.url();
   return {
     networkCount: signalCounter.n,
+    contentText,
     url,
     bodyHtmlLength,
     visibleTextSignature,
@@ -2474,6 +2519,36 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
   if (!instruction) return false;
   const haystack = instruction.toLowerCase();
   return ADVANCE_STEP_PHRASES.some((p) => haystack.includes(p));
+}
+
+const PAGE_TRANSITION_RX =
+  /\b(?:continu(?:e|es|ing)|proceed(?:s|ing)?|advanc(?:e|es|ing))\s+(?:on\s+)?to\s+\w/i;
+
+/**
+ * Whether the step's own outcome is leaving for another page ("the button that
+ * continues to the checkout page"). A step that also enters or chooses a value
+ * is judged on that value instead, and an outcome clause alone ("so the salary
+ * field appears") is not a transition: an option click can say that.
+ */
+export function declaresPageTransition(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  const positive = instruction.replace(NEGATED_ACTION_CLAUSE, " ");
+  return PAGE_TRANSITION_RX.test(positive) && !DATA_ENTRY_WORDING.test(positive);
+}
+
+/**
+ * A declared page transition is proven by a request, a URL change or a changed
+ * page. The clicked control's own state is not evidence: a button flips to a
+ * loading or active class whether or not it leads anywhere.
+ */
+export function lacksTransitionEvidence(params: {
+  step: string;
+  networkAdvanced: boolean;
+  urlChanged: boolean;
+  pageAdvanced: boolean;
+}): boolean {
+  const { step, networkAdvanced, urlChanged, pageAdvanced } = params;
+  return declaresPageTransition(step) && !networkAdvanced && !urlChanged && !pageAdvanced;
 }
 
 /**
@@ -3182,6 +3257,8 @@ export function isClickViewSwapVerified(params: {
    * text swap is not a page advance.
    */
   blockedSubmitShape?: boolean;
+  /** Nothing but a transient popup moved, which no mid-flow submit counts as its advance. */
+  popupOnlyChange?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -3203,10 +3280,12 @@ export function isClickViewSwapVerified(params: {
     contentRemoved = false,
     resolvedElementNamesStepTarget = true,
     blockedSubmitShape = false,
+    popupOnlyChange = false,
   } = params;
   // A click on a control unrelated to the step's quoted target is not the
   // step's success, whatever the DOM did afterwards.
   if (!resolvedElementNamesStepTarget) return false;
+  if (midFlowSubmit && popupOnlyChange && networkDelta === 0) return false;
   if (midFlowSubmit && blockedSubmitShape && networkDelta === 0 && invalidMarkerDelta > 0) {
     return false;
   }
@@ -5465,6 +5544,13 @@ export async function verifyPromptSelectorCommitted(
       } else {
         fv = field.value || "";
       }
+      // A searchable select keeps an empty search input beside the value it
+      // displays; a closed one's displayed text is the committed value.
+      if (selectStep && want && field !== el && field.tagName === "INPUT" && fv === "" && el.contains(field) && !el.matches('[aria-expanded="true"]') && !el.querySelector('[aria-expanded="true"]')) {
+        const shown = el.cloneNode(true);
+        for (const n of Array.from(shown.querySelectorAll("[role=listbox],[role=option],[role=menu],ul"))) n.remove();
+        fv = shown.textContent || "";
+      }
       fv = fv.replace(/\\s+/g, " ").trim().toLowerCase();
       return { isPromptWidget: true, committed: fv !== "" && (!want || namesOption(fv, want)) };
     }
@@ -7373,7 +7459,14 @@ function chosenOptionOfStep(instruction: string): string | null {
     instruction,
     /\b(?:choose|pick)\s+(?:the\s+(?:\S+\s+)?)?(?=')/i
   )?.phrase;
-  return phrase ? phrase.text.trim() : null;
+  if (phrase) return phrase.text.trim();
+  // Only a step naming its dropdown: "click the option" alone also words a radio answer.
+  if (!/\b(?:dropdown|combobox|listbox|select menu)\b/i.test(instruction)) return null;
+  const clicked = matchQuotedAfter(
+    instruction,
+    /\bclick\s+(?:on\s+)?(?:the\s+)?(?:\S+\s+)?option\s+(?=')/i
+  )?.phrase;
+  return clicked ? clicked.text.trim() : null;
 }
 
 /**
@@ -17148,6 +17241,7 @@ export async function executeStepWithHealing(params: {
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausibleForPost,
       midFlowSubmit,
+      popupOnlyChange: isPopupOnlyChange(advanceBaseline, post),
       pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
       contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
@@ -17359,6 +17453,21 @@ export async function executeStepWithHealing(params: {
       (!datepickerRejected &&
         !promptSelectorRejected &&
         (clickViewSwapVerified || formValueVerified));
+
+    if (
+      verified &&
+      lacksTransitionEvidence({
+        step,
+        networkAdvanced: networkIsRealAdvance,
+        urlChanged,
+        pageAdvanced: settledPageAdvanced || clickViewSwapVerified,
+      })
+    ) {
+      verified = false;
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} declared page transition made no network, url or page change; not treating as verified`
+      );
+    }
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -18015,6 +18124,7 @@ export async function executeStepWithHealing(params: {
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
+            !(retryMidFlowSubmit && isPopupOnlyChange(retryDomBaseline, retryPost)) &&
             ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
@@ -18115,6 +18225,19 @@ export async function executeStepWithHealing(params: {
                 weakDomSignalsAllowed &&
                 retryDestinationPlausible &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
+          const retryPageTextChanged =
+            weakDomSignalsAllowed && retryTextChanged && !isPopupOnlyChange(pre, retryPost);
+          if (
+            retryVerified &&
+            lacksTransitionEvidence({
+              step,
+              networkAdvanced: retryNetworkFired && retryDestinationPlausible,
+              urlChanged: retryUrlChanged,
+              pageAdvanced: retryPageAdvanced || retryRemovalCredited || retryPageTextChanged,
+            })
+          ) {
+            retryVerified = false;
+          }
           // Same committed-value guard as the primary path: weak signals must
           // not credit a select step whose target value never committed.
           if (
