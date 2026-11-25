@@ -59,10 +59,7 @@ function searchCapture(
     url: SEARCH_URL,
     status: 200,
     requestHeaders: { "Content-Type": "application/json" },
-    requestPostData: JSON.stringify({
-      query: SEARCH_QUERY,
-      variables: { filter },
-    }),
+    requestPostData: JSON.stringify({ query: SEARCH_QUERY, variables: { filter } }),
     responseHeaders: { "content-type": "application/json" },
     responseBody: { catalogSearch: { items } },
     operationName: "catalogSearch",
@@ -216,12 +213,8 @@ describe("recon-generate CLI — mutation-path noise fix alongside prior fold-pl
 
     // Pin the low/high-occurrence boundary directly, as this repo's own
     // combined-regression tests do for each mechanism they exercise.
-    expect(isZeroVarianceRepeatCapture(belowThresholdNoise[0]!, allCaptures, () => false)).toBe(
-      false
-    );
-    expect(isZeroVarianceRepeatCapture(aboveThresholdNoise[0]!, allCaptures, () => false)).toBe(
-      true
-    );
+    expect(isZeroVarianceRepeatCapture(belowThresholdNoise[0]!, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(aboveThresholdNoise[0]!, allCaptures)).toBe(true);
 
     writeRunDir(runRoot, allCaptures);
 

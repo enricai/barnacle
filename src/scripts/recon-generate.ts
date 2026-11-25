@@ -3067,49 +3067,6 @@ function nonGetBeaconPredicate(
 }
 
 /**
- * Fewest DISTINCT request bodies an endpoint must have answered with one and
- * the same response before a hop AHEAD of the declared submit is read as
- * chrome. Two differing requests sharing an acknowledgement is ambiguous: a
- * genuine chain step (a facet re-query, a quote refresh) can answer a bare
- * `{ ok: true }` to both. Three or more is a pattern: the endpoint ignores what
- * it is sent, which is what a telemetry/logging beacon does.
- */
-const PRE_SUBMIT_BEACON_MIN_DISTINCT_REQUESTS = 3;
-
-/**
- * Stricter sibling of {@link nonGetBeaconPredicate} for hops before the first
- * declared submit match, where a capture is presumed to be part of the chain
- * the submit depends on. A non-GET capture counts as a beacon only when its
- * endpoint (method + {@link endpointKey}) received at least
- * {@link PRE_SUBMIT_BEACON_MIN_DISTINCT_REQUESTS} distinct request bodies and
- * answered every one of them identically (judged over body-bearing responses,
- * as {@link nonGetBeaconPredicate} does). Byte-identical repeats contribute
- * one distinct body, so a polled endpoint re-sending the same request is not
- * caught here.
- */
-function preSubmitBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
-  const occurrences = new Map<string, Capture[]>();
-  for (const c of pool) {
-    if (c.method === "GET" || c.method?.toUpperCase() === "OPTIONS") continue;
-    const key = `${c.method} ${endpointKey(c.url)}`;
-    const list = occurrences.get(key);
-    if (list) list.push(c);
-    else occurrences.set(key, [c]);
-  }
-  const beaconKeys = new Set<string>();
-  for (const [key, list] of occurrences) {
-    const distinctRequests = new Set(list.map((c) => c.requestPostData ?? "")).size;
-    if (distinctRequests < PRE_SUBMIT_BEACON_MIN_DISTINCT_REQUESTS) continue;
-    const bodied = list.filter((c) => c.responseBody != null && c.responseBody !== "");
-    const judged = bodied.length > 0 ? bodied : list;
-    if (new Set(judged.map((c) => JSON.stringify(c.responseBody ?? null))).size === 1) {
-      beaconKeys.add(key);
-    }
-  }
-  return (c) => beaconKeys.has(`${c.method} ${endpointKey(c.url)}`);
-}
-
-/**
  * Resolves the same primary-endpoint capture that {@link firstEndpointPath}
  * derives a path string from, so non-GraphQL flows can also read that
  * capture's own `.responseBody` instead of an array-order-first replay.
@@ -3812,30 +3769,28 @@ function restrictToSubmitPattern<T extends Capture>(
   return matching.length > 0 ? matching : pool;
 }
 
-function originOf(url: string): string | null {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return null;
+/** True when a response holds a list of objects anywhere: data, not an acknowledgement. */
+function carriesObjectRows(v: unknown): boolean {
+  if (Array.isArray(v)) return v.some((x) => x !== null && typeof x === "object");
+  return v !== null && typeof v === "object" && Object.values(v).some(carriesObjectRows);
+}
+
+/** Values long enough that their reappearance in a request is not coincidence. */
+function threadableScalars(v: unknown): string[] {
+  if (typeof v === "string" || typeof v === "number") {
+    return String(v).length >= 4 ? [String(v)] : [];
   }
+  return v !== null && typeof v === "object" ? Object.values(v).flatMap(threadableScalars) : [];
 }
 
-/** True for an empty answer or one made only of booleans/null (`{ok:true}`). */
-function isBareAcknowledgement(body: unknown): boolean {
-  if (body === null || body === undefined || body === "") return true;
-  if (typeof body === "boolean") return true;
-  if (typeof body !== "object") return false;
-  return Object.values(body as Record<string, unknown>).every(
-    (v) => v === null || typeof v === "boolean"
+/** Everything a response hands a later request: body scalars, headers, and cookie values. */
+function threadableValues(c: Capture): string[] {
+  const headers = Object.entries(c.responseHeaders ?? {}).flatMap(([name, value]) =>
+    name.toLowerCase() === "set-cookie"
+      ? value.split("\n").map((line) => line.split(";")[0]!.slice(line.indexOf("=") + 1))
+      : [value]
   );
-}
-
-/** True for a flat object of scalars only (`{status:"ok",id:7}`): no data payload. */
-function isFlatScalarAnswer(body: unknown): boolean {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
-  return Object.values(body as Record<string, unknown>).every(
-    (v) => v === null || ["boolean", "number", "string"].includes(typeof v)
-  );
+  return threadableScalars([c.responseBody, headers]);
 }
 
 /**
@@ -3858,22 +3813,25 @@ function isFlatScalarAnswer(body: unknown): boolean {
  * kept for the same reason the pre-submit chain is: the drill's request may
  * thread state minted by one of them. A fold match alone never resurrects a
  * sequence the submit pattern rejected outright.
+ *
+ * When the declared endpoint is a search the visitor re-queried (it answers
+ * rows, and no step is declared the submit), an undeclared non-GET hop is
+ * chrome unless it answers request-dependent rows or a later request to another
+ * endpoint uses what it answered. A write flow is never filtered: its saves
+ * commonly answer one constant acknowledgement.
  */
 export function truncateActionSequenceAtSubmitPattern(
   sequence: ActionCapture[],
   submitPatterns: SubmitPatterns | null,
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  declaresSubmitStep = false
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
   let lastSubmitIndex = -1;
-  let firstSubmitIndex = -1;
   let lastFoldIndex = -1;
   for (let i = 0; i < sequence.length; i++) {
-    if (matchesSubmit(sequence[i]!.capture)) {
-      lastSubmitIndex = i;
-      if (firstSubmitIndex === -1) firstSubmitIndex = i;
-    }
+    if (matchesSubmit(sequence[i]!.capture)) lastSubmitIndex = i;
     if (matchesFoldReturn(sequence[i]!.capture)) lastFoldIndex = i;
   }
   if (lastSubmitIndex === -1) return [];
@@ -3884,57 +3842,47 @@ export function truncateActionSequenceAtSubmitPattern(
   // into the drill sequence. A declared submit/fold match is never dropped.
   const pool = sequence.map((a) => a.capture);
   const isBeacon = nonGetBeaconPredicate(pool, submitPatterns);
-  // Ahead of the first submit match the hop is presumed to be chain the submit
-  // depends on, so only the stronger evidence of an endpoint answering many
-  // distinct requests identically marks it as a beacon there.
-  const isPreSubmitBeacon = preSubmitBeaconPredicate(pool);
-  const submitOrigin = originOf(sequence[firstSubmitIndex]!.capture.url);
-  const endpointCounts = new Map<string, number>();
-  for (const a of sequence) {
-    const k = `${a.capture.method} ${endpointKey(a.capture.url)}`;
-    endpointCounts.set(k, (endpointCounts.get(k) ?? 0) + 1);
-  }
-  const recurringEndpoints = new Set([...endpointCounts].filter(([, n]) => n >= 2).map(([k]) => k));
-  const laterEndpoints = new Set(
-    sequence
-      .slice(firstSubmitIndex + 1)
-      .map((a) => `${a.capture.method} ${endpointKey(a.capture.url)}`)
-  );
-  return sequence
-    .slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1)
+  const hits = pool.filter((c) => matchesSubmit(c));
+  const isSearchRead =
+    !declaresSubmitStep &&
+    submitPatterns?.endpoint != null &&
+    isDeclaredPostSearchRepeat(pool, matchesSubmit) &&
+    hits.every((c) => carriesObjectRows(c.responseBody));
+  const kept = sequence.slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1);
+  // A hop stays when a later request to another endpoint uses what it answered.
+  const requests = isSearchRead
+    ? kept.map(({ capture: c }) => ({
+        key: endpointKey(c.url),
+        text: `${c.url} ${c.requestPostData ?? ""} ${Object.values(c.requestHeaders).join(" ")}`,
+      }))
+    : [];
+  const usesByValue = new Map<string, number[]>();
+  const usesOf = (value: string): number[] => {
+    const known = usesByValue.get(value);
+    if (known) return known;
+    const spellings = [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)];
+    const uses = requests.flatMap(({ text }, j) =>
+      spellings.some((s) => text.includes(s)) ? [j] : []
+    );
+    usesByValue.set(value, uses);
+    return uses;
+  };
+  const feedsLater = (idx: number): boolean =>
+    threadableValues(kept[idx]!.capture).some((value) => {
+      const uses = usesOf(value);
+      // Carried by this request or an earlier one, the value was not minted here.
+      if (uses.some((j) => j <= idx)) return false;
+      return uses.some((j) => requests[j]!.key !== requests[idx]!.key);
+    });
+  return kept
     .map((step, idx) => ({ step, idx }))
     .filter(({ step }) => step.capture.method?.toUpperCase() !== "OPTIONS")
     .filter(({ step, idx }) => {
-      if (idx === firstSubmitIndex) return true;
-      if (matchesSubmit(step.capture) || matchesFoldReturn(step.capture)) return true;
-      if (submitPatterns?.endpoint == null) return true;
-      const m = step.capture.method?.toUpperCase();
-      // A bare acknowledgement from another origin is third-party telemetry.
-      if (
-        m !== "GET" &&
-        submitOrigin !== null &&
-        originOf(step.capture.url) !== submitOrigin &&
-        (isBareAcknowledgement(step.capture.responseBody) ||
-          (recurringEndpoints.has(`${step.capture.method} ${endpointKey(step.capture.url)}`) &&
-            isFlatScalarAnswer(step.capture.responseBody)))
-      ) {
-        return false;
-      }
-      // A pre-submit endpoint that keeps recurring after the submit, answering
-      // requests identically, is chrome rather than a chain step.
-      if (
-        idx < firstSubmitIndex &&
-        m !== "GET" &&
-        laterEndpoints.has(`${step.capture.method} ${endpointKey(step.capture.url)}`) &&
-        isBeacon(step.capture)
-      ) {
-        return false;
-      }
-      // Before the FIRST submit match, the pre-submit chain (e.g. a pair of
-      // facet re-queries) must survive while a recurring telemetry POST that
-      // ignores its request is dropped; after it, chrome recurring between
-      // repeated submit/drill cycles is dropped on the weaker evidence.
-      return idx < firstSubmitIndex ? !isPreSubmitBeacon(step.capture) : !isBeacon(step.capture);
+      const c = step.capture;
+      if (!isSearchRead || c.method === "GET" || matchesSubmit(c) || matchesFoldReturn(c))
+        return true;
+      const carriesData = carriesObjectRows(c.responseBody) && !isBeacon(c);
+      return carriesData || feedsLater(idx);
     })
     .map(({ step }) => step);
 }
@@ -22391,7 +22339,8 @@ export async function main(): Promise<void> {
         : truncateActionSequenceAtSubmitPattern(
             patternedExtractedActionCaptures,
             submitPatterns,
-            foldReturnSpec
+            foldReturnSpec,
+            flowSteps.some((st) => typeof st !== "string" && st.submitStep === true)
           );
     // The submit-manifest is authoritative and later supplies the captures
     // matching the declared pattern, so count those too: the declared pattern

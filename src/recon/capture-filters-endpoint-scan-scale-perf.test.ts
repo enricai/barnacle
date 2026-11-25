@@ -23,9 +23,7 @@ describe("isZeroVarianceRepeatCapture — decision-site scan stays near-linear a
     expect(pool).toHaveLength(GROUP_COUNT * PER_GROUP);
 
     const start = performance.now();
-    const verdicts = pool.map((candidate) =>
-      isZeroVarianceRepeatCapture(candidate, pool, () => false)
-    );
+    const verdicts = pool.map((candidate) => isZeroVarianceRepeatCapture(candidate, pool));
     const elapsedMs = performance.now() - start;
 
     expect(elapsedMs).toBeLessThan(3000);

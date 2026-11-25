@@ -77,16 +77,8 @@ function referenceCandidatesWithExpectations(): {
   expected: boolean;
 }[] {
   const beaconUrl = "https://apply.acme.example/auth/responder.html?clientId=X&environment=PROD";
-  const beaconFirst: Capture = {
-    method: "GET",
-    url: beaconUrl,
-    requestPostData: null,
-  };
-  const beaconSecond: Capture = {
-    method: "GET",
-    url: beaconUrl,
-    requestPostData: null,
-  };
+  const beaconFirst: Capture = { method: "GET", url: beaconUrl, requestPostData: null };
+  const beaconSecond: Capture = { method: "GET", url: beaconUrl, requestPostData: null };
 
   const realEndpointUrl = "https://apply.acme.example/api/v1/availability?productId=abc";
   const realFirst: Capture = {
@@ -116,7 +108,7 @@ describe("captureEndpointIndexCache — equivalence with the pre-rewrite linear 
 
     largeSet.forEach((candidate, i) => {
       const isUnparsable = i % 137 === 0;
-      const verdict = isZeroVarianceRepeatCapture(candidate, largeSet, () => false);
+      const verdict = isZeroVarianceRepeatCapture(candidate, largeSet);
       if (isUnparsable) {
         expect(verdict).toBe(false);
         return;
@@ -135,7 +127,7 @@ describe("captureEndpointIndexCache — equivalence with the pre-rewrite linear 
 
     for (const { candidate, sibling, expected } of cases) {
       const allCaptures = [candidate, sibling, ...filler];
-      expect(isZeroVarianceRepeatCapture(candidate, allCaptures, () => false)).toBe(expected);
+      expect(isZeroVarianceRepeatCapture(candidate, allCaptures)).toBe(expected);
     }
   });
 
@@ -145,7 +137,7 @@ describe("captureEndpointIndexCache — equivalence with the pre-rewrite linear 
 
     const [, firstCandidate] = largeSet;
     if (!firstCandidate) throw new Error("synthetic capture set is empty");
-    isZeroVarianceRepeatCapture(firstCandidate, largeSet, () => false);
+    isZeroVarianceRepeatCapture(firstCandidate, largeSet);
     const callsAfterFirstLookup = urlSpy.count();
     // Building the index parses every capture's URL at most twice
     // (endpointOrigin + pathname parse), so the very first lookup against a
@@ -154,7 +146,7 @@ describe("captureEndpointIndexCache — equivalence with the pre-rewrite linear 
 
     const candidatesToProbe = largeSet.slice(2, 102);
     for (const candidate of candidatesToProbe) {
-      isZeroVarianceRepeatCapture(candidate, largeSet, () => false);
+      isZeroVarianceRepeatCapture(candidate, largeSet);
     }
     const callsAfterHundredMoreLookups = urlSpy.count() - callsAfterFirstLookup;
 
@@ -175,17 +167,15 @@ describe("captureEndpointIndexCache — equivalence with the pre-rewrite linear 
     const [primingCandidate] = largeSet;
     if (!primingCandidate) throw new Error("synthetic capture set is empty");
     // Prime the index.
-    isZeroVarianceRepeatCapture(primingCandidate, largeSet, () => false);
+    isZeroVarianceRepeatCapture(primingCandidate, largeSet);
     const afterPriming = urlSpy.count();
 
     const firstBatchCandidates = largeSet.slice(1, 51);
-    for (const candidate of firstBatchCandidates)
-      isZeroVarianceRepeatCapture(candidate, largeSet, () => false);
+    for (const candidate of firstBatchCandidates) isZeroVarianceRepeatCapture(candidate, largeSet);
     const afterFirstBatch = urlSpy.count() - afterPriming;
 
     const secondBatchCandidates = largeSet.slice(51, 101);
-    for (const candidate of secondBatchCandidates)
-      isZeroVarianceRepeatCapture(candidate, largeSet, () => false);
+    for (const candidate of secondBatchCandidates) isZeroVarianceRepeatCapture(candidate, largeSet);
     const afterSecondBatch = urlSpy.count() - afterPriming - afterFirstBatch;
 
     // Per-candidate cost for an equal-sized later batch should not have

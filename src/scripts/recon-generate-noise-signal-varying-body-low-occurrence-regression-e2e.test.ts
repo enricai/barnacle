@@ -103,9 +103,7 @@ describe("recon noise admission at low occurrence scale: same-origin widget with
     const sameOriginNoise: Capture[] = Array.from({ length: 7 }, (_, i) =>
       buildCapture({
         url: SAME_ORIGIN_NOISE_URL,
-        requestPostData: JSON.stringify({
-          nonce: `nonce-${i}-${Math.random()}`,
-        }),
+        requestPostData: JSON.stringify({ nonce: `nonce-${i}-${Math.random()}` }),
         responseBody: { impressionId: `imp-${i}-${Math.random()}` },
         responseHeaders: { "content-type": "application/json" },
         timestamp: nextTimestamp(),
@@ -118,8 +116,8 @@ describe("recon noise admission at low occurrence scale: same-origin widget with
     // Pin the predicate directly at the reported scale before running the
     // full pipeline: the noise widget must be excluded, and the real search
     // capture must not be swept in merely for sharing a host.
-    expect(isZeroVarianceRepeatCapture(sameOriginNoise[0]!, allCaptures, () => false)).toBe(true);
-    expect(isZeroVarianceRepeatCapture(search, allCaptures, () => false)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(sameOriginNoise[0]!, allCaptures)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(search, allCaptures)).toBe(false);
 
     writeRunDir(runRoot, allCaptures);
 
