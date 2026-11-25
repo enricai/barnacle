@@ -11,6 +11,7 @@ import { format } from "date-fns";
 import { z } from "zod";
 import { getScriptLogger } from "@/lib/logging";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
+import { matchesSubmitPattern, type SubmitMatchCapture } from "@/recon/submit-match";
 
 const logger = getScriptLogger("recon-shared");
 
@@ -203,6 +204,8 @@ export interface ReplayResult {
    * capture's response shape. Empty when re-sending them does not restore it.
    */
   shapeRestoringHeaders?: string[];
+  /** On a 400/401/403: the status once re-sent with `shapeRestoringHeaders`, when that restored the capture. */
+  headerReplay?: { status: number };
   /** On a 401: the outcome of re-replaying with the captured authorization header. */
   authReplay?: {
     status: number;
@@ -440,6 +443,37 @@ export function readSubmitEndpointPattern(flowFile: string): string | undefined 
 }
 
 /**
+ * Matches the search requests a flow file declares itself to be reading with:
+ * `readOnly: true` plus the `submitEndpointPattern` (and `submitBodyPattern`,
+ * when declared). Null without both declarations, and on an unreadable file or
+ * invalid pattern, so an undeclared write is never taken for a read.
+ */
+export function readDeclaredReadMatcher(
+  flowFile: string
+): ((capture: SubmitMatchCapture) => boolean) | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return null;
+    const { readOnly, submitEndpointPattern, submitBodyPattern } = parsed as Record<
+      string,
+      unknown
+    >;
+    if (readOnly !== true) return null;
+    if (typeof submitEndpointPattern !== "string" || submitEndpointPattern === "") return null;
+    const endpointRx = new RegExp(submitEndpointPattern);
+    const bodyRx = typeof submitBodyPattern === "string" ? new RegExp(submitBodyPattern) : null;
+    return (capture) => matchesSubmitPattern(capture, endpointRx, bodyRx);
+  } catch (err) {
+    logger.warn(
+      `flow file '${flowFile}' declares no usable read endpoint: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return null;
+  }
+}
+
+/**
  * Reads the explicit top-level `browserFlowOnly` opt-in out of a recon flow file.
  *
  * Throws on an unreadable or malformed file so a broken flow is reported rather
@@ -529,8 +563,18 @@ export function readDeclaredMaxAttempts(flowFile: string): number | null {
   }
 }
 
-/** True when the replay got a 2xx response, whether or not its shape matched the capture. */
+/** True when `shapeRestoringHeaders` was proven by re-replay, on a diverging or a refused replay. */
+export function hasProvenHeaders(r: ReplayResult): boolean {
+  return r.shapeDiffers === true || r.headerReplay !== undefined;
+}
+
+/**
+ * True when the endpoint answers a plain replay: the replay got a 2xx response,
+ * whether or not its shape matched the capture, or got one once the captured
+ * app headers it omitted were re-sent.
+ */
 export function replayReachable(r: ReplayResult): boolean {
+  if (r.headerReplay !== undefined) return true;
   return r.replayStatus !== null && r.replayStatus >= 200 && r.replayStatus < 300;
 }
 
@@ -557,14 +601,14 @@ export const CREDENTIAL_REQUEST_HEADERS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Counts, per captured request header (lowercased), how many shape-diverging
- * replays it restored when re-sent (`shapeRestoringHeaders`): the request headers
+ * Counts, per captured request header (lowercased), how many shape-diverging or
+ * refused replays it restored when re-sent (`shapeRestoringHeaders`): the request headers
  * re-replay proved load-bearing.
  */
 export function tallyShapeRestoringHeaders(replays: ReplayResult[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const replay of replays) {
-    if (!replay.shapeDiffers) continue;
+    if (!hasProvenHeaders(replay)) continue;
     for (const header of new Set(
       (replay.shapeRestoringHeaders ?? []).map((h) => h.toLowerCase())
     )) {

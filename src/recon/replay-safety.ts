@@ -1,13 +1,16 @@
 /**
  * Replay-safety predicate: only side-effect-free captures are replayed by
  * default. GET/HEAD/OPTIONS are safe; a GraphQL POST is safe only when its
- * document is a query operation.
+ * document is a query operation. A non-GraphQL POST is safe only when the flow
+ * file declares it a read.
  */
 
 export interface ReplayCandidate {
   method: string;
   query?: string | null;
   operationName?: string | null;
+  /** The flow file declares this request to be a read (see `readDeclaredReadMatcher`). */
+  declaredRead?: boolean;
 }
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -46,6 +49,7 @@ export function isGraphqlQueryDocument(doc: string): boolean {
 export function unsafeReplayReason(c: ReplayCandidate): string | null {
   const method = (c.method || "GET").toUpperCase();
   if (SAFE_METHODS.has(method)) return null;
+  if (method === "POST" && c.declaredRead === true && !c.query) return null;
   if (method === "POST" && c.query) {
     return isGraphqlQueryDocument(c.query)
       ? null

@@ -270,6 +270,30 @@ describe("isSamePathFamily", () => {
   });
 });
 
+describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
+  const url = "https://api.example-shop.test/v1/search";
+  const mk = (trades: string) => ({
+    method: "POST",
+    url,
+    requestPostData: JSON.stringify({
+      scope: { owner: { id: "X" } },
+      filters: { kind: "K", tags: [trades] },
+    }),
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: {},
+  });
+  const pool = [mk("C"), mk("A"), mk("B")];
+  const declared = (c: { method: string; url: string }) => c.url === url;
+
+  it("is not zero-variance when the declared predicate matches", () => {
+    for (const c of pool) expect(isZeroVarianceRepeatCapture(c, pool, declared)).toBe(false);
+  });
+
+  it("control: the same pool is zero-variance when nothing is declared", () => {
+    for (const c of pool) expect(isZeroVarianceRepeatCapture(c, pool, () => false)).toBe(true);
+  });
+});
+
 describe("isZeroVarianceRepeatCapture", () => {
   const beaconUrl = "https://apply.acme.example/auth/responder.html?clientId=X&environment=PROD";
 
@@ -1994,7 +2018,7 @@ describe("matchesAnyTelemetryPattern — bare word host labels", () => {
   });
 });
 
-describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
+describe("isZeroVarianceRepeatCapture declared-submit exemption (14 posts)", () => {
   const url = "https://api.example-shop.test/v1/items";
   const posts = Array.from({ length: 14 }, (_, i) => ({
     method: "POST",
@@ -2012,7 +2036,7 @@ describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
       requestPostData: null,
       status: 200,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { ok: true },
+      responseBody: {},
     },
   ];
   it("is a beacon without the matcher, kept with it", () => {

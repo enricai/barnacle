@@ -58,6 +58,7 @@ const emit = (tokenUrl: string | null, multipart = false) => {
     undefined,
     undefined,
     undefined,
+    null,
     tokenUrl === null ? new Map() : new Map([[bearerKindKey(`Bearer ${USER}`) ?? "", tokenUrl]])
   );
 };

@@ -191,6 +191,7 @@ describe("recon-generate credential headers", () => {
         undefined,
         undefined,
         undefined,
+        null,
         tokenUrl === null ? new Map() : new Map([[bearerKindKey(`Bearer ${USER}`) ?? "", tokenUrl]])
       );
 

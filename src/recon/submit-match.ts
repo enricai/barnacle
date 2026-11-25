@@ -2,13 +2,14 @@
  * Single shared definition of "this capture matches the flow's
  * submitEndpointPattern (and submitBodyPattern when declared)". Used by both
  * the submit manifest and the end-of-run audit so they cannot disagree.
- * Method-agnostic: callers decide how to treat GET vs non-GET. Only http(s)
+ * Callers decide how to treat GET vs non-GET. Only http(s)
  * requests can be a submission, so a `data:`/`blob:` URL that merely contains
  * the pattern text never matches.
  */
 import { isHttpUrl } from "@/recon/capture-filters";
 
 export interface SubmitMatchCapture {
+  method?: unknown;
   url?: unknown;
   requestPostData?: unknown;
 }
@@ -49,6 +50,8 @@ export function isQualifyingSubmitCapture(
   }
 ): boolean {
   if (typeof capture.url !== "string") return false;
+  // The browser's own CORS preflight shares the submit's URL but submits nothing.
+  if (String(capture.method).toUpperCase() === "OPTIONS") return false;
   if (opts.ownBackendHostnames.length > 0) {
     let hostname: string;
     try {

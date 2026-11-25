@@ -52,12 +52,15 @@ import {
 import { locateHtmlBearerToken } from "@/recon/html-state-producers";
 import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
+import type { SubmitMatchCapture } from "@/recon/submit-match";
 import { fetchFollowingRedirectsPreservingMethod } from "@/scraper/redirect-follow";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   adoptReconRunRoot,
+  CREDENTIAL_REQUEST_HEADERS,
   type ReplayResult,
   readDeclaredEndpointPatterns,
+  readDeclaredReadMatcher,
   readOwnBackendHostnames,
   readSubmitEndpointPattern,
   replayPassed,
@@ -94,6 +97,8 @@ interface Capture {
 }
 
 export type { ReplayResult };
+
+type DeclaredReadMatcher = (capture: SubmitMatchCapture) => boolean;
 
 interface RateLimitFinding {
   endpoint: string;
@@ -471,12 +476,70 @@ async function findShapeRestoringHeaders(
   }
   if (alone.length > 0 || candidates.length < 2) return { headers: alone, reproduced: true };
   if (!(await restores(candidates))) return { headers: [], reproduced: true };
+  return { headers: await dropUnneeded(candidates, restores), reproduced: true };
+}
+
+/** Drops headers one at a time while the rest still restore, leaving a minimal restoring set. */
+async function dropUnneeded(
+  candidates: string[],
+  restores: (names: string[]) => Promise<boolean>
+): Promise<string[]> {
   let kept = candidates;
   for (const h of candidates) {
     const without = kept.filter((k) => k !== h);
-    if (await restores(without)) kept = without;
+    if (without.length > 0 && (await restores(without))) kept = without;
   }
-  return { headers: kept, reproduced: true };
+  return kept;
+}
+
+/** Statuses an API answers when a header it requires is missing. */
+const REFUSED_STATUSES = new Set([400, 401, 403]);
+
+/**
+ * The minimal set of captured app headers that turns a refused replay into the
+ * captured response. All of them are re-sent together once, and only a success
+ * is narrowed, so an endpoint that stays refused costs one extra request.
+ * Cookies and credential request headers are left out: they belong to one recon
+ * session, and a bearer token has its own re-replay.
+ */
+async function findRefusalLiftingHeaders(
+  capture: Capture,
+  headers: Record<string, string>,
+  requestBody: string | null
+): Promise<{ headers: string[]; status: number } | null> {
+  const seen = new Set<string>();
+  const candidates = omittedHeaders(capture.requestHeaders, headers, true).filter((h) => {
+    const lower = h.toLowerCase();
+    if (h.startsWith(":") || TRANSPORT_REQUEST_HEADERS.has(lower) || seen.has(lower)) return false;
+    seen.add(lower);
+    return !CREDENTIAL_REQUEST_HEADERS.has(lower);
+  });
+  if (candidates.length === 0) return null;
+  const send = async (names: string[]): Promise<number | null> => {
+    try {
+      const { response, body } = await sendReplay(
+        capture,
+        { ...headers, ...Object.fromEntries(names.map((h) => [h, capture.requestHeaders[h]!])) },
+        requestBody
+      );
+      const restored =
+        response.ok &&
+        !bodyTypeDiffers(capture.responseBody, body) &&
+        !responseShapeDiffers(capture.responseBody, body);
+      return restored ? response.status : null;
+    } catch (err) {
+      logger.warn(
+        `header re-replay ${capture.method} ${capture.url} failed: ${toErrorMessage(err)}`
+      );
+      return null;
+    }
+  };
+  const status = await send(candidates);
+  if (status === null) return null;
+  return {
+    headers: await dropUnneeded(candidates, async (names) => (await send(names)) !== null),
+    status,
+  };
 }
 
 /**
@@ -492,6 +555,7 @@ export async function replayCapture(
     methods?: Set<string> | null;
     htmlDocuments?: ReadonlyArray<unknown>;
     htmlDocumentUrls?: ReadonlyArray<string | undefined>;
+    isDeclaredRead?: DeclaredReadMatcher | null;
   } = {}
 ): Promise<ReplayResult | null> {
   if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) {
@@ -540,15 +604,13 @@ export async function replayCapture(
       (k) => k.toLowerCase() === "authorization"
     );
     let sentHeaders = headers;
-    if (
-      response.status === 401 &&
-      authName !== undefined &&
-      isSafeToReplay({
-        method: capture.method,
-        query: capture.query ?? null,
-        operationName: capture.operationName,
-      })
-    ) {
+    const safeToResend = isSafeToReplay({
+      method: capture.method,
+      query: capture.query ?? null,
+      operationName: capture.operationName,
+      declaredRead: opts.isDeclaredRead?.(capture) ?? false,
+    });
+    if (response.status === 401 && authName !== undefined && safeToResend) {
       const authValue = capture.requestHeaders[authName] as string;
       const authHeaders = { ...headers, [authName]: authValue };
       try {
@@ -598,7 +660,11 @@ export async function replayCapture(
           omittedAsCaptured
         )
       : { headers: [], reproduced: true };
-    const shapeRestoringHeaders = proof.headers;
+    const lifted =
+      REFUSED_STATUSES.has(response.status) && safeToResend && authReplay?.tokenReplayable !== true
+        ? await findRefusalLiftingHeaders(capture, headers, requestBody)
+        : null;
+    const shapeRestoringHeaders = lifted?.headers ?? proof.headers;
     const restoredBy = !proof.reproduced
       ? "the divergence did not reproduce on an unchanged re-send"
       : shapeRestoringHeaders.length > 0
@@ -612,11 +678,15 @@ export async function replayCapture(
       );
     } else if (!success) {
       logger.warn(`[${response.status}] ${capture.method} ${capture.url}`);
-      if (response.status === 403)
+      if (lifted)
+        logger.warn(
+          `  → ${lifted.status} when re-sent with the captured ${lifted.headers.join(", ")}`
+        );
+      else if (response.status === 403)
         logger.warn(
           "  → 403: try adding more headers; if persistent, accept Stagehand-only production"
         );
-      if (response.status === 401) {
+      if (response.status === 401 && !lifted) {
         const ts = authReplay?.tokenSource;
         logger.warn(
           ts
@@ -646,6 +716,7 @@ export async function replayCapture(
       shapeDiffers,
       omittedCaptureHeaders,
       shapeRestoringHeaders,
+      ...(lifted ? { headerReplay: { status: lifted.status } } : {}),
       ...(authReplay ? { authReplay } : {}),
       error: shapeDiffers ? shapeMessage : null,
     };
@@ -704,7 +775,10 @@ export function isStaticFixturePath(pathname: string, includeLocaleDictionaries 
   return new RegExp(`/(${segs})(/|\\.json$|$)`).test(pathname.toLowerCase());
 }
 
-function isReplayResultSafe(r: ReplayResult): boolean {
+function isReplayResultSafe(
+  r: ReplayResult,
+  isDeclaredRead: DeclaredReadMatcher | null = null
+): boolean {
   let query: string | null = null;
   if (r.requestBody) {
     try {
@@ -718,6 +792,8 @@ function isReplayResultSafe(r: ReplayResult): boolean {
     method: r.method,
     query,
     operationName: r.operationName,
+    declaredRead:
+      isDeclaredRead?.({ method: r.method, url: r.url, requestPostData: r.requestBody }) ?? false,
   });
 }
 
@@ -967,7 +1043,8 @@ export function selectRateLimitTargets(
   fallbackHost: string | null = null,
   declaredEndpointPatterns: readonly string[] = [],
   submitEndpointPattern?: string,
-  captureHeadersFor?: (replay: ReplayResult) => Record<string, string> | undefined
+  captureHeadersFor?: (replay: ReplayResult) => Record<string, string> | undefined,
+  isDeclaredRead: DeclaredReadMatcher | null = null
 ): {
   targets: Map<string, { method: string; body: string | null; headers?: Record<string, string> }>;
   skipped: number;
@@ -991,7 +1068,7 @@ export function selectRateLimitTargets(
     // is reachable via replayed auth; its probe must carry that header.
     const viaAuth = !replayReachable(replay) && replay.authReplay?.tokenReplayable === true;
     if (!replayReachable(replay) && !viaAuth) continue;
-    if (!isReplayResultSafe(replay)) continue;
+    if (!isReplayResultSafe(replay, isDeclaredRead)) continue;
     if (isNoiseUrl(replay.url)) {
       skipped++;
       continue;
@@ -1067,12 +1144,13 @@ export function selectRateLimitTargets(
  * Chooses which captures to replay. Noise URLs (incl. non-http(s)) are always
  * skipped, with the matching rule; non-safe methods are skipped unless
  * `includeUnsafe` is set or the method is explicitly listed in `optInMethods`
- * (the `--methods` flag).
+ * (the `--methods` flag). A POST the flow file declares a read is safe.
  */
 export function selectReplayCaptures<T extends { filename: string; capture: Capture }>(
   captures: T[],
   includeUnsafe: boolean,
-  optInMethods: Set<string> | null = null
+  optInMethods: Set<string> | null = null,
+  isDeclaredRead: DeclaredReadMatcher | null = null
 ): {
   selected: T[];
   skipped: Array<{ filename: string; url: string; reason: string }>;
@@ -1083,7 +1161,13 @@ export function selectReplayCaptures<T extends { filename: string; capture: Capt
     const { capture, filename } = item;
     const noise = noiseReason(capture.url);
     const optedIn = optInMethods?.has((capture.method || "GET").toUpperCase()) ?? false;
-    const unsafe = includeUnsafe || optedIn ? null : unsafeReplayReason(capture);
+    const unsafe =
+      includeUnsafe || optedIn
+        ? null
+        : unsafeReplayReason({
+            ...capture,
+            declaredRead: isDeclaredRead?.(capture) ?? false,
+          });
     const reason = noise ?? unsafe;
     if (reason) skipped.push({ filename, url: capture.url, reason });
     else selected.push(item);
@@ -1158,6 +1242,7 @@ async function main(): Promise<void> {
     else if (args[i] === "--flow-file" && args[i + 1]) flowFile = args[++i]!;
   }
   const ownBackendHostnames = flowFile ? readOwnBackendHostnames(flowFile) : [];
+  const isDeclaredRead = flowFile ? readDeclaredReadMatcher(flowFile) : null;
 
   mkdirSync(runDir.replaysDir, { recursive: true });
 
@@ -1176,7 +1261,12 @@ async function main(): Promise<void> {
   // endpoint that matters. The count is logged so a skipped endpoint is never
   // silently mistaken for "nothing captured it."
   const includeUnsafe = args.includes("--include-unsafe-methods");
-  const { selected: preRobots, skipped } = selectReplayCaptures(unique, includeUnsafe, methods);
+  const { selected: preRobots, skipped } = selectReplayCaptures(
+    unique,
+    includeUnsafe,
+    methods,
+    isDeclaredRead
+  );
   const robots = await fetchRobotsByOrigin(preRobots.map((p) => p.capture.url));
   const { allowed: robotsAllowed, blocked } = applyRobots(preRobots, robots);
   const scopeHost = ((): string | null => {
@@ -1212,6 +1302,7 @@ async function main(): Promise<void> {
       methods,
       htmlDocuments,
       htmlDocumentUrls,
+      isDeclaredRead,
     });
     if (result === null) continue;
     replays.push(result);
@@ -1264,7 +1355,8 @@ async function main(): Promise<void> {
     fallbackHost,
     flowFile ? readDeclaredEndpointPatterns(flowFile) : [],
     flowFile ? readSubmitEndpointPattern(flowFile) : undefined,
-    (r) => probeworthy.find((p) => p.filename === r.sourceCapture)?.capture.requestHeaders
+    (r) => probeworthy.find((p) => p.filename === r.sourceCapture)?.capture.requestHeaders,
+    isDeclaredRead
   );
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +

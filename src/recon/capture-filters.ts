@@ -1363,7 +1363,11 @@ export function isZeroVarianceRepeatCapture(
     status?: number;
     requestHeaders?: Record<string, string>;
   }[],
-  isDeclaredSubmit?: (capture: { method: string; url: string }) => boolean
+  isDeclaredSubmit?: (capture: {
+    method: string;
+    url: string;
+    requestPostData?: string | null;
+  }) => boolean
 ): boolean {
   let candidateUrl: URL;
   try {

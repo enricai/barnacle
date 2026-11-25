@@ -71,6 +71,7 @@ import {
   CREDENTIAL_REQUEST_HEADERS,
   compareCaptureFilenames,
   type ExtraPayloadField,
+  hasProvenHeaders,
   type RateLimitFinding,
   type ReplayResult,
   readApplicantContract,
@@ -2276,7 +2277,7 @@ const VOLATILE_HEADER_NAME_FRAGMENTS = ["correlation-id", "conversation-id"];
 
 /**
  * Credential/conditional headers (as captured) that recon:http's re-replay proved
- * restore a shape-diverging replay's response shape. They stay out of
+ * restore a shape-diverging or refused replay. They stay out of
  * BASE_HEADERS; the generated contract carries a TODO to obtain each per call.
  */
 export function shapeRestoringCredentialHeaders(replays: ReplayResult[]): string[] {
@@ -2284,7 +2285,8 @@ export function shapeRestoringCredentialHeaders(replays: ReplayResult[]): string
   for (const r of replays) {
     for (const h of r.shapeRestoringHeaders ?? []) {
       const lower = h.toLowerCase();
-      if (CREDENTIAL_REQUEST_HEADERS.has(lower) && !names.has(lower)) names.set(lower, h);
+      const perCall = CREDENTIAL_REQUEST_HEADERS.has(lower) || isCredentialHeaderName(lower);
+      if (perCall && !names.has(lower)) names.set(lower, h);
     }
   }
   return [...names.values()];
@@ -2380,7 +2382,7 @@ export function deriveRequestHeaders(
   // Per load-bearing header, the captures whose replay it restored.
   const loadBearingSources = new Map<string, Capture[]>();
   for (const r of replays) {
-    if (!r.shapeDiffers) continue;
+    if (!hasProvenHeaders(r)) continue;
     const own = captures.filter(
       (c) =>
         c.url === r.url &&
@@ -2503,8 +2505,10 @@ export function isGraphQL(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
+  submitPatterns: SubmitPatterns | null = null
 ): boolean {
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const scoped = captures.filter((c) => {
     if (
@@ -2539,7 +2543,7 @@ export function isGraphQL(
   );
   const rescuedInvariantEndpoints = new Set<string>();
   const restAntiVotes = restAntiVoteCandidates.filter((c) => {
-    if (!isZeroVarianceRepeatCapture(c, scoped)) return true;
+    if (!isZeroVarianceRepeatCapture(c, scoped, isDeclaredSubmit)) return true;
     if (hasNoBusinessRelevantResponseState(c)) return false;
     const key = endpointKey(c.url);
     if (rescuedInvariantEndpoints.has(key)) return false;
@@ -2565,7 +2569,7 @@ export function isGraphQL(
   const proVotes = scoped
     .filter((c) => c.query)
     .filter((c) => {
-      if (!isZeroVarianceRepeatCapture(c, scoped)) return true;
+      if (!isZeroVarianceRepeatCapture(c, scoped, isDeclaredSubmit)) return true;
       const key = endpointKey(c.url);
       if (rescuedInvariantQueryEndpoints.has(key)) return false;
       rescuedInvariantQueryEndpoints.add(key);
@@ -3137,6 +3141,22 @@ interface PostBodyBinding {
 }
 
 /**
+ * Schema of one caller-controlled body value, from every recorded value of it: a
+ * value the first capture left out or empty is still typed by a later one, and
+ * a mixed or object value is accepted as it is.
+ */
+function postBodyValueZod(seen: readonly unknown[]): string {
+  if (seen.length > 0 && seen.every(Array.isArray)) {
+    return `z.array(${postBodyValueZod((seen as unknown[][]).flat())})`;
+  }
+  const kinds = new Set(seen.map((v) => (Array.isArray(v) ? "array" : typeof v)));
+  const kind = kinds.size === 1 ? [...kinds][0] : undefined;
+  if (kind === "number") return "z.coerce.number()";
+  if (kind === "boolean") return "z.coerce.boolean()";
+  return kind === "string" ? "z.string()" : "z.unknown()";
+}
+
+/**
  * Body model for a declared read-only POST search whose captures re-issue the
  * endpoint with different JSON bodies. Every leaf (scalar or array) whose
  * value differs between captures becomes a defaulted payload field and the
@@ -3189,18 +3209,11 @@ function derivePostBodyModel(
     for (let n = 2; used.has(field); n++) field = `${base}${n}`;
     used.add(field);
     const def = JSON.stringify(first ?? null);
-    const sample = Array.isArray(first) ? first[0] : first;
-    const elem =
-      typeof sample === "number"
-        ? "z.coerce.number()"
-        : typeof sample === "boolean"
-          ? "z.coerce.boolean()"
-          : "z.string()";
-    const zod = Array.isArray(first)
-      ? `z.array(${elem}).optional().default(${def})`
-      : first === null || first === undefined
-        ? "z.unknown().optional()"
-        : `${elem}.optional().default(${def})`;
+    const seen = values.filter((v) => v !== null && v !== undefined);
+    const zod =
+      first === null || first === undefined
+        ? `${postBodyValueZod(seen)}.optional()`
+        : `${postBodyValueZod(seen)}.optional().default(${def})`;
     bindings.push({ field, zod });
     return `payload.${field}`;
   };
@@ -3697,11 +3710,10 @@ function isZeroVarianceUnlessDeclared(
   submitPatterns: SubmitPatterns | null,
   matchesFoldReturn: (capture: Capture) => boolean
 ): boolean {
-  const hasDeclaredSubmit =
-    submitPatterns !== null && (submitPatterns.endpoint !== null || submitPatterns.body !== null);
-  if (hasDeclaredSubmit && compileSubmitMatcher(submitPatterns)(capture)) return false;
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
+  if (isDeclaredSubmit(capture)) return false;
   if (matchesFoldReturn(capture)) return false;
-  return isZeroVarianceRepeatCapture(capture, pool);
+  return isZeroVarianceRepeatCapture(capture, pool, isDeclaredSubmit);
 }
 
 /**
@@ -3768,6 +3780,30 @@ function restrictToSubmitPattern<T extends Capture>(
   return matching.length > 0 ? matching : pool;
 }
 
+/** True when a response holds a list of objects anywhere: data, not an acknowledgement. */
+function carriesObjectRows(v: unknown): boolean {
+  if (Array.isArray(v)) return v.some((x) => x !== null && typeof x === "object");
+  return v !== null && typeof v === "object" && Object.values(v).some(carriesObjectRows);
+}
+
+/** Values long enough that their reappearance in a request is not coincidence. */
+function threadableScalars(v: unknown): string[] {
+  if (typeof v === "string" || typeof v === "number") {
+    return String(v).length >= 4 ? [String(v)] : [];
+  }
+  return v !== null && typeof v === "object" ? Object.values(v).flatMap(threadableScalars) : [];
+}
+
+/** Everything a response hands a later request: body scalars, headers, and cookie values. */
+function threadableValues(c: Capture): string[] {
+  const headers = Object.entries(c.responseHeaders ?? {}).flatMap(([name, value]) =>
+    name.toLowerCase() === "set-cookie"
+      ? value.split("\n").map((line) => line.split(";")[0]!.slice(line.indexOf("=") + 1))
+      : [value]
+  );
+  return threadableScalars([c.responseBody, headers]);
+}
+
 /**
  * Truncates a host-gated action sequence at the LAST capture matching the
  * flow's declared submit pattern, keeping every capture up to and including
@@ -3788,11 +3824,18 @@ function restrictToSubmitPattern<T extends Capture>(
  * kept for the same reason the pre-submit chain is: the drill's request may
  * thread state minted by one of them. A fold match alone never resurrects a
  * sequence the submit pattern rejected outright.
+ *
+ * When the declared endpoint is a search the visitor re-queried (it answers
+ * rows, and no step is declared the submit), an undeclared non-GET hop is
+ * chrome unless it answers request-dependent rows or a later request to another
+ * endpoint uses what it answered. A write flow is never filtered: its saves
+ * commonly answer one constant acknowledgement.
  */
 export function truncateActionSequenceAtSubmitPattern(
   sequence: ActionCapture[],
   submitPatterns: SubmitPatterns | null,
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  declaresSubmitStep = false
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
@@ -3804,9 +3847,55 @@ export function truncateActionSequenceAtSubmitPattern(
   }
   if (lastSubmitIndex === -1) return [];
   // Preflights are not emitted as steps (the runtime issues them itself).
-  return sequence
-    .slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1)
-    .filter((step) => step.capture.method?.toUpperCase() !== "OPTIONS");
+  // A recurring telemetry/analytics POST (same endpoint, answer independent of
+  // the request) between the submit and the drill is page chrome, not a hop whose
+  // state the drill threads: its varying body fields would otherwise be frozen
+  // into the drill sequence. A declared submit/fold match is never dropped.
+  const pool = sequence.map((a) => a.capture);
+  const isBeacon = nonGetBeaconPredicate(pool, submitPatterns);
+  const hits = pool.filter((c) => matchesSubmit(c));
+  const isSearchRead =
+    !declaresSubmitStep &&
+    submitPatterns?.endpoint != null &&
+    isDeclaredPostSearchRepeat(pool, matchesSubmit) &&
+    hits.every((c) => carriesObjectRows(c.responseBody));
+  const kept = sequence.slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1);
+  // A hop stays when a later request to another endpoint uses what it answered.
+  const requests = isSearchRead
+    ? kept.map(({ capture: c }) => ({
+        key: endpointKey(c.url),
+        text: `${c.url} ${c.requestPostData ?? ""} ${Object.values(c.requestHeaders).join(" ")}`,
+      }))
+    : [];
+  const usesByValue = new Map<string, number[]>();
+  const usesOf = (value: string): number[] => {
+    const known = usesByValue.get(value);
+    if (known) return known;
+    const spellings = [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)];
+    const uses = requests.flatMap(({ text }, j) =>
+      spellings.some((s) => text.includes(s)) ? [j] : []
+    );
+    usesByValue.set(value, uses);
+    return uses;
+  };
+  const feedsLater = (idx: number): boolean =>
+    threadableValues(kept[idx]!.capture).some((value) => {
+      const uses = usesOf(value);
+      // Carried by this request or an earlier one, the value was not minted here.
+      if (uses.some((j) => j <= idx)) return false;
+      return uses.some((j) => requests[j]!.key !== requests[idx]!.key);
+    });
+  return kept
+    .map((step, idx) => ({ step, idx }))
+    .filter(({ step }) => step.capture.method?.toUpperCase() !== "OPTIONS")
+    .filter(({ step, idx }) => {
+      const c = step.capture;
+      if (!isSearchRead || c.method === "GET" || matchesSubmit(c) || matchesFoldReturn(c))
+        return true;
+      const carriesData = carriesObjectRows(c.responseBody) && !isBeacon(c);
+      return carriesData || feedsLater(idx);
+    })
+    .map(({ step }) => step);
 }
 
 /**
@@ -10833,10 +10922,14 @@ export function emitMultiStepExecuteHttp(
    * (default) leaves full-flow output byte-identical.
    */
   httpPrefixCount: number | undefined = undefined,
+  /** The flow's declared submit patterns; a declared search is never judged
+   * request-invariant by {@link isZeroVarianceRepeatCapture}. */
+  submitPatterns: SubmitPatterns | null = null,
   /** Documents proven to serve the steps' bearers ({@link locateBearerSources}). */
   bearerSources: BearerSources = new Map()
 ): string {
   if (httpPrefixCount !== undefined) actions = actions.slice(0, httpPrefixCount);
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   const tokenBootstrap = { sources: bearerSources, used: { value: false } };
   interface Rendered {
     url: string;
@@ -11245,7 +11338,7 @@ export function emitMultiStepExecuteHttp(
     // isGet UUID-only floor) and for the fold/drill per-item pass. Rendering
     // its exact literal URL makes this hold even when a value's own
     // length/chain-eligibility scoping doesn't happen to catch the coincidence.
-    const url = isZeroVarianceRepeatCapture(cap, allCaptures)
+    const url = isZeroVarianceRepeatCapture(cap, allCaptures, isDeclaredSubmit)
       ? cap.url
       : interpolateStateValues(
           cap.url,
@@ -11902,7 +11995,7 @@ export function emitMultiStepExecuteHttp(
         const isProvenInvariantFor = (chainCapture: Capture): boolean => {
           const cached = isProvenInvariantMemo.get(chainCapture);
           if (cached !== undefined) return cached;
-          const computed = isZeroVarianceRepeatCapture(chainCapture, allCaptures);
+          const computed = isZeroVarianceRepeatCapture(chainCapture, allCaptures, isDeclaredSubmit);
           isProvenInvariantMemo.set(chainCapture, computed);
           return computed;
         };
@@ -14599,10 +14692,31 @@ function isMintedDependencyValue(value: string): boolean {
   return true;
 }
 
+/**
+ * Recognizes a re-issue of the primary: the same operation answering with its
+ * list at the same path. Such a request can name an id the drill returned (a
+ * search narrowed to one result), but it lists items anew rather than fetching
+ * more about one, so it is no hop of the drill's chain. A drill declared on the
+ * primary's own operation is left alone.
+ */
+function primaryRepeatMatcher(
+  primary: Capture,
+  primaryArrayPath: readonly string[],
+  drill: Capture
+): (capture: Capture) => boolean {
+  const identity = (c: Capture): string => `${c.method} ${operationGroupKey(c)}`;
+  const primaryIdentity = identity(primary);
+  if (primaryArrayPath.length === 0 || identity(drill) === primaryIdentity) return () => false;
+  return (capture) =>
+    identity(capture) === primaryIdentity &&
+    objectItemsAtPath(capture.responseBody, primaryArrayPath) !== null;
+}
+
 export function computeFoldChain<T extends { capture: Capture }>(
   actions: readonly T[],
   drillStepIndex: number,
-  drillArrayPath: string[]
+  drillArrayPath: string[],
+  isPrimaryRepeat: (capture: Capture) => boolean = () => false
 ): { chain: number[]; chainArrayPath: string[]; chainTerminalIndex: number } {
   const chain = [drillStepIndex];
   let chainArrayPath = drillArrayPath;
@@ -14614,6 +14728,7 @@ export function computeFoldChain<T extends { capture: Capture }>(
   );
   for (let i = drillStepIndex + 1; i < actions.length; i++) {
     const candidate = actions[i]!;
+    if (isPrimaryRepeat(candidate.capture)) continue;
     const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
     const dependsOnChain = chain.some((chainIndex) => {
       const chainStepCapture = actions[chainIndex]!.capture;
@@ -14783,7 +14898,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
   globallyConsumedIndices: ReadonlySet<number>,
   requestStringValueIndex: ReadonlyMap<string, number[]>,
   // See detectDrillDownFoldPlan's identical parameter.
-  allowSelfEndpointDrill = true
+  allowSelfEndpointDrill: boolean | ((c: Capture) => boolean) = true
 ): PrimaryScanGroup[] {
   scanPrimaryCandidateGroupsCallCount++;
   const primary = actions[primaryIndex]!;
@@ -14838,7 +14953,9 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // capture a payload variant of the primary: it differs only in
       // variables, is evidence for payload fields, and is never a drill.
       if (
-        !allowSelfEndpointDrill &&
+        !(typeof allowSelfEndpointDrill === "function"
+          ? allowSelfEndpointDrill(drill.capture)
+          : allowSelfEndpointDrill) &&
         endpointKey(drill.capture.url) === primaryEndpointKey &&
         (!isGraphQLCapture(primary.capture) ||
           operationGroupKey(drill.capture) === operationGroupKey(primary.capture))
@@ -14913,7 +15030,8 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         drillIndex,
-        drillArrayPath
+        drillArrayPath,
+        primaryRepeatMatcher(primary.capture, primaryArray.path, drill.capture)
       );
 
       const chainTerminalItems = objectItemsAtPath(
@@ -14985,8 +15103,11 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
    * drill-down. Inventing one from that pairing is what makes
    * `assertNoFrozenVaryingDrillParams` throw on a read-only GET search whose
    * flow deliberately varies its facets.
+   *
+   * A predicate allows a same-endpoint capture only when it returns true for
+   * that capture (a capture matching a declared drill endpointPattern).
    */
-  allowSelfEndpointDrill = true
+  allowSelfEndpointDrill: boolean | ((c: Capture) => boolean) = true
 ): FoldPlan[] {
   const plans: FoldPlan[] = [];
   // Spans every primary candidate, not just the current one's own drill
@@ -16394,7 +16515,12 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         entryIndex,
-        drillArrayPath ?? []
+        drillArrayPath ?? [],
+        primaryRepeatMatcher(
+          actions[primaryStepIndex]!.capture,
+          primaryArrayPath,
+          actions[entryIndex]!.capture
+        )
       );
       // The chain's resolved terminal must actually hold foldable data —
       // an intermediate drill step with neither its own candidate NOR a
@@ -16951,7 +17077,11 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null
 ): Map<string, Set<Capture>> {
-  const structuralPlans = detectDrillDownFoldPlan(actions, null, foldReturnSpec !== null);
+  const structuralPlans = detectDrillDownFoldPlan(
+    actions,
+    null,
+    compileFoldReturnEndpointMatcher(foldReturnSpec)
+  );
   const specPlan = foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec);
   const plans = structuralPlans.length > 0 ? structuralPlans : specPlan === null ? [] : [specPlan];
   const consumersByValue = new Map<string, Set<Capture>>();
@@ -17075,7 +17205,9 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   const structuralPlans = detectDrillDownFoldPlan(
     actions,
     primaryIdentityAnchor,
-    foldReturnSpec !== null
+    // Only a capture matching the declared drill pattern may be a drill of
+    // the declared search; same-endpoint facet re-queries stay parallel.
+    compileFoldReturnEndpointMatcher(foldReturnSpec)
   );
   const plans =
     structuralPlans.length > 0
@@ -18512,6 +18644,9 @@ export function emitContractTsParts(opts: {
    * output byte-for-byte: no `browserFallbackGate` meta field, and
    * `createHttpClient(...)` unchanged. */
   fallbackGateSpec?: FallbackGateSpec;
+  /** The flow's declared submit patterns, so declared searches are never
+   * judged request-invariant by the emitter's zero-variance guards. */
+  submitPatterns?: SubmitPatterns | null;
   /** Bearer the read-flow clients obtain per call ({@link deriveReadFlowBearer}). */
   readFlowBearer?: ReadFlowBearer | null;
 }): { code: string; payloadSchemaExpr: string } {
@@ -19610,7 +19745,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // see emitMultiStepExecuteHttp's identical `parameterize` guard
           // ({@link isGenuineVaryingQueryValue}) for why this is decided
           // field by field rather than for the whole capture at once.
-          const isProvenInvariant = isZeroVarianceRepeatCapture(chainCapture, allCaptures);
+          const isProvenInvariant = isZeroVarianceRepeatCapture(
+            chainCapture,
+            allCaptures,
+            compileDeclaredSubmitMatcher(opts.submitPatterns ?? null)
+          );
           const filteredValueBindings = isProvenInvariant
             ? valueBindings.filter((b) =>
                 isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures)
@@ -22228,7 +22367,13 @@ export async function main(): Promise<void> {
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
     const safeRps =
       rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-    const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain, primaryHost);
+    const gql = isGraphQL(
+      activeCaptures,
+      ownBackendHostnames,
+      fallbackDomain,
+      primaryHost,
+      submitPatterns
+    );
     // Hoisted so both the primary-operation gate below and rawActionCaptures
     // (further down) read the same computed sequence instead of calling the
     // extractor twice. Computed unfiltered (submitPatterns: null) — a
@@ -22459,7 +22604,8 @@ export async function main(): Promise<void> {
         : truncateActionSequenceAtSubmitPattern(
             patternedExtractedActionCaptures,
             submitPatterns,
-            foldReturnSpec
+            foldReturnSpec,
+            flowSteps.some((st) => typeof st !== "string" && st.submitStep === true)
           );
     // The submit-manifest is authoritative and later supplies the captures
     // matching the declared pattern, so count those too: the declared pattern
@@ -22956,6 +23102,7 @@ export async function main(): Promise<void> {
             vocabulary,
             applicantContract,
             httpStepsOpt?.actions,
+            submitPatterns,
             locateBearerSources(activeCaptures, replays)
           )
         : undefined;
@@ -23265,6 +23412,7 @@ export async function main(): Promise<void> {
         : deriveReadFlowBearer(activeCaptures, replays, `${baseUrl}${endpointPath}`),
       unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
       fallbackGateSpec,
+      submitPatterns,
     };
 
     const firstContract = emitContractTsParts(contractOpts);
