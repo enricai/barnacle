@@ -43,8 +43,10 @@ describe("anonymous GraphQL identity", () => {
       ),
     ];
     const all = [chrome(), chrome(), chrome(), chrome(), ...search];
-    for (const s of search) expect(isZeroVarianceRepeatCapture(s, all)).toBe(false);
-    expect(isZeroVarianceRepeatCapture(all[0] as (typeof all)[number], all)).toBe(true);
+    for (const s of search) expect(isZeroVarianceRepeatCapture(s, all, () => false)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(all[0] as (typeof all)[number], all, () => false)).toBe(
+      true
+    );
   });
   it("retains a once-fired anonymous read", () => {
     const one = cap(
@@ -53,6 +55,6 @@ describe("anonymous GraphQL identity", () => {
       { data: { allItems: [{ name: "a" }] } }
     );
     const all = [chrome(), chrome(), chrome(), one];
-    expect(isZeroVarianceRepeatCapture(one, all)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(one, all, () => false)).toBe(false);
   });
 });

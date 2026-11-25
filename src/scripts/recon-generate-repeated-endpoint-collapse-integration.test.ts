@@ -60,6 +60,6 @@ describe("repeated-endpoint collapse — combined root-cause coverage", () => {
       responseBody: { clientId: "abc123", siteId: "xyz" },
     };
 
-    expect(isZeroVarianceRepeatCapture(candidate, occurrences)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(candidate, occurrences, () => false)).toBe(true);
   });
 });

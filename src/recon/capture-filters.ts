@@ -1363,7 +1363,11 @@ export function isZeroVarianceRepeatCapture(
     status?: number;
     requestHeaders?: Record<string, string>;
   }[],
-  isDeclaredSubmit?: (capture: { method: string; url: string }) => boolean
+  isDeclaredSubmit: (capture: {
+    method: string;
+    url: string;
+    requestPostData?: string | null;
+  }) => boolean
 ): boolean {
   let candidateUrl: URL;
   try {
@@ -1381,7 +1385,7 @@ export function isZeroVarianceRepeatCapture(
   // The flow's declared read-only submit endpoint re-issued with differing
   // bodies is the flow's search action, never a beacon (any method).
   if (
-    isDeclaredSubmit?.(candidate) &&
+    isDeclaredSubmit(candidate) &&
     sameEndpoint.some((c) => c.requestPostData !== candidate.requestPostData)
   ) {
     return false;

@@ -2503,8 +2503,10 @@ export function isGraphQL(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  primaryHost: string | null = null
+  primaryHost: string | null = null,
+  submitPatterns: SubmitPatterns | null = null
 ): boolean {
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const scoped = captures.filter((c) => {
     if (
@@ -2539,7 +2541,7 @@ export function isGraphQL(
   );
   const rescuedInvariantEndpoints = new Set<string>();
   const restAntiVotes = restAntiVoteCandidates.filter((c) => {
-    if (!isZeroVarianceRepeatCapture(c, scoped)) return true;
+    if (!isZeroVarianceRepeatCapture(c, scoped, isDeclaredSubmit)) return true;
     if (hasNoBusinessRelevantResponseState(c)) return false;
     const key = endpointKey(c.url);
     if (rescuedInvariantEndpoints.has(key)) return false;
@@ -2565,7 +2567,7 @@ export function isGraphQL(
   const proVotes = scoped
     .filter((c) => c.query)
     .filter((c) => {
-      if (!isZeroVarianceRepeatCapture(c, scoped)) return true;
+      if (!isZeroVarianceRepeatCapture(c, scoped, isDeclaredSubmit)) return true;
       const key = endpointKey(c.url);
       if (rescuedInvariantQueryEndpoints.has(key)) return false;
       rescuedInvariantQueryEndpoints.add(key);
@@ -3697,11 +3699,10 @@ function isZeroVarianceUnlessDeclared(
   submitPatterns: SubmitPatterns | null,
   matchesFoldReturn: (capture: Capture) => boolean
 ): boolean {
-  const hasDeclaredSubmit =
-    submitPatterns !== null && (submitPatterns.endpoint !== null || submitPatterns.body !== null);
-  if (hasDeclaredSubmit && compileSubmitMatcher(submitPatterns)(capture)) return false;
+  const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
+  if (isDeclaredSubmit(capture)) return false;
   if (matchesFoldReturn(capture)) return false;
-  return isZeroVarianceRepeatCapture(capture, pool);
+  return isZeroVarianceRepeatCapture(capture, pool, isDeclaredSubmit);
 }
 
 /**
@@ -11104,7 +11105,7 @@ export function emitMultiStepExecuteHttp(
     // isGet UUID-only floor) and for the fold/drill per-item pass. Rendering
     // its exact literal URL makes this hold even when a value's own
     // length/chain-eligibility scoping doesn't happen to catch the coincidence.
-    const url = isZeroVarianceRepeatCapture(cap, allCaptures)
+    const url = isZeroVarianceRepeatCapture(cap, allCaptures, () => false)
       ? cap.url
       : interpolateStateValues(
           cap.url,
@@ -11760,7 +11761,7 @@ export function emitMultiStepExecuteHttp(
         const isProvenInvariantFor = (chainCapture: Capture): boolean => {
           const cached = isProvenInvariantMemo.get(chainCapture);
           if (cached !== undefined) return cached;
-          const computed = isZeroVarianceRepeatCapture(chainCapture, allCaptures);
+          const computed = isZeroVarianceRepeatCapture(chainCapture, allCaptures, () => false);
           isProvenInvariantMemo.set(chainCapture, computed);
           return computed;
         };
@@ -19396,7 +19397,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // see emitMultiStepExecuteHttp's identical `parameterize` guard
           // ({@link isGenuineVaryingQueryValue}) for why this is decided
           // field by field rather than for the whole capture at once.
-          const isProvenInvariant = isZeroVarianceRepeatCapture(chainCapture, allCaptures);
+          const isProvenInvariant = isZeroVarianceRepeatCapture(
+            chainCapture,
+            allCaptures,
+            () => false
+          );
           const filteredValueBindings = isProvenInvariant
             ? valueBindings.filter((b) =>
                 isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures)
@@ -22002,7 +22007,13 @@ export async function main(): Promise<void> {
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
     const safeRps =
       rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-    const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain, primaryHost);
+    const gql = isGraphQL(
+      activeCaptures,
+      ownBackendHostnames,
+      fallbackDomain,
+      primaryHost,
+      submitPatterns
+    );
     // Hoisted so both the primary-operation gate below and rawActionCaptures
     // (further down) read the same computed sequence instead of calling the
     // extractor twice. Computed unfiltered (submitPatterns: null) — a

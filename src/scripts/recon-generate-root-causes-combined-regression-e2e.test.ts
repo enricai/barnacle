@@ -125,8 +125,8 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
     // queryless-repeat threshold must NOT be classified as noise merely for
     // sharing a host with it.
     const allCaptures = [listing, drillOne, ...noise];
-    expect(isZeroVarianceRepeatCapture(noise[0]!, allCaptures)).toBe(true);
-    expect(isZeroVarianceRepeatCapture(listing, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(noise[0]!, allCaptures, () => false)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(listing, allCaptures, () => false)).toBe(false);
 
     writeRunDir(runRoot, allCaptures);
 
@@ -210,9 +210,14 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
     vi.stubGlobal("fetch", fetchMock);
 
     const executeHttp = evalExecuteHttpBody(executeHttpBody, httpClient, z);
-    const runtimeResult = await executeHttp({ BaseUrl: `https://${OWN_BACKEND_HOST}`, page: 1 });
+    const runtimeResult = await executeHttp({
+      BaseUrl: `https://${OWN_BACKEND_HOST}`,
+      page: 1,
+    });
 
-    const data = runtimeResult.data as { results?: Array<Record<string, unknown>> };
+    const data = runtimeResult.data as {
+      results?: Array<Record<string, unknown>>;
+    };
     expect(data.results).toHaveLength(ITEM_COUNT);
     const byId = new Map((data.results ?? []).map((item) => [item.id as string, item]));
     for (const id of ids) {
@@ -300,7 +305,10 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
     let overrideCallCount = 0;
     const overrideExecuteHttp = evalPaginated((_baseUrl: string) => async (_op, _q, variables) => {
       overrideCallCount += 1;
-      const pagination = variables.pagination as { skip: number; count: number };
+      const pagination = variables.pagination as {
+        skip: number;
+        count: number;
+      };
       const remaining = Math.max(0, 20 - pagination.skip);
       return {
         catalog: {
@@ -402,13 +410,21 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
     });
     const hold = buildCapture({
       url: HOLD_URL,
-      requestPostData: JSON.stringify({ unitId: "unit-a", unitPlan: "Standard", partySize: 2 }),
+      requestPostData: JSON.stringify({
+        unitId: "unit-a",
+        unitPlan: "Standard",
+        partySize: 2,
+      }),
       responseBody: { held: true },
       timestamp: "2026-05-01T00:00:01Z",
     });
     const confirm = buildCapture({
       url: CONFIRM_URL,
-      requestPostData: JSON.stringify({ unitId: "unit-a", unitPlan: "Deluxe", partySize: 3 }),
+      requestPostData: JSON.stringify({
+        unitId: "unit-a",
+        unitPlan: "Deluxe",
+        partySize: 3,
+      }),
       responseBody: { confirmed: true, partyCapacityLimit: 4 },
       timestamp: "2026-05-01T00:00:02Z",
     });
@@ -469,7 +485,11 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
       unitId: "unit-a",
     };
     expect(
-      PayloadSchema.safeParse({ ...BASE_VALID_PAYLOAD, unitPlan: "Standard", partySize: 2 }).success
+      PayloadSchema.safeParse({
+        ...BASE_VALID_PAYLOAD,
+        unitPlan: "Standard",
+        partySize: 2,
+      }).success
     ).toBe(true);
     expect(
       PayloadSchema.safeParse({
@@ -479,8 +499,11 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
       }).success
     ).toBe(false);
     expect(
-      PayloadSchema.safeParse({ ...BASE_VALID_PAYLOAD, unitPlan: "Standard", partySize: 99 })
-        .success
+      PayloadSchema.safeParse({
+        ...BASE_VALID_PAYLOAD,
+        unitPlan: "Standard",
+        partySize: 99,
+      }).success
     ).toBe(false);
   }, 30_000);
 });

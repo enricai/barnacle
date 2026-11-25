@@ -55,22 +55,22 @@ describe("isZeroVarianceRepeatCapture form submits", () => {
     ["multipart 200 html", "multipart/form-data; boundary=x", 200, "text/html"],
   ] as const)("keeps distinct-body %s", (_n, rt, st, ct) => {
     const all = set(rt, st, ct);
-    expect(isZeroVarianceRepeatCapture(first(all), all)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first(all), all, () => false)).toBe(false);
   });
   it("keeps queryless distinct-body submits", () => {
     const all = ["a=1", "a=2", "a=3"].map((b) =>
       mk(b, "application/x-www-form-urlencoded", 302, null, "https://shop.example.com/wizard")
     );
-    expect(isZeroVarianceRepeatCapture(first(all), all)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first(all), all, () => false)).toBe(false);
   });
   it("still drops beacons", () => {
     const gif = set("text/plain", 200, "image/gif");
-    expect(isZeroVarianceRepeatCapture(first(gif), gif)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first(gif), gif, () => false)).toBe(true);
     const json = set("application/json", 204, "application/json");
-    expect(isZeroVarianceRepeatCapture(first(json), json)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first(json), json, () => false)).toBe(true);
   });
   it("still drops identical-body repeats", () => {
     const all = [1, 2, 3].map(() => mk("a=1", "application/x-www-form-urlencoded", 302, null));
-    expect(isZeroVarianceRepeatCapture(first(all), all)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(first(all), all, () => false)).toBe(true);
   });
 });
