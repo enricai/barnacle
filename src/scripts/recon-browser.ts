@@ -248,6 +248,21 @@ export function getBodyUnavailableCount(): number {
   return bodyUnavailableCounter.n;
 }
 
+/**
+ * Builds the capture observer that records method + GraphQL document of every
+ * capture whose URL matches the declared submitEndpointPattern, for
+ * flowHasSubmitSemantics. A null/empty pattern observes nothing.
+ */
+export function createSubmitPatternObserver(
+  submitEndpointPattern: string | null | undefined,
+  sink: Array<{ method: string; query?: string | null }>
+): (capture: { url: string; method: string; query?: string | null }) => void {
+  const rx = submitEndpointPattern ? new RegExp(submitEndpointPattern) : null;
+  return (c) => {
+    if (rx?.test(c.url)) sink.push({ method: c.method, query: c.query });
+  };
+}
+
 export function wireNetworkCapture(
   page: Page,
   counter: { n: number },
@@ -256,7 +271,8 @@ export function wireNetworkCapture(
   recentCaptureMeta: { method: string; status: number; url: string }[],
   getCurrentPhase: () => string,
   getCurrentPageOrigin: () => string,
-  captureTracker?: CaptureTracker
+  captureTracker?: CaptureTracker,
+  onCaptureObserved?: (capture: { url: string; method: string; query?: string | null }) => void
 ): () => void {
   const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
@@ -273,6 +289,7 @@ export function wireNetworkCapture(
       // happy-path doesn't read these files until something else fails.
       if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) bodyUnavailableCounter.n++;
       captureTracker?.observe(capture.url, capture.requestPostData);
+      onCaptureObserved?.(capture);
       try {
         writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
@@ -3209,6 +3226,13 @@ async function main(): Promise<void> {
         }
       };
       const captureTracker = createCaptureTracker();
+      // Kind evidence of captures the declared submitEndpointPattern matched,
+      // so flowHasSubmitSemantics can tell a read data call from a submission.
+      const patternMatchedCaptures: Array<{ method: string; query?: string | null }> = [];
+      const observePatternMatch = createSubmitPatternObserver(
+        submitEndpointPattern,
+        patternMatchedCaptures
+      );
       const capture = createCaptureRebinder(page, (target) =>
         wireNetworkCapture(
           target,
@@ -3218,7 +3242,8 @@ async function main(): Promise<void> {
           recentCaptureMeta,
           () => currentPhase,
           currentPageOrigin,
-          captureTracker
+          captureTracker,
+          observePatternMatch
         )
       );
       const stopCapture = capture.stopAll;
@@ -3384,6 +3409,7 @@ async function main(): Promise<void> {
           submitEndpointPattern,
           requireSubmitEndpointMatch,
           readOnly,
+          matchedCaptures: patternMatchedCaptures,
         });
         const midFlowSubmitShaped = isMidFlowSubmitShapedStep({
           step: step.instruction,
@@ -3459,6 +3485,7 @@ async function main(): Promise<void> {
                       submitEndpointPattern,
                       requireSubmitEndpointMatch,
                       readOnly,
+                      matchedCaptures: patternMatchedCaptures,
                     }),
                     stepIndex: i,
                     totalSteps: () => plan.length,
@@ -3683,6 +3710,7 @@ async function main(): Promise<void> {
               submitEndpointPattern,
               requireSubmitEndpointMatch,
               readOnly,
+              matchedCaptures: patternMatchedCaptures,
             });
             // A dead session throws synchronously here too — fall back to ""
             // rather than let the trailing-grace check itself crash the run.
