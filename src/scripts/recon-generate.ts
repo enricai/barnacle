@@ -5837,7 +5837,18 @@ export interface BearerSource {
   source: "rsc-row" | "html";
   row?: string;
 }
-export type BearerSources = ReadonlyMap<string, BearerSource>;
+/**
+ * A bare string value is a document URL whose bearer location is unknown; it is
+ * still minted from, without a source note.
+ */
+export type BearerSources = ReadonlyMap<string, BearerSource | string>;
+
+/** A {@link BearerSources} value as a URL plus whatever location evidence it carries. */
+function bearerSourceEntry(
+  v: BearerSource | string | undefined
+): { url: string; source?: BearerSource["source"]; row?: string } | undefined {
+  return typeof v === "string" ? { url: v } : v;
+}
 
 /** Comment text naming where a bearer was found; safe inside a block comment. */
 function bearerSourceNote(s: { source: string; row?: string }): string {
@@ -5849,7 +5860,10 @@ function bearerSourceNote(s: { source: string; row?: string }): string {
  * Documents that replays proved serve a bearer. Keyed by the token's kind, so a
  * document located for one endpoint's token is never used for another's.
  */
-export function locateBearerSources(captures: Capture[], replays: ReplayResult[]): BearerSources {
+export function locateBearerSources(
+  captures: Capture[],
+  replays: ReplayResult[]
+): ReadonlyMap<string, BearerSource> {
   const sources = new Map<string, BearerSource>();
   for (const r of replays) {
     const ts = r.authReplay?.tokenReplayable ? r.authReplay.tokenSource : undefined;
@@ -5985,12 +5999,15 @@ function credentialHeaderThrowExpr(
 ): string {
   if (bootstrap && capturedValue !== undefined) {
     const c = stableJwtClaims(capturedValue);
-    const located = bootstrap.sources.get(bearerKindKey(capturedValue) ?? "");
+    const located = bearerSourceEntry(bootstrap.sources.get(bearerKindKey(capturedValue) ?? ""));
     const url = located?.url;
     if (c && located && url !== undefined) {
       bootstrap.used.value = true;
       const prefix = /^bearer\s/i.test(capturedValue.trim()) ? "Bearer " : "";
-      return `${prefix}\${/* ${bearerSourceNote(located)} */ await mintBearerToken(${JSON.stringify(url)}, ${JSON.stringify(c.want)}, ${JSON.stringify(c.keys)})}`;
+      const note = located.source
+        ? `/* ${bearerSourceNote({ source: located.source, row: located.row })} */ `
+        : "";
+      return `${prefix}\${${note}await mintBearerToken(${JSON.stringify(url)}, ${JSON.stringify(c.want)}, ${JSON.stringify(c.keys)})}`;
     }
   }
   const msg = JSON.stringify(
