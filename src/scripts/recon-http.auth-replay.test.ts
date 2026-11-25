@@ -67,6 +67,48 @@ describe("recon-http 401 auth replay", () => {
     expect(r?.omittedCaptureHeaders).toEqual(["x-other"]);
   });
 
+  it("names the located source in the 401 log, else keeps generic advice", async () => {
+    stub(true);
+    loggerStub.warn.mockClear();
+    const doc = `<script>var t="${JWT}"</script>`;
+    const r = await replayCapture("a.json", cap("GET"), {
+      htmlDocuments: [doc],
+      htmlDocumentUrls: ["https://page.test/home"],
+    });
+    expect(r?.authReplay?.tokenSource?.url).toBe("https://page.test/home");
+    expect(r?.authReplay?.tokenSource?.document).toBe(0);
+    const msgs = loggerStub.warn.mock.calls.map((c) => String(c[0]));
+    expect(msgs.some((m) => m.includes("https://page.test/home"))).toBe(true);
+    expect(msgs.some((m) => m.includes("build refresh strategy"))).toBe(false);
+
+    loggerStub.warn.mockClear();
+    await replayCapture("a.json", cap("GET"), {
+      htmlDocuments: ["<html></html>"],
+    });
+    expect(
+      loggerStub.warn.mock.calls.some((c) => String(c[0]).includes("build refresh strategy"))
+    ).toBe(true);
+  });
+
+  it("reports the RSC row in tokenSource and the 401 log", async () => {
+    stub(true);
+    loggerStub.warn.mockClear();
+    const rows = `7:T${JWT.length.toString(16)},${JWT}`;
+    const doc = `<script>self.__next_f.push([1,${JSON.stringify(rows)}])</script>`;
+    const r = await replayCapture("a.json", cap("GET"), {
+      htmlDocuments: [doc],
+      htmlDocumentUrls: ["https://page.test/rsc"],
+    });
+    expect(r?.authReplay?.tokenSource).toEqual({
+      document: 0,
+      url: "https://page.test/rsc",
+      source: "rsc-row",
+      row: "7",
+    });
+    const msgs = loggerStub.warn.mock.calls.map((c) => String(c[0]));
+    expect(msgs.some((m) => m.includes("rsc-row, row 7"))).toBe(true);
+  });
+
   it("records needs-browser when the retry also fails", async () => {
     stub(false);
     const r = await replayCapture("a.json", cap("GET"));

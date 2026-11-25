@@ -488,7 +488,11 @@ async function findShapeRestoringHeaders(
 export async function replayCapture(
   filename: string,
   capture: Capture,
-  opts: { methods?: Set<string> | null; htmlDocuments?: ReadonlyArray<unknown> } = {}
+  opts: {
+    methods?: Set<string> | null;
+    htmlDocuments?: ReadonlyArray<unknown>;
+    htmlDocumentUrls?: ReadonlyArray<string | undefined>;
+  } = {}
 ): Promise<ReplayResult | null> {
   if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) {
     logger.warn(`skip ${capture.method} ${capture.url}: request body unavailable at capture time`);
@@ -560,7 +564,14 @@ export async function replayCapture(
           status: retry.response.status,
           tokenReplayable: replayable,
           tokenSource: loc
-            ? { document: loc.document, source: loc.source, ...(loc.row ? { row: loc.row } : {}) }
+            ? {
+                document: loc.document,
+                ...(opts.htmlDocumentUrls?.[loc.document]
+                  ? { url: opts.htmlDocumentUrls[loc.document] }
+                  : {}),
+                source: loc.source,
+                ...(loc.row ? { row: loc.row } : {}),
+              }
             : null,
         };
         logger.info(
@@ -605,10 +616,14 @@ export async function replayCapture(
         logger.warn(
           "  → 403: try adding more headers; if persistent, accept Stagehand-only production"
         );
-      if (response.status === 401)
+      if (response.status === 401) {
+        const ts = authReplay?.tokenSource;
         logger.warn(
-          "  → 401: endpoint requires auth — capture token, determine lifetime, build refresh strategy"
+          ts
+            ? `  → 401: endpoint requires auth — bearer token is served in ${ts.url ?? `captured document #${ts.document}`} (${ts.source}${ts.row ? `, row ${ts.row}` : ""}); fetch that document to mint it`
+            : "  → 401: endpoint requires auth — capture token, determine lifetime, build refresh strategy"
         );
+      }
     } else {
       const bodyStr = JSON.stringify(replayBody);
       if (bodyStr === "{}" || bodyStr === "[]" || bodyStr === "null")
@@ -959,7 +974,12 @@ export function selectRateLimitTargets(
 } {
   const collected = new Map<
     string,
-    { method: string; body: string | null; tier: number; headers?: Record<string, string> }
+    {
+      method: string;
+      body: string | null;
+      tier: number;
+      headers?: Record<string, string>;
+    }
   >();
   const seenEndpoints = new Set<string>();
   let skipped = 0;
@@ -1183,12 +1203,21 @@ async function main(): Promise<void> {
   );
   for (const sk of skipped) logger.info(`skipped ${sk.url}: ${sk.reason}`);
 
-  const htmlDocuments = all
-    .map((c) => c.capture.responseBody)
-    .filter((b): b is string => typeof b === "string");
+  const htmlEntries = all
+    .map((c) => ({
+      body: c.capture.responseBody,
+      url: c.capture.url as string | undefined,
+    }))
+    .filter((e): e is { body: string; url: string | undefined } => typeof e.body === "string");
+  const htmlDocuments = htmlEntries.map((e) => e.body);
+  const htmlDocumentUrls = htmlEntries.map((e) => e.url);
   const replays: ReplayResult[] = [];
   for (const { filename, capture } of probeworthy) {
-    const result = await replayCapture(filename, capture, { methods, htmlDocuments });
+    const result = await replayCapture(filename, capture, {
+      methods,
+      htmlDocuments,
+      htmlDocumentUrls,
+    });
     if (result === null) continue;
     replays.push(result);
     writeFileSync(join(runDir.replaysDir, filename), JSON.stringify(result, null, 2));
