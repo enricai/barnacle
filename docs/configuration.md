@@ -76,7 +76,7 @@ Set `USE_BEDROCK=true` to route Stagehand's LLM calls through AWS Bedrock instea
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CACHE_TTL_MS` | `900000` (15 min) | LRU response cache TTL. Cached responses skip the target API entirely. |
+| `CACHE_TTL_MS` | `900000` (15 min) | LRU response cache TTL. Cached responses skip the target API entirely. A result can shorten its own with `cacheTtlMs`. |
 | `CACHE_MAX_ENTRIES` | `1000` | Maximum entries in the LRU cache. |
 
 ### Idempotency store

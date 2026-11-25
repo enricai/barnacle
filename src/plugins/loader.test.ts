@@ -959,13 +959,21 @@ describe("dispatch — cache integration", () => {
       mockGetOrCreateInFlight.mockImplementation(real.getOrCreateInFlight);
     });
 
-    it("re-invokes executeHttp for an identical request after a truncated result", async () => {
+    it("serves a repeat of a page-capped request from cache, though its data says truncated", async () => {
       mockHttpExecute.mockResolvedValue({ data: { items: [1], truncated: true } });
       const body = { q: "example.test" };
-      const first = await dispatch(httpPlugin, body, stubContext);
+      await dispatch(httpPlugin, body, stubContext);
       const second = await dispatch(httpPlugin, body, stubContext);
-      expect(first.data).toEqual({ items: [1], truncated: true });
       expect(second.data).toEqual({ items: [1], truncated: true });
+      expect(mockHttpExecute).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-invokes executeHttp for an identical request after a result that asked not to be cached", async () => {
+      mockHttpExecute.mockResolvedValue({ data: { items: [1] }, cacheTtlMs: 0 });
+      const body = { q: "example.test" };
+      const first = await dispatch(httpPlugin, body, stubContext);
+      await dispatch(httpPlugin, body, stubContext);
+      expect(first.data).toEqual({ items: [1] });
       expect(mockHttpExecute).toHaveBeenCalledTimes(2);
     });
 

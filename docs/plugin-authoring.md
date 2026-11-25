@@ -138,6 +138,21 @@ return {
 };
 ```
 
+## Incomplete results (`cacheTtlMs`)
+
+Core caches every hot-path result for `CACHE_TTL_MS` (15 minutes by default).
+When a deadline, a refusal or a failed call left the answer incomplete, return a
+short `cacheTtlMs` alongside `data`, so the gap is not served for that long:
+
+```ts
+return { data: responseData, ...(incomplete && { cacheTtlMs: 60_000 }) };
+```
+
+It can only shorten the TTL. Prefer a short time to `0` (do not cache): when a
+site is failing or blocking, a brief entry keeps repeat requests off it. A page
+the caller asked for out of a longer list is complete, so leave it unset there.
+Core reads nothing inside `data` (a `truncated` field, for instance) to decide.
+
 ## Reconciliation join keys (`extractJoinKeys`)
 
 Core has no opinion on join-key shape — that's site-specific vocabulary (a click

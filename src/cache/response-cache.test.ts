@@ -1,3 +1,4 @@
+import { LRUCache } from "lru-cache";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -7,39 +8,73 @@ import {
   getOrCreateInFlight,
   invalidateResponse,
 } from "@/cache/response-cache";
+import { config } from "@/config";
 
 describe("response-cache", () => {
   beforeEach(() => {
     clearResponseCache();
   });
 
-  it("does not cache a value whose data.truncated is true", async () => {
-    const { key } = getCachedResponse("/v1/trunc", { a: 1 });
-    const r = await getOrCreateInFlight(key, async () => ({ data: { truncated: true } }));
-    expect(r.data.truncated).toBe(true);
-    expect(getCachedResponse("/v1/trunc", { a: 1 }).value).toBeUndefined();
-  });
+  describe("cacheTtlMs", () => {
+    const put = async (endpoint: string, value: object): Promise<() => unknown> => {
+      const { key } = getCachedResponse(endpoint, {});
+      await getOrCreateInFlight(key, async () => value);
+      return () => getCachedResponse(endpoint, {}).value;
+    };
+    const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-  it("caches a complete result while not caching a truncated one", async () => {
-    const full = getCachedResponse("/v1/full", { a: 1 });
-    await getOrCreateInFlight(full.key, async () => ({ data: {} }));
-    expect(getCachedResponse("/v1/full", { a: 1 }).value).toEqual({ data: {} });
-    const part = getCachedResponse("/v1/part", { a: 1 });
-    await getOrCreateInFlight(part.key, async () => ({ data: { truncated: true } }));
-    expect(getCachedResponse("/v1/part", { a: 1 }).value).toBeUndefined();
-  });
+    it("caches a result whose data says truncated: that field belongs to the site", async () => {
+      const value = { data: { truncated: true } };
+      expect((await put("/v1/truncated", value))()).toEqual(value);
+    });
 
-  it("coalesces concurrent callers on a truncated result with one producer call", async () => {
-    const { key } = getCachedResponse("/v1/coalesce", { a: 1 });
-    const producer = vi.fn(async () => ({ data: { truncated: true } }));
-    const [r1, r2] = await Promise.all([
-      getOrCreateInFlight(key, producer),
-      getOrCreateInFlight(key, producer),
-    ]);
-    expect(producer).toHaveBeenCalledTimes(1);
-    expect(r1.data.truncated).toBe(true);
-    expect(r2.data.truncated).toBe(true);
-    expect(getCachedResponse("/v1/coalesce", { a: 1 }).value).toBeUndefined();
+    it("ignores a cacheTtlMs inside data", async () => {
+      const value = { data: { cacheTtlMs: 0 } };
+      expect((await put("/v1/inside", value))()).toEqual(value);
+    });
+
+    it("serves a short-lived result until its time passes", async () => {
+      const value = { data: {}, cacheTtlMs: 40 };
+      const read = await put("/v1/short", value);
+      expect(read()).toEqual(value);
+      await wait(90);
+      expect(read()).toBeUndefined();
+    });
+
+    it.each([0, 0.5, -1, Number.NaN, Number.NEGATIVE_INFINITY])(
+      "returns but does not store a result with cacheTtlMs %s",
+      async (cacheTtlMs) => {
+        const { key } = getCachedResponse("/v1/none", { cacheTtlMs: String(cacheTtlMs) });
+        const value = { data: {}, cacheTtlMs };
+        expect(await getOrCreateInFlight(key, async () => value)).toBe(value);
+        expect(
+          getCachedResponse("/v1/none", { cacheTtlMs: String(cacheTtlMs) }).value
+        ).toBeUndefined();
+      }
+    );
+
+    it.each([Number.MAX_SAFE_INTEGER, Number.POSITIVE_INFINITY])(
+      "never outlives the configured TTL when asked for %s",
+      async (cacheTtlMs) => {
+        const set = vi.spyOn(LRUCache.prototype, "set");
+        const read = await put(`/v1/long-${cacheTtlMs}`, { data: {}, cacheTtlMs });
+        expect(read()).toBeDefined();
+        expect(set.mock.calls.at(-1)?.[2]).toEqual({ ttl: config.cache.ttlMs });
+        set.mockRestore();
+      }
+    );
+
+    it("shares one producer call between concurrent callers of an unstored result", async () => {
+      const { key } = getCachedResponse("/v1/coalesce", { a: 1 });
+      const producer = vi.fn(async () => ({ data: { n: 1 }, cacheTtlMs: 0 }));
+      const [first, second] = await Promise.all([
+        getOrCreateInFlight(key, producer),
+        getOrCreateInFlight(key, producer),
+      ]);
+      expect(producer).toHaveBeenCalledTimes(1);
+      expect(first).toBe(second);
+      expect(getCachedResponse("/v1/coalesce", { a: 1 }).value).toBeUndefined();
+    });
   });
 
   it("stores and retrieves by endpoint+payload", async () => {
