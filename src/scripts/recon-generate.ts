@@ -13282,11 +13282,26 @@ export function correlateNavigateToParamsWithVariables(
   steps.forEach((step, i) => {
     const field = step.payloadField;
     if (!field || step.payloadFieldNone) return;
-    const paths = new Set<string>();
-    for (const [key, value] of queries[i]!) {
-      const seq = paramSeq.get(key);
-      if (seq === undefined || value === undefined) continue;
-      for (const [path, vs] of varSeq) if (vs === seq) paths.add(path);
+    const collect = (only?: (key: string) => boolean): Set<string> => {
+      const out = new Set<string>();
+      for (const [key, value] of queries[i]!) {
+        const seq = paramSeq.get(key);
+        if (seq === undefined || value === undefined || (only && !only(key))) continue;
+        for (const [path, vs] of varSeq) if (vs === seq) out.add(path);
+      }
+      return out;
+    };
+    // A param named like the payloadField is the strongest anchor; otherwise
+    // drop variables whose own leaf name is claimed by a different param.
+    const lc = field.toLowerCase();
+    let paths = collect((k) => k.toLowerCase() === lc);
+    if (paths.size === 0) {
+      paths = collect();
+      if (paths.size > 1) {
+        const keys = new Set([...queries[i]!.keys()].map((k) => k.toLowerCase()));
+        const unclaimed = [...paths].filter((p) => !keys.has(p.split(".").pop()!.toLowerCase()));
+        if (unclaimed.length > 0) paths = new Set(unclaimed);
+      }
     }
     const leafMatch = [...paths].filter(
       (p) => p.split(".").pop()!.toLowerCase() === field.toLowerCase()
@@ -18353,7 +18368,15 @@ export function classifySubmissionFlow(o: {
   /** A declared submit endpoint re-queried with differing filter bodies. */
   isDeclaredPostSearchRead?: boolean;
 }): boolean {
-  if (o.noReplayableActionFlow) return true;
+  const readsOnly =
+    o.actionCaptureMethods.length > 0 &&
+    (o.gql
+      ? !o.graphqlActionSequenceHasMutation
+      : o.actionCaptureMethods.every((m) => {
+          const u = (m ?? "").toUpperCase();
+          return u === "GET" || u === "OPTIONS";
+        }));
+  if (o.noReplayableActionFlow) return !readsOnly;
   if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
