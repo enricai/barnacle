@@ -14596,7 +14596,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
   globallyConsumedIndices: ReadonlySet<number>,
   requestStringValueIndex: ReadonlyMap<string, number[]>,
   // See detectDrillDownFoldPlan's identical parameter.
-  allowSelfEndpointDrill = true
+  allowSelfEndpointDrill: boolean | ((c: Capture) => boolean) = true
 ): PrimaryScanGroup[] {
   scanPrimaryCandidateGroupsCallCount++;
   const primary = actions[primaryIndex]!;
@@ -14651,7 +14651,9 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // capture a payload variant of the primary: it differs only in
       // variables, is evidence for payload fields, and is never a drill.
       if (
-        !allowSelfEndpointDrill &&
+        !(typeof allowSelfEndpointDrill === "function"
+          ? allowSelfEndpointDrill(drill.capture)
+          : allowSelfEndpointDrill) &&
         endpointKey(drill.capture.url) === primaryEndpointKey &&
         (!isGraphQLCapture(primary.capture) ||
           operationGroupKey(drill.capture) === operationGroupKey(primary.capture))
@@ -14798,8 +14800,11 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
    * drill-down. Inventing one from that pairing is what makes
    * `assertNoFrozenVaryingDrillParams` throw on a read-only GET search whose
    * flow deliberately varies its facets.
+   *
+   * A predicate allows a same-endpoint capture only when it returns true for
+   * that capture (a capture matching a declared drill endpointPattern).
    */
-  allowSelfEndpointDrill = true
+  allowSelfEndpointDrill: boolean | ((c: Capture) => boolean) = true
 ): FoldPlan[] {
   const plans: FoldPlan[] = [];
   // Spans every primary candidate, not just the current one's own drill
@@ -16764,7 +16769,11 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null
 ): Map<string, Set<Capture>> {
-  const structuralPlans = detectDrillDownFoldPlan(actions, null, foldReturnSpec !== null);
+  const structuralPlans = detectDrillDownFoldPlan(
+    actions,
+    null,
+    compileFoldReturnEndpointMatcher(foldReturnSpec)
+  );
   const specPlan = foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec);
   const plans = structuralPlans.length > 0 ? structuralPlans : specPlan === null ? [] : [specPlan];
   const consumersByValue = new Map<string, Set<Capture>>();
@@ -16888,7 +16897,9 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   const structuralPlans = detectDrillDownFoldPlan(
     actions,
     primaryIdentityAnchor,
-    foldReturnSpec !== null
+    // Only a capture matching the declared drill pattern may be a drill of
+    // the declared search; same-endpoint facet re-queries stay parallel.
+    compileFoldReturnEndpointMatcher(foldReturnSpec)
   );
   const plans =
     structuralPlans.length > 0
