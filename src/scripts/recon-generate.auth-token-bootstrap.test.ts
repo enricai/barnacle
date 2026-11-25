@@ -89,7 +89,7 @@ describe("recon-generate runtime bearer bootstrap", () => {
     const { stripTypeScriptTypes } = await import("node:module");
     const js = stripTypeScriptTypes(ts);
     const row = (id: string, t: string) => `${id}:T${Buffer.byteLength(t).toString(16)},${t}`;
-    const stream = row("a", CLIENT) + row("b", USER) + "c:[]";
+    const stream = `${row("a", CLIENT)}${row("b", USER)}c:[]`;
     const html = `<script>self.__next_f.push([1,${JSON.stringify(stream)}])</script>`;
     const run = new Function(
       "context",
