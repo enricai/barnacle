@@ -109,6 +109,25 @@ describe("recon-http 401 auth replay", () => {
     expect(msgs.some((m) => m.includes("rsc-row, row 7"))).toBe(true);
   });
 
+  it("reads the RSC T-row at exactly its hex length when another row follows immediately", async () => {
+    stub(true);
+    loggerStub.warn.mockClear();
+    const hex = JWT.length.toString(16);
+    const rows = `9:T${hex},${JWT}a:["$","div",null,{}]\n`;
+    const doc = `<script>self.__next_f.push([1,${JSON.stringify(rows)}])</script>`;
+    const r = await replayCapture("a.json", cap("GET"), {
+      htmlDocuments: [doc],
+      htmlDocumentUrls: ["https://docs.example.test/app"],
+    });
+    expect(r?.authReplay?.tokenSource).toMatchObject({ source: "rsc-row", row: "9" });
+    const msgs = loggerStub.warn.mock.calls.map((c) => String(c[0]));
+    const line = msgs.find((m) => m.includes("rsc-row, row 9"));
+    expect(line).toBeDefined();
+    expect(line).toContain("https://docs.example.test/app");
+    expect(line).not.toContain(JWT);
+    expect(msgs.some((m) => m.includes("build refresh strategy"))).toBe(false);
+  });
+
   it("records needs-browser when the retry also fails", async () => {
     stub(false);
     const r = await replayCapture("a.json", cap("GET"));
