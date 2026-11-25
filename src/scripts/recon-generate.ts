@@ -13171,6 +13171,39 @@ export function emitMultiStepExecuteHttp(
             },
             text,
           );
+          // A declared joinTemplate composes the drill's key from several
+          // primary fields, so the payload-key pass has already turned a
+          // top-level body key carrying that composed value into
+          // `${payload.<key>}`; rebind those to the per-row template.
+          const composedBinding = joinTemplateValueBinding(
+            target,
+            firstItem,
+            itemVar,
+            scopedAccessor,
+          );
+          let swappedWithTemplate = swapped;
+          if (composedBinding) {
+            try {
+              const parsedBody: unknown = JSON.parse(
+                chainCapture.requestPostData ?? "",
+              );
+              if (
+                parsedBody !== null &&
+                typeof parsedBody === "object" &&
+                !Array.isArray(parsedBody)
+              ) {
+                for (const [k, v] of Object.entries(parsedBody)) {
+                  if (String(v) !== composedBinding.value) continue;
+                  swappedWithTemplate = swappedWithTemplate
+                    .split(`\${payload.${k}}`)
+                    .join(composedBinding.replacement);
+                  referencesItemVar = true;
+                }
+              }
+            } catch {
+              // non-JSON body: nothing to rebind
+            }
+          }
           // Literal-value substitution: ONE guarded regex-alternation pass over
           // `swapped` for every threaded field's value, longest first — see
           // substituteThreadedValues's doc for why a per-field sequential pass
@@ -13251,7 +13284,7 @@ export function emitMultiStepExecuteHttp(
             referencesItemVar = true;
           }
           const result = substituteThreadedValues(
-            swapped,
+            swappedWithTemplate,
             filteredValueBindings,
           );
           const withDrillParamBindings = applyDrillParamBindings(
@@ -16762,7 +16795,7 @@ export function emitJoinTemplateExpr(
   const parts = tokens.map((t) => {
     if (t.kind === "literal") return JSON.stringify(t.text);
     if (t.format === undefined) return `String(${accessor(t.field)})`;
-    return `((v: unknown) => { const m = typeof v === "string" ? /^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2}):(\\d{2}))?/.exec(v) : null; const d = m ? null : new Date(v as string | number); const p = m ? [1, 2, 3, 4, 5, 6].map((n) => Number(m[n] ?? 0)) : d ? [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()] : []; const z = (n: number | undefined, w = 2) => String(n ?? 0).padStart(w, "0"); return ${JSON.stringify(t.format)}.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (k) => k === "yyyy" ? z(p[0], 4) : k === "yy" ? z((p[0] ?? 0) % 100) : k === "MM" ? z(p[1]) : k === "dd" ? z(p[2]) : k === "HH" ? z(p[3]) : k === "mm" ? z(p[4]) : z(p[5])); })(${accessor(t.field)})`;
+    return `[${accessor(t.field)}].map((v) => { const m = typeof v === "string" ? /^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2}):(\\d{2}))?/.exec(v) : null; const d = m ? null : new Date(typeof v === "number" ? v : String(v)); const q = (m ? [1, 2, 3, 4, 5, 6].map((n) => Number(m[n] ?? 0)) : d ? [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()] : []).map((n) => n); const s = q.map((n) => String(n).padStart(2, "0")); return ${JSON.stringify(t.format)}.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (k) => k === "yyyy" ? String(q[0] ?? 0).padStart(4, "0") : k === "yy" ? String((q[0] ?? 0) % 100).padStart(2, "0") : k === "MM" ? (s[1] ?? "00") : k === "dd" ? (s[2] ?? "00") : k === "HH" ? (s[3] ?? "00") : k === "mm" ? (s[4] ?? "00") : (s[5] ?? "00")); }).join("")`;
   });
   return parts.join(" + ");
 }
