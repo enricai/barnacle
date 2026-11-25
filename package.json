@@ -164,6 +164,10 @@
       "types": "./dist/scraper/flow-runner.d.ts",
       "default": "./dist/scraper/flow-runner.js"
     },
+    "./scraper/bearer-token-source": {
+      "types": "./dist/scraper/bearer-token-source.d.ts",
+      "default": "./dist/scraper/bearer-token-source.js"
+    },
     "./scraper/graphql-client": {
       "types": "./dist/scraper/graphql-client.d.ts",
       "default": "./dist/scraper/graphql-client.js"

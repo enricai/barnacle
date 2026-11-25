@@ -12,6 +12,8 @@ export interface GraphqlClientOptions<TResponse> {
   baseHeaders: Record<string, string>;
   /** GraphQL endpoint URL committed from recon (e.g. `https://example.com/graphql`). */
   endpoint: string;
+  /** Call-time headers; see `HttpClientOptions.resolveHeaders`. */
+  resolveHeaders?: (url: string) => Promise<Record<string, string>>;
 }
 
 /**
@@ -39,9 +41,9 @@ export function createGraphqlClient<TResponse>(
   variables: Record<string, unknown>,
   requestOptions?: GraphqlRequestOptions
 ) => Promise<TResponse> {
-  const { schema, bottleneck, baseHeaders, endpoint } = options;
+  const { schema, bottleneck, baseHeaders, endpoint, resolveHeaders } = options;
 
-  const httpClient = createHttpClient({ schema, bottleneck, baseHeaders });
+  const httpClient = createHttpClient({ schema, bottleneck, baseHeaders, resolveHeaders });
 
   return (
     operationName: string,

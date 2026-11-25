@@ -5820,12 +5820,150 @@ function isCredentialHeaderName(lower: string): boolean {
   );
 }
 
+/** Document URLs serving a bearer, by {@link bearerKindKey} of the bearer each one serves. */
+export type BearerSources = ReadonlyMap<string, string>;
+
 /**
- * Template-literal interpolation that throws at call time instead of freezing
- * a captured credential into generated source.
- * TODO(recon): supply a runtime token source (bootstrap + html extractor).
+ * Documents that replays proved serve a bearer. Keyed by the token's kind, so a
+ * document located for one endpoint's token is never used for another's.
  */
-function credentialHeaderThrowExpr(headerName: string): string {
+export function locateBearerSources(captures: Capture[], replays: ReplayResult[]): BearerSources {
+  const sources = new Map<string, string>();
+  for (const r of replays) {
+    const url = r.authReplay?.tokenReplayable ? r.authReplay.tokenSource?.url : undefined;
+    if (!url) continue;
+    for (const c of captures) {
+      if (endpointKey(c.url) !== endpointKey(r.url)) continue;
+      const header = authorizationOf(c);
+      const kind = header && bearerKindKey(header[1]);
+      if (kind && !sources.has(kind)) sources.set(kind, url);
+    }
+  }
+  return sources;
+}
+
+function authorizationOf(c: Capture): [string, string] | undefined {
+  return Object.entries(c.requestHeaders).find(([k]) => k.toLowerCase() === "authorization");
+}
+
+/** Identity of a captured JWT's kind (never its value); null when it is not a JWT. */
+export function bearerKindKey(value: string): string | null {
+  const jwt = stableJwtClaims(value);
+  return jwt && JSON.stringify([Object.entries(jwt.want).sort(), jwt.keys]);
+}
+
+// Only claims that name the token's kind select it; per-mint values
+// (session_state, at_hash, client address, uuids) differ for every pool token.
+const DISCRIMINATING_JWT_CLAIMS = new Set([
+  "typ",
+  "type",
+  "token_type",
+  "tokentype",
+  "token_use",
+  "use",
+  "aud",
+  "iss",
+  "scope",
+  "azp",
+  "client_id",
+  "role",
+]);
+
+/**
+ * Stable claims of a captured JWT (never its value) used to pick the right
+ * token among several in the document. Null when `value` is not a JWT.
+ */
+function stableJwtClaims(
+  value: string
+): { want: Record<string, string | boolean>; keys: string[] } | null {
+  const tok = /^bearer\s+(.+)$/i.exec(value.trim())?.[1] ?? value.trim();
+  if (!/^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(tok)) return null;
+  try {
+    const p = JSON.parse(Buffer.from(tok.split(".")[1] ?? "", "base64url").toString("utf8"));
+    if (!p || typeof p !== "object" || Array.isArray(p)) return null;
+    const want: Record<string, string | boolean> = {};
+    for (const [k, v] of Object.entries(p as Record<string, unknown>)) {
+      if (!DISCRIMINATING_JWT_CLAIMS.has(k.toLowerCase())) continue;
+      if (typeof v === "string" || typeof v === "boolean") want[k] = v;
+    }
+    return { want, keys: Object.keys(p as object).sort() };
+  } catch {
+    return null;
+  }
+}
+
+/** Multi-step preamble binding the engine's bearer mint to this call's base URL. */
+function tokenBootstrapHelperLines(recordedBaseUrl: string): string[] {
+  return [
+    "    // Bearer minted from the page that serves it; the recorded value is never emitted.",
+    "    const mintBearerToken = (documentUrl: string, claims: Record<string, unknown>, claimNames: string[]): Promise<string> =>",
+    `      mintBearerFromDocument({ documentUrl, recordedBaseUrl: ${JSON.stringify(recordedBaseUrl)}, claims, claimNames, bottleneck: limiter }, context.baseUrl);`,
+    "",
+  ];
+}
+
+/** Call-time bearer for a read flow's clients; `document` null means none was located. */
+export interface ReadFlowBearer {
+  document: string | null;
+  headerName: string;
+  prefix: string;
+  claims: Record<string, string | boolean>;
+  claimNames: string[];
+  bearerHosts: string[];
+  otherHosts: string[];
+}
+
+/**
+ * The bearer a read flow must obtain per call: proven by a replay on `endpoint`
+ * that was refused without it and answered with it. Null when no replay proved one.
+ */
+export function deriveReadFlowBearer(
+  captures: Capture[],
+  replays: ReplayResult[],
+  endpoint: string
+): ReadFlowBearer | null {
+  const key = endpointKey(endpoint);
+  if (!replays.some((r) => r.authReplay?.tokenReplayable && endpointKey(r.url) === key))
+    return null;
+  const sample = captures.find((c) => endpointKey(c.url) === key && authorizationOf(c));
+  const header = sample && authorizationOf(sample);
+  if (!header) return null;
+  const jwt = stableJwtClaims(header[1]);
+  const hosts = (cs: Capture[]): string[] => [
+    ...new Set(cs.filter((c) => URL.canParse(c.url)).map((c) => new URL(c.url).host)),
+  ];
+  const bearerHosts = hosts(captures.filter((c) => authorizationOf(c) !== undefined));
+  return {
+    document: locateBearerSources(captures, replays).get(bearerKindKey(header[1]) ?? "") ?? null,
+    headerName: header[0],
+    prefix: /^bearer\s/i.test(header[1].trim()) ? "Bearer " : "",
+    claims: jwt?.want ?? {},
+    claimNames: jwt?.keys ?? [],
+    bearerHosts,
+    otherHosts: hosts(captures).filter((h) => !bearerHosts.includes(h)),
+  };
+}
+
+/**
+ * Template-literal interpolation for a credential header. With a located
+ * token source and a JWT-shaped captured value it mints the bearer at call
+ * time from the HTML document (claims-selected); otherwise it throws at call
+ * time instead of freezing a captured credential into generated source.
+ */
+function credentialHeaderThrowExpr(
+  headerName: string,
+  capturedValue?: string,
+  bootstrap?: { sources: BearerSources; used: { value: boolean } }
+): string {
+  if (bootstrap && capturedValue !== undefined) {
+    const c = stableJwtClaims(capturedValue);
+    const url = bootstrap.sources.get(bearerKindKey(capturedValue) ?? "");
+    if (c && url !== undefined) {
+      bootstrap.used.value = true;
+      const prefix = /^bearer\s/i.test(capturedValue.trim()) ? "Bearer " : "";
+      return `${prefix}\${await mintBearerToken(${JSON.stringify(url)}, ${JSON.stringify(c.want)}, ${JSON.stringify(c.keys)})}`;
+    }
+  }
   const msg = JSON.stringify(
     `TODO: ${headerName} requires a runtime credential; none is wired (captured value intentionally not emitted)`
   ).replace(/[`\\]|\$\{/g, (m) => (m === "`" ? "'" : m));
@@ -10775,10 +10913,13 @@ export function emitMultiStepExecuteHttp(
   httpPrefixCount: number | undefined = undefined,
   /** The flow's declared submit patterns; a declared search is never judged
    * request-invariant by {@link isZeroVarianceRepeatCapture}. */
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  /** Documents proven to serve the steps' bearers ({@link locateBearerSources}). */
+  bearerSources: BearerSources = new Map()
 ): string {
   if (httpPrefixCount !== undefined) actions = actions.slice(0, httpPrefixCount);
   const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
+  const tokenBootstrap = { sources: bearerSources, used: { value: false } };
   interface Rendered {
     url: string;
     method: string;
@@ -11493,7 +11634,7 @@ export function emitMultiStepExecuteHttp(
         !joinCarryingHeaderNames?.has(k) &&
         !boundHeaderNames.has(lower)
       ) {
-        perCallHeaders[k] = credentialHeaderThrowExpr(k);
+        perCallHeaders[k] = credentialHeaderThrowExpr(k, v, tokenBootstrap);
       } else if (
         lower === "api-token" ||
         lower === "authorization" ||
@@ -11647,6 +11788,7 @@ export function emitMultiStepExecuteHttp(
       `    // TODO: unbound captured literal(s) — verify these carry caller data, not the recon capture's: ${[...unboundLiteralKeys].join(", ")}`
     );
   }
+  const bootstrapInsertAt = lines.length;
   const declaredNames = new Set<string>();
   // Every non-terminal chain step past the drill step is folded into the SAME
   // per-item loop the drill step itself emits (see below) — it must not also
@@ -11922,6 +12064,37 @@ export function emitMultiStepExecuteHttp(
               .split(payloadLastSegmentPlaceholder)
               .join(replacement);
           }, text);
+          // A declared joinTemplate composes the drill's key from several
+          // primary fields, so the payload-key pass has already turned a
+          // top-level body key carrying that composed value into
+          // `${payload.<key>}`; rebind those to the per-row template.
+          const composedBinding = joinTemplateValueBinding(
+            target,
+            firstItem,
+            itemVar,
+            scopedAccessor
+          );
+          let swappedWithTemplate = swapped;
+          if (composedBinding) {
+            try {
+              const parsedBody: unknown = JSON.parse(chainCapture.requestPostData ?? "");
+              if (
+                parsedBody !== null &&
+                typeof parsedBody === "object" &&
+                !Array.isArray(parsedBody)
+              ) {
+                for (const [k, v] of Object.entries(parsedBody)) {
+                  if (String(v) !== composedBinding.value) continue;
+                  swappedWithTemplate = swappedWithTemplate
+                    .split(`\${payload.${k}}`)
+                    .join(composedBinding.replacement);
+                  referencesItemVar = true;
+                }
+              }
+            } catch {
+              // A non-JSON body has no top-level keys to rebind.
+            }
+          }
           // Literal-value substitution: ONE guarded regex-alternation pass over
           // `swapped` for every threaded field's value, longest first — see
           // substituteThreadedValues's doc for why a per-field sequential pass
@@ -11995,7 +12168,7 @@ export function emitMultiStepExecuteHttp(
           if (swapFiredForItemBoundField || filteredValueBindings.some((b) => b.isItemBound)) {
             referencesItemVar = true;
           }
-          const result = substituteThreadedValues(swapped, filteredValueBindings);
+          const result = substituteThreadedValues(swappedWithTemplate, filteredValueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             specForTarget(target, foldReturnSpec),
             chainCapture,
@@ -12331,7 +12504,9 @@ export function emitMultiStepExecuteHttp(
         // per-call too, or its custom name freezes into an invariant
         // BASE_HEADERS-equivalent literal.
         if (isCredentialHeaderName(lower) && interpolated === v) {
-          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k)}\``);
+          perCallHeaderEntries.push(
+            `${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k, v, tokenBootstrap)}\``
+          );
         } else if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
           perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
         }
@@ -12454,6 +12629,8 @@ export function emitMultiStepExecuteHttp(
     lines.push(`    return { data: ${castToResponseType(returnVar)} };`);
   }
 
+  if (tokenBootstrap.used.value)
+    lines.splice(bootstrapInsertAt, 0, ...tokenBootstrapHelperLines(baseUrl));
   const renderedMultiStepBody = lines.join("\n");
   assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
   return renderedMultiStepBody;
@@ -13103,11 +13280,26 @@ export function correlateNavigateToParamsWithVariables(
   steps.forEach((step, i) => {
     const field = step.payloadField;
     if (!field || step.payloadFieldNone) return;
-    const paths = new Set<string>();
-    for (const [key, value] of queries[i]!) {
-      const seq = paramSeq.get(key);
-      if (seq === undefined || value === undefined) continue;
-      for (const [path, vs] of varSeq) if (vs === seq) paths.add(path);
+    const collect = (only?: (key: string) => boolean): Set<string> => {
+      const out = new Set<string>();
+      for (const [key, value] of queries[i]!) {
+        const seq = paramSeq.get(key);
+        if (seq === undefined || value === undefined || (only && !only(key))) continue;
+        for (const [path, vs] of varSeq) if (vs === seq) out.add(path);
+      }
+      return out;
+    };
+    // A param named like the payloadField is the strongest anchor; otherwise
+    // drop variables whose own leaf name is claimed by a different param.
+    const lc = field.toLowerCase();
+    let paths = collect((k) => k.toLowerCase() === lc);
+    if (paths.size === 0) {
+      paths = collect();
+      if (paths.size > 1) {
+        const keys = new Set([...queries[i]!.keys()].map((k) => k.toLowerCase()));
+        const unclaimed = [...paths].filter((p) => !keys.has(p.split(".").pop()!.toLowerCase()));
+        if (unclaimed.length > 0) paths = new Set(unclaimed);
+      }
     }
     const leafMatch = [...paths].filter(
       (p) => p.split(".").pop()!.toLowerCase() === field.toLowerCase()
@@ -15195,7 +15387,7 @@ export function emitJoinTemplateExpr(
   const parts = tokens.map((t) => {
     if (t.kind === "literal") return JSON.stringify(t.text);
     if (t.format === undefined) return `String(${accessor(t.field)})`;
-    return `((v: unknown) => { const m = typeof v === "string" ? /^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2}):(\\d{2}))?/.exec(v) : null; const d = m ? null : new Date(v as string | number); const p = m ? [1, 2, 3, 4, 5, 6].map((n) => Number(m[n] ?? 0)) : d ? [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()] : []; const z = (n: number | undefined, w = 2) => String(n ?? 0).padStart(w, "0"); return ${JSON.stringify(t.format)}.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (k) => k === "yyyy" ? z(p[0], 4) : k === "yy" ? z((p[0] ?? 0) % 100) : k === "MM" ? z(p[1]) : k === "dd" ? z(p[2]) : k === "HH" ? z(p[3]) : k === "mm" ? z(p[4]) : z(p[5])); })(${accessor(t.field)})`;
+    return `[${accessor(t.field)}].map((v) => { const m = typeof v === "string" ? /^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2}):(\\d{2}))?/.exec(v) : null; const d = m ? null : new Date(typeof v === "number" ? v : String(v)); const q = (m ? [1, 2, 3, 4, 5, 6].map((n) => Number(m[n] ?? 0)) : d ? [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()] : []); const s = q.map((n) => String(n).padStart(2, "0")); return ${JSON.stringify(t.format)}.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (k) => k === "yyyy" ? String(q[0] ?? 0).padStart(4, "0") : k === "yy" ? String((q[0] ?? 0) % 100).padStart(2, "0") : k === "MM" ? (s[1] ?? "00") : k === "dd" ? (s[2] ?? "00") : k === "HH" ? (s[3] ?? "00") : k === "mm" ? (s[4] ?? "00") : (s[5] ?? "00")); }).join("")`;
   });
   return parts.join(" + ");
 }
@@ -18162,8 +18354,18 @@ export function classifySubmissionFlow(o: {
   graphqlActionSequenceHasMutation: boolean;
   /** A declared submit endpoint re-queried with differing filter bodies. */
   isDeclaredPostSearchRead?: boolean;
+  /** The author marked a step as the submit, so a reads-only recording is still a submission. */
+  declaresSubmitStep?: boolean;
 }): boolean {
-  if (o.noReplayableActionFlow) return true;
+  const readsOnly =
+    o.actionCaptureMethods.length > 0 &&
+    (o.gql
+      ? !o.graphqlActionSequenceHasMutation
+      : o.actionCaptureMethods.every((m) => {
+          const u = (m ?? "").toUpperCase();
+          return u === "GET" || u === "OPTIONS";
+        }));
+  if (o.noReplayableActionFlow) return o.declaresSubmitStep === true || !readsOnly;
   if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
@@ -18406,6 +18608,8 @@ export function emitContractTsParts(opts: {
   /** The flow's declared submit patterns, so declared searches are never
    * judged request-invariant by the emitter's zero-variance guards. */
   submitPatterns?: SubmitPatterns | null;
+  /** Bearer the read-flow clients obtain per call ({@link deriveReadFlowBearer}). */
+  readFlowBearer?: ReadFlowBearer | null;
 }): { code: string; payloadSchemaExpr: string } {
   const {
     siteId,
@@ -18456,6 +18660,7 @@ export function emitContractTsParts(opts: {
     headerBindings = [],
     unpopulatedDeclaredVariables = [],
     fallbackGateSpec = {},
+    readFlowBearer = null,
   } = opts;
   if (mixedHttpPrefix !== (mixedHandoverOpt !== undefined)) {
     throw new Error(
@@ -19180,6 +19385,15 @@ export function emitContractTsParts(opts: {
       ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${escapeForTemplateLiteral(gqlQuery!.trim())}\`;\n`
       : "";
 
+  const usesReadFlowBearer =
+    readFlowBearer !== null && !omitExecuteHttp && !mixedHttpPrefix && !multiStepBody;
+  const resolveHeadersOption = usesReadFlowBearer ? ", resolveHeaders: resolveAuthHeaders" : "";
+  const readFlowBearerBlock = !usesReadFlowBearer
+    ? ""
+    : `
+const resolveAuthHeaders = createBearerHeaderResolver({ documentUrl: ${JSON.stringify(readFlowBearer.document)}, recordedBaseUrl: ${JSON.stringify(baseUrl)}, claims: ${JSON.stringify(readFlowBearer.claims)}, claimNames: ${JSON.stringify(readFlowBearer.claimNames)}, bottleneck: limiter, headerName: ${JSON.stringify(readFlowBearer.headerName)}, prefix: ${JSON.stringify(readFlowBearer.prefix)}, bearerHosts: ${JSON.stringify(readFlowBearer.bearerHosts)}, otherHosts: ${JSON.stringify(readFlowBearer.otherHosts)} });
+`;
+
   const gqlCacheBlock =
     omitExecuteHttp || mixedHttpPrefix
       ? ""
@@ -19196,7 +19410,7 @@ function getGql(baseUrl: string): GqlFn {
       schema: ${pascal}ResponseSchema,
       bottleneck: limiter,
       baseHeaders: BASE_HEADERS,
-      endpoint: \`\${baseUrl}${endpointPath}\`,
+      endpoint: \`\${baseUrl}${endpointPath}\`,${usesReadFlowBearer ? "\n      resolveHeaders: resolveAuthHeaders," : ""}
     });
     gqlCache.set(baseUrl, client);
   }
@@ -19208,12 +19422,12 @@ ${
   // GraphQL to the primary endpoint.
   needsFoldHttpClient
     ? `
-const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
+const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption}${resolveHeadersOption} });
 `
     : ""
 }`
         : `
-const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
+const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption}${resolveHeadersOption} });
 `;
 
   const gqlOperationNameExpr = gqlOperationName
@@ -19890,6 +20104,18 @@ ${executeHttpBody}
  * Stagehand automatically on schema drift or bot challenge.
  */`;
 
+  const bearerImports = [
+    ...(readFlowBearerBlock.includes("createBearerHeaderResolver(")
+      ? ["createBearerHeaderResolver"]
+      : []),
+    ...(!omitExecuteHttp && executeHttpBody.includes("mintBearerFromDocument(")
+      ? ["mintBearerFromDocument"]
+      : []),
+  ];
+  const bearerImport =
+    bearerImports.length > 0
+      ? `import { ${bearerImports.join(", ")} } from "${ENGINE_PKG}/scraper/bearer-token-source";\n`
+      : "";
   const redirectFollowImport =
     !omitExecuteHttp && /\bfetchFollowingRedirectsPreservingMethod\(/.test(executeHttpBody)
       ? `import { fetchFollowingRedirectsPreservingMethod } from "${ENGINE_PKG}/scraper/redirect-follow";\n`
@@ -19900,7 +20126,7 @@ ${executeHttpBody}
 
 ${bottleneckImport}import { z } from "zod/v4";
 
-${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${redirectFollowImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}${
+${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${bearerImport}${redirectFollowImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}${
   !omitExecuteHttp && /\bgetLogger\(/.test(executeHttpBody)
     ? `\nimport { getLogger } from "${ENGINE_PKG}/lib/logging";`
     : ""
@@ -19918,7 +20144,7 @@ ${optionDecls}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
-${internalRequestReferenceBlock}${queryConst}${gqlCacheBlock}${httpPrefixBlock}${fixtureComments}
+${internalRequestReferenceBlock}${queryConst}${readFlowBearerBlock}${gqlCacheBlock}${httpPrefixBlock}${fixtureComments}
 ${pluginDocComment}
 export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
   meta: {
@@ -22597,6 +22823,7 @@ export async function main(): Promise<void> {
       gql: !!gql,
       actionCaptureMethods: actionCaptures.map((a) => a.capture.method),
       graphqlActionSequenceHasMutation,
+      declaresSubmitStep: flowSteps.some((st) => typeof st !== "string" && st.submitStep === true),
     });
 
     // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
@@ -22836,7 +23063,8 @@ export async function main(): Promise<void> {
             vocabulary,
             applicantContract,
             httpStepsOpt?.actions,
-            submitPatterns
+            submitPatterns,
+            locateBearerSources(activeCaptures, replays)
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
@@ -23140,6 +23368,9 @@ export async function main(): Promise<void> {
       payloadFieldNames: browserFlow.payloadFieldNames,
       optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
       headerBindings,
+      readFlowBearer: isSubmissionFlow
+        ? null
+        : deriveReadFlowBearer(activeCaptures, replays, `${baseUrl}${endpointPath}`),
       unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
       fallbackGateSpec,
       submitPatterns,

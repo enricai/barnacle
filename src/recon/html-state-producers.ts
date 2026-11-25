@@ -197,6 +197,8 @@ export function extractHtmlBearerTokens(body: unknown): HtmlBearerToken[] {
       }
     }
   };
+  let rest = "";
+  let cursor = 0;
   const rowRe = /([0-9a-zA-Z]+):T([0-9a-fA-F]+),/g;
   for (let m = rowRe.exec(stream); m; m = rowRe.exec(stream)) {
     const start = m.index + m[0].length;
@@ -209,8 +211,16 @@ export function extractHtmlBearerTokens(body: unknown): HtmlBearerToken[] {
       end += cp > 0xffff ? 2 : 1;
     }
     add(tokensIn(stream.slice(start, end), "rsc-row", m[1]));
+    rest += stream.slice(cursor, m.index);
+    cursor = end;
     // Resume right after the row's text; the next row id may follow directly.
     rowRe.lastIndex = end;
+  }
+  rest += stream.slice(cursor);
+  // Non-text rows (e.g. `1:{"token":"..."}`): the token is delimited by the JSON itself.
+  for (const line of rest.split("\n")) {
+    const id = /^([0-9a-zA-Z]+):/.exec(line)?.[1];
+    add(tokensIn(line, "rsc-row", id));
   }
   const rscTokens = new Set(found.map((t) => t.token));
   const plain = body.replace(/push\(\s*\[\s*1\s*,\s*"(?:[^"\\]|\\.)*"\s*\]\s*\)/g, "");
