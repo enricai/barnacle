@@ -3812,6 +3812,24 @@ function restrictToSubmitPattern<T extends Capture>(
   return matching.length > 0 ? matching : pool;
 }
 
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** True for an empty answer or one made only of booleans/null (`{ok:true}`). */
+function isBareAcknowledgement(body: unknown): boolean {
+  if (body === null || body === undefined || body === "") return true;
+  if (typeof body === "boolean") return true;
+  if (typeof body !== "object") return false;
+  return Object.values(body as Record<string, unknown>).every(
+    (v) => v === null || typeof v === "boolean"
+  );
+}
+
 /**
  * Truncates a host-gated action sequence at the LAST capture matching the
  * flow's declared submit pattern, keeping every capture up to and including
@@ -3862,6 +3880,12 @@ export function truncateActionSequenceAtSubmitPattern(
   // depends on, so only the stronger evidence of an endpoint answering many
   // distinct requests identically marks it as a beacon there.
   const isPreSubmitBeacon = preSubmitBeaconPredicate(pool);
+  const submitOrigin = originOf(sequence[firstSubmitIndex]!.capture.url);
+  const laterEndpoints = new Set(
+    sequence
+      .slice(firstSubmitIndex + 1)
+      .map((a) => `${a.capture.method} ${endpointKey(a.capture.url)}`)
+  );
   return sequence
     .slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1)
     .map((step, idx) => ({ step, idx }))
@@ -3870,6 +3894,26 @@ export function truncateActionSequenceAtSubmitPattern(
       if (idx === firstSubmitIndex) return true;
       if (matchesSubmit(step.capture) || matchesFoldReturn(step.capture)) return true;
       if (submitPatterns?.endpoint == null) return true;
+      const m = step.capture.method?.toUpperCase();
+      // A bare acknowledgement from another origin is third-party telemetry.
+      if (
+        m !== "GET" &&
+        submitOrigin !== null &&
+        originOf(step.capture.url) !== submitOrigin &&
+        isBareAcknowledgement(step.capture.responseBody)
+      ) {
+        return false;
+      }
+      // A pre-submit endpoint that keeps recurring after the submit, answering
+      // requests identically, is chrome rather than a chain step.
+      if (
+        idx < firstSubmitIndex &&
+        m !== "GET" &&
+        laterEndpoints.has(`${step.capture.method} ${endpointKey(step.capture.url)}`) &&
+        isBeacon(step.capture)
+      ) {
+        return false;
+      }
       // Before the FIRST submit match, the pre-submit chain (e.g. a pair of
       // facet re-queries) must survive while a recurring telemetry POST that
       // ignores its request is dropped; after it, chrome recurring between

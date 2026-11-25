@@ -2188,7 +2188,7 @@ describe("matchesAnyTelemetryPattern — bare word host labels", () => {
   });
 });
 
-describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
+describe("isZeroVarianceRepeatCapture declared-submit exemption (14 posts)", () => {
   const url = "https://api.example-shop.test/v1/items";
   const posts = Array.from({ length: 14 }, (_, i) => ({
     method: "POST",
