@@ -142,4 +142,88 @@ describe("recon-generate credential headers", () => {
     expect(body).not.toContain("secretvalue123456789");
     expect(body).toContain("TODO: X-A'b-Token requires");
   });
+  describe("runtime token bootstrap", () => {
+    const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const USER = `eyJhbGciOiJIUzI1NiJ9.${b64({ tokenType: "user", sub: "u1" })}.sigsigsig`;
+    const emitWith = (tokenSource: { url: string } | null) =>
+      emitMultiStepExecuteHttp(
+        [
+          step(
+            "r0",
+            "https://app.example.test/a/login/",
+            { "Content-Type": "application/json" },
+            false
+          ),
+          step(
+            "r1",
+            "https://app.example.test/a/submit/",
+            {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${USER}`,
+              Cookie: COOKIE,
+              "X-Csrf-Token": "csrfvalue987654321",
+            },
+            false
+          ),
+        ] as never,
+        { q: "one" },
+        { stringMessageKey: null, nestedErrorPaths: [] },
+        new Map(),
+        new Set(),
+        new Map(),
+        new Set(),
+        new Map(),
+        new Map(),
+        "https://app.example.test",
+        new Map(),
+        new Map(),
+        null,
+        new Map(),
+        new Map(),
+        new Set(),
+        [],
+        new Map(),
+        new Map(),
+        null,
+        null,
+        [],
+        undefined,
+        undefined,
+        undefined,
+        tokenSource
+      );
+
+    const noLiterals = (body: string) => {
+      expect(body).not.toContain(USER);
+      expect(body).not.toContain("sigsigsig");
+      expect(body).not.toContain("abcdef123456zzz");
+      expect(body).not.toContain("csrfvalue987654321");
+    };
+
+    it("with a token source: fetches the document, reads RSC rows by hex length, selects by claims, no literal", async () => {
+      const body = emitWith({ url: "https://app.example.test/dash" });
+      noLiterals(body);
+      expect(body).toContain('context.baseUrl + "/dash"');
+      expect(body).toContain("parseInt(m[2] as string, 16)");
+      expect(body).toContain('{"tokenType":"user"}');
+      expect(body).toContain("Bearer ${await mintBearerToken(");
+      expect(body).not.toContain("TODO: Authorization");
+      // Cookie is dropped and x-*-token still throws; neither is frozen.
+      expect(body).not.toContain("Cookie");
+      expect(body).toContain("TODO: X-Csrf-Token requires");
+      // The emitted body must be valid TypeScript: strip types (throws on a syntax
+      // error), then compile as an async function body.
+      const { stripTypeScriptTypes } = await import("node:module");
+      const js = stripTypeScriptTypes(`async function f(context: any) {\n${body}\n}`);
+      expect(() => new Function(`${js}; return f;`)).not.toThrow();
+    });
+
+    it("without a token source: throw-at-call-time stub with TODO, no bootstrap, no literal", () => {
+      const body = emitWith(null);
+      noLiterals(body);
+      expect(body).toContain("TODO: Authorization requires a runtime credential");
+      expect(body).toContain("throw new Error");
+      expect(body).not.toContain("mintBearerToken");
+    });
+  });
 });
