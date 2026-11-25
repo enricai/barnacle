@@ -218,7 +218,7 @@ describe("flow-runner/executeStepWithHealing — judge-rejected mid-flow Save an
 });
 
 describe("flow-runner/executeStepWithHealing — select popup opened with the field value unchanged", () => {
-  const SELECT_STEP = "Click the 'Preferred Contact Method' dropdown";
+  const SELECT_STEP = "In the 'Preferred Contact Method' dropdown, select 'Email'";
   const WIDGET = "xpath=//*[@id='contact-widget']";
 
   beforeEach(() => {
