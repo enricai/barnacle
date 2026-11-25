@@ -82,9 +82,10 @@ describe("recon-generate runtime bearer bootstrap", () => {
 
   it("extracts the right token when the next row id follows with no separator", async () => {
     const body = emit({ url: "/dash" });
-    const start = body.indexOf("const mintBearerToken");
-    const end = body.indexOf("\n    };\n", start) + "\n    };\n".length;
-    const ts = body.slice(start, end).replace(/^\s*const mintBearerToken/, "const mintBearerToken");
+    const start = body.indexOf("const bearerCache");
+    const tail = body.indexOf("no token matching the expected claims", start);
+    const end = body.indexOf("\n    };\n", tail) + "\n    };\n".length;
+    const ts = body.slice(start, end);
     const { stripTypeScriptTypes } = await import("node:module");
     const js = stripTypeScriptTypes(ts);
     const row = (id: string, t: string) => `${id}:T${Buffer.byteLength(t).toString(16)},${t}`;
@@ -92,7 +93,7 @@ describe("recon-generate runtime bearer bootstrap", () => {
     const html = `<script>self.__next_f.push([1,${JSON.stringify(stream)}])</script>`;
     const run = new Function(
       "context",
-      "fetch",
+      "fetchFollowingRedirectsPreservingMethod",
       `${js}; return mintBearerToken({tokenType:"user"}, []);`
     );
     const out = await run({ baseUrl: "https://app.example.test" }, async () => ({
