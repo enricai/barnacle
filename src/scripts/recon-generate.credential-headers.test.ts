@@ -192,7 +192,11 @@ describe("recon-generate credential headers", () => {
         undefined,
         undefined,
         null,
-        tokenUrl === null ? new Map() : new Map([[bearerKindKey(`Bearer ${USER}`) ?? "", { url: tokenUrl, source: "html" as const }]])
+        tokenUrl === null
+          ? new Map()
+          : new Map([
+              [bearerKindKey(`Bearer ${USER}`) ?? "", { url: tokenUrl, source: "html" as const }],
+            ])
       );
 
     const noLiterals = (body: string) => {
