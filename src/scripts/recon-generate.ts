@@ -3825,7 +3825,7 @@ export function truncateActionSequenceAtSubmitPattern(
         !(submitPatterns?.endpoint != null && isBeacon(step.capture))
       );
     });
-}}
+}
 
 /**
  * Reads `submit-manifest.json` (written by recon-browser) and resolves it to the
