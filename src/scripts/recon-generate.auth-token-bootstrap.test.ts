@@ -59,7 +59,7 @@ const emit = (tokenUrl: string | null, multipart = false) => {
     undefined,
     undefined,
     null,
-    tokenUrl === null ? new Map() : new Map([[bearerKindKey(`Bearer ${USER}`) ?? "", tokenUrl]])
+    tokenUrl === null ? new Map() : new Map([[bearerKindKey(`Bearer ${USER}`) ?? "", { url: tokenUrl, source: "html" as const }]])
   );
 };
 
@@ -70,7 +70,7 @@ describe("recon-generate runtime bearer bootstrap", () => {
     expect(body).not.toContain("sigsigsig");
     expect(body).toContain('mintBearerToken("https://app.example.test/dash?x=1"');
     expect(body).toContain('{"tokenType":"user"}');
-    expect(body).toContain("Bearer ${await mintBearerToken(");
+    expect(body).toContain("Bearer ${/* bearer source: html */ await mintBearerToken(");
     expect(body).not.toContain("TODO: Authorization");
   });
 

@@ -192,7 +192,7 @@ describe("recon-generate credential headers", () => {
         undefined,
         undefined,
         null,
-        tokenUrl === null ? new Map() : new Map([[bearerKindKey(`Bearer ${USER}`) ?? "", tokenUrl]])
+        tokenUrl === null ? new Map() : new Map([[bearerKindKey(`Bearer ${USER}`) ?? "", { url: tokenUrl, source: "html" as const }]])
       );
 
     const noLiterals = (body: string) => {
@@ -207,7 +207,7 @@ describe("recon-generate credential headers", () => {
       noLiterals(body);
       expect(body).toContain('mintBearerToken("https://app.example.test/dash"');
       expect(body).toContain('{"tokenType":"user"}');
-      expect(body).toContain("Bearer ${await mintBearerToken(");
+      expect(body).toContain("Bearer ${/* bearer source: html */ await mintBearerToken(");
       expect(body).not.toContain("TODO: Authorization");
       // Cookie is dropped and x-*-token still throws; neither is frozen.
       expect(body).not.toContain("Cookie");
