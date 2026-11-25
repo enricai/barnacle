@@ -277,7 +277,7 @@ describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
     url,
     requestPostData: JSON.stringify({
       booking: { bookingAgency: { id: "X" } },
-      filters: { cruiseType: "C", trades: [trades] },
+      filters: { kind: "C", trades: [trades] },
     }),
     responseBody: { items: [{ id: trades }] },
   });
