@@ -5,6 +5,7 @@ import {
   bearerKindKey,
   compileActionSteps,
   deriveReadFlowBearer,
+  emitContractTsParts,
   emitMultiStepExecuteHttp,
   indexStateValues,
   locateBearerSources,
@@ -146,5 +147,35 @@ describe("bearer sources", () => {
     expect(rsc).toContain("/* bearer source: rsc-row row 1a */ await mintBearerToken(");
     const html = emitMulti({ url: "https://app.example.test/d", source: "html" });
     expect(html).toContain("/* bearer source: html */ await mintBearerToken(");
+  });
+
+  it("states the source kind and RSC row in the read-flow emitted plugin", () => {
+    const emit = (source: "rsc-row" | "html", row?: string) =>
+      emitContractTsParts({
+        siteId: "recon-site-9",
+        pascal: "ReconSite9",
+        baseUrl: "https://shop.example.test",
+        baseHeaders: {},
+        minTime: 100,
+        safeRps: 10,
+        responseBody: { ok: true },
+        gql: false,
+        gqlQuery: null,
+        endpointPath: "/api",
+        auxFiles: [],
+        readFlowBearer: {
+          document: "https://shop.example.test/d",
+          source,
+          row,
+          headerName: "Authorization",
+          prefix: "Bearer ",
+          claims: { tokenType: "user" },
+          claimNames: ["tokenType"],
+          bearerHosts: ["shop.example.test"],
+          otherHosts: [],
+        },
+      }).code;
+    expect(emit("rsc-row", "1a")).toContain("// bearer source: rsc-row row 1a\n");
+    expect(emit("html")).toContain("// bearer source: html\n");
   });
 });
