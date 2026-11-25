@@ -6344,7 +6344,7 @@ function locatedTokenSource(
 ): TokenBootstrapSource | null {
   for (const r of replays) {
     const ts = r.authReplay?.tokenSource;
-    if (ts?.url) return { url: ts.url };
+    if (r.authReplay?.tokenReplayable && ts?.url) return { url: ts.url };
   }
   return null;
 }
