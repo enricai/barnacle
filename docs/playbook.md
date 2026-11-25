@@ -595,7 +595,8 @@ the same key into a single origin call, preventing thundering-herd fan-out on
 cold start. Cache key: `${context.baseUrl}:${plugin.meta.siteId}:<sha256(canonical
 payload)[:32]>` (`src/plugins/loader.ts:82-83`) — swapping a site's base URL
 via env naturally invalidates its cache. Object key order and primitive array
-order are normalized. Default TTL 15 minutes, via `CACHE_TTL_MS`.
+order are normalized. Default TTL 15 minutes, via `CACHE_TTL_MS`; a result can
+shorten its own with `cacheTtlMs`.
 
 ### 5B — Browser fallback (on failure only)
 

@@ -316,15 +316,19 @@ export interface SitePluginContext {
  * re-running the browser flow.
  */
 export interface SitePluginResult<TData = Record<string, unknown>> {
-  /**
-   * Merged verbatim into the response envelope by core.
-   *
-   * Completeness contract: a result whose `data.truncated === true` declares
-   * itself partial. The engine honors this: such a result is returned to the
-   * caller but never written to the response cache, so it is not served for
-   * the full TTL as if it were the complete answer.
-   */
+  /** Merged verbatim into the response envelope by core. */
   data: TData;
+  /**
+   * How long the response cache may serve this hot-path result, in
+   * milliseconds, when that is shorter than `CACHE_TTL_MS`. For an answer a
+   * deadline, a refusal or a failed call left incomplete: cached briefly it
+   * still shields a struggling site from repeat requests, without being served
+   * for the full TTL as if it were complete. Can only shorten the TTL; anything
+   * that is not at least 1 (0, negative, NaN) means do not cache. Leave it
+   * unset for a complete answer, which includes one page of a longer list when
+   * one page is what the caller asked for. Never part of the response.
+   */
+  cacheTtlMs?: number;
   /**
    * Written to the `submission-envelope` telemetry record by core. If absent, core
    * writes `data` instead. Intentionally not generic so plugins can redact PII
