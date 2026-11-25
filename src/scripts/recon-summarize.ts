@@ -39,7 +39,6 @@ const logger = getScriptLogger("recon-summarize");
 const DEFAULT_OUT = "docs/target-recon.md";
 const PLACEHOLDER_ID = "<id>";
 
-/** Renders an ISO timestamp as a UTC medium-date/short-time string for the findings doc. */
 /** One Auth Required bullet: the recorded authReplay outcome, else the generic advice. */
 export function formatAuthRequiredLine(r: ReplayResult): string {
   const a = r.authReplay;
@@ -51,6 +50,7 @@ export function formatAuthRequiredLine(r: ReplayResult): string {
   return `- \`${r.url}\` — 401. Authorized retry: ${a.status}; token ${a.tokenReplayable ? "replayable" : "not replayable"}; ${where}.`;
 }
 
+/** Renders an ISO timestamp as a UTC medium-date/short-time string for the findings doc. */
 export function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("en-US", {
     timeZone: "UTC",
