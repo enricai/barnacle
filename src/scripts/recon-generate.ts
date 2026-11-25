@@ -5822,7 +5822,7 @@ function stableJwtClaims(
 }
 
 /** Runtime helper source that fetches the document and extracts the bearer by claims. */
-function tokenBootstrapHelperLines(src: TokenBootstrapSource): string[] {
+function tokenBootstrapHelperLines(src: TokenBootstrapSource, recordedBaseUrl = ""): string[] {
   let path: string;
   let origin = "";
   try {
@@ -5836,9 +5836,16 @@ function tokenBootstrapHelperLines(src: TokenBootstrapSource): string[] {
   }
   // Same host as the plugin's base URL (tenant-resolved at runtime) -> baseUrl;
   // a different host -> the captured origin.
-  const base = origin
-    ? `(new URL(context.baseUrl).host === ${JSON.stringify(new URL(origin).host)} ? context.baseUrl : ${JSON.stringify(origin)})`
-    : "context.baseUrl";
+  let recordedHost = "";
+  try {
+    recordedHost = new URL(recordedBaseUrl).host;
+  } catch {
+    // no recorded base URL
+  }
+  const base =
+    origin && new URL(origin).host !== recordedHost
+      ? `(new URL(context.baseUrl).host === ${JSON.stringify(new URL(origin).host)} ? context.baseUrl : ${JSON.stringify(origin)})`
+      : "context.baseUrl";
   return [
     "    // Runtime bearer: fetched from the page that serves it; the captured value is never emitted.",
     "    const bearerCache = new Map<string, Promise<string>>();",
@@ -12623,7 +12630,7 @@ export function emitMultiStepExecuteHttp(
   }
 
   if (tokenBootstrap.used.value && tokenSource)
-    lines.splice(bootstrapInsertAt, 0, ...tokenBootstrapHelperLines(tokenSource));
+    lines.splice(bootstrapInsertAt, 0, ...tokenBootstrapHelperLines(tokenSource, baseUrl));
   const renderedMultiStepBody = lines.join("\n");
   assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
   return renderedMultiStepBody;
