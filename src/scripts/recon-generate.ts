@@ -3816,13 +3816,16 @@ export function truncateActionSequenceAtSubmitPattern(
   return sequence
     .slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1)
     .filter((step) => step.capture.method?.toUpperCase() !== "OPTIONS")
-    .filter(
-      (step) =>
-        matchesSubmit(step.capture) ||
+    .filter((step) => {
+      // Only hops after the last submit match are candidates: pre-submit chain
+      // steps (e.g. repeated wizard section saves) must survive.
+      if (sequence.indexOf(step) <= lastSubmitIndex) return true;
+      return (
         matchesFoldReturn(step.capture) ||
         !(submitPatterns?.endpoint != null && isBeacon(step.capture))
-    );
-}
+      );
+    });
+}}
 
 /**
  * Reads `submit-manifest.json` (written by recon-browser) and resolves it to the
