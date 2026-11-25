@@ -3798,9 +3798,13 @@ export function truncateActionSequenceAtSubmitPattern(
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileDeclaredDrillMatcher(foldReturnSpec);
   let lastSubmitIndex = -1;
+  let firstSubmitIndex = -1;
   let lastFoldIndex = -1;
   for (let i = 0; i < sequence.length; i++) {
-    if (matchesSubmit(sequence[i]!.capture)) lastSubmitIndex = i;
+    if (matchesSubmit(sequence[i]!.capture)) {
+      lastSubmitIndex = i;
+      if (firstSubmitIndex === -1) firstSubmitIndex = i;
+    }
     if (matchesFoldReturn(sequence[i]!.capture)) lastFoldIndex = i;
   }
   if (lastSubmitIndex === -1) return [];
@@ -3815,16 +3819,20 @@ export function truncateActionSequenceAtSubmitPattern(
   );
   return sequence
     .slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1)
-    .filter((step) => step.capture.method?.toUpperCase() !== "OPTIONS")
-    .filter((step) => {
-      // Only hops after the last submit match are candidates: pre-submit chain
-      // steps (e.g. repeated wizard section saves) must survive.
-      if (sequence.indexOf(step) <= lastSubmitIndex) return true;
+    .map((step, idx) => ({ step, idx }))
+    .filter(({ step }) => step.capture.method?.toUpperCase() !== "OPTIONS")
+    .filter(({ step, idx }) => {
+      // Only hops after the FIRST submit match are candidates: the pre-submit
+      // chain (e.g. repeated wizard section saves) must survive, while chrome
+      // recurring between repeated submit/drill cycles is dropped.
+      if (idx <= firstSubmitIndex) return true;
       return (
+        matchesSubmit(step.capture) ||
         matchesFoldReturn(step.capture) ||
         !(submitPatterns?.endpoint != null && isBeacon(step.capture))
       );
-    });
+    })
+    .map(({ step }) => step);
 }
 
 /**
