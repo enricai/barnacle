@@ -58,6 +58,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { isAllowedFixtureHost, isHttpUrl, registrableDomain } from "@/recon/capture-filters";
+import { isSafeToReplay } from "@/recon/replay-safety";
 import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
 import { followNewPage } from "@/scraper/active-page";
 import {
@@ -181,7 +182,6 @@ import {
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import type { Capture } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
-import { isSafeToReplay } from "@/recon/replay-safety";
 import type { Logger } from "@/types/logging";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 import {
@@ -18894,7 +18894,9 @@ async function runHealingFlowScoped(
   // Kind evidence (method + GraphQL document) of captures the declared
   // submitEndpointPattern matched, fed to flowHasSubmitSemantics.
   const patternMatchedCaptures: Array<{ method: string; query?: string | null }> = [];
-  const submitPatternRx = deps.submitEndpointPattern ? new RegExp(deps.submitEndpointPattern) : null;
+  const submitPatternRx = deps.submitEndpointPattern
+    ? new RegExp(deps.submitEndpointPattern)
+    : null;
   const wireCapture = (target: Page): (() => void) =>
     wireSignalCapture(target, {
       counter,
