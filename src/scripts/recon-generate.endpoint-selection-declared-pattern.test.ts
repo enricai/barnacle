@@ -103,3 +103,43 @@ describe("truncateActionSequenceAtSubmitPattern preflights", () => {
     ).toEqual([]);
   });
 });
+
+describe("truncateActionSequenceAtSubmitPattern pre-submit beacons", () => {
+  const pats = { endpoint: "/api/search$", body: null };
+  const post = (path: string, body: unknown, response: unknown, index: number) => ({
+    capture: cap({
+      method: "POST",
+      url: `https://example.com${path}`,
+      requestPostData: JSON.stringify(body),
+      responseBody: response,
+    }),
+    index,
+  });
+
+  it("drops a pre-submit endpoint that answers 3+ distinct requests identically", () => {
+    const seq = [
+      post("/api/ui-events", { event: "load", seq: 1 }, { ok: true }, 0),
+      post("/api/ui-events", { event: "scroll", seq: 2 }, { ok: true }, 1),
+      post("/api/ui-events", { event: "click", seq: 3 }, { ok: true }, 2),
+      post("/api/search", { q: "a" }, { hits: [1] }, 3),
+    ];
+    expect(truncateActionSequenceAtSubmitPattern(seq, pats).map((s) => s.index)).toEqual([3]);
+  });
+
+  it("keeps two differing pre-submit requests that share an acknowledgement", () => {
+    const seq = [
+      post("/api/quote", { filters: ["A"] }, { ok: true }, 0),
+      post("/api/quote", { filters: ["A", "B"] }, { ok: true }, 1),
+      post("/api/search", { q: "a" }, { hits: [1] }, 2),
+    ];
+    expect(truncateActionSequenceAtSubmitPattern(seq, pats).map((s) => s.index)).toEqual([0, 1, 2]);
+  });
+
+  it("keeps a pre-submit endpoint whose answers depend on the request", () => {
+    const seq = [0, 1, 2].map((n) => post("/api/step", { n }, { echo: n }, n));
+    seq.push(post("/api/search", { q: "a" }, { hits: [1] }, 3));
+    expect(truncateActionSequenceAtSubmitPattern(seq, pats).map((s) => s.index)).toEqual([
+      0, 1, 2, 3,
+    ]);
+  });
+});

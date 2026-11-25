@@ -3874,9 +3874,7 @@ export function truncateActionSequenceAtSubmitPattern(
       // facet re-queries) must survive while a recurring telemetry POST that
       // ignores its request is dropped; after it, chrome recurring between
       // repeated submit/drill cycles is dropped on the weaker evidence.
-      return idx < firstSubmitIndex
-        ? !isPreSubmitBeacon(step.capture)
-        : !isBeacon(step.capture);
+      return idx < firstSubmitIndex ? !isPreSubmitBeacon(step.capture) : !isBeacon(step.capture);
     })
     .map(({ step }) => step);
 }
