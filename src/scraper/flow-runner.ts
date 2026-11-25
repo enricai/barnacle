@@ -1724,7 +1724,7 @@ export const STEP_WATCHDOG_MS = 120_000;
  * Review dump had 0 ng-invalid but 18 `Mui-error` + 12 `aria-invalid`.
  */
 const INVALID_MARKER_CLASS_SOURCE =
-  "ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid|Mui-error";
+  "ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid|Mui-error|has-error";
 /**
  * Browser-context predicate string: given an element `el` in scope, is it a
  * required-unfilled / invalid control? Covers the class markers above AND the
@@ -1736,23 +1736,31 @@ const INVALID_MARKER_EL_EXPR = `((el) => {
   const rx = /(${INVALID_MARKER_CLASS_SOURCE})/;
   const cls = (el.getAttribute && el.getAttribute("class")) || "";
   if (rx.test(cls)) return true;
-  if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
-  // Non-class error-node markers: a visible, non-empty error-message / error-banner
-  // node (error hook in data-automation-id / data-testid / data-test-id, or a
-  // role=alert container carrying an error hook). Empty templates don't count.
-  if (el.getAttribute) {
-    const hook = ["data-automation-id", "data-testid", "data-test-id"]
-      .map((a) => el.getAttribute(a) || "").join(" ");
-    const isErrHook = /(^|[-_\\s])(error|errors|errormessage|error-message|errorbanner|error-banner)([-_\\s]|$)|error(message|banner|summary)/i.test(hook);
-    const isAlertErr = el.getAttribute("role") === "alert" &&
-      /error|danger/i.test(cls + " " + hook);
-    if (isErrHook || isAlertErr) {
-      const txt = (el.textContent || "").trim();
-      const hidden = el.hidden === true || el.getAttribute("aria-hidden") === "true";
-      if (txt.length > 0 && !hidden) return true;
+  if (!el.getAttribute) return false;
+  if (el.getAttribute("aria-invalid") === "true") return true;
+  // Non-class error markers all need rendered message text: an empty template
+  // or a hidden node is not a validation message the user can see.
+  const shown = (n) => !!n && (n.textContent || "").trim().length > 0 &&
+    n.hidden !== true && n.getAttribute("aria-hidden") !== "true" &&
+    !(n.style && n.style.display === "none");
+  // An element whose aria-errormessage target is a rendered, non-empty node.
+  const errTarget = el.getAttribute("aria-errormessage");
+  if (errTarget && el.ownerDocument) {
+    for (const id of errTarget.split(/\\s+/).filter(Boolean)) {
+      if (shown(el.ownerDocument.getElementById(id))) return true;
     }
   }
-  return false;
+  // An error-message / error-banner / error-heading node, however the page
+  // spells it: a hook (data-automation-id / data-testid / data-test-id) or a
+  // class whose camelCase/kebab/snake words include one starting "error"
+  // (inputError, errorHeading, error-message, field_errors).
+  const hook = ["data-automation-id", "data-testid", "data-test-id"]
+    .map((a) => el.getAttribute(a) || "").join(" ");
+  const words = (hook + " " + cls).replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()
+    .split(/[^a-z0-9]+/).filter(Boolean);
+  const isErrNode = words.some((w) => w.startsWith("error"));
+  const isAlertErr = el.getAttribute("role") === "alert" && /error|danger/i.test(cls + " " + hook);
+  return (isErrNode || isAlertErr) && shown(el);
 })`;
 /**
  * Browser-context predicate string: given an element `el` in scope, is it
@@ -3344,7 +3352,7 @@ export async function countNgInvalidContainers(target: FrameTarget): Promise<num
       seen.add(el);
       if (isInvalid(el)) n++;
     }
-    for (const el of document.querySelectorAll("[data-automation-id],[data-testid],[data-test-id],[role=alert]")) {
+    for (const el of document.querySelectorAll("[data-automation-id],[data-testid],[data-test-id],[role=alert],[aria-errormessage]")) {
       if (!seen.has(el) && isInvalid(el)) n++;
     }
     return n;
@@ -5367,7 +5375,10 @@ export async function verifyPromptSelectorCommitted(
   requestedOption?: string | null,
   selectStep = false
 ): Promise<VerifyPromptSelectorCommittedResult | null> {
-  const xpath = xpathBodyForEvaluate(selector, target);
+  // A resolved action may carry a CSS selector rather than an xpath; both
+  // name the same element, so neither form may leave the commit unread.
+  const css = selector.startsWith("css=") ? selector.slice("css=".length) : null;
+  const xpath = css === null ? xpathBodyForEvaluate(selector, target) : "";
   if (xpath === null) return null;
   const expr = `(() => {
     const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
@@ -5379,9 +5390,14 @@ export async function verifyPromptSelectorCommitted(
     const want = ${JSON.stringify(requestedOption ?? "")};
     const selectStep = ${JSON.stringify(selectStep)};
     const xpath = ${JSON.stringify(xpath)};
-    const result = ${SHADOW_XPATH_FIRST_NODE}(xpath);
-    let el = result;
-    if (!el && typeof document.evaluate !== "function") {
+    const css = ${JSON.stringify(css)};
+    let el = null;
+    if (css !== null) {
+      try { el = document.querySelector(css); } catch { el = null; }
+    } else {
+      el = ${SHADOW_XPATH_FIRST_NODE}(xpath);
+    }
+    if (css === null && !el && typeof document.evaluate !== "function") {
       // A document with no native xpath support: resolve the plain
       // id-anchored shape ("//tag[@id='x']") directly.
       const idm = /^\\/\\/(?:[A-Za-z][\\w-]*|\\*)\\[@id=(['"])([^'"]+)\\1\\]$/.exec(xpath);
@@ -5427,14 +5443,19 @@ export async function verifyPromptSelectorCommitted(
           }
         }
       }
-      if (!field && selectStep && el.tagName && want && !/^(BUTTON|A|LABEL|INPUT|SELECT|TEXTAREA)$/.test(el.tagName) && el.getAttribute("role") !== "button") {
-        // A non-button custom dropdown display with no backing control: its
-        // own text is the committed value, so an opener still showing a
-        // placeholder/count (popup merely opened) is not a commit.
+      if (!field && selectStep && el.tagName && !/^(A|LABEL|INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) {
         const own = (el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+        // A running "N items selected" opener states its own commit count,
+        // whatever element renders it (a button included): zero means the
+        // popup merely opened and nothing was chosen.
         const count = /^(\\d+)\\s+items?\\s+selected\\b/.exec(own);
         if (count) return { isPromptWidget: true, committed: Number(count[1]) > 0 };
-        return { isPromptWidget: true, committed: own !== "" && namesOption(own, want) };
+        // A non-button custom dropdown display with no backing control: its
+        // own text is the committed value, so an opener still showing a
+        // placeholder (popup merely opened) is not a commit.
+        if (want && !/^BUTTON$/.test(el.tagName) && el.getAttribute("role") !== "button") {
+          return { isPromptWidget: true, committed: own !== "" && namesOption(own, want) };
+        }
       }
       if (!field) return { isPromptWidget: false, committed: false };
       let fv = "";
@@ -5785,8 +5806,8 @@ async function promptSelectorReadbackRejects(
   const readback = await verifyPromptSelectorCommitted(
     target,
     selector,
-    parsePromptSelectorStep(step)?.option,
-    parseSelectStep(step) !== null
+    parsePromptSelectorStep(step)?.option ?? chosenOptionOfStep(step),
+    isSelectionIntentStep(step)
   );
   return readback?.isPromptWidget === true && readback.committed === false;
 }
@@ -7325,6 +7346,34 @@ export function parseSelectStep(
   // or "'…' prompt selector". See `pickQuestionLabel`.
   const questionLabel = pickQuestionLabel(instruction, option);
   return { option, questionLabel };
+}
+
+/**
+ * Whether a step's intent is to CHOOSE a value in a dropdown-style control, in
+ * any of the verbs flow authors use ("select", "choose", "pick"). The committed
+ * value of the target is the success evidence for such a step, so the guard that
+ * reads it must not depend on which of these verbs the author happened to write.
+ * Catch-all steps ("any remaining …") have no single target and are excluded,
+ * as in {@link parseSelectStep}.
+ */
+export function isSelectionIntentStep(instruction: string): boolean {
+  return chosenOptionOfStep(instruction) !== null;
+}
+
+/**
+ * The option a choose-a-value step names — the quoted string after "select",
+ * "choose" or "pick" (allowing a short filler such as "the option") — or `null`
+ * when the step is not a selection or is a catch-all.
+ */
+function chosenOptionOfStep(instruction: string): string | null {
+  const selected = parseSelectStep(instruction);
+  if (selected) return selected.option;
+  if (/\bany\s+remaining\b/i.test(instruction)) return null;
+  const phrase = matchQuotedAfter(
+    instruction,
+    /\b(?:choose|pick)\s+(?:the\s+(?:\S+\s+)?)?(?=')/i
+  )?.phrase;
+  return phrase ? phrase.text.trim() : null;
 }
 
 /**
@@ -18072,7 +18121,7 @@ export async function executeStepWithHealing(params: {
             retryVerified &&
             !retryNetworkIsRealAdvance &&
             !retryUrlChanged &&
-            parseSelectStep(step) !== null
+            isSelectionIntentStep(step)
           ) {
             const fbSelector =
               resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
