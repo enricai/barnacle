@@ -5920,6 +5920,20 @@ function refererNamesRecordedInstance(referer: string): boolean {
     )
   )
     return true;
+  // A trailing single word directly under a plural collection word
+  // (`/rooms/<name>`) names one recorded entity.
+  if (
+    segments.some(
+      (s, i) =>
+        i >= 2 &&
+        i === segments.length - 1 &&
+        /^[A-Za-z]{3,}$/.test(s) &&
+        /^[A-Za-z]{2,}s$/i.test(segments[i - 1] ?? "") &&
+        !/ss$/i.test(segments[i - 1] ?? "") &&
+        !/s$/i.test(s)
+    )
+  )
+    return true;
   // A query value that repeats a path segment echoes the recorded entity.
   for (const [, value] of url.searchParams) {
     if (value.length > 0 && value !== "bound" && segments.includes(value)) return true;
