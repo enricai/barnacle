@@ -122,6 +122,12 @@ export interface PluginIdempotency {
   classifyFailure?: (error: unknown) => IdempotencyFailureClass;
   /** Opt in to accept-then-poll: /run returns 202 + operation id; poll GET <route>/operations/:id. */
   async?: boolean;
+  /**
+   * Engine-internal; supplied by the loader, not by plugin authors. Maps an
+   * error thrown by `preflight` to the refusal the guard should surface
+   * (e.g. for a made-up site like `shop.example.com`).
+   */
+  refusalFor?: (err: unknown) => Promise<unknown>;
 }
 
 /**
@@ -403,4 +409,10 @@ export interface SitePlugin<TPayload = unknown, TResult = Record<string, unknown
    * auto-fire behavior.
    */
   extractJoinKeys?: (payload: TPayload) => Record<string, unknown> | null;
+  /**
+   * Optional check run before the operation starts. Throwing `UnknownOutcomeError`
+   * means the operation may already have taken effect; any other error refuses
+   * the request before it starts.
+   */
+  preflight?: (payload: TPayload, context: SitePluginContext) => Promise<void>;
 }
