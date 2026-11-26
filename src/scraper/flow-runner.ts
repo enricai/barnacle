@@ -3259,6 +3259,8 @@ export function isClickViewSwapVerified(params: {
   blockedSubmitShape?: boolean;
   /** Nothing but a transient popup moved, which no mid-flow submit counts as its advance. */
   popupOnlyChange?: boolean;
+  /** A select step whose target value never changed: the popup opened, no option was chosen. */
+  selectOptionNotChosen?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -3281,7 +3283,10 @@ export function isClickViewSwapVerified(params: {
     resolvedElementNamesStepTarget = true,
     blockedSubmitShape = false,
     popupOnlyChange = false,
+    selectOptionNotChosen = false,
   } = params;
+  // An opened popup with no option chosen is not the select's success.
+  if (selectOptionNotChosen) return false;
   // A click on a control unrelated to the step's quoted target is not the
   // step's success, whatever the DOM did afterwards.
   if (!resolvedElementNamesStepTarget) return false;
@@ -17242,6 +17247,8 @@ export async function executeStepWithHealing(params: {
       destinationPlausible: midFlowDestinationPlausibleForPost,
       midFlowSubmit,
       popupOnlyChange: isPopupOnlyChange(advanceBaseline, post),
+      selectOptionNotChosen:
+        parseSelectStep(step) !== null && post.formValueSignature === pre.formValueSignature,
       pageAdvanced: settledPageAdvanced,
       actSucceeded: record.actResultSuccess === true,
       contentRemoved: isVisibleTextShrunk(pre.visibleTextSignature, post.visibleTextSignature),
