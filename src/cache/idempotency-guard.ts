@@ -21,8 +21,45 @@ import type { PluginIdempotency } from "@/site-plugin";
 export type IdempotencyRecord =
   | { state: "success"; value: unknown }
   | { state: "unknown"; message: string }
-  | { state: "pending" }
+  | { state: "pending"; preSubmit?: PreSubmitRecord }
   | { state: "failed"; message: string };
+
+/** Durable marker written just before an irreversible submit. Key names only, never values. */
+export interface PreSubmitRecord {
+  siteId: string;
+  requestId: string;
+  stepIndex: number;
+  at: number;
+  payloadKeys: string[];
+}
+
+export function preSubmitStoreKey(siteId: string, requestId: string, stepIndex: number): string {
+  return JSON.stringify(["pre-submit", siteId, requestId, stepIndex]);
+}
+
+/** Persists a pre-submit record (payload key names only) and resolves once stored. */
+export async function writePreSubmitRecord(
+  store: IdempotencyStore,
+  input: { siteId: string; requestId: string; stepIndex: number; payload: unknown },
+  ttlMs: number = DEFAULT_IDEMPOTENCY_TTL_MS
+): Promise<PreSubmitRecord> {
+  const p = input.payload;
+  const payloadKeys =
+    p !== null && typeof p === "object" && !Array.isArray(p) ? Object.keys(p).sort() : [];
+  const record: PreSubmitRecord = {
+    siteId: input.siteId,
+    requestId: input.requestId,
+    stepIndex: input.stepIndex,
+    at: Date.now(),
+    payloadKeys,
+  };
+  await store.set(
+    preSubmitStoreKey(input.siteId, input.requestId, input.stepIndex),
+    { state: "pending", preSubmit: record },
+    ttlMs
+  );
+  return record;
+}
 
 /** Poll view of an async operation. */
 export type OperationStatus =

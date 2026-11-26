@@ -127,6 +127,7 @@ interface ContextWithTelemetry extends SitePluginContext {
 function buildContext(requestId: string): ContextWithTelemetry {
   return {
     baseUrl: "https://example.com",
+    recordPreSubmit: vi.fn(async () => {}),
     logger: {
       info: vi.fn(),
       error: vi.fn(),

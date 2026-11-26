@@ -159,6 +159,7 @@ describe("recon-flow.json-declared browserFallbackGate/httpTimeoutMs — generat
 
     const context: SitePluginContext = {
       baseUrl: "https://example.com",
+      recordPreSubmit: vi.fn(async () => {}),
       logger: {
         info: vi.fn(),
         error: vi.fn(),

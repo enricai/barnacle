@@ -108,6 +108,7 @@ function buildStubContext(): ContextWithTelemetry {
   };
   const base: Omit<SitePluginContext, "telemetry"> = {
     baseUrl: "https://example.com",
+    recordPreSubmit: vi.fn(async () => {}),
     logger: {
       info: vi.fn(),
       error: vi.fn(),
