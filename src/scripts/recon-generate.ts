@@ -18471,7 +18471,18 @@ export function classifySubmissionFlow(o: {
           const u = (m ?? "").toUpperCase();
           return u === "GET" || u === "OPTIONS";
         }));
-  if (o.noReplayableActionFlow) return o.declaresSubmitStep === true || !readsOnly;
+  // Several bare POSTs with no replayable action step and no declared submit are
+  // re-queries (e.g. GraphQL query operations whose gql detection did not resolve),
+  // not a lone submission; a single POST stays a submission.
+  const repeatedUndeclaredPosts =
+    o.actionStepCount === 0 &&
+    o.actionCaptureMethods.length >= 2 &&
+    o.actionCaptureMethods.every((m) => {
+      const u = (m ?? "").toUpperCase();
+      return u === "POST" || u === "GET" || u === "OPTIONS";
+    });
+  if (o.noReplayableActionFlow)
+    return o.declaresSubmitStep === true || !(readsOnly || repeatedUndeclaredPosts);
   if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
