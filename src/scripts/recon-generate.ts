@@ -20976,7 +20976,7 @@ export function emitConfigManifest(opts: {
     canonicalise
   );
 
-  const steps = flowSteps.map((step) => {
+  const mappedSteps = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
     const frameSelector = isObj ? step.frameSelector : undefined;
     const instruction = isObj ? step.step : step;
@@ -21033,6 +21033,19 @@ export function emitConfigManifest(opts: {
     };
   });
 
+  // Carry a flow-declared order-data verifyRequest into the manifest so a
+  // config-plugin load verifies deterministically instead of via a model call.
+  const steps = mappedSteps.map((mapped, i) => {
+    const src = flowSteps[i];
+    const vr = typeof src === "string" ? undefined : src?.verifyRequest;
+    if (vr === undefined) return mapped;
+    const base =
+      typeof mapped === "string"
+        ? { step: mapped, optional: false, upload: false, submitStep: false }
+        : mapped;
+    return { ...base, verifyRequest: vr };
+  });
+
   // The last step of a submission flow is structurally the submit — force
   // submitStep:true even when the source recon-flow.json step never declared
   // it, mirroring emitBrowserFlowTs's forcing (see there) so a config-plugin
@@ -21049,6 +21062,7 @@ export function emitConfigManifest(opts: {
             upload: lastStep.upload,
             submitStep: true,
             ...(lastStep.frameSelector ? { frameSelector: lastStep.frameSelector } : {}),
+            ...("verifyRequest" in lastStep ? { verifyRequest: lastStep.verifyRequest } : {}),
           };
   }
 

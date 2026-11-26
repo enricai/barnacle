@@ -4,7 +4,7 @@ import { type VerifyRequestSpec, verifyOrderData } from "@/scraper/order-verific
 import type { FetchImpl } from "@/scraper/raw-fetch";
 
 const spec: VerifyRequestSpec = {
-  urlTemplate: "/api/orders/${orderId}",
+  urlTemplate: "/api/orders/$" + "{orderId}",
   method: "GET",
   jsonPath: "data.status",
   expect: "paid",
@@ -49,7 +49,7 @@ describe("verifyOrderData", () => {
   it("unverified on cross-origin url without fetching", async () => {
     const calls: Array<[string, Record<string, string>]> = [];
     const r = await verifyOrderData(
-      { ...spec, urlTemplate: "https://evil.example/${orderId}" },
+      { ...spec, urlTemplate: "https://evil.example/$" + "{orderId}" },
       { ...base, fetchImpl: stub(200, "{}", calls) }
     );
     expect(r).toEqual({ verified: false, reason: "cross-origin" });
