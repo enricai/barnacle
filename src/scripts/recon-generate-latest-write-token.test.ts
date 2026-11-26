@@ -80,7 +80,9 @@ describe("write token binds to the latest carrying response", () => {
     const tok = (s: string) => s.match(/"updatedAt"\s*:\s*"?\$\{([^}]*)\}/)?.[1];
     expect(tok(update), update).toBeDefined();
     expect(tok(save), save).toBeDefined();
-    expect(tok(update)).toMatch(/r0/);
-    expect(tok(save)).toMatch(/r1/);
+    const decl = (v: string) => contract.match(new RegExp(`const ${v} = \\((r\\d+) as`))?.[1];
+    expect(decl(tok(update)!), contract).toBe("r0");
+    expect(decl(tok(save)!), contract).toBe("r1");
+    expect(tok(save)).not.toBe(tok(update));
   }, 60_000);
 });
