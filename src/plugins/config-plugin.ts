@@ -417,6 +417,12 @@ export async function buildConfigPlugin(
         ownBackendHostnames: spec.flow.ownBackendHostnames ?? [],
         knownErrorClassPrefixes: spec.flow.knownErrorClassPrefixes ?? [],
         wizardExitButtonLabels: spec.flow.wizardExitButtonLabels ?? [],
+        ...(hasSubmitStep && typeof context.recordPreSubmit === "function"
+          ? {
+              recordPreSubmit: ({ stepIndex }: { stepIndex: number }) =>
+                context.recordPreSubmit({ stepIndex, payload }),
+            }
+          : {}),
       });
 
       if (hasSubmitStep && !flowResult.submitVerified) {
