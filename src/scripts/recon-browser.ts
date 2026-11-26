@@ -87,7 +87,12 @@ import {
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
-import { isQualifyingSubmitCapture, isSuccessStatus } from "@/recon/submit-match";
+import {
+  isQualifyingSubmitCapture,
+  isReadCapture,
+  isSuccessStatus,
+  matchesSubmitPattern,
+} from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
@@ -256,7 +261,8 @@ export function wireNetworkCapture(
   recentCaptureMeta: { method: string; status: number; url: string }[],
   getCurrentPhase: () => string,
   getCurrentPageOrigin: () => string,
-  captureTracker?: CaptureTracker
+  captureTracker?: CaptureTracker,
+  onObservedCapture?: (capture: { method?: unknown; url: string; requestPostData?: unknown }) => void
 ): () => void {
   const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
@@ -273,6 +279,7 @@ export function wireNetworkCapture(
       // happy-path doesn't read these files until something else fails.
       if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) bodyUnavailableCounter.n++;
       captureTracker?.observe(capture.url, capture.requestPostData);
+      onObservedCapture?.(capture);
       try {
         writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
@@ -3177,6 +3184,26 @@ async function main(): Promise<void> {
     // filtered at the push site so the window isn't washed out by SPA chunk
     // loads — see the comment in wireNetworkCapture's onFinished.
     const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+    // Read-versus-write evidence from captures matching the declared submit
+    // pattern (GETs included, which recentCaptureMeta filters out): a matching
+    // read sets sawMatchedRead; a matching non-read sets sawMatchedWrite.
+    const matchedCaptureEvidence = { sawMatchedRead: false, sawMatchedWrite: false };
+    const matchedEndpointRx = ((): RegExp | null => {
+      try {
+        return submitEndpointPattern ? new RegExp(submitEndpointPattern) : null;
+      } catch {
+        return null;
+      }
+    })();
+    const matchedBodyRx = ((): RegExp | null => {
+      try {
+        return submitBodyPattern ? new RegExp(submitBodyPattern) : null;
+      } catch {
+        return null;
+      }
+    })();
+    const readEvidenceNow = (): boolean =>
+      matchedCaptureEvidence.sawMatchedRead && !matchedCaptureEvidence.sawMatchedWrite;
 
     // Hoisted out of the try block so the finally can run the replan
     // write-back even when the cascade throws — replan-discovered steps
@@ -3218,7 +3245,12 @@ async function main(): Promise<void> {
           recentCaptureMeta,
           () => currentPhase,
           currentPageOrigin,
-          captureTracker
+          captureTracker,
+          (c) => {
+            if (matchedEndpointRx === null || !matchesSubmitPattern(c, matchedEndpointRx, matchedBodyRx)) return;
+            if (isReadCapture(c)) matchedCaptureEvidence.sawMatchedRead = true;
+            else matchedCaptureEvidence.sawMatchedWrite = true;
+          }
         )
       );
       const stopCapture = capture.stopAll;
@@ -3384,6 +3416,7 @@ async function main(): Promise<void> {
           submitEndpointPattern,
           requireSubmitEndpointMatch,
           readOnly,
+          readEvidence: readEvidenceNow(),
         });
         const midFlowSubmitShaped = isMidFlowSubmitShapedStep({
           step: step.instruction,
@@ -3459,6 +3492,7 @@ async function main(): Promise<void> {
                       submitEndpointPattern,
                       requireSubmitEndpointMatch,
                       readOnly,
+                      readEvidence: readEvidenceNow(),
                     }),
                     stepIndex: i,
                     totalSteps: () => plan.length,
@@ -3683,6 +3717,7 @@ async function main(): Promise<void> {
               submitEndpointPattern,
               requireSubmitEndpointMatch,
               readOnly,
+              readEvidence: readEvidenceNow(),
             });
             // A dead session throws synchronously here too — fall back to ""
             // rather than let the trailing-grace check itself crash the run.
