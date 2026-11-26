@@ -177,7 +177,9 @@ describe("routes/health /readyz", () => {
 
   it("reports STEEL_API_KEY missing for the steel provider", async () => {
     const app = await buildHealthApp(
-      makeConfig({ scraper: { ...makeConfig().scraper, provider: "steel", steelApiKey: undefined } })
+      makeConfig({
+        scraper: { ...makeConfig().scraper, provider: "steel", steelApiKey: undefined },
+      })
     );
     try {
       const response = await app.inject({ method: "GET", url: "/readyz" });
