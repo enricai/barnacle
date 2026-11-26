@@ -221,6 +221,16 @@ describe("HTML-issued token emission", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(out).toContain("nonce=${nonceToken}");
   });
+  it("extracts a <meta name content> token and splices it into a urlencoded body", () => {
+    const out = emit(
+      mk(`<meta name="csrf-token" content="${T}">`, `csrf-token=${T}&go=1`, ""),
+      true
+    );
+    expect(out).not.toContain(T);
+    expect(out).toMatch(/match\(\/<meta\\b/);
+    expect(out).toContain('"csrf-token"');
+    expect(out).toContain("not found in response");
+  });
   it("disambiguates two HTML tokens whose names derive the same variable", () => {
     const T2 = "Zx3cV6bN1mAs8dFgHj5K";
     const out = emit(
