@@ -65,7 +65,8 @@ export function createCaptureTracker(): CaptureTracker {
       let wake: (() => void) | null = null;
       const listener = (url: string, body: string): void => {
         if (bodyRx !== null) {
-          if (!endpointRx.test(url) || !bodyRx.test(body)) return;
+          if (!endpointRx.test(url) || !bodyRx.test(body.replace(/https?:\/\/[^\s"'\\]+/g, "")))
+            return;
         } else if (
           !endpointRx.test(url) &&
           !endpointRx.test(body.replace(/https?:\/\/[^\s"'\\]+/g, ""))

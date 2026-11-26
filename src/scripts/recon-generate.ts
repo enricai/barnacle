@@ -2672,6 +2672,11 @@ function isGraphQLCapture(capture: Capture): boolean {
   return capture.query !== null || capture.operationName !== null;
 }
 
+function sameQueryText(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (a === null || a === undefined || b === null || b === undefined) return a === b;
+  return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+}
+
 function operationGroupKey(capture: Capture): string {
   const endpointPath = (() => {
     try {
@@ -15023,7 +15028,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
         isGraphQLCapture(primary.capture) &&
         endpointKey(drill.capture.url) === primaryEndpointKey &&
         operationGroupKey(drill.capture) === operationGroupKey(primary.capture) &&
-        drill.capture.query === primary.capture.query
+        sameQueryText(drill.capture.query, primary.capture.query)
       ) {
         continue;
       }
@@ -16514,13 +16519,13 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       const primaryCap = actions[primaryStepIndex]!.capture;
       if (
         primaryCap.query != null &&
-        primaryCap.query === drill.capture.query &&
+        sameQueryText(primaryCap.query, drill.capture.query) &&
         operationGroupKey(primaryCap) === operationGroupKey(drill.capture) &&
         (drillStepIndex !== primaryStepIndex ||
           actions.some(
             (a, i) =>
               i !== primaryStepIndex &&
-              a.capture.query === primaryCap.query &&
+              sameQueryText(a.capture.query, primaryCap.query) &&
               operationGroupKey(a.capture) === operationGroupKey(primaryCap)
           ))
       ) {
