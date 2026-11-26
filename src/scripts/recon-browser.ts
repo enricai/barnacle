@@ -272,7 +272,7 @@ export function wireNetworkCapture(
       // and let the cascade continue. The capture is forensic-only — the
       // happy-path doesn't read these files until something else fails.
       if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) bodyUnavailableCounter.n++;
-      captureTracker?.observe(capture.url, capture.requestPostData, capture.method);
+      captureTracker?.observe(capture.url, capture.requestPostData);
       try {
         writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
