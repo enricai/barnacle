@@ -38,12 +38,13 @@ const manifest = (flowSteps: unknown[]) =>
 describe("sensitive payload-field tag", () => {
   it("emits meta.redaction naming only tagged fields in the ts plugin", () => {
     const src = emitContractTs({ ...OPTS, flowSteps: tagged } as never);
-    expect(src).toContain('redaction: {"digitKeys":["Phone"],"wordKeys":["Surname"]}');
+    expect(src).toContain('redaction: {"digitKeys":["Phone"],"wordKeys":["Surname"],"tokenizeKeys":["Phone","Surname"]}');
   });
   it("emits spec.redaction in the manifest", () => {
     expect(manifest(tagged).spec.redaction).toEqual({
       digitKeys: ["Phone"],
       wordKeys: ["Surname"],
+      tokenizeKeys: ["Phone", "Surname"],
     });
   });
   it("emits nothing for untagged flows", () => {
