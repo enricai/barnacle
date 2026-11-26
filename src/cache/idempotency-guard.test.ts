@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { UnknownOutcomeError } from "@/api/errors";
+import { TaskDeadlineError } from "@/scraper/errors";
 import {
   createFileIdempotencyStore,
   createIdempotencyGuard,
@@ -110,7 +111,6 @@ describe("createIdempotencyGuard", () => {
   });
 
   it("treats TaskDeadlineError (direct or as originalError) as unknown outcome", async () => {
-    const { TaskDeadlineError } = await import("@/scraper/errors");
     const c = { keyFields: ["id"] };
     const wrapped = Object.assign(new Error("wrapped"), { originalError: new TaskDeadlineError() });
     for (const [id, e] of [
