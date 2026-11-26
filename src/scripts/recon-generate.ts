@@ -10988,6 +10988,8 @@ export function emitMultiStepExecuteHttp(
     method: string;
     headersExpr: string;
     bodyArg: string;
+    /** True when bodyArg's template is a JSON document (payload splices need JSON-escaping at emit). */
+    jsonBody: boolean;
     schemaExpr: string;
   }
 
@@ -11772,7 +11774,14 @@ export function emitMultiStepExecuteHttp(
     // contract would enforce that narrowed shape on every call in the chain.
     const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
-    rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
+    rendered.push({
+      url,
+      method: cap.method,
+      headersExpr,
+      bodyArg,
+      jsonBody: parsedBody !== null && !multipartBodyCrlf,
+      schemaExpr,
+    });
   }
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
@@ -12318,7 +12327,12 @@ export function emitMultiStepExecuteHttp(
           const paramHeaders = threadAttached(
             parameterize(chainRendered.headersExpr, chainStep.capture)
           );
-          const paramBody = threadAttached(parameterize(chainRendered.bodyArg, chainStep.capture));
+          // JSON-escape payload splices only AFTER every rebinding pass in
+          // `parameterize` has matched the plain `${payload.X}` form.
+          const paramBody = escapeJsonBodyPayloadSplices(
+            threadAttached(parameterize(chainRendered.bodyArg, chainStep.capture)),
+            chainRendered.jsonBody
+          );
           if (
             itemVarRefPattern.test(paramUrl) ||
             itemVarRefPattern.test(paramHeaders) ||
@@ -12502,7 +12516,7 @@ export function emitMultiStepExecuteHttp(
           r.method,
           r.url,
           r.headersExpr,
-          r.bodyArg,
+          escapeJsonBodyPayloadSplices(r.bodyArg, r.jsonBody),
           textVar,
           step.varName,
           "    "
@@ -12629,7 +12643,9 @@ export function emitMultiStepExecuteHttp(
         lines.push(`    await httpClient(\`${r.url}\`, {`);
       }
       lines.push(`      method: ${JSON.stringify(r.method)},`);
-      const joined = [r.headersExpr, r.bodyArg].filter((s) => s !== "").join(" ");
+      const joined = [r.headersExpr, escapeJsonBodyPayloadSplices(r.bodyArg, r.jsonBody)]
+        .filter((s) => s !== "")
+        .join(" ");
       if (joined !== "") {
         lines.push(`      ${joined}`);
       }
@@ -20733,6 +20749,45 @@ export function buildSensitiveRedactionPolicy(
     ...(digitKeys.size > 0 && { digitKeys: [...digitKeys].sort() }),
     ...(wordKeys.size > 0 && { wordKeys: [...wordKeys].sort() }),
   };
+}
+
+/**
+ * JSON-escape caller `${payload.<x>}` splices that sit INSIDE a JSON string
+ * literal of an emitted body template, so a quote/backslash/newline in the
+ * caller's value cannot break (or inject into) the JSON. Must run after the
+ * fold drill-down rebinding passes, which match the plain `${payload.X}` form.
+ * Splices outside a string literal (numbers/booleans) are left untouched.
+ */
+export function escapeJsonBodyPayloadSplices(bodyArg: string, jsonBody: boolean): string {
+  if (!jsonBody || !bodyArg.includes("${payload.")) return bodyArg;
+  let out = "";
+  let inString = false;
+  let i = 0;
+  while (i < bodyArg.length) {
+    const ch = bodyArg[i]!;
+    if (inString && bodyArg.startsWith("${payload.", i)) {
+      let depth = 0;
+      let j = i + 1;
+      for (; j < bodyArg.length; j++) {
+        if (bodyArg[j] === "{") depth++;
+        else if (bodyArg[j] === "}" && --depth === 0) break;
+      }
+      if (j < bodyArg.length) {
+        const expr = bodyArg.slice(i + 2, j);
+        out += `\${JSON.stringify(String(${expr})).slice(1, -1)}`;
+        i = j + 1;
+        continue;
+      }
+    }
+    if (ch === '"') {
+      let backslashes = 0;
+      for (let k = out.length - 1; k >= 0 && out[k] === "\\"; k--) backslashes++;
+      if (!inString || backslashes % 2 === 0) inString = !inString;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
 }
 
 /**
