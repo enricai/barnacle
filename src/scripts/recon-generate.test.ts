@@ -6704,8 +6704,18 @@ describe("classifySubmissionFlow", () => {
   });
   it("is true when no replayable action flow", () => {
     expect(
-      classifySubmissionFlow({ ...base, noReplayableActionFlow: true, actionStepCount: 0 })
+      classifySubmissionFlow({
+        ...base,
+        noReplayableActionFlow: true,
+        actionStepCount: 0,
+        actionCaptureMethods: ["POST"],
+      })
     ).toBe(true);
+  });
+  it("is false when no replayable action flow and several undeclared POST captures (re-queries)", () => {
+    expect(
+      classifySubmissionFlow({ ...base, noReplayableActionFlow: true, actionStepCount: 0 })
+    ).toBe(false);
   });
 });
 
