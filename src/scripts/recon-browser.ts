@@ -88,8 +88,8 @@ import {
 } from "@/lib/telemetry/telemetry-paths";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
 import {
-  isQualifyingSubmitCapture,
   isDocumentNavigation,
+  isQualifyingSubmitCapture,
   isReadCapture,
   isSuccessStatus,
   matchesSubmitPattern,
@@ -3486,7 +3486,9 @@ async function main(): Promise<void> {
                     settle: buildNavigateSettle(
                       captureTracker,
                       step.settleOn ?? submitEndpointPattern,
-                      step.settleOn !== undefined ? null : submitBodyPattern
+                      step.settleOn !== undefined && step.settleOn !== submitEndpointPattern
+                        ? null
+                        : submitBodyPattern
                     ),
                   })
                 : executeStepWithHealing({

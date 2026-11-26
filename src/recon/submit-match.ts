@@ -73,7 +73,8 @@ export function isDocumentNavigation(capture: SubmitMatchCapture): boolean {
   if (typeof h !== "object" || h === null) return false;
   for (const [k, v] of Object.entries(h as Record<string, unknown>)) {
     const key = k.toLowerCase();
-    if (key === "sec-fetch-dest" && typeof v === "string" && /^(document|iframe|frame)$/i.test(v)) return true;
+    if (key === "sec-fetch-dest" && typeof v === "string" && /^(document|iframe|frame)$/i.test(v))
+      return true;
     if (key === "upgrade-insecure-requests" && String(v) === "1") return true;
   }
   return false;
