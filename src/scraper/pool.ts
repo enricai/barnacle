@@ -2,7 +2,7 @@ import PQueue from "p-queue";
 
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
-import { TaskDeadlineError } from "@/scraper/errors";
+import { isTaskDeadlineError, TaskDeadlineError } from "@/scraper/errors";
 import { type RetryOptions, withScraperRetry } from "@/scraper/retry";
 import { type BrowserSession, createBrowserSession } from "@/scraper/session";
 import type { BrowserSessionOptions } from "@/scraper/session-shared";
@@ -108,11 +108,15 @@ export async function runWithSession<T>(
           deadline.catch(() => {});
           try {
             const value = await Promise.race([taskPromise, deadline]);
-            // The task settled after being signalled: the deadline still failed the attempt.
+            // The task settled after being signalled: the deadline still failed the attempt,
+            // and the error says the outcome is unknown (surfaced as UNKNOWN_OUTCOME on the wire).
             if (deadlineHit) throw deadlineError();
             return value;
           } catch (err) {
-            if (deadlineHit) throw deadlineError();
+            if (deadlineHit) {
+              // A task that stopped by throwing (e.g. on abort) or never stopped: outcome unknown.
+              throw isTaskDeadlineError(err) ? err : deadlineError();
+            }
             // Must run before onSessionRestart: closeSession() nulls sessionRef.
             throw resolveSessionDeathError(sessionRef.session ?? undefined, err);
           } finally {
