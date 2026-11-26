@@ -137,6 +137,24 @@ export function isSessionLifetimeExceededError(err: unknown): err is SessionLife
 }
 
 /**
+ * A task exceeded its per-task deadline. The task was not told to stop, so its
+ * outcome is UNKNOWN: it may still be running or may have completed. Non-
+ * retryable — a retry on a new session could duplicate its effects.
+ */
+export class TaskDeadlineError extends ScraperError {
+  constructor(message = "task exceeded its deadline; its outcome is unknown") {
+    super(message, false);
+  }
+}
+
+/** Cross-realm-safe replacement for `err instanceof TaskDeadlineError`. See {@link isCaptchaError} for why this exists. */
+export function isTaskDeadlineError(err: unknown): err is TaskDeadlineError {
+  return (
+    err instanceof TaskDeadlineError || (err instanceof Error && err.name === "TaskDeadlineError")
+  );
+}
+
+/**
  * The underlying session's CDP transport was torn down by the SDK itself
  * mid-operation. Distinct from {@link SessionTimeoutError} so downstream code
  * (recon-browser's exit-code gate) can branch on it precisely instead of
@@ -534,6 +552,7 @@ const SCRAPER_ERROR_NAMES = new Set([
   "SelectorFailureError",
   "SessionTimeoutError",
   "SessionLifetimeExceededError",
+  "TaskDeadlineError",
   "CdpTransportClosedError",
   "UnknownScraperError",
   "StepVerificationError",

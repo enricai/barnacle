@@ -9,6 +9,7 @@ import {
   SessionLifetimeExceededError,
   SessionTimeoutError,
   StepVerificationError,
+  TaskDeadlineError,
   UnknownScraperError,
 } from "@/scraper/errors";
 import { classifyScraperError, withScraperRetry } from "@/scraper/retry";
@@ -84,6 +85,25 @@ describe("scraper/retry", () => {
       ).rejects.toThrow(/session lifetime reached/);
       expect(counter.n).toBe(1);
       expect(onSessionRestart).not.toHaveBeenCalled();
+    });
+
+    it("aborts on TaskDeadlineError without retry, restart or onRetry", async () => {
+      const counter = { n: 0 };
+      const onSessionRestart = vi.fn(async () => {});
+      const onRetry = vi.fn();
+      const p = withScraperRetry(
+        async () => {
+          counter.n += 1;
+          throw new TaskDeadlineError("deadline hit");
+        },
+        { maxAttempts: 3, onSessionRestart, onRetry }
+      );
+      await expect(p).rejects.toBeInstanceOf(TaskDeadlineError);
+      await expect(p).rejects.toMatchObject({ retryable: false });
+      expect(counter.n).toBe(1);
+      expect(onSessionRestart).not.toHaveBeenCalled();
+      expect(onRetry).not.toHaveBeenCalled();
+      expect(classifyScraperError(new TaskDeadlineError())).toBeInstanceOf(TaskDeadlineError);
     });
 
     it.each([
