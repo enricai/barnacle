@@ -16531,6 +16531,17 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       const matchResult =
         chainMatchResult ??
         ((): { entryIndex: number; primaryMatchedItemIndex: number } | null => {
+          // Same GraphQL operation (same text) as the primary, matched only by
+          // response echo: a payload variant of the primary, not a drill.
+          const primaryCap = actions[primaryStepIndex]!.capture;
+          if (
+            drillStepIndex !== primaryStepIndex &&
+            primaryCap.query != null &&
+            primaryCap.query === drill.capture.query &&
+            operationGroupKey(primaryCap) === operationGroupKey(drill.capture)
+          ) {
+            return null;
+          }
           const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndexFromResponse(
             primaryItems,
             spec.joinFields,
@@ -18482,7 +18493,10 @@ export function classifySubmissionFlow(o: {
       return u === "POST" || u === "GET" || u === "OPTIONS";
     });
   if (o.noReplayableActionFlow)
-    return o.declaresSubmitStep === true || !(readsOnly || repeatedUndeclaredPosts);
+    return (
+      o.declaresSubmitStep === true ||
+      !(readsOnly || repeatedUndeclaredPosts || o.isDeclaredPostSearchRead === true)
+    );
   if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
