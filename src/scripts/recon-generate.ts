@@ -15020,6 +15020,14 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // capture a payload variant of the primary: it differs only in
       // variables, is evidence for payload fields, and is never a drill.
       if (
+        isGraphQLCapture(primary.capture) &&
+        endpointKey(drill.capture.url) === primaryEndpointKey &&
+        operationGroupKey(drill.capture) === operationGroupKey(primary.capture) &&
+        drill.capture.query === primary.capture.query
+      ) {
+        continue;
+      }
+      if (
         !(typeof allowSelfEndpointDrill === "function"
           ? allowSelfEndpointDrill(drill.capture)
           : allowSelfEndpointDrill) &&
@@ -16505,10 +16513,16 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       // response echo: a payload variant of the primary, not a drill.
       const primaryCap = actions[primaryStepIndex]!.capture;
       if (
-        drillStepIndex !== primaryStepIndex &&
         primaryCap.query != null &&
         primaryCap.query === drill.capture.query &&
-        operationGroupKey(primaryCap) === operationGroupKey(drill.capture)
+        operationGroupKey(primaryCap) === operationGroupKey(drill.capture) &&
+        (drillStepIndex !== primaryStepIndex ||
+          actions.some(
+            (a, i) =>
+              i !== primaryStepIndex &&
+              a.capture.query === primaryCap.query &&
+              operationGroupKey(a.capture) === operationGroupKey(primaryCap)
+          ))
       ) {
         continue;
       }
