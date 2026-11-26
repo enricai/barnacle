@@ -156,8 +156,8 @@ function shortDigitMatcher(value: string, label: string): BaseMatcher | null {
       ? // not inside timestamp milliseconds (".123")
         "(?<!\\d[.,])"
       : // not inside clock times or dates
-        "(?<!\\d[:./-])";
-  const after = value.length === 3 ? "" : "(?![:./-]\\d)";
+        "(?<!\\d[:./,-])";
+  const after = value.length === 3 ? "(?![.,]\\d)" : "(?![:./,-]\\d)";
   return {
     pattern: new RegExp(`${notBetweenLetters}(?<!\\d)${context}${value}(?!\\d)${after}`, "gu"),
     label,

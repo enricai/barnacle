@@ -86,6 +86,7 @@ describe("redactPii", () => {
     expect(redactPii("at 10:12:30 on 2024-12-05 12:30")).toBe("at 10:12:30 on 2024-12-05 12:30");
     expect(redactPii("code AB12CD")).toBe("code AB12CD");
     expect(redactPii("age 12.")).toBe("age <n>.");
+    expect(redactPii("price 3,12 and 12,5")).toBe("price 3,12 and 12,5");
   });
 
   it("bounds a 3-digit value to a standalone run", () => {
@@ -94,6 +95,7 @@ describe("redactPii", () => {
       "1234 and 51234 and 2024-01-01T00:00:00.123Z"
     );
     expect(redactPii("AB123CD")).toBe("AB123CD");
+    expect(redactPii("1,123 and 123,456")).toBe("1,123 and 123,456");
     expect(redactPii("zip 123 ok")).toBe("zip <n> ok");
   });
 
