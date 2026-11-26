@@ -187,7 +187,10 @@ export async function captureLlmCall(
 ): Promise<void> {
   if (config.telemetry.enabled === false) return;
   const sinkPath = opts.sinkPath ?? config.telemetry.callsNdjsonPath;
-  const sample = redactPiiDeep({ ...input, ts: formatISO(new Date()) }) as LlmCallSample;
+  const sample = {
+    ...(redactPiiDeep({ ...input }) as Omit<LlmCallSample, "ts">),
+    ts: formatISO(new Date()),
+  } as LlmCallSample;
 
   try {
     const line = `${JSON.stringify(sample)}\n`;
