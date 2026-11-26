@@ -8323,13 +8323,37 @@ export function actionSequenceIsReadSamplesFor(o: {
   isDeclaredDrillCapture: (c: Capture) => boolean;
 }): boolean {
   const { compiledActionSteps } = o;
+  // A declared 2xx GET is a read, not a write: a mint feeding only it is not a submit feeder.
+  const matchesDeclaredWrite = (c: Capture): boolean =>
+    o.matchesDeclaredSubmit(c) && !(c.method === "GET" && c.status >= 200 && c.status < 300);
+  // Only a header/cookie mint is replayed by the client's `bind`; a body/HTML token the
+  // read re-sends would be frozen on the single-endpoint path, so that mint stays a feeder.
+  const mintsOnlyHeaders = (capture: Capture): boolean =>
+    (compiledActionSteps.find((s) => s.capture === capture)?.produces ?? []).every(
+      (p) => p.kind === "header"
+    );
   const feedsDeclaredStep = (capture: Capture): boolean =>
-    stepFeedsDeclaredSubmit(capture, compiledActionSteps, o.matchesDeclaredSubmit);
+    stepFeedsDeclaredSubmit(
+      capture,
+      compiledActionSteps,
+      mintsOnlyHeaders(capture) ? matchesDeclaredWrite : o.matchesDeclaredSubmit
+    );
   const feedsLaterStep = (capture: Capture): boolean =>
     compiledActionSteps.find((s) => s.capture === capture)?.consumers?.some((c) => c !== capture) ??
     false;
+  const feedsDeclaredReadOnly = (capture: Capture): boolean =>
+    stepFeedsDeclaredSubmit(capture, compiledActionSteps, o.matchesDeclaredSubmit) &&
+    !feedsDeclaredStep(capture) &&
+    (compiledActionSteps.find((s) => s.capture === capture)?.consumers ?? []).every(
+      (c) => c === capture || (o.matchesDeclaredSubmit(c) && !matchesDeclaredWrite(c))
+    );
   const isIncidentalReadFlowPost = (capture: Capture): boolean =>
-    o.declaresSubmitPattern && !o.matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
+    o.declaresSubmitPattern &&
+    !o.matchesDeclaredSubmit(capture) &&
+    // Only a GET mint gets the declared-GET-read exemption; a state-changing POST does not.
+    !(capture.method === "GET"
+      ? feedsDeclaredStep(capture)
+      : stepFeedsDeclaredSubmit(capture, compiledActionSteps, o.matchesDeclaredSubmit));
   return (
     compiledActionSteps.length === 0 ||
     o.actionCaptures.every(
@@ -8346,8 +8370,9 @@ export function actionSequenceIsReadSamplesFor(o: {
           a.capture.status >= 200 &&
           a.capture.status < 300 &&
           !feedsDeclaredStep(a.capture) &&
-          // A GET whose response a later step re-sends is a link of a chain, not a sample.
-          !feedsLaterStep(a.capture))
+          // A GET whose response a later step re-sends is a link of a chain, not a sample,
+          // unless the only consumer is a declared 2xx GET read (a cookie mint).
+          (!feedsLaterStep(a.capture) || feedsDeclaredReadOnly(a.capture)))
     )
   );
 }
@@ -22877,7 +22902,14 @@ export async function main(): Promise<void> {
     // its action step so the fold resolves onto the read.
     const readFlowHasDeclaredDrill =
       isReadOnlyGetFlow && compiledActionSteps.some((s) => isDeclaredDrillCapture(s.capture));
-    const actionSteps = isReadOnlyGetFlow && !readFlowHasDeclaredDrill ? [] : compiledActionSteps;
+    // A mint feeding the declared read stays a step so the cookie is replayed.
+    const actionSteps = !isReadOnlyGetFlow
+      ? compiledActionSteps
+      : readFlowHasDeclaredDrill
+        ? compiledActionSteps
+        : compiledActionSteps.filter((s) =>
+            stepFeedsDeclaredSubmit(s.capture, compiledActionSteps, matchesDeclaredSubmit)
+          );
     const noReplayableActionFlow =
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isDeclaredPostSearchRead =
