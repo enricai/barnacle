@@ -3204,24 +3204,49 @@ function derivePostBodyModel(
     }
     const distinct = new Set(values.map((v) => JSON.stringify(v)));
     if (distinct.size === 1) return JSON.stringify(first);
+    const seen = values.filter((v) => v !== null && v !== undefined);
+    const listed = seen.length > 0 && seen.every(Array.isArray);
+    const elements = listed ? (seen as unknown[][]).flat() : seen;
+    const scalarLeaf = (v: unknown): v is string | number =>
+      typeof v === "string" || typeof v === "number";
+    // How a declared value sits at this path: as a whole leaf, or (`6_8`) split
+    // across the keys of one element (`{start:"6",end:"8"}`).
+    type Carried =
+      | { kind: "whole" }
+      | { kind: "parts"; keys: string[]; numeric: boolean[]; sep: string };
+    const carriedBy = (observed: string): Carried | undefined => {
+      const lo = observed.toLowerCase();
+      if (elements.some((e) => scalarLeaf(e) && String(e).toLowerCase() === lo))
+        return { kind: "whole" };
+      const sep = /^[A-Za-z0-9]+([^A-Za-z0-9]+)[A-Za-z0-9]/.exec(observed)?.[1];
+      if (sep === undefined) return undefined;
+      const parts = lo.split(sep);
+      for (const e of elements) {
+        if (!isObj(e)) continue;
+        const entries = Object.entries(e);
+        if (entries.length !== parts.length || !entries.every(([, v]) => scalarLeaf(v))) continue;
+        const keys: string[] = [];
+        const numeric: boolean[] = [];
+        for (const part of parts) {
+          const hit = entries.find(
+            ([k, v]) => !keys.includes(k) && String(v).toLowerCase() === part
+          );
+          if (hit === undefined) break;
+          keys.push(hit[0]);
+          numeric.push(typeof hit[1] === "number");
+        }
+        if (keys.length === parts.length) return { kind: "parts", keys, numeric, sep };
+      }
+      return undefined;
+    };
     // A declared payloadField whose observed value (a step's navigateTo query
-    // value or quoted instruction value) appears at this varying path tracks it:
-    // bind the declared name instead of inventing a path-named field.
-    const leaves: string[] = [];
-    const collect = (v: unknown): void => {
-      if (typeof v === "string" || typeof v === "number") leaves.push(String(v).toLowerCase());
-      else if (Array.isArray(v)) v.forEach(collect);
-      else if (isObj(v)) Object.values(v).forEach(collect);
-    };
-    values.forEach(collect);
-    // A composite value (`6_8`) binds when every part is a leaf (`{start:"6",end:"8"}`).
-    const matches = (o: string): boolean => {
-      const lo = o.toLowerCase();
-      if (leaves.includes(lo)) return true;
-      const parts = lo.split("_");
-      return parts.length > 1 && parts.every((p) => p !== "" && leaves.includes(p));
-    };
-    const tracked = declared.find((d) => !used.has(d.name) && d.observed.some(matches));
+    // value or quoted instruction value) is carried at this varying path tracks
+    // it: the field takes that value, and the body path is rebuilt around it
+    // instead of an invented path-named field.
+    const trackedCarry = (d: { observed: readonly string[] }): Carried | undefined =>
+      d.observed.map(carriedBy).find((c) => c !== undefined);
+    const tracked = declared.find((d) => !used.has(d.name) && trackedCarry(d) !== undefined);
+    const carried = tracked ? trackedCarry(tracked) : undefined;
     const base = path
       .map((seg, i) => {
         const w = seg
@@ -3236,12 +3261,29 @@ function derivePostBodyModel(
     for (let n = 2; !tracked && used.has(field); n++) field = `${base}${n}`;
     used.add(field);
     const def = JSON.stringify(first ?? null);
-    const seen = values.filter((v) => v !== null && v !== undefined);
-    const zod =
-      first === null || first === undefined
-        ? `${postBodyValueZod(seen)}.optional()`
-        : `${postBodyValueZod(seen)}.optional().default(${def})`;
-    bindings.push({ field, zod });
+    const unset = first === null || first === undefined;
+    const withDefault = (zod: string): string =>
+      unset ? `${zod}.optional()` : `${zod}.optional().default(${def})`;
+    // A list-valued path takes one value or several; an omitted field keeps the recorded list.
+    const guardUnset = (expr: string): string =>
+      unset ? `(payload.${field} === undefined ? undefined : ${expr})` : expr;
+    if (listed && carried?.kind === "whole") {
+      const item = postBodyValueZod(elements);
+      bindings.push({ field, zod: withDefault(`z.union([z.array(${item}), ${item}])`) });
+      return guardUnset(`[payload.${field}].flat()`);
+    }
+    if (listed && carried?.kind === "parts") {
+      bindings.push({ field, zod: withDefault("z.union([z.array(z.unknown()), z.string()])") });
+      const piece = (i: number): string => {
+        const part = `v.split(${JSON.stringify(carried.sep)})[${i}]`;
+        return carried.numeric[i] ? `Number(${part})` : part;
+      };
+      const element = carried.keys.map((k, i) => `${JSON.stringify(k)}: ${piece(i)}`).join(", ");
+      return guardUnset(
+        `((v) => (typeof v === "string" ? [{ ${element} }] : v))(payload.${field})`
+      );
+    }
+    bindings.push({ field, zod: withDefault(postBodyValueZod(seen)) });
     return `payload.${field}`;
   };
   const bodyExpr = build([]);
