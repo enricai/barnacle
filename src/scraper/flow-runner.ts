@@ -3306,10 +3306,7 @@ export function isClickViewSwapVerified(params: {
     destinationPlausible !== false &&
     !isAdvanceWithPattern &&
     textChanged &&
-    pageAdvanced &&
-    // Validation markers that grew with no network round trip are a blocked
-    // submit rendering its errors, even when the header/text flipped with them.
-    !(invalidMarkerDelta > 0 && networkDelta === 0)
+    pageAdvanced
   ) {
     return true;
   }
@@ -14973,10 +14970,23 @@ export async function executeStepWithHealing(params: {
       const markersNow = await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page)).catch(
         () => 0
       );
-      // A header/text flip that arrives together with grown markers is the
-      // same blocked submit (an error-review screen), so the text need not
-      // have grown; a changed URL is still a real navigation.
-      if (markersNow > stepStartInvalidMarkerCount && settled.url === stepStartSnapshot.url) {
+      const lenNow = /^(\d+):/.exec(settled.visibleTextSignature ?? "");
+      const lenStart = /^(\d+):/.exec(stepStartSnapshot.visibleTextSignature ?? "");
+      const markersGrew = markersNow > stepStartInvalidMarkerCount;
+      if (markersGrew && lenNow && lenStart && Number(lenNow[1]) > Number(lenStart[1])) {
+        return false;
+      }
+      // A header/text flip onto an error-review screen is the same blocked
+      // submit though the text did not grow: grown markers on the same URL
+      // together with validation wording the step-start page did not carry.
+      const VALIDATION_WORDING =
+        /\b(errors?|invalid|required|fix (these|the|them)|must (have|be))\b/i;
+      if (
+        markersGrew &&
+        settled.url === stepStartSnapshot.url &&
+        VALIDATION_WORDING.test(settled.visibleText ?? "") &&
+        !VALIDATION_WORDING.test(stepStartSnapshot.visibleText ?? "")
+      ) {
         return false;
       }
     }
