@@ -3248,14 +3248,20 @@ function declaredFieldObservedValues(
 ): { name: string; observed: string[] }[] {
   const out = new Map<string, string[]>();
   for (const name of names) out.set(name, []);
+  // Faceted URLs accumulate earlier facets: only a pair new to this step is this step's own value.
+  const seenPairs = new Set<string>();
   for (const step of flowSteps) {
-    if (typeof step === "string" || step.payloadField === undefined) continue;
-    const list = out.get(step.payloadField);
-    if (!list) continue;
-    for (const m of step.step.matchAll(/['"]([^'"]+)['"]/g)) list.push(m[1]!);
+    if (typeof step === "string") continue;
+    const list = step.payloadField === undefined ? undefined : out.get(step.payloadField);
+    if (list) for (const m of step.step.matchAll(/['"]([^'"]+)['"]/g)) list.push(m[1]!);
     if (step.navigateTo !== undefined) {
       try {
-        for (const [, v] of new URL(step.navigateTo).searchParams) if (v !== "") list.push(v);
+        for (const [k, v] of new URL(step.navigateTo).searchParams) {
+          const pair = `${k}\u0000${v}`;
+          if (v === "" || seenPairs.has(pair)) continue;
+          seenPairs.add(pair);
+          list?.push(v);
+        }
       } catch {
         // not an absolute URL: no observed value
       }
