@@ -125,6 +125,17 @@ const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
 const DOUBLE_QUOTED_SPAN = /"([^"]+)"/g;
 
 /**
+ * Set a per-call header once, case-insensitively. The first writer wins, so an
+ * explicit capture value beats a later baseUrl/tenant-derived default and two
+ * captured casings of one name collapse to a single entry.
+ */
+function setHeaderOnce(target: Record<string, string>, name: string, value: string): void {
+  const lower = name.toLowerCase();
+  if (Object.keys(target).some((k) => k.toLowerCase() === lower)) return;
+  target[name] = value;
+}
+
+/**
  * Quoted spans of a flow-step instruction. The runtime parsers only understand
  * single quotes, so a double-quoted span is consulted only when the step has no
  * single-quoted one — a mixed instruction keeps its single-quote grammar, and a
@@ -11658,7 +11669,7 @@ export function emitMultiStepExecuteHttp(
       // above), regardless of what interpolateStateValues would otherwise do.
       const volatileVarName = volatileHeaderVarNames.get(lower);
       if (volatileVarName !== undefined) {
-        perCallHeaders[k] = `\${${volatileVarName}}`;
+        setHeaderOnce(perCallHeaders, k, `\${${volatileVarName}}`);
         continue;
       }
       const interpolated = interpolateStateValues(
@@ -11687,14 +11698,14 @@ export function emitMultiStepExecuteHttp(
         !joinCarryingHeaderNames?.has(k) &&
         !boundHeaderNames.has(lower)
       ) {
-        perCallHeaders[k] = credentialHeaderThrowExpr(k, v, tokenBootstrap);
+        setHeaderOnce(perCallHeaders, k, credentialHeaderThrowExpr(k, v, tokenBootstrap));
       } else if (
         lower === "api-token" ||
         lower === "authorization" ||
         joinCarryingHeaderNames?.has(k) ||
         interpolated !== v
       ) {
-        perCallHeaders[k] = interpolated;
+        setHeaderOnce(perCallHeaders, k, interpolated);
       }
     }
     // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
@@ -11705,14 +11716,14 @@ export function emitMultiStepExecuteHttp(
     // generated plugin code. Built via concatenation so Biome doesn't mistake
     // it for a placeholder in THIS file's source.
     for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-      perCallHeaders[headerName] = substituteOrigin(observedValue, baseUrl);
+      setHeaderOnce(perCallHeaders, headerName, substituteOrigin(observedValue, baseUrl));
     }
     // G2: emit tenant-subdomain headers per-call from caller payload field
     // (e.g. API-ShortName → ${payload.ApiShortName}). The discoveredFields
     // population above ensures the field is in the payload schema.
     for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
       const fieldName = headerNameToPayloadFieldName(headerName);
-      perCallHeaders[headerName] = `\${payload.${fieldName}}`;
+      setHeaderOnce(perCallHeaders, headerName, `\${payload.${fieldName}}`);
     }
     // A text-captured multipart body (requestPostData non-null) is sent through
     // httpClient as a string, so the captured multipart Content-Type (with the
@@ -12524,7 +12535,7 @@ export function emitMultiStepExecuteHttp(
       const headersVar = `headers_${step.varName}`;
       // Extract just the per-call header overrides (API-Token etc.) from the
       // rendered headers expression to merge with BASE_HEADERS.
-      const perCallHeaderEntries: string[] = [];
+      const perCallHeaderMap: Record<string, string> = {};
       const multipartPrior = actions.slice(0, i);
       for (const [k, v] of Object.entries(cap.requestHeaders)) {
         const lower = k.toLowerCase();
@@ -12539,7 +12550,7 @@ export function emitMultiStepExecuteHttp(
         // from the flow-wide hoisted mint instead of the captured literal.
         const volatileVarName = volatileHeaderVarNames.get(lower);
         if (volatileVarName !== undefined) {
-          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`\${${volatileVarName}}\``);
+          setHeaderOnce(perCallHeaderMap, k, `\${${volatileVarName}}`);
           continue;
         }
         const interpolated = interpolateStateValues(
@@ -12561,11 +12572,9 @@ export function emitMultiStepExecuteHttp(
           interpolated === v &&
           !isEmptyTokenPlaceholderHeaderValue(v)
         ) {
-          perCallHeaderEntries.push(
-            `${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k, v, tokenBootstrap)}\``
-          );
+          setHeaderOnce(perCallHeaderMap, k, credentialHeaderThrowExpr(k, v, tokenBootstrap));
         } else if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
-          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
+          setHeaderOnce(perCallHeaderMap, k, interpolated);
         }
       }
       // G1+G2: include tenant-derived headers in the multipart fetch too.
@@ -12573,12 +12582,15 @@ export function emitMultiStepExecuteHttp(
       // for a template-literal in THIS file's source.
       for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
         const v = substituteOrigin(observedValue, baseUrl);
-        perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`${v}\``);
+        setHeaderOnce(perCallHeaderMap, headerName, v);
       }
       for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
         const fieldName = headerNameToPayloadFieldName(headerName);
-        perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`\${payload.${fieldName}}\``);
+        setHeaderOnce(perCallHeaderMap, headerName, `\${payload.${fieldName}}`);
       }
+      const perCallHeaderEntries = Object.entries(perCallHeaderMap).map(
+        ([k, v]) => `${JSON.stringify(k)}: \`${v}\``
+      );
       const perCallHeadersLit = perCallHeaderEntries.length
         ? `, ${perCallHeaderEntries.join(", ")}`
         : "";
