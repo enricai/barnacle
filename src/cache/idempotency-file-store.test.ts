@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +5,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createFileIdempotencyStore } from "@/cache/idempotency-guard";
 import { resolveIdempotencyEntryPath } from "@/lib/telemetry/telemetry-paths";
+
+const renamed: string[] = [];
+vi.mock("node:fs", async (orig) => {
+  const actual = await orig<typeof import("node:fs")>();
+  return {
+    ...actual,
+    renameSync: (a: string, b: string) => {
+      renamed.push(a);
+      return actual.renameSync(a, b);
+    },
+  };
+});
 
 const dirs: string[] = [];
 const mk = () => {
@@ -73,15 +84,9 @@ describe("file store owner/renew/read safety", () => {
   it("uses distinct temp files for concurrent sets", () => {
     const dir = mk();
     const s = createFileIdempotencyStore(dir);
-    const names: string[] = [];
-    const orig = fs.renameSync;
-    const spy = vi.spyOn(fs, "renameSync").mockImplementation((a, b) => {
-      names.push(String(a));
-      return orig(a, b);
-    });
+    renamed.length = 0;
     s.set("k", { state: "pending" }, 1000);
     s.set("k", { state: "pending" }, 1000);
-    spy.mockRestore();
-    expect(new Set(names).size).toBe(2);
+    expect(new Set(renamed).size).toBe(2);
   });
 });
