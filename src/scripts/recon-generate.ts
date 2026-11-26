@@ -20230,10 +20230,7 @@ ${sensitiveRedactionLiteral}    defaultBaseUrl: ${JSON.stringify(baseUrl)},
     // (hasMultipartStep), OR this is a job-application submission flow
     // (usesApplicantContactSchema) since basePayloadSchemaExpr requires a
     // real Resume Buffer via ApplicantContactSchema regardless of whether
-    // the recorded browser flow contained an upload step, OR the payload
-    // has a non-scalar discoveredStructuredKeys field (payloadNeedsMultipart),
-    // since the multipart wire format is what makes that field's
-    // JSON-stringified encoding parseable.
+    // the recorded browser flow contained an upload step.
     `
         : ""
     }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}${redactionLiteral}
