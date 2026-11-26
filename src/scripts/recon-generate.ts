@@ -12371,7 +12371,8 @@ export function emitMultiStepExecuteHttp(
                 paramBody,
                 textVar,
                 chainStep.varName,
-                "      "
+                "      ",
+                httpPrefixCount !== undefined
               )
             );
             for (const p of chainHtmlProduces) {
@@ -12519,7 +12520,8 @@ export function emitMultiStepExecuteHttp(
           escapeJsonBodyPayloadSplices(r.bodyArg, r.jsonBody),
           textVar,
           step.varName,
-          "    "
+          "    ",
+          httpPrefixCount !== undefined
         )
       );
       for (const p of htmlProduces) {
@@ -12734,17 +12736,32 @@ function emitHtmlFetchLines(
   bodyArg: string,
   textVar: string,
   stepVar: string,
-  indent: string
+  indent: string,
+  carriesSession = false
 ): string[] {
   const literal = headersExpr.replace(/^headers:\s*/, "").replace(/,\s*$/, "");
-  const headers = literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
+  const base = literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
+  const cookieExpr = `Object.entries(prefixCookies).map(([k, v]) => \`\${k}=\${v}\`).join("; ")`;
+  const headers = carriesSession
+    ? `{ ...${base}, ...(Object.keys(prefixCookies).length > 0 ? { Cookie: ${cookieExpr} } : {}) }`
+    : base;
   const respVar = `resp_${stepVar}`;
+  const collect = carriesSession
+    ? [
+        `${indent}for (const entry of ${respVar}.headers.getSetCookie()) {`,
+        `${indent}  const pair = entry.split(";")[0] ?? "";`,
+        `${indent}  const eq = pair.indexOf("=");`,
+        `${indent}  if (eq > 0) prefixCookies[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();`,
+        `${indent}}`,
+      ]
+    : [];
   return [
     `${indent}const ${respVar} = await fetchFollowingRedirectsPreservingMethod(\`${url}\`, {`,
     `${indent}  method: ${JSON.stringify(method)},`,
     `${indent}  headers: ${headers},`,
     ...(bodyArg !== "" ? [`${indent}  ${bodyArg}`] : []),
     `${indent}});`,
+    ...collect,
     `${indent}if (!${respVar}.ok) throw new Error(\`step ${stepVar} (HTML token fetch) failed: HTTP \${${respVar}.status}\`);`,
     `${indent}const ${textVar} = await ${respVar}.text();`,
   ];
