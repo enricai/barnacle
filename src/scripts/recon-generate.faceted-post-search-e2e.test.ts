@@ -140,10 +140,6 @@ async function generate(): Promise<string> {
       ownBackendHostnames: ["www.example.test", "gw.api.example.test"],
       submitEndpointPattern: "pricing/v1/trips$",
       requireSubmitEndpointMatch: true,
-      extraPayloadFields: [
-        { name: "trade", type: "string" },
-        { name: "promoCode", type: "string", optional: true },
-      ],
       foldReturn: [
         {
           endpointPattern: "ref/v1/itineraries\\?offers=",
@@ -223,13 +219,7 @@ describe("recon-generate: faceted POST search with a GET drill", () => {
     const contractPath = await generate();
     const contract = readFileSync(contractPath, "utf8");
     expect(contract.match(/pricing\/v1\/trips`/g)).toHaveLength(1);
-    // A declared extra field bound to a list-valued body path takes one value or a list.
-    expect(contract).toContain(
-      "trade: z.union([z.array(z.string()), z.string()]).optional().default"
-    );
-    expect(contract).not.toContain("trade: z.string()");
-    // An unbound declared extra field is still emitted with its declared type.
-    expect(contract).toContain("promoCode: z.string().optional()");
+    expect(contract).toContain("filtersTrades: z.array(z.string()).optional().default");
     expect(contract).toContain("filtersShips: z.array(z.string()).optional()");
     expect(contract).toContain("filtersLength: z.array(z.unknown()).optional()");
     expect(contract).toContain("bookingGuests: z.array(z.unknown()).optional().default");
@@ -271,7 +261,7 @@ describe("recon-generate: faceted POST search with a GET drill", () => {
     const recorded = await run({});
     expect(recorded.searches).toEqual([searchBody(SEARCHES[0]!)]);
     const faceted = await run({
-      trade: "A",
+      filtersTrades: ["A"],
       filtersShips: ["XP"],
       filtersLength: [{ start: "7", end: "10" }],
       filtersMeta: "B",

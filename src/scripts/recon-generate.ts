@@ -3269,8 +3269,14 @@ function derivePostBodyModel(
       unset ? `(payload.${field} === undefined ? undefined : ${expr})` : expr;
     if (listed && carried?.kind === "whole") {
       const item = postBodyValueZod(elements);
-      bindings.push({ field, zod: withDefault(`z.union([z.array(${item}), ${item}])`) });
-      return guardUnset(`[payload.${field}].flat()`);
+      // The body path keeps its own path-named field (the recorded list, settable
+      // directly); the declared field overrides it only when the caller supplies it.
+      let pathField = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
+      for (let n = 2; used.has(pathField); n++) pathField = `${base}${n}`;
+      used.add(pathField);
+      bindings.push({ field: pathField, zod: withDefault(postBodyValueZod(seen)) });
+      bindings.push({ field, zod: `z.union([z.array(${item}), ${item}]).optional()` });
+      return `(payload.${field} === undefined ? payload.${pathField} : [payload.${field}].flat())`;
     }
     if (listed && carried?.kind === "parts") {
       bindings.push({ field, zod: withDefault("z.union([z.array(z.unknown()), z.string()])") });
