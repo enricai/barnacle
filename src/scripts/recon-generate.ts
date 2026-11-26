@@ -5832,22 +5832,48 @@ function isCredentialHeaderName(lower: string): boolean {
 }
 
 /** Document URLs serving a bearer, by {@link bearerKindKey} of the bearer each one serves. */
-export type BearerSources = ReadonlyMap<string, string>;
+export interface BearerSource {
+  url: string;
+  source: "rsc-row" | "html";
+  row?: string;
+}
+/**
+ * A bare string value is a document URL whose bearer location is unknown; it is
+ * still minted from, without a source note.
+ */
+export type BearerSources = ReadonlyMap<string, BearerSource | string>;
+
+/** A {@link BearerSources} value as a URL plus whatever location evidence it carries. */
+function bearerSourceEntry(
+  v: BearerSource | string | undefined
+): { url: string; source?: BearerSource["source"]; row?: string } | undefined {
+  return typeof v === "string" ? { url: v } : v;
+}
+
+/** Comment text naming where a bearer was found; safe inside a block comment. */
+function bearerSourceNote(s: { source: string; row?: string }): string {
+  const row = s.row !== undefined ? ` row ${s.row}` : "";
+  return `bearer source: ${s.source}${row}`.replace(/\*\/|[\r\n]/g, " ");
+}
 
 /**
  * Documents that replays proved serve a bearer. Keyed by the token's kind, so a
  * document located for one endpoint's token is never used for another's.
  */
-export function locateBearerSources(captures: Capture[], replays: ReplayResult[]): BearerSources {
-  const sources = new Map<string, string>();
+export function locateBearerSources(
+  captures: Capture[],
+  replays: ReplayResult[]
+): ReadonlyMap<string, BearerSource> {
+  const sources = new Map<string, BearerSource>();
   for (const r of replays) {
-    const url = r.authReplay?.tokenReplayable ? r.authReplay.tokenSource?.url : undefined;
-    if (!url) continue;
+    const ts = r.authReplay?.tokenReplayable ? r.authReplay.tokenSource : undefined;
+    const url = ts?.url;
+    if (!ts || !url) continue;
     for (const c of captures) {
       if (endpointKey(c.url) !== endpointKey(r.url)) continue;
       const header = authorizationOf(c);
       const kind = header && bearerKindKey(header[1]);
-      if (kind && !sources.has(kind)) sources.set(kind, url);
+      if (kind && !sources.has(kind)) sources.set(kind, { url, source: ts.source, row: ts.row });
     }
   }
   return sources;
@@ -5916,6 +5942,8 @@ function tokenBootstrapHelperLines(recordedBaseUrl: string): string[] {
 /** Call-time bearer for a read flow's clients; `document` null means none was located. */
 export interface ReadFlowBearer {
   document: string | null;
+  source: "rsc-row" | "html" | null;
+  row?: string;
   headerName: string;
   prefix: string;
   claims: Record<string, string | boolean>;
@@ -5944,8 +5972,11 @@ export function deriveReadFlowBearer(
     ...new Set(cs.filter((c) => URL.canParse(c.url)).map((c) => new URL(c.url).host)),
   ];
   const bearerHosts = hosts(captures.filter((c) => authorizationOf(c) !== undefined));
+  const located = locateBearerSources(captures, replays).get(bearerKindKey(header[1]) ?? "");
   return {
-    document: locateBearerSources(captures, replays).get(bearerKindKey(header[1]) ?? "") ?? null,
+    document: located?.url ?? null,
+    source: located?.source ?? null,
+    row: located?.row,
     headerName: header[0],
     prefix: /^bearer\s/i.test(header[1].trim()) ? "Bearer " : "",
     claims: jwt?.want ?? {},
@@ -5968,11 +5999,15 @@ function credentialHeaderThrowExpr(
 ): string {
   if (bootstrap && capturedValue !== undefined) {
     const c = stableJwtClaims(capturedValue);
-    const url = bootstrap.sources.get(bearerKindKey(capturedValue) ?? "");
-    if (c && url !== undefined) {
+    const located = bearerSourceEntry(bootstrap.sources.get(bearerKindKey(capturedValue) ?? ""));
+    const url = located?.url;
+    if (c && located && url !== undefined) {
       bootstrap.used.value = true;
       const prefix = /^bearer\s/i.test(capturedValue.trim()) ? "Bearer " : "";
-      return `${prefix}\${await mintBearerToken(${JSON.stringify(url)}, ${JSON.stringify(c.want)}, ${JSON.stringify(c.keys)})}`;
+      const note = located.source
+        ? `/* ${bearerSourceNote({ source: located.source, row: located.row })} */ `
+        : "";
+      return `${prefix}\${${note}await mintBearerToken(${JSON.stringify(url)}, ${JSON.stringify(c.want)}, ${JSON.stringify(c.keys)})}`;
     }
   }
   const msg = JSON.stringify(
@@ -19430,7 +19465,7 @@ export function emitContractTsParts(opts: {
   const readFlowBearerBlock = !usesReadFlowBearer
     ? ""
     : `
-const resolveAuthHeaders = createBearerHeaderResolver({ documentUrl: ${JSON.stringify(readFlowBearer.document)}, recordedBaseUrl: ${JSON.stringify(baseUrl)}, claims: ${JSON.stringify(readFlowBearer.claims)}, claimNames: ${JSON.stringify(readFlowBearer.claimNames)}, bottleneck: limiter, headerName: ${JSON.stringify(readFlowBearer.headerName)}, prefix: ${JSON.stringify(readFlowBearer.prefix)}, bearerHosts: ${JSON.stringify(readFlowBearer.bearerHosts)}, otherHosts: ${JSON.stringify(readFlowBearer.otherHosts)} });
+${readFlowBearer.source ? `// ${bearerSourceNote({ source: readFlowBearer.source, row: readFlowBearer.row })}\n` : ""}const resolveAuthHeaders = createBearerHeaderResolver({ documentUrl: ${JSON.stringify(readFlowBearer.document)}, recordedBaseUrl: ${JSON.stringify(baseUrl)}, claims: ${JSON.stringify(readFlowBearer.claims)}, claimNames: ${JSON.stringify(readFlowBearer.claimNames)}, bottleneck: limiter, headerName: ${JSON.stringify(readFlowBearer.headerName)}, prefix: ${JSON.stringify(readFlowBearer.prefix)}, bearerHosts: ${JSON.stringify(readFlowBearer.bearerHosts)}, otherHosts: ${JSON.stringify(readFlowBearer.otherHosts)} });
 `;
 
   const gqlCacheBlock =
