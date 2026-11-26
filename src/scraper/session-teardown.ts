@@ -1,3 +1,4 @@
+import { ApiError } from "@/api/errors";
 import { CdpTransportClosedError, SessionLifetimeExceededError } from "@/scraper/errors";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import type { BrowserSession } from "@/scraper/session-shared";
@@ -126,12 +127,15 @@ export function raceAgainstTeardown<T>(
  * Upgrades a caught error to `SessionLifetimeExceededError` when the session
  * recorded a lifetime-expiry death, so every code path that observes the
  * death fails fast regardless of which error it caught. Steel sessions have
- * no `getSessionTimeoutHit`, so the error passes through unchanged.
+ * no `getSessionTimeoutHit`, so the error passes through unchanged. A typed
+ * client-facing `ApiError` always passes through unchanged: it is the task's
+ * deliberate outcome and must not be erased by the lifetime error.
  */
 export function resolveSessionDeathError(
   session: Pick<BrowserSession, "getSessionTimeoutHit"> | undefined,
   err: unknown
 ): unknown {
+  if (err instanceof ApiError) return err;
   const hit = session?.getSessionTimeoutHit?.();
   if (!hit) return err;
   return new SessionLifetimeExceededError(
