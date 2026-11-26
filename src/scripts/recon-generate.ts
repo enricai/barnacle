@@ -3135,6 +3135,15 @@ export function firstEndpointCapture(
   return pool.find(valid) ?? null;
 }
 
+/** A flow step's declared payloadField with the capture phase and facet value of its step. */
+interface DeclaredBodyStepField {
+  field: string;
+  /** Capture phase the step produces (slug of its instruction); "" when unknown. */
+  phase: string;
+  /** Facet value the step introduces; "" when unknown. */
+  value: string;
+}
+
 interface PostBodyBinding {
   field: string;
   zod: string;
@@ -3164,17 +3173,26 @@ function postBodyValueZod(seen: readonly unknown[]): string {
  * stay literal. Returns null when no body varies or bodies are not JSON objects.
  */
 function derivePostBodyModel(
-  captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
-  endpointPath: string
+  captures: readonly {
+    method?: string;
+    url: string;
+    requestPostData?: string | null;
+    phase?: string;
+  }[],
+  endpointPath: string,
+  declared: readonly DeclaredBodyStepField[] = []
 ): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
   const bodies: Record<string, unknown>[] = [];
+  const phases: (string | undefined)[] = [];
   for (const c of captures) {
     if (c.method !== undefined && c.method.toUpperCase() !== "POST") continue;
     if (safeUrlPathname(c.url) !== endpointPath) continue;
     try {
       const parsed: unknown = JSON.parse(c.requestPostData ?? "");
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed))
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
         bodies.push(parsed as Record<string, unknown>);
+        phases.push(c.phase);
+      }
     } catch {
       // non-JSON body: not modelled
     }
@@ -3205,8 +3223,20 @@ function derivePostBodyModel(
         return i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1);
       })
       .join("");
-    let field = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
-    for (let n = 2; used.has(field); n++) field = `${base}${n}`;
+    // The declared per-step field whose step introduced this change owns the leaf.
+    let declaredField: string | undefined;
+    for (let j = 1; j < bodies.length && declaredField === undefined; j++) {
+      const now = JSON.stringify(values[j]);
+      if (now === JSON.stringify(values[j - 1])) continue;
+      const free = declared.filter((d) => !used.has(d.field));
+      const phase = phases[j];
+      declaredField = (
+        free.find((d) => d.phase !== "" && d.phase === phase) ??
+        free.find((d) => d.value !== "" && now?.includes(d.value) === true)
+      )?.field;
+    }
+    let field = declaredField ?? (/^[A-Za-z_]/.test(base) ? base : `f${base}`);
+    if (declaredField === undefined) for (let n = 2; used.has(field); n++) field = `${base}${n}`;
     used.add(field);
     const def = JSON.stringify(first ?? null);
     const seen = values.filter((v) => v !== null && v !== undefined);
@@ -3219,6 +3249,28 @@ function derivePostBodyModel(
   };
   const bodyExpr = build([]);
   return bindings.length > 0 ? { bodyExpr, bindings } : null;
+}
+
+/** Declared per-step payloadFields keyed by the capture phase their step records (recon-browser slugs the instruction to 24 chars). */
+function declaredBodyStepFields(
+  flowSteps: FlowStepInput[],
+  env: NodeJS.ProcessEnv
+): DeclaredBodyStepField[] {
+  const values = new Map<string, string>();
+  for (const f of extractNavigateToFacetOrder(flowSteps, env))
+    if (!values.has(f.field)) values.set(f.field, f.value);
+  const out: DeclaredBodyStepField[] = [];
+  for (const step of flowSteps) {
+    if (typeof step === "string" || !step.payloadField || step.payloadFieldNone) continue;
+    if (out.some((d) => d.field === step.payloadField)) continue;
+    const phase = step.step
+      .replace(/[^a-z0-9]+/gi, "-")
+      .toLowerCase()
+      .replace(/^-|-$/g, "")
+      .slice(0, 24);
+    out.push({ field: step.payloadField, phase, value: values.get(step.payloadField) ?? "" });
+  }
+  return out;
 }
 
 function safeUrlPathname(url: string): string {
@@ -18944,7 +18996,11 @@ export function emitContractTsParts(opts: {
   // the other sources unchanged.
   const postBodyModel =
     readOnlyPostSearch && !gql && !multiStepBody && !suppliedGetInputModel
-      ? derivePostBodyModel(allCaptures, endpointPath)
+      ? derivePostBodyModel(
+          allCaptures,
+          endpointPath,
+          declaredBodyStepFields(contractFlowSteps, process.env)
+        )
       : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
