@@ -21214,6 +21214,15 @@ function computeFlowPayloadFieldNames(
   return { payloadFieldNames, optionalPayloadFieldNames };
 }
 
+/** Per-step `frameSelector` property text (with its leading `, `), or "". */
+function stepFrameSelectorProp(step: unknown): string {
+  const fs =
+    typeof step === "object" && step !== null
+      ? (step as { frameSelector?: string }).frameSelector
+      : undefined;
+  return fs !== undefined ? `, frameSelector: ${JSON.stringify(fs)}` : "";
+}
+
 export function emitBrowserFlowTs(opts: {
   siteId: string;
   pascal: string;
@@ -21343,7 +21352,7 @@ export function emitBrowserFlowTs(opts: {
       );
       const hashAt = step.navigateTo.indexOf("#");
       if (hashAt !== -1) navigateBaselineHash = step.navigateTo.slice(hashAt + 1);
-      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${navigateToExpr} },`;
+      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${navigateToExpr}${stepFrameSelectorProp(step)} },`;
     }
     if (isObj && step.emailStep === true) {
       usesEmailStep = true;
@@ -21351,7 +21360,7 @@ export function emitBrowserFlowTs(opts: {
       const upload = step.upload === true;
       const submitStep = step.submitStep === true;
       const emailStepConfigExpr = JSON.stringify(step.emailStepConfig ?? {});
-      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}, emailStep: true, emailStepConfig: ${emailStepConfigExpr} },`;
+      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}, emailStep: true, emailStepConfig: ${emailStepConfigExpr}${stepFrameSelectorProp(step)} },`;
     }
     // ${RECON_PASSWORD} is reserved-tooling, not a domain-vocabulary concern —
     // it names a credential the recon capture needed to authenticate, not a
@@ -21364,7 +21373,7 @@ export function emitBrowserFlowTs(opts: {
       const optional = isObj ? step.optional === true : false;
       const upload = isObj ? step.upload === true : false;
       const submitStep = isObj ? step.submitStep === true : false;
-      return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
+      return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}${stepFrameSelectorProp(step)} },`;
     }
     const field = resolveStepPayloadField(
       instruction,
@@ -21390,7 +21399,7 @@ export function emitBrowserFlowTs(opts: {
           );
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
-    return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
+    return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}${stepFrameSelectorProp(step)} },`;
   });
 
   // The last step of a submission flow is structurally the submit — force
@@ -21409,18 +21418,6 @@ export function emitBrowserFlowTs(opts: {
       stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
         /^([\s\S]*)submitStep: (true|false)/,
         "$1submitStep: true"
-      );
-    }
-  }
-
-  // Per-step frameSelector: emit it on the step object so the runtime's
-  // `s.frameSelector ?? deps.frameSelector` drives the frame this step names.
-  for (let i = 0; i < stepLiterals.length; i++) {
-    const st = flowSteps[i];
-    if (st !== undefined && typeof st !== "string" && st.frameSelector !== undefined) {
-      stepLiterals[i] = stepLiterals[i]!.replace(
-        / \},$/,
-        ` frameSelector: ${JSON.stringify(st.frameSelector)} },`
       );
     }
   }

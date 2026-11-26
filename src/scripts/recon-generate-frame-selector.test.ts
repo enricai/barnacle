@@ -53,3 +53,43 @@ describe("emitBrowserFlowTs — per-step frameSelector emission", () => {
     expect(code.match(/#step_frame/g)).toHaveLength(1);
   });
 });
+
+describe("emitBrowserFlowTs — per-step frameSelector literal validity", () => {
+  const SEL = "iframe[src^='https://example-pay.test']";
+  const arrayOf = (code: string): string => {
+    const lines = code.split("\n").filter((l) => /^ {2}\{ instruction:/.test(l));
+    return `[${lines.join("\n")}]`;
+  };
+  const parses = async (src: string): Promise<number> => {
+    const ts = await import("typescript");
+    const sf = ts.createSourceFile("x.ts", `const a = ${src};`, ts.ScriptTarget.Latest, true);
+    return (sf as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics.length;
+  };
+
+  it("separates frameSelector with a comma on a declareOnly submitStep:false step", async () => {
+    const { code } = emitBrowserFlowTs({
+      ...BASE_OPTS,
+      flowSteps: [
+        { step: "Click Pay", submitStep: false, payloadField: "email", frameSelector: SEL },
+        { step: "Click Next", submitStep: false },
+      ],
+    });
+    expect(code).toContain(`submitStep: false, frameSelector: ${JSON.stringify(SEL)} },`);
+    expect(await parses(arrayOf(code))).toBe(0);
+  });
+
+  it("is valid for navigateTo, emailStep, password and last-step-submit shapes", async () => {
+    const { code } = emitBrowserFlowTs({
+      ...BASE_OPTS,
+      flowSteps: [
+        { step: "Go", navigateTo: "https://careers.example.org/a", frameSelector: SEL },
+        { step: "Confirm email", emailStep: true, frameSelector: SEL },
+        { step: "Type ${RECON_PASSWORD}", frameSelector: SEL },
+        { step: "Click Submit", frameSelector: SEL },
+      ],
+    });
+    expect(code.match(/, frameSelector: /g)!.length).toBeGreaterThanOrEqual(4);
+    expect(code).toMatch(/submitStep: true, frameSelector: [^\n]* \},\n/);
+    expect(await parses(arrayOf(code))).toBe(0);
+  });
+});
