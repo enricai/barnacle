@@ -197,9 +197,6 @@ describe("routes/health /readyz", () => {
           provider: "steel",
           browserbaseApiKey: undefined,
           browserbaseProjectId: undefined,
-          provider: "steel",
-          browserbaseApiKey: undefined,
-          browserbaseProjectId: undefined,
           steelApiKey: "test-steel",
           anthropicApiKey: "test-anthropic",
           readinessQueueThreshold: 5,
@@ -228,9 +225,6 @@ describe("routes/health /readyz", () => {
     const app = await buildHealthApp(
       makeConfig({
         scraper: {
-          provider: "steel",
-          browserbaseApiKey: undefined,
-          browserbaseProjectId: undefined,
           provider: "steel",
           browserbaseApiKey: undefined,
           browserbaseProjectId: undefined,
