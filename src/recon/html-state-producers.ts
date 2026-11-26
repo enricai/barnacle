@@ -5,7 +5,7 @@
  */
 
 /** Kind of HTML element/location an issued token was read from. */
-export type HtmlTokenElement = "form-action" | "link" | "hidden-input" | "path-segment";
+export type HtmlTokenElement = "form-action" | "link" | "hidden-input" | "path-segment" | "meta";
 
 export interface HtmlIssuedToken {
   value: string;
@@ -99,6 +99,11 @@ export function extractHtmlIssuedTokens(body: unknown): HtmlIssuedToken[] {
     const name = attr(m[0], "name");
     const value = attr(m[0], "value");
     if (name && value) out.push({ value, element: "hidden-input", name });
+  }
+  for (const m of body.matchAll(/<meta\b[^>]*>/gi)) {
+    const name = attr(m[0], "name");
+    const content = attr(m[0], "content");
+    if (name && content) out.push({ value: content, element: "meta", name });
   }
   return out;
 }
