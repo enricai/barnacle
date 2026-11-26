@@ -19166,11 +19166,9 @@ export function emitContractTsParts(opts: {
     );
   }
 
-  // A non-scalar (Mechanism B) field forces multipart wire encoding just like
-  // an upload step does: the multipart body encodes arrays/objects as
-  // JSON-stringified strings, so those fields need the same
-  // multipartJsonObject() parsing Answers already gets in basePayloadSchemaExpr.
-  const payloadNeedsMultipart = hasMultipartStep || (discoveredStructuredKeys?.size ?? 0) > 0;
+  // Multipart is decided by the recorded wire encoding only (hasMultipartStep):
+  // a non-scalar structured key in a JSON body is not proof of multipart.
+  const payloadNeedsMultipart = hasMultipartStep;
 
   // Phase F: additional-body keys (from action POSTs beyond r0). Each gets a
   // payload field of the appropriate Zod type. Site-agnostic.
