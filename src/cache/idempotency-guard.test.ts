@@ -251,7 +251,7 @@ describe("record write isolation", () => {
   const cfg = {
     keyFields: ["id"],
     classifyFailure: (e: unknown) =>
-      e instanceof Error && e.message === "boom" ? ("unknown" as const) : undefined,
+      e instanceof Error && e.message === "boom" ? ("unknown" as const) : ("failed" as const),
   };
   const failingStore = () => {
     const base = createInMemoryIdempotencyStore();
