@@ -3306,7 +3306,10 @@ export function isClickViewSwapVerified(params: {
     destinationPlausible !== false &&
     !isAdvanceWithPattern &&
     textChanged &&
-    pageAdvanced
+    pageAdvanced &&
+    // Validation markers that grew with no network round trip are a blocked
+    // submit rendering its errors, even when the header/text flipped with them.
+    !(invalidMarkerDelta > 0 && networkDelta === 0)
   ) {
     return true;
   }
