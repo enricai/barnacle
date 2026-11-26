@@ -3165,7 +3165,8 @@ function postBodyValueZod(seen: readonly unknown[]): string {
  */
 function derivePostBodyModel(
   captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
-  endpointPath: string
+  endpointPath: string,
+  declared: readonly { name: string; observed: readonly string[] }[] = []
 ): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
   const bodies: Record<string, unknown>[] = [];
   for (const c of captures) {
@@ -3195,6 +3196,15 @@ function derivePostBodyModel(
     }
     const distinct = new Set(values.map((v) => JSON.stringify(v)));
     if (distinct.size === 1) return JSON.stringify(first);
+    // A declared payloadField whose observed value (a step's navigateTo query
+    // value or quoted instruction value) appears at this varying path tracks it:
+    // bind the declared name instead of inventing a path-named field.
+    const seenAll = values.flatMap((v) => (Array.isArray(v) ? v : [v]));
+    const tracked = declared.find(
+      (d) =>
+        !used.has(d.name) &&
+        d.observed.some((o) => seenAll.some((v) => typeof v === "string" && v.toLowerCase() === o.toLowerCase()))
+    );
     const base = path
       .map((seg, i) => {
         const w = seg
@@ -3205,8 +3215,8 @@ function derivePostBodyModel(
         return i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1);
       })
       .join("");
-    let field = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
-    for (let n = 2; used.has(field); n++) field = `${base}${n}`;
+    let field = tracked ? tracked.name : /^[A-Za-z_]/.test(base) ? base : `f${base}`;
+    for (let n = 2; !tracked && used.has(field); n++) field = `${base}${n}`;
     used.add(field);
     const def = JSON.stringify(first ?? null);
     const seen = values.filter((v) => v !== null && v !== undefined);
@@ -3219,6 +3229,29 @@ function derivePostBodyModel(
   };
   const bodyExpr = build([]);
   return bindings.length > 0 ? { bodyExpr, bindings } : null;
+}
+
+/** Values a declared payloadField was observed with: its steps' navigateTo query values and quoted instruction values. */
+function declaredFieldObservedValues(
+  flowSteps: readonly FlowStepInput[],
+  names: Iterable<string>
+): { name: string; observed: string[] }[] {
+  const out = new Map<string, string[]>();
+  for (const name of names) out.set(name, []);
+  for (const step of flowSteps) {
+    if (typeof step === "string" || step.payloadField === undefined) continue;
+    const list = out.get(step.payloadField);
+    if (!list) continue;
+    for (const m of step.step.matchAll(/['"]([^'"]+)['"]/g)) list.push(m[1]!);
+    if (step.navigateTo !== undefined) {
+      try {
+        for (const [, v] of new URL(step.navigateTo).searchParams) if (v !== "") list.push(v);
+      } catch {
+        // not an absolute URL: no observed value
+      }
+    }
+  }
+  return [...out].filter(([, v]) => v.length > 0).map(([name, observed]) => ({ name, observed }));
 }
 
 function safeUrlPathname(url: string): string {
@@ -18944,7 +18977,15 @@ export function emitContractTsParts(opts: {
   // the other sources unchanged.
   const postBodyModel =
     readOnlyPostSearch && !gql && !multiStepBody && !suppliedGetInputModel
-      ? derivePostBodyModel(allCaptures, endpointPath)
+      ? derivePostBodyModel(
+          allCaptures,
+          endpointPath,
+          declaredFieldObservedValues(contractFlowSteps, [
+            ...(payloadFieldNames ?? []),
+            ...optionalPayloadFieldNames,
+            ...extraPayloadFields.map((f) => f.name),
+          ])
+        )
       : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
@@ -19356,7 +19397,10 @@ export function emitContractTsParts(opts: {
   }
   if (postBodyModel) {
     for (const { field, zod } of postBodyModel.bindings) {
-      if (extendFields.has(field)) continue;
+      // A declared payloadField bound to a body path is typed by that path.
+      const declaredBound =
+        (payloadFieldNames?.has(field) ?? false) || optionalPayloadFieldNames.has(field);
+      if (extendFields.has(field) && !declaredBound) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: ${zod},`);
     }
@@ -19364,6 +19408,7 @@ export function emitContractTsParts(opts: {
   // Flow-declared extra payload fields: declared type/optionality are
   // authoritative and override a name discovered from captures (one entry per name).
   for (const f of extraPayloadFields) {
+    if (postBodyModel?.bindings.some((b) => b.field === f.name)) continue;
     extendFields.set(f.name, `  ${f.name}: z.${f.type}()${f.optional ? ".optional()" : ""},`);
   }
   const mergedExtension =
