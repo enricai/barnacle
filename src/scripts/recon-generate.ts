@@ -8348,7 +8348,9 @@ export function actionSequenceIsReadSamplesFor(o: {
       (c) => c === capture || (o.matchesDeclaredSubmit(c) && !matchesDeclaredWrite(c))
     );
   const isIncidentalReadFlowPost = (capture: Capture): boolean =>
-    o.declaresSubmitPattern && !o.matchesDeclaredSubmit(capture) && !feedsDeclaredStep(capture);
+    o.declaresSubmitPattern &&
+    !o.matchesDeclaredSubmit(capture) &&
+    !stepFeedsDeclaredSubmit(capture, compiledActionSteps, o.matchesDeclaredSubmit);
   return (
     compiledActionSteps.length === 0 ||
     o.actionCaptures.every(
