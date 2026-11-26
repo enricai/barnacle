@@ -20756,7 +20756,7 @@ export function buildSensitiveRedactionPolicy(
  * fold drill-down rebinding passes, which match the plain `${payload.X}` form.
  * Splices outside a string literal (numbers/booleans) are left untouched.
  */
-function escapeJsonBodyPayloadSplices(bodyArg: string, jsonBody: boolean): string {
+export function escapeJsonBodyPayloadSplices(bodyArg: string, jsonBody: boolean): string {
   if (!jsonBody || !bodyArg.includes("${payload.")) return bodyArg;
   let out = "";
   let inString = false;
