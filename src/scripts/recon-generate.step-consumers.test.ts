@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   actionSequenceIsReadSamplesFor,
   classifySubmissionFlow,
-  emitBrowserFlowTs,
   compileActionSteps,
+  emitBrowserFlowTs,
   extractActionSequence,
   indexStateValues,
   stepFeedsDeclaredSubmit,
