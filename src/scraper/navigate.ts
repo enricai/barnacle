@@ -42,7 +42,7 @@ export const NAVIGATE_SETTLE_QUIET_MS = Number(process.env.NAVIGATE_SETTLE_QUIET
 
 /** Tracks completed captures (URL + request body) so a navigate step can settle on one. */
 export interface CaptureTracker {
-  observe(url: string, body: string | null | undefined): void;
+  observe(url: string, body: string | null | undefined, method?: string): void;
   /** Starts a settle window; only captures observed after this call count. */
   begin(matcher: { endpointRx: RegExp; bodyRx: RegExp | null }): NavigateSettleWait;
 }
@@ -55,15 +55,21 @@ export interface NavigateSettleWait {
 export type NavigateSettle = () => NavigateSettleWait;
 
 export function createCaptureTracker(): CaptureTracker {
-  const waiters = new Set<(url: string, body: string) => void>();
+  const waiters = new Set<(url: string, body: string, bodyless: boolean) => void>();
   return {
-    observe(url, body) {
-      for (const w of [...waiters]) w(url, body ?? "");
+    observe(url, body, method) {
+      // A CORS preflight (OPTIONS) is not the data call. When the method is
+      // unknown, a body-less capture is treated as a preflight too.
+      const m = method?.toUpperCase();
+      if (m === "OPTIONS") return;
+      const bodyless = (m === undefined || m === "") && (body === null || body === undefined);
+      if (bodyless) return;
+      for (const w of [...waiters]) w(url, body ?? "", false);
     },
     begin({ endpointRx, bodyRx }) {
       let matchedAt: number | null = null;
       let wake: (() => void) | null = null;
-      const listener = (url: string, body: string): void => {
+      const listener = (url: string, body: string, _bodyless: boolean): void => {
         if (!endpointRx.test(url)) return;
         if (bodyRx !== null && !bodyRx.test(body)) return;
         matchedAt = Date.now();
