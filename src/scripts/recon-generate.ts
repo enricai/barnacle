@@ -5892,6 +5892,9 @@ function refererNamesRecordedInstance(referer: string): boolean {
   const segments = url.pathname.split("/").map(decodePathSegment);
   if (segments.some((s) => s.length > 0 && (isWrittenDateValue(s) || isRecordedIdValue(s))))
     return true;
+  // A multi-word slug beneath a collection segment names one recorded entity.
+  if (segments.some((s, i) => s.length > 0 && isInstanceSlug(i, s, segments[i + 1], false)))
+    return true;
   for (const [key, value] of url.searchParams) {
     if (value === "" || value === "bound") continue;
     if (isWrittenDateValue(value) || isRecordedIdValue(value) || isEntityIdQueryKey(key))
