@@ -20807,7 +20807,8 @@ export function assertResponseProblem(spec: unknown): string | null {
   if (request === null || typeof request !== "object" || Array.isArray(request))
     return "assertResponse.request is required ({method, url})";
   const { method, url } = request as Record<string, unknown>;
-  if (method !== "GET" && method !== "POST") return "assertResponse.request.method must be GET or POST";
+  if (method !== "GET" && method !== "POST")
+    return "assertResponse.request.method must be GET or POST";
   if (typeof url !== "string" || !/^(\/|https?:\/\/)/.test(url))
     return "assertResponse.request.url must be an absolute http(s) URL or a /path";
   if (equals === null || typeof equals !== "object" || Array.isArray(equals))
@@ -20885,7 +20886,7 @@ function emitAssertResponseLines(
       (st) => typeof st !== "string" && st.payloadField === field && !st.payloadFieldNone
     ) as Exclude<FlowStepInput, string> | undefined;
     const expected = applyDeclaredBindingWire(`payload.${field}`, {
-      value: null,
+      value: "",
       field,
       optional: false,
       origin: "step",
@@ -20894,7 +20895,7 @@ function emitAssertResponseLines(
       kindHints: [],
       wire: declaring?.payloadWire,
       transform: declaring?.payloadTransform,
-    } as NavigateToFacetBinding);
+    });
     const read = `${JSON.stringify(path.split("."))}.reduce<unknown>((o, k) => (o as Record<string, unknown> | null | undefined)?.[k], ${resp})`;
     lines.push(
       `    if (String(${read}) !== String(${expected})) ${diff}.push(${JSON.stringify(`${path} (payload.${field})`)});`
@@ -22591,7 +22592,10 @@ export async function main(): Promise<void> {
   const httpStepsOpt =
     declaredHttpSteps === null
       ? null
-      : { ...declaredHttpSteps, tailFromStep: browserTailFromStep ?? declaredHttpSteps.tailFromStep };
+      : {
+          ...declaredHttpSteps,
+          tailFromStep: browserTailFromStep ?? declaredHttpSteps.tailFromStep,
+        };
   const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
   const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
 
