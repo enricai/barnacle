@@ -289,6 +289,11 @@ describe("isZeroVarianceRepeatCapture declared-submit exemption", () => {
     for (const c of pool) expect(isZeroVarianceRepeatCapture(c, pool, declared)).toBe(false);
   });
 
+  it("is not zero-variance for a declared capture repeated with identical bodies", () => {
+    const same = [mk("A"), mk("A"), mk("A")];
+    for (const c of same) expect(isZeroVarianceRepeatCapture(c, same, declared)).toBe(false);
+  });
+
   it("control: the same pool is zero-variance when nothing is declared", () => {
     for (const c of pool) expect(isZeroVarianceRepeatCapture(c, pool, () => false)).toBe(true);
   });
