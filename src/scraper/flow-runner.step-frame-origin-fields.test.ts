@@ -18,6 +18,8 @@ describe("HealingFlowStep frameOrigin / completeSelector / verifyRequest", () =>
     expect(step.verifyRequest?.method).toBe("GET");
     expectTypeOf<HealingFlowStep["frameOrigin"]>().toEqualTypeOf<string | undefined>();
     expectTypeOf<HealingFlowStep["completeSelector"]>().toEqualTypeOf<string | undefined>();
-    expectTypeOf<NonNullable<HealingFlowStep["verifyRequest"]>["method"]>().toEqualTypeOf<"GET" | "POST">();
+    expectTypeOf<NonNullable<HealingFlowStep["verifyRequest"]>["method"]>().toEqualTypeOf<
+      "GET" | "POST"
+    >();
   });
 });
