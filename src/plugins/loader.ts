@@ -178,7 +178,8 @@ function isFallbackAllowed(plugin: SitePlugin<unknown, unknown>, err: ScraperErr
  * three branches.
  */
 /** Per-attempt shallow copy of the context carrying the pool's task signal and deadline. */
-function withTaskSignal(context: SitePluginContext, taskCtx: TaskContext): SitePluginContext {
+function withTaskSignal(context: SitePluginContext, taskCtx?: TaskContext): SitePluginContext {
+  if (!taskCtx) return context;
   return { ...context, signal: taskCtx.signal, deadlineAt: taskCtx.deadlineAt };
 }
 
