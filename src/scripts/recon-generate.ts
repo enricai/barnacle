@@ -7734,7 +7734,8 @@ export function indexStateValues(
         isGet &&
         !UUID_REGEX.test(value) &&
         !chainForceIncludeValues.has(value) &&
-        !forceIncludeValues.has(value)
+        !forceIncludeValues.has(value) &&
+        !isMintedThenSentAsRequestHeader(value, i)
       )
         continue;
       if (!index.has(value)) {

@@ -69,6 +69,28 @@ describe("token tracing across a multi-step flow", () => {
     expect(out).not.toContain(TOKEN);
   });
 
+  it("emits a GET-body token re-sent as a request header via the response, not a literal", () => {
+    const CT = "a".repeat(40) + "B".repeat(46);
+    const out = emit([
+      buildCapture({
+        method: "GET",
+        url: "https://shop.example.com/api/session",
+        requestPostData: null,
+        responseBody: { csrf: { token: CT } },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildCapture({
+        url: "https://shop.example.com/api/order",
+        requestPostData: JSON.stringify({ qty: 2 }),
+        requestHeaders: { "Content-Type": "application/json", "X-CSRF-Token": CT },
+        responseBody: { done: true },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ]);
+    expect(out).not.toContain(CT);
+    expect(out).toMatch(/csrf/);
+  });
+
   it("emits no threading for independent calls", () => {
     const out = emit([
       start,
