@@ -5857,6 +5857,14 @@ function resolveBaseUrlDerivedHeader(
 /** A calendar date in a common written form: ISO, `dd.mm.yyyy`, `dd/mm/yyyy`, `yyyy/mm/dd`. */
 function isWrittenDateValue(v: string): boolean {
   if (isDateWindowValue(v)) return true;
+  // Written month names: `15-Dec-2026`, `Dec 15, 2026`, `15 December 2026`.
+  const mon = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*";
+  if (
+    new RegExp(`^\\d{1,2}[ ./-]${mon}[ ./-,]*\\d{4}$`, "i").test(v) ||
+    new RegExp(`^${mon}[ ./-]\\d{1,2}[ ,./-]+\\d{4}$`, "i").test(v) ||
+    new RegExp(`^\\d{4}[ ./-]${mon}[ ./-]\\d{1,2}$`, "i").test(v)
+  )
+    return true;
   const ymd = /^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/.exec(v);
   if (ymd) {
     const [m, d] = [Number(ymd[2]), Number(ymd[3])];
