@@ -269,6 +269,8 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
 
     // Registered synchronously (no await before inFlight.set) so concurrent
     // duplicates always find it; the store lookup happens inside the promise.
+    const lockKey: string = key;
+    const lockConfig: PluginIdempotency = config;
     const promise = (async () => {
       try {
         return await runLocked();
@@ -280,14 +282,14 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     });
     async function runLocked(): Promise<T> {
       for (;;) {
-        const recorded = await store.get(key);
+        const recorded = await store.get(lockKey);
         if (recorded && recorded.state !== "pending") return replay(recorded) as T;
         if (!store.claim) {
           if (recorded) throw new Error("unexpected idempotency record state");
-          return execAndRecord(key, config, execute);
+          return execAndRecord(lockKey, lockConfig, execute);
         }
-        if (!recorded && (await store.claim(key, LEASE_MS))) {
-          return execAndRecord(key, config, execute, true);
+        if (!recorded && (await store.claim(lockKey, LEASE_MS))) {
+          return execAndRecord(lockKey, lockConfig, execute, true);
         }
         // Another process holds the lease: wait for its outcome.
         await new Promise((r) => setTimeout(r, LEASE_POLL_MS));
