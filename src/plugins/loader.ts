@@ -778,8 +778,11 @@ async function dispatchWithIdempotency(
   const declared = plugin.meta.idempotency;
   if (!declared) return dispatch(plugin, body, context, options);
   idempotencyGuard ??= createIdempotencyGuard();
-  return idempotencyGuard.run(plugin.meta.siteId, guardConfig(plugin, declared, body, context), body, () =>
-    dispatch(plugin, body, context, options)
+  return idempotencyGuard.run(
+    plugin.meta.siteId,
+    guardConfig(plugin, declared, body, context),
+    body,
+    () => dispatch(plugin, body, context, options)
   );
 }
 
