@@ -5860,7 +5860,7 @@ function isWrittenDateValue(v: string): boolean {
   // Written month names: `15-Dec-2026`, `Dec 15, 2026`, `15 December 2026`.
   const mon = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*";
   if (
-    new RegExp(`^\\d{1,2}[ ./-]${mon}[ ./-,]*\\d{4}$`, "i").test(v) ||
+    new RegExp(`^\\d{1,2}[ ./-]${mon}[ ,./-]*\\d{4}$`, "i").test(v) ||
     new RegExp(`^${mon}[ ./-]\\d{1,2}[ ,./-]+\\d{4}$`, "i").test(v) ||
     new RegExp(`^\\d{4}[ ./-]${mon}[ ./-]\\d{1,2}$`, "i").test(v)
   )
