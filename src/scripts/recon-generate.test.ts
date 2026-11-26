@@ -393,23 +393,20 @@ describe("gatherResponseBodySamples — groups by operation identity, filters to
   });
 });
 
-describe("emitContractTs — non-scalar discoveredStructuredKeys field forces multipart, no upload step", () => {
+describe("emitContractTs — non-scalar discoveredStructuredKeys field, JSON wire, no upload step", () => {
   const source = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: false,
     discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
   });
 
-  it("emits multipart: true in meta even though hasMultipartStep is false", () => {
-    expect(source).toContain("multipart: true,");
+  it("does not emit multipart: true (wire encoding is JSON, not multipart)", () => {
+    expect(source).not.toContain("multipart: true,");
   });
 
-  it("wraps the structured field in multipartJsonObject(...)", () => {
-    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
-  });
-
-  it("imports multipartJsonObject from the package subpath", () => {
-    expect(source).toContain('multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"');
+  it("keeps the structured field as a plain schema, not multipartJsonObject", () => {
+    expect(source).toContain("eventData: z.object({ a: z.string() }),");
+    expect(source).not.toContain("multipartJsonObject");
   });
 });
 
