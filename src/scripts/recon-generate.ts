@@ -125,6 +125,17 @@ const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
 const DOUBLE_QUOTED_SPAN = /"([^"]+)"/g;
 
 /**
+ * Set a per-call header once, case-insensitively. The first writer wins, so an
+ * explicit capture value beats a later baseUrl/tenant-derived default and two
+ * captured casings of one name collapse to a single entry.
+ */
+function setHeaderOnce(target: Record<string, string>, name: string, value: string): void {
+  const lower = name.toLowerCase();
+  if (Object.keys(target).some((k) => k.toLowerCase() === lower)) return;
+  target[name] = value;
+}
+
+/**
  * Quoted spans of a flow-step instruction. The runtime parsers only understand
  * single quotes, so a double-quoted span is consulted only when the step has no
  * single-quoted one — a mixed instruction keeps its single-quote grammar, and a
@@ -5986,6 +5997,11 @@ export function deriveReadFlowBearer(
   };
 }
 
+/** A literal "null" header value is an empty-token placeholder, not a credential. */
+function isEmptyTokenPlaceholderHeaderValue(value: string): boolean {
+  return value.trim().toLowerCase() === "null";
+}
+
 /**
  * Template-literal interpolation for a credential header. With a located
  * token source and a JWT-shaped captured value it mints the bearer at call
@@ -7734,7 +7750,8 @@ export function indexStateValues(
         isGet &&
         !UUID_REGEX.test(value) &&
         !chainForceIncludeValues.has(value) &&
-        !forceIncludeValues.has(value)
+        !forceIncludeValues.has(value) &&
+        !isMintedThenSentAsRequestHeader(value, i)
       )
         continue;
       if (!index.has(value)) {
@@ -10971,6 +10988,8 @@ export function emitMultiStepExecuteHttp(
     method: string;
     headersExpr: string;
     bodyArg: string;
+    /** True when bodyArg's template is a JSON document (payload splices need JSON-escaping at emit). */
+    jsonBody: boolean;
     schemaExpr: string;
   }
 
@@ -11652,7 +11671,7 @@ export function emitMultiStepExecuteHttp(
       // above), regardless of what interpolateStateValues would otherwise do.
       const volatileVarName = volatileHeaderVarNames.get(lower);
       if (volatileVarName !== undefined) {
-        perCallHeaders[k] = `\${${volatileVarName}}`;
+        setHeaderOnce(perCallHeaders, k, `\${${volatileVarName}}`);
         continue;
       }
       const interpolated = interpolateStateValues(
@@ -11677,17 +11696,18 @@ export function emitMultiStepExecuteHttp(
       if (
         isCredentialHeaderName(lower) &&
         interpolated === v &&
+        !isEmptyTokenPlaceholderHeaderValue(v) &&
         !joinCarryingHeaderNames?.has(k) &&
         !boundHeaderNames.has(lower)
       ) {
-        perCallHeaders[k] = credentialHeaderThrowExpr(k, v, tokenBootstrap);
+        setHeaderOnce(perCallHeaders, k, credentialHeaderThrowExpr(k, v, tokenBootstrap));
       } else if (
         lower === "api-token" ||
         lower === "authorization" ||
         joinCarryingHeaderNames?.has(k) ||
         interpolated !== v
       ) {
-        perCallHeaders[k] = interpolated;
+        setHeaderOnce(perCallHeaders, k, interpolated);
       }
     }
     // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
@@ -11698,14 +11718,14 @@ export function emitMultiStepExecuteHttp(
     // generated plugin code. Built via concatenation so Biome doesn't mistake
     // it for a placeholder in THIS file's source.
     for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-      perCallHeaders[headerName] = substituteOrigin(observedValue, baseUrl);
+      setHeaderOnce(perCallHeaders, headerName, substituteOrigin(observedValue, baseUrl));
     }
     // G2: emit tenant-subdomain headers per-call from caller payload field
     // (e.g. API-ShortName → ${payload.ApiShortName}). The discoveredFields
     // population above ensures the field is in the payload schema.
     for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
       const fieldName = headerNameToPayloadFieldName(headerName);
-      perCallHeaders[headerName] = `\${payload.${fieldName}}`;
+      setHeaderOnce(perCallHeaders, headerName, `\${payload.${fieldName}}`);
     }
     // A text-captured multipart body (requestPostData non-null) is sent through
     // httpClient as a string, so the captured multipart Content-Type (with the
@@ -11754,7 +11774,14 @@ export function emitMultiStepExecuteHttp(
     // contract would enforce that narrowed shape on every call in the chain.
     const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
-    rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
+    rendered.push({
+      url,
+      method: cap.method,
+      headersExpr,
+      bodyArg,
+      jsonBody: parsedBody !== null && !multipartBodyCrlf,
+      schemaExpr,
+    });
   }
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
@@ -12300,7 +12327,12 @@ export function emitMultiStepExecuteHttp(
           const paramHeaders = threadAttached(
             parameterize(chainRendered.headersExpr, chainStep.capture)
           );
-          const paramBody = threadAttached(parameterize(chainRendered.bodyArg, chainStep.capture));
+          // JSON-escape payload splices only AFTER every rebinding pass in
+          // `parameterize` has matched the plain `${payload.X}` form.
+          const paramBody = escapeJsonBodyPayloadSplices(
+            threadAttached(parameterize(chainRendered.bodyArg, chainStep.capture)),
+            chainRendered.jsonBody
+          );
           if (
             itemVarRefPattern.test(paramUrl) ||
             itemVarRefPattern.test(paramHeaders) ||
@@ -12339,7 +12371,8 @@ export function emitMultiStepExecuteHttp(
                 paramBody,
                 textVar,
                 chainStep.varName,
-                "      "
+                "      ",
+                httpPrefixCount !== undefined
               )
             );
             for (const p of chainHtmlProduces) {
@@ -12484,10 +12517,11 @@ export function emitMultiStepExecuteHttp(
           r.method,
           r.url,
           r.headersExpr,
-          r.bodyArg,
+          escapeJsonBodyPayloadSplices(r.bodyArg, r.jsonBody),
           textVar,
           step.varName,
-          "    "
+          "    ",
+          httpPrefixCount !== undefined
         )
       );
       for (const p of htmlProduces) {
@@ -12517,7 +12551,7 @@ export function emitMultiStepExecuteHttp(
       const headersVar = `headers_${step.varName}`;
       // Extract just the per-call header overrides (API-Token etc.) from the
       // rendered headers expression to merge with BASE_HEADERS.
-      const perCallHeaderEntries: string[] = [];
+      const perCallHeaderMap: Record<string, string> = {};
       const multipartPrior = actions.slice(0, i);
       for (const [k, v] of Object.entries(cap.requestHeaders)) {
         const lower = k.toLowerCase();
@@ -12532,7 +12566,7 @@ export function emitMultiStepExecuteHttp(
         // from the flow-wide hoisted mint instead of the captured literal.
         const volatileVarName = volatileHeaderVarNames.get(lower);
         if (volatileVarName !== undefined) {
-          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`\${${volatileVarName}}\``);
+          setHeaderOnce(perCallHeaderMap, k, `\${${volatileVarName}}`);
           continue;
         }
         const interpolated = interpolateStateValues(
@@ -12549,12 +12583,14 @@ export function emitMultiStepExecuteHttp(
         // recognizes as a prior step's produced state var must thread
         // per-call too, or its custom name freezes into an invariant
         // BASE_HEADERS-equivalent literal.
-        if (isCredentialHeaderName(lower) && interpolated === v) {
-          perCallHeaderEntries.push(
-            `${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k, v, tokenBootstrap)}\``
-          );
+        if (
+          isCredentialHeaderName(lower) &&
+          interpolated === v &&
+          !isEmptyTokenPlaceholderHeaderValue(v)
+        ) {
+          setHeaderOnce(perCallHeaderMap, k, credentialHeaderThrowExpr(k, v, tokenBootstrap));
         } else if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
-          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
+          setHeaderOnce(perCallHeaderMap, k, interpolated);
         }
       }
       // G1+G2: include tenant-derived headers in the multipart fetch too.
@@ -12562,12 +12598,15 @@ export function emitMultiStepExecuteHttp(
       // for a template-literal in THIS file's source.
       for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
         const v = substituteOrigin(observedValue, baseUrl);
-        perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`${v}\``);
+        setHeaderOnce(perCallHeaderMap, headerName, v);
       }
       for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
         const fieldName = headerNameToPayloadFieldName(headerName);
-        perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`\${payload.${fieldName}}\``);
+        setHeaderOnce(perCallHeaderMap, headerName, `\${payload.${fieldName}}`);
       }
+      const perCallHeaderEntries = Object.entries(perCallHeaderMap).map(
+        ([k, v]) => `${JSON.stringify(k)}: \`${v}\``
+      );
       const perCallHeadersLit = perCallHeaderEntries.length
         ? `, ${perCallHeaderEntries.join(", ")}`
         : "";
@@ -12606,7 +12645,9 @@ export function emitMultiStepExecuteHttp(
         lines.push(`    await httpClient(\`${r.url}\`, {`);
       }
       lines.push(`      method: ${JSON.stringify(r.method)},`);
-      const joined = [r.headersExpr, r.bodyArg].filter((s) => s !== "").join(" ");
+      const joined = [r.headersExpr, escapeJsonBodyPayloadSplices(r.bodyArg, r.jsonBody)]
+        .filter((s) => s !== "")
+        .join(" ");
       if (joined !== "") {
         lines.push(`      ${joined}`);
       }
@@ -12695,17 +12736,32 @@ function emitHtmlFetchLines(
   bodyArg: string,
   textVar: string,
   stepVar: string,
-  indent: string
+  indent: string,
+  carriesSession = false
 ): string[] {
   const literal = headersExpr.replace(/^headers:\s*/, "").replace(/,\s*$/, "");
-  const headers = literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
+  const base = literal === "" ? "BASE_HEADERS" : `{ ...BASE_HEADERS, ...${literal} }`;
+  const cookieExpr = `Object.entries(prefixCookies).map(([k, v]) => \`\${k}=\${v}\`).join("; ")`;
+  const headers = carriesSession
+    ? `{ ...${base}, ...(Object.keys(prefixCookies).length > 0 ? { Cookie: ${cookieExpr} } : {}) }`
+    : base;
   const respVar = `resp_${stepVar}`;
+  const collect = carriesSession
+    ? [
+        `${indent}for (const entry of ${respVar}.headers.getSetCookie()) {`,
+        `${indent}  const pair = entry.split(";")[0] ?? "";`,
+        `${indent}  const eq = pair.indexOf("=");`,
+        `${indent}  if (eq > 0) prefixCookies[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();`,
+        `${indent}}`,
+      ]
+    : [];
   return [
     `${indent}const ${respVar} = await fetchFollowingRedirectsPreservingMethod(\`${url}\`, {`,
     `${indent}  method: ${JSON.stringify(method)},`,
     `${indent}  headers: ${headers},`,
     ...(bodyArg !== "" ? [`${indent}  ${bodyArg}`] : []),
     `${indent}});`,
+    ...collect,
     `${indent}if (!${respVar}.ok) throw new Error(\`step ${stepVar} (HTML token fetch) failed: HTTP \${${respVar}.status}\`);`,
     `${indent}const ${textVar} = await ${respVar}.text();`,
   ];
@@ -12759,6 +12815,20 @@ function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string
       `${indent}    if ((n?.[1] ?? n?.[2] ?? n?.[3]) !== ${name}) continue;`,
       `${indent}    const v = /\\svalue\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
       `${indent}    if (v) return (v[1] ?? v[2] ?? v[3] ?? "").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#0*39;/g, "'");`,
+      `${indent}  }`,
+      `${indent}  return undefined;`,
+      `${indent}})();`,
+      fail,
+    ];
+  }
+  if (p.element === "meta") {
+    return [
+      `${indent}const ${p.name} = (() => {`,
+      `${indent}  for (const tag of ${textVar}.match(/<meta\\b[^>]*>/gi) ?? []) {`,
+      `${indent}    const n = /\\sname\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
+      `${indent}    if ((n?.[1] ?? n?.[2] ?? n?.[3]) !== ${name}) continue;`,
+      `${indent}    const v = /\\scontent\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
+      `${indent}    if (v) return (v[1] ?? v[2] ?? v[3] ?? "").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#0*39;/g, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">");`,
       `${indent}  }`,
       `${indent}  return undefined;`,
       `${indent}})();`,
@@ -20696,6 +20766,45 @@ export function buildSensitiveRedactionPolicy(
     ...(digitKeys.size > 0 && { digitKeys: [...digitKeys].sort() }),
     ...(wordKeys.size > 0 && { wordKeys: [...wordKeys].sort() }),
   };
+}
+
+/**
+ * JSON-escape caller `${payload.<x>}` splices that sit INSIDE a JSON string
+ * literal of an emitted body template, so a quote/backslash/newline in the
+ * caller's value cannot break (or inject into) the JSON. Must run after the
+ * fold drill-down rebinding passes, which match the plain `${payload.X}` form.
+ * Splices outside a string literal (numbers/booleans) are left untouched.
+ */
+export function escapeJsonBodyPayloadSplices(bodyArg: string, jsonBody: boolean): string {
+  if (!jsonBody || !bodyArg.includes("${payload.")) return bodyArg;
+  let out = "";
+  let inString = false;
+  let i = 0;
+  while (i < bodyArg.length) {
+    const ch = bodyArg[i]!;
+    if (inString && bodyArg.startsWith("${payload.", i)) {
+      let depth = 0;
+      let j = i + 1;
+      for (; j < bodyArg.length; j++) {
+        if (bodyArg[j] === "{") depth++;
+        else if (bodyArg[j] === "}" && --depth === 0) break;
+      }
+      if (j < bodyArg.length) {
+        const expr = bodyArg.slice(i + 2, j);
+        out += `\${JSON.stringify(String(${expr})).slice(1, -1)}`;
+        i = j + 1;
+        continue;
+      }
+    }
+    if (ch === '"') {
+      let backslashes = 0;
+      for (let k = out.length - 1; k >= 0 && out[k] === "\\"; k--) backslashes++;
+      if (!inString || backslashes % 2 === 0) inString = !inString;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
 }
 
 /**

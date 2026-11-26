@@ -69,6 +69,28 @@ describe("token tracing across a multi-step flow", () => {
     expect(out).not.toContain(TOKEN);
   });
 
+  it("emits a GET-body token re-sent as a request header via the response, not a literal", () => {
+    const CT = "a".repeat(40) + "B".repeat(46);
+    const out = emit([
+      buildCapture({
+        method: "GET",
+        url: "https://shop.example.com/api/session",
+        requestPostData: null,
+        responseBody: { csrf: { token: CT } },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildCapture({
+        url: "https://shop.example.com/api/order",
+        requestPostData: JSON.stringify({ qty: 2 }),
+        requestHeaders: { "Content-Type": "application/json", "X-CSRF-Token": CT },
+        responseBody: { done: true },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ]);
+    expect(out).not.toContain(CT);
+    expect(out).toMatch(/csrf/);
+  });
+
   it("emits no threading for independent calls", () => {
     const out = emit([
       start,
@@ -220,6 +242,16 @@ describe("HTML-issued token emission", () => {
     expect(out).toContain('"nonce"');
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal interpolation text in generated plugin source
     expect(out).toContain("nonce=${nonceToken}");
+  });
+  it("extracts a <meta name content> token and splices it into a urlencoded body", () => {
+    const out = emit(
+      mk(`<meta name="csrf-token" content="${T}">`, `csrf-token=${T}&go=1`, ""),
+      true
+    );
+    expect(out).not.toContain(T);
+    expect(out).toMatch(/match\(\/<meta\\b/);
+    expect(out).toContain('"csrf-token"');
+    expect(out).toContain("not found in response");
   });
   it("disambiguates two HTML tokens whose names derive the same variable", () => {
     const T2 = "Zx3cV6bN1mAs8dFgHj5K";
