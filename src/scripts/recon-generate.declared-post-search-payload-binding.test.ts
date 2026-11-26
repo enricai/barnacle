@@ -11,11 +11,14 @@ const REPO_ROOT = join(__dirname, "..", "..");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 const HOST = "api.example-travel.test";
 
-const FACETS = [
-  { cabin: "economy", carrier: "AA", stops: "0" },
-  { cabin: "business", carrier: "BB", stops: "1" },
-  { cabin: "first", carrier: "CC", stops: "2" },
-  { cabin: "economy", carrier: "DD", stops: "1" },
+const BASE = { kind: "R", meta: "I" };
+const FACETS: Array<Record<string, unknown>> = [
+  { ...BASE, carriers: ["AA"] },
+  { ...BASE, carriers: ["AA"], cabins: ["ECO"] },
+  { ...BASE, carriers: ["AA"], hubs: ["JFK"] },
+  { ...BASE, carriers: ["BB"], hubs: ["JFK"], cabins: ["ECO"] },
+  { ...BASE, carriers: ["CC"], hubs: ["LHR"] },
+  { ...BASE, carriers: ["AA"], cabins: ["BUS"], hubs: ["LHR"] },
 ];
 
 function cap(o: Partial<Capture>): Capture {
@@ -55,7 +58,7 @@ describe("recon-generate: declared payloadFields bind on a faceted POST search",
     FACETS.forEach((f, i) => {
       const c = cap({
         timestamp: `2024-01-01T00:00:${String(10 + i).padStart(2, "0")}Z`,
-        requestPostData: JSON.stringify({ filters: f, page: 1 }),
+        requestPostData: JSON.stringify({ booking: { currency: "USD", pax: 2 }, filters: f }),
         responseBody: { flights: [{ id: `F${i}`, price: 100 + i }] },
       });
       writeFileSync(
@@ -73,10 +76,20 @@ describe("recon-generate: declared payloadFields bind on a faceted POST search",
         requireSubmitEndpointMatch: true,
         ownBackendHostnames: [HOST],
         steps: [
-          { step: "pick a cabin", payloadField: "cabin" },
-          { step: "pick a carrier", payloadField: "carrier" },
-          { step: "pick the number of stops", payloadField: "stops" },
-          { step: "search flights", submitStep: true },
+          {
+            step: "Open the results page",
+            optional: true,
+            navigateTo: `https://${HOST}/results/?carrier=AA`,
+            payloadField: "carrier",
+          },
+          {
+            step: "Open the hub filter dropdown and select the 'JFK' option",
+            payloadField: "hub",
+          },
+          {
+            step: "Open the cabin filter dropdown and select the 'ECO' option",
+            payloadField: "cabin",
+          },
         ],
       })
     );
@@ -116,7 +129,7 @@ describe("recon-generate: declared payloadFields bind on a faceted POST search",
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     const output = logged.join("\n");
     expect(contract).toContain("/v1/flights/search");
-    for (const field of ["cabin", "carrier", "stops"]) {
+    for (const field of ["carrier", "hub", "cabin"]) {
       expect(contract, contract).toMatch(new RegExp(`payload\\.${field}\\b`));
       expect(output).not.toContain(`declared payloadField ${field} is read by no emitted request`);
     }
