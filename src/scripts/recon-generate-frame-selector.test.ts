@@ -90,7 +90,7 @@ describe("emitBrowserFlowTs — per-step frameSelector literal validity", () => 
       flowSteps: [
         { step: "Go", navigateTo: "https://careers.example.org/a", frameSelector: SEL },
         { step: "Confirm email", emailStep: true, frameSelector: SEL },
-        { step: "Type ${RECON_PASSWORD}", frameSelector: SEL },
+        { step: "Type $" + "{RECON_PASSWORD}", frameSelector: SEL },
         { step: "Click Submit", frameSelector: SEL },
       ],
     });

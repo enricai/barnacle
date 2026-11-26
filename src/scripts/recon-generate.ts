@@ -21413,12 +21413,17 @@ export function emitBrowserFlowTs(opts: {
   ) {
     // Flag sits before optional navigateTo/emailStep keys, so match it
     // anywhere (last occurrence) rather than only directly before ` },`.
-    const flagIdx = lastStepLiteral.lastIndexOf("submitStep: ");
-    if (flagIdx >= 0) {
-      stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
-        /^([\s\S]*)submitStep: (true|false)/,
-        "$1submitStep: true"
-      );
+    // The per-step frameSelector is a trailing, JSON-quoted property; patch
+    // only the text before it so a selector containing "submitStep: false"
+    // is never rewritten.
+    const tail = `${stepFrameSelectorProp(flowSteps.at(-1))} },`;
+    const head = lastStepLiteral.endsWith(tail)
+      ? lastStepLiteral.slice(0, -tail.length)
+      : lastStepLiteral;
+    const rest = head === lastStepLiteral ? "" : tail;
+    if (head.lastIndexOf("submitStep: ") >= 0) {
+      stepLiterals[stepLiterals.length - 1] =
+        head.replace(/^([\s\S]*)submitStep: (true|false)/, "$1submitStep: true") + rest;
     }
   }
 
