@@ -12765,6 +12765,20 @@ function emitHtmlExtractionLines(p: HtmlProduce, textVar: string, indent: string
       fail,
     ];
   }
+  if (p.element === "meta") {
+    return [
+      `${indent}const ${p.name} = (() => {`,
+      `${indent}  for (const tag of ${textVar}.match(/<meta\\b[^>]*>/gi) ?? []) {`,
+      `${indent}    const n = /\\sname\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
+      `${indent}    if ((n?.[1] ?? n?.[2] ?? n?.[3]) !== ${name}) continue;`,
+      `${indent}    const v = /\\scontent\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i.exec(tag);`,
+      `${indent}    if (v) return (v[1] ?? v[2] ?? v[3] ?? "").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#0*39;/g, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">");`,
+      `${indent}  }`,
+      `${indent}  return undefined;`,
+      `${indent}})();`,
+      fail,
+    ];
+  }
   if (pathPattern) {
     return [
       `${indent}const ${p.name} = (() => {`,

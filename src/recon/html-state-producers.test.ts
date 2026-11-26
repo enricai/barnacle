@@ -8,6 +8,14 @@ describe("extractHtmlIssuedTokens", () => {
     expect(t).toContainEqual({ value: "abc123def456ghi789", element: "form-action", name: "csrf" });
     expect(t).toContainEqual({ value: "H4sh+value00000", element: "form-action", name: "hashed" });
   });
+  it("indexes meta name/content tokens, entity-decoded", () => {
+    const html = `<head><meta name="csrf-token" content="abc&amp;def123456"></head>`;
+    expect(extractHtmlIssuedTokens(html)).toContainEqual({
+      value: "abc&def123456",
+      element: "meta",
+      name: "csrf-token",
+    });
+  });
   it("indexes path segments (job id, slug) but not plain words", () => {
     const html = `<a href="/jobs/8f3a2b1c-1111-2222-3333-444455556666/senior-engineer/candidate">x</a>`;
     const t = extractHtmlIssuedTokens(html).filter((x) => x.element === "path-segment");
