@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { UnknownOutcomeError } from "@/api/errors";
-import { TaskDeadlineError } from "@/scraper/errors";
 import {
   createFileIdempotencyStore,
   createIdempotencyGuard,
@@ -13,6 +12,7 @@ import {
   deriveIdempotencyKey,
   deriveOperationId,
 } from "@/cache/idempotency-guard";
+import { TaskDeadlineError } from "@/scraper/errors";
 
 afterEach(() => vi.useRealTimers());
 
