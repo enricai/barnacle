@@ -13293,7 +13293,7 @@ function facetPayloadExpression(facet: NavigateToFacetBinding, fallback = ""): s
 function applyDeclaredBindingWire(expression: string, binding: NavigateToFacetBinding): string {
   const transformed =
     binding.transform === "utc-instant"
-      ? `new Date(String(${expression})).toISOString()`
+      ? `new Date(String(${expression})).toISOString().replace(/\\.000Z$/, "Z")`
       : expression;
   return binding.wire === "number" ? `Number(${transformed})` : transformed;
 }

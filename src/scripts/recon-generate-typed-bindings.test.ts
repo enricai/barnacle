@@ -108,7 +108,7 @@ describe("typed payload bindings", () => {
     );
     expect(contract).toMatch(/"roomId":\$\{JSON\.stringify\(Number\(payload\.roomId\)\)\}/);
     expect(contract).toMatch(/"count":\$\{JSON\.stringify\(Number\(payload\.count\)\)\}/);
-    expect(contract).toContain("new Date(String(payload.reservedTo)).toISOString()");
+    expect(contract).toContain("new Date(String(payload.reservedTo)).toISOString().replace(");
     expect(contract).toMatch(/roomId: z\.string\(\)/);
     expect(contract).not.toMatch(/\border: z\./);
     expect(contract).not.toContain("payload.order");
