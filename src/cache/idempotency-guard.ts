@@ -226,10 +226,34 @@ export function deriveOperationId(key: string): string {
   return createHash("sha256").update(key).digest("hex").slice(0, 32);
 }
 
+/** Successes recorded in this process, shared by every guard on one store. */
+const successesByStore = new WeakMap<
+  IdempotencyStore,
+  Map<string, { record: IdempotencyRecord; expiresAt: number }>
+>();
+function successesFor(store: IdempotencyStore) {
+  let m = successesByStore.get(store);
+  if (!m) {
+    m = new Map();
+    successesByStore.set(store, m);
+  }
+  return m;
+}
+
 export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): IdempotencyGuard {
   const store = options.store ?? createConfiguredIdempotencyStore();
   const ttlMs = options.ttlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS;
   const inFlight = new Map<string, Promise<unknown>>();
+  const successes = successesFor(store);
+  const recordedSuccess = (key: string): IdempotencyRecord | undefined => {
+    const e = successes.get(key);
+    if (!e) return undefined;
+    if (e.expiresAt <= Date.now()) {
+      successes.delete(key);
+      return undefined;
+    }
+    return e.record;
+  };
 
   const activeOps = new Set<string>();
   const opKey = (siteId: string, id: string) => `op:${siteId}:${id}`;
@@ -256,6 +280,10 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
       const cur = await store.get(key);
       if (cur?.state === "success") return;
       await store.set(key, record, ttlMs);
+      // The read above can be stale: a success recorded meanwhile in this
+      // process is restored so a settled unknown never replaces it.
+      const won = recordedSuccess(key);
+      if (won) await store.set(key, won, ttlMs);
     } catch {
       // A store failure must not replace the run's own result.
     }
@@ -306,7 +334,9 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
       timer = undefined;
       if (isSuccess(value)) {
         try {
-          await store.set(key, { state: "success", value }, ttlMs);
+          const rec: IdempotencyRecord = { state: "success", value };
+          successes.set(key, { record: rec, expiresAt: Date.now() + ttlMs });
+          await store.set(key, rec, ttlMs);
         } catch {
           // keep the run result
         }
