@@ -185,7 +185,34 @@ describe("read-only GET classification inputs: incidental mint GET and beacon PO
     expect(classify(false)).toBe(true);
   });
 
-  it("a mint GET the declared read re-sends keeps it a multi-step flow", () => {
-    expect(classify(true)).toBe(false);
+  it("a mint GET the declared read re-sends is still a read flow", () => {
+    expect(classify(true)).toBe(true);
+  });
+
+  const classifyNoPattern = (matches: (c: { url: string }) => boolean) => {
+    const f = steps(true);
+    const caps = [f.mint, f.read];
+    const seq = caps.map((capture, index) => ({ capture, index }));
+    const compiled = compileActionSteps(
+      seq,
+      indexStateValues(caps, new Set(), new Set(seq.map((a) => a.index)))
+    );
+    return actionSequenceIsReadSamplesFor({
+      compiledActionSteps: compiled,
+      actionCaptures: caps.map((capture) => ({ capture })),
+      readSiblings: [],
+      declaresSubmitPattern: false,
+      matchesDeclaredSubmit: matches,
+      isRecurringReadFlowBeacon: () => false,
+      isDeclaredDrillCapture: () => false,
+    });
+  };
+
+  it("a mint GET whose only consumer is the declared 2xx GET read stays a read sample", () => {
+    expect(classifyNoPattern(isDeclaredRead)).toBe(true);
+  });
+
+  it("a mint GET feeding a declared write is not a read sample", () => {
+    expect(classifyNoPattern((c) => c.url.includes("/session/token"))).toBe(false);
   });
 });
