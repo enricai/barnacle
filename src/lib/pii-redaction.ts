@@ -154,10 +154,10 @@ function shortDigitMatcher(value: string, label: string): BaseMatcher | null {
   const context =
     value.length === 3
       ? // not inside timestamp milliseconds (".123")
-        "(?<!\\d[.,])"
+        "(?<!\\d[.,x×X])"
       : // not inside clock times or dates
-        "(?<!\\d[:./,-])";
-  const after = value.length === 3 ? "(?![.,]\\d)" : "(?![:./,-]\\d)";
+        "(?<!\\d[:./,x×X-])";
+  const after = value.length === 3 ? "(?![.,x×X]\\d)" : "(?![:./,x×X-]\\d)";
   return {
     pattern: new RegExp(`${notBetweenLetters}(?<!\\d)${context}${value}(?!\\d)${after}`, "gu"),
     label,
