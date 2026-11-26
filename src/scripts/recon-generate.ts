@@ -5911,6 +5911,11 @@ function refererNamesRecordedInstance(referer: string): boolean {
         i >= 2 &&
         /^[A-Za-z]{3,}$/.test(s) &&
         /^[A-Za-z]{2,}$/.test(segments[i - 1] ?? "") &&
+        // Either a plural collection word, or a singular one followed by a
+        // non-plural name (`/room/<name>/book`, not `/cart/items/checkout`).
+        (/s$/i.test(segments[i - 1] ?? "")
+          ? !/ss$/i.test(segments[i - 1] ?? "")
+          : !/s$/i.test(s)) &&
         (segments[i + 1] ?? "").length > 0
     )
   )
