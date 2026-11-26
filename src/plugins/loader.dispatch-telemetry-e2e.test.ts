@@ -32,7 +32,7 @@ import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { readReconciliationRows } from "@/lib/telemetry/submission-reader";
 import { registerRoutes } from "@/plugins/loader";
-import { runWithSession } from "@/scraper/pool";
+import { runWithSession, type TaskContext } from "@/scraper/pool";
 import type { BrowserSession } from "@/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 
@@ -303,8 +303,11 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
       getOutboundIp: vi.fn().mockResolvedValue(knownIp),
     };
     vi.mocked(runWithSession).mockImplementationOnce(
-      (task: (session: BrowserSession) => Promise<unknown>) =>
-        task(fakeSession as unknown as BrowserSession)
+      (task: (session: BrowserSession, ctx: TaskContext) => Promise<unknown>) =>
+        task(fakeSession as unknown as BrowserSession, {
+          signal: new AbortController().signal,
+          deadlineAt: Date.now() + 60_000,
+        })
     );
 
     const midRunPlugin: SitePlugin<unknown, unknown> = {

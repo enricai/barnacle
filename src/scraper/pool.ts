@@ -2,11 +2,21 @@ import PQueue from "p-queue";
 
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
-import { SessionTimeoutError } from "@/scraper/errors";
+import { TaskDeadlineError } from "@/scraper/errors";
 import { type RetryOptions, withScraperRetry } from "@/scraper/retry";
 import { type BrowserSession, createBrowserSession } from "@/scraper/session";
 import type { BrowserSessionOptions } from "@/scraper/session-shared";
 import { resolveSessionDeathError } from "@/scraper/session-teardown";
+
+/** How long a task may take to settle after its signal is aborted before we give up on it. */
+const TASK_STOP_GRACE_MS = 30_000;
+
+/** Second argument handed to every task: aborted with TaskDeadlineError at the deadline. */
+export interface TaskContext {
+  signal: AbortSignal;
+  /** Absolute deadline, epoch ms. */
+  deadlineAt: number;
+}
 
 const logger = getLogger({ name: "scraper/pool" });
 
@@ -39,10 +49,11 @@ const queue = new PQueue({ concurrency: config.scraper.poolSize });
  * restart the session and try again.
  */
 export async function runWithSession<T>(
-  task: (session: BrowserSession) => Promise<T>,
+  task: (session: BrowserSession, ctx: TaskContext) => Promise<T>,
   retryOptions: Omit<RetryOptions, "onSessionRestart"> = {},
   taskTimeoutMs = TASK_TIMEOUT_MS,
-  sessionOpts: Omit<BrowserSessionOptions, "provider"> = {}
+  sessionOpts: Omit<BrowserSessionOptions, "provider"> = {},
+  stopGraceMs = TASK_STOP_GRACE_MS
 ): Promise<T> {
   return queue.add(async () => {
     const sessionRef: { session: BrowserSession | null } = { session: null };
@@ -65,18 +76,42 @@ export async function runWithSession<T>(
       return await withScraperRetry(
         async () => {
           const session = await ensureSession();
-          const timeout = new Promise<never>((_, reject) => {
-            const t = setTimeout(
-              () => reject(new SessionTimeoutError(`task exceeded ${taskTimeoutMs}ms`)),
-              taskTimeoutMs
-            );
-            t.unref();
+          const controller = new AbortController();
+          const deadlineAt = Date.now() + taskTimeoutMs;
+          let timer: NodeJS.Timeout | undefined;
+          let graceTimer: NodeJS.Timeout | undefined;
+          let deadlineHit = false;
+          const taskPromise = Promise.resolve().then(() =>
+            task(session, { signal: controller.signal, deadlineAt })
+          );
+          const deadline = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              deadlineHit = true;
+              const err = new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms`);
+              controller.abort(err);
+              // Reject only once the task has stopped, so the session is not
+              // closed and no retry begins while it still runs. If it never
+              // stops, give up after the grace period (outcome unknown).
+              const giveUp = (): void => reject(err);
+              taskPromise.then(giveUp, giveUp);
+              graceTimer = setTimeout(giveUp, stopGraceMs);
+              graceTimer.unref();
+            }, taskTimeoutMs);
+            timer.unref();
           });
+          deadline.catch(() => {});
           try {
-            return await Promise.race([task(session), timeout]);
+            const value = await Promise.race([taskPromise, deadline]);
+            // The task settled after being signalled: the deadline still failed the attempt.
+            if (deadlineHit) throw new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms`);
+            return value;
           } catch (err) {
+            if (deadlineHit) throw new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms`);
             // Must run before onSessionRestart: closeSession() nulls sessionRef.
             throw resolveSessionDeathError(sessionRef.session ?? undefined, err);
+          } finally {
+            clearTimeout(timer);
+            clearTimeout(graceTimer);
           }
         },
         {
