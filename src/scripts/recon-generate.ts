@@ -5815,6 +5815,29 @@ function substituteOrigin(value: string, baseUrl: string): string {
 }
 
 /**
+ * One resolution for an origin-derived per-call header, shared by the plain
+ * and multipart header builders. Origin / Referer values are rewritten onto
+ * `context.baseUrl`; a Referer's recorded path and query are never frozen: when
+ * the Referer is the step's own request URL it is rebuilt from the step's
+ * rendered URL (bound values), otherwise its recorded path/query is bound from
+ * caller payload accessors only. Prior responses are deliberately not read, so
+ * a Referer never dereferences a response field the server may not have sent.
+ */
+function resolveBaseUrlDerivedHeader(
+  headerName: string,
+  observedValue: string,
+  baseUrl: string,
+  cap: Capture,
+  renderedUrl: string,
+  payloadAccessorByValue: Map<string, string>
+): string {
+  if (headerName.toLowerCase() !== "referer") return substituteOrigin(observedValue, baseUrl);
+  if (observedValue === cap.url) return substituteOrigin(renderedUrl, baseUrl);
+  const bound = interpolateStateValues(observedValue, [], cap, payloadAccessorByValue, false);
+  return substituteOrigin(bound, baseUrl);
+}
+
+/**
  * True for a request header whose captured value is a per-session credential
  * (see CREDENTIAL_REQUEST_HEADERS) or a token-bearing custom header
  * (`api-token`, `x-*-token`, `*-api-token`).
@@ -11698,7 +11721,14 @@ export function emitMultiStepExecuteHttp(
     // generated plugin code. Built via concatenation so Biome doesn't mistake
     // it for a placeholder in THIS file's source.
     for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-      perCallHeaders[headerName] = substituteOrigin(observedValue, baseUrl);
+      perCallHeaders[headerName] = resolveBaseUrlDerivedHeader(
+        headerName,
+        observedValue,
+        baseUrl,
+        cap,
+        url,
+        payloadAccessorByValue
+      );
     }
     // G2: emit tenant-subdomain headers per-call from caller payload field
     // (e.g. API-ShortName → ${payload.ApiShortName}). The discoveredFields
@@ -12561,7 +12591,14 @@ export function emitMultiStepExecuteHttp(
       // Build the placeholder via concatenation so Biome doesn't mistake it
       // for a template-literal in THIS file's source.
       for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-        const v = substituteOrigin(observedValue, baseUrl);
+        const v = resolveBaseUrlDerivedHeader(
+          headerName,
+          observedValue,
+          baseUrl,
+          cap,
+          r.url,
+          payloadAccessorByValue
+        );
         perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`${v}\``);
       }
       for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
