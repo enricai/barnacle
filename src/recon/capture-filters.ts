@@ -1384,12 +1384,9 @@ export function isZeroVarianceRepeatCapture(
     ) ?? [];
   // The flow's declared read-only submit endpoint re-issued with differing
   // bodies is the flow's search action, never a beacon (any method).
-  if (
-    isDeclaredSubmit?.(candidate) &&
-    sameEndpoint.some((c) => c.requestPostData !== candidate.requestPostData)
-  ) {
-    return false;
-  }
+  // A capture the flow declared is never vetoed as noise, whether or not its
+  // bodies differ.
+  if (isDeclaredSubmit?.(candidate)) return false;
   // A server-rendered form's redirect/HTML answer reads as "no response state"
   // below, but distinct bodies are distinct steps: never zero-variance.
   if (
