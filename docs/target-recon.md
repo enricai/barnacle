@@ -295,3 +295,17 @@ action steps, `tailFromStep` exceeds the flow steps, the HTTP prefix crosses hos
 in the prefix cannot be traced to a producing step, or `--emit config` is used (a manifest cannot hand
 cookies to the browser). `httpSteps` cannot be combined with `browserFlowOnly: true`. Run with
 `--emit ts`.
+
+## Typed payload bindings (`wire`, `transform`)
+
+A flow-file payload binding (a flow field bound to a path in the recorded request body) may declare
+how the value is sent on the wire, independent of its public schema type (which stays `string`):
+
+- `wire` (optional): `"number"` makes the emitted accessor send the value as an unquoted JSON number
+  (for example `"roomId": 9`) instead of a string. Omitted: the value is sent as recorded.
+- `transform` (optional): `"utc-instant"` converts an input such as `2026-12-15T11:30:00-08:00` to its UTC
+  instant (`2026-12-15T19:30:00Z`) before it is sent.
+
+A binding with neither field emits exactly what it did before. A structured payload input (for example
+`items_attributes`) whose every occurrence in the body is rebound to a declared scalar binding is no longer
+registered in the schema; if any occurrence stays unbound, the input remains required.
