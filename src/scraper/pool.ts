@@ -87,7 +87,7 @@ export async function runWithSession<T>(
           const deadline = new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
               deadlineHit = true;
-              const err = new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms`);
+              const err = new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms; its outcome is unknown`);
               controller.abort(err);
               // Reject only once the task has stopped, so the session is not
               // closed and no retry begins while it still runs. If it never
@@ -103,10 +103,10 @@ export async function runWithSession<T>(
           try {
             const value = await Promise.race([taskPromise, deadline]);
             // The task settled after being signalled: the deadline still failed the attempt.
-            if (deadlineHit) throw new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms`);
+            if (deadlineHit) throw new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms; its outcome is unknown`);
             return value;
           } catch (err) {
-            if (deadlineHit) throw new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms`);
+            if (deadlineHit) throw new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms; its outcome is unknown`);
             // Must run before onSessionRestart: closeSession() nulls sessionRef.
             throw resolveSessionDeathError(sessionRef.session ?? undefined, err);
           } finally {
