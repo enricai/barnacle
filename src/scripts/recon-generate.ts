@@ -8350,7 +8350,10 @@ export function actionSequenceIsReadSamplesFor(o: {
   const isIncidentalReadFlowPost = (capture: Capture): boolean =>
     o.declaresSubmitPattern &&
     !o.matchesDeclaredSubmit(capture) &&
-    !stepFeedsDeclaredSubmit(capture, compiledActionSteps, o.matchesDeclaredSubmit);
+    // Only a GET mint gets the declared-GET-read exemption; a state-changing POST does not.
+    !(capture.method === "GET"
+      ? feedsDeclaredStep(capture)
+      : stepFeedsDeclaredSubmit(capture, compiledActionSteps, o.matchesDeclaredSubmit));
   return (
     compiledActionSteps.length === 0 ||
     o.actionCaptures.every(
