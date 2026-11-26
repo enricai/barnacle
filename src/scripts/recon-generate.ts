@@ -20673,6 +20673,17 @@ type FlowStepInput =
       navigateTo?: string;
       /** Per-step cross-origin `<iframe>` selector; overrides the flow-level one. */
       frameSelector?: string;
+      /** Provider frame origin a sensitive declared step's field lives in. */
+      frameOrigin?: string;
+      /** Selector the provider sets when the field is valid. */
+      completeSelector?: string;
+      /** Request against the site's own order data verifying a submit step. */
+      verifyRequest?: {
+        urlTemplate: string;
+        method: "GET" | "POST";
+        jsonPath: string;
+        expect: string | number | boolean;
+      };
     };
 
 /**
