@@ -263,6 +263,131 @@ describe("durable store reload", () => {
   });
 });
 
+describe("record write isolation", () => {
+  const cfg = {
+    keyFields: ["id"],
+    classifyFailure: (e: unknown) =>
+      e instanceof Error && e.message === "boom" ? ("unknown" as const) : ("failed" as const),
+  };
+  const failingStore = () => {
+    const base = createInMemoryIdempotencyStore();
+    return {
+      ...base,
+      set: () => Promise.reject(new Error("disk full")),
+    };
+  };
+
+  it("keeps the run's error when recording an unknown outcome fails, and warns", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const g = createIdempotencyGuard({ store: failingStore() });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("boom")))
+    ).rejects.toThrow("boom");
+    expect(write).toHaveBeenCalledWith(
+      expect.stringContaining("failed to record unknown outcome: disk full")
+    );
+    write.mockRestore();
+  });
+
+  it("returns the run's value when recording a success fails, and warns", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const g = createIdempotencyGuard({ store: failingStore() });
+    expect(await g.run("s", cfg, { id: "1" }, async () => ({ ok: 1 }))).toEqual({ ok: 1 });
+    expect(write).toHaveBeenCalledWith(
+      expect.stringContaining("failed to record success outcome: disk full")
+    );
+    write.mockRestore();
+  });
+  it("warns instead of swallowing when start() cannot record the final outcome", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const base = createInMemoryIdempotencyStore();
+    let calls = 0;
+    const store = {
+      ...base,
+      set: (...a: Parameters<typeof base.set>) =>
+        ++calls === 1 ? base.set(...a) : Promise.reject(new Error("disk full")),
+    };
+    const g = createIdempotencyGuard({ store });
+    await g.start("s", cfg, { id: "1" }, async () => 1);
+    await vi.waitFor(() =>
+      expect(write).toHaveBeenCalledWith(
+        expect.stringContaining("failed to record operation outcome: disk full")
+      )
+    );
+    write.mockRestore();
+  });
+});
+
+describe("leased runs release the lease", () => {
+  const cfg = { keyFields: ["id"] };
+  const leasedStore = () => {
+    const base = createInMemoryIdempotencyStore();
+    return { ...base, claim: vi.fn().mockResolvedValue(true), delete: vi.fn() };
+  };
+
+  it("deletes the lease when the run fails with a known error", async () => {
+    const store = leasedStore();
+    const g = createIdempotencyGuard({ store });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("nope")))
+    ).rejects.toThrow("nope");
+    expect(store.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes the lease when the result is not a success", async () => {
+    const store = leasedStore();
+    const g = createIdempotencyGuard({ store });
+    await g.run("s", cfg, { id: "1" }, async () => ({ needsUserInfo: true }));
+    expect(store.delete).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("leased runs when the outcome write fails", () => {
+  const cfg = {
+    keyFields: ["id"],
+    classifyFailure: (e: unknown) =>
+      e instanceof Error && e.message === "boom" ? ("unknown" as const) : ("failed" as const),
+  };
+  const leasedFailingStore = () => {
+    const base = createInMemoryIdempotencyStore();
+    return {
+      ...base,
+      claim: vi.fn().mockResolvedValue(true),
+      delete: vi.fn(),
+      set: () => Promise.reject(new Error("disk full")),
+    };
+  };
+
+  it("returns the value and keeps the claim when set fails after success", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const store = leasedFailingStore();
+    const g = createIdempotencyGuard({ store });
+    expect(await g.run("s", cfg, { id: "1" }, async () => ({ ok: 1 }))).toEqual({ ok: 1 });
+    expect(store.delete).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it("rethrows the original error and keeps the claim when set fails after unknown error", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const store = leasedFailingStore();
+    const g = createIdempotencyGuard({ store });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("boom")))
+    ).rejects.toThrow("boom");
+    expect(store.delete).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it("still releases the claim for a known failure when set would fail", async () => {
+    const store = leasedFailingStore();
+    const g = createIdempotencyGuard({ store });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("nope")))
+    ).rejects.toThrow("nope");
+    expect(store.delete).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("guard refusalFor", () => {
   const failingStore = () => ({
     get: () => {

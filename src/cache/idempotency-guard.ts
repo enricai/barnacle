@@ -228,6 +228,11 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     throw new Error("unexpected idempotency record state");
   }
 
+  const warn = (state: string, e: unknown) =>
+    process.stderr.write(
+      `idempotency: failed to record ${state} outcome: ${e instanceof Error ? e.message : String(e)}\n`
+    );
+
   async function execAndRecord<T>(
     key: string,
     config: PluginIdempotency,
@@ -235,26 +240,41 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     leased = false
   ): Promise<T> {
     const isSuccess = config.isSuccess ?? defaultIsSuccess;
+    let value: T;
+    let ok: boolean;
     try {
-      const value = await execute();
-      if (isSuccess(value)) await store.set(key, { state: "success", value }, ttlMs);
-      else if (leased) await store.delete(key);
-      return value;
+      value = await execute();
+      ok = isSuccess(value);
     } catch (err) {
+      // Record writes are isolated: a store failure never replaces the run's error.
       if (classifyUnknown(config, err)) {
-        await store.set(
-          key,
-          {
-            state: "unknown",
-            message: `previous run ended with an unknown outcome: ${err instanceof Error ? err.message : String(err)}`,
-          },
-          ttlMs
-        );
+        try {
+          await store.set(
+            key,
+            {
+              state: "unknown",
+              message: `previous run ended with an unknown outcome: ${err instanceof Error ? err.message : String(err)}`,
+            },
+            ttlMs
+          );
+        } catch (e) {
+          warn("unknown", e);
+        }
       } else if (leased) {
         await Promise.resolve(store.delete(key)).catch(() => undefined);
       }
       throw err;
     }
+    if (ok) {
+      try {
+        await store.set(key, { state: "success", value }, ttlMs);
+      } catch (e) {
+        warn("success", e);
+      }
+    } else if (leased) {
+      await Promise.resolve(store.delete(key)).catch(() => undefined);
+    }
+    return value;
   }
 
   function run<T>(
@@ -350,7 +370,7 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
             ttlMs
           )
       )
-      .catch(() => undefined)
+      .catch((e) => warn("operation", e))
       .finally(() => activeOps.delete(k));
     return id;
   }
