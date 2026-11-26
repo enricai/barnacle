@@ -295,3 +295,43 @@ action steps, `tailFromStep` exceeds the flow steps, the HTTP prefix crosses hos
 in the prefix cannot be traced to a producing step, or `--emit config` is used (a manifest cannot hand
 cookies to the browser). `httpSteps` cannot be combined with `browserFlowOnly: true`. Run with
 `--emit ts`.
+
+## Read-back assertions (`assertResponse`)
+
+A flow step carrying `assertResponse` issues a request over HTTP and requires response fields to equal
+payload inputs. It has no browser instruction: recon-generate removes it from the step list the browser
+flow reads (and `tailFromStep` indexes the full list, assertions included).
+
+```json
+{
+  "step": "read the order back",
+  "assertResponse": {
+    "request": { "method": "GET", "url": "/api/orders/{OrderId}" },
+    "equals": { "customer.email": "Email" },
+    "afterAction": 2
+  }
+}
+```
+
+- `request.method` (`GET` | `POST`) and `request.url` (a `/path` on the site origin or an absolute
+  http(s) URL; `{Field}` is replaced by that payload input, URL-encoded).
+- `equals`: response field (dotted path) → payload field name. At least one. The payload value is compared
+  after the wire type/transform declared by the step that binds that payload field.
+- `afterAction` (integer ≥ 0, default: after every action): the number of HTTP actions that run first.
+
+The emitted contract throws before the next action when a field differs; the message names the fields
+only, never the values. A malformed declaration fails generation. A flow without it generates unchanged.
+
+## Typed payload bindings (`wire`, `transform`)
+
+A flow-file payload binding (a flow field bound to a path in the recorded request body) may declare
+how the value is sent on the wire, independent of its public schema type (which stays `string`):
+
+- `wire` (optional): `"number"` makes the emitted accessor send the value as an unquoted JSON number
+  (for example `"roomId": 9`) instead of a string. Omitted: the value is sent as recorded.
+- `transform` (optional): `"utc-instant"` converts an input such as `2026-12-15T11:30:00-08:00` to its UTC
+  instant (`2026-12-15T19:30:00Z`) before it is sent.
+
+A binding with neither field emits exactly what it did before. A structured payload input (for example
+`items_attributes`) whose every occurrence in the body is rebound to a declared scalar binding is no longer
+registered in the schema; if any occurrence stays unbound, the input remains required.

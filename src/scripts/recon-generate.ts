@@ -644,6 +644,8 @@ function walkNavigateToFacets(
           literals: collectStepFacetLiterals(step.step, env),
           kind: deriveFacetKind(step.payloadField),
           kindHints: collectStepFacetKindHints(step.step, env),
+          wire: step.payloadWire,
+          transform: step.payloadTransform,
         });
       }
       continue;
@@ -685,6 +687,8 @@ interface WalkedNavigateToFacet {
   literals: string[];
   kind: string;
   kindHints: string[];
+  wire?: "number";
+  transform?: "utc-instant";
 }
 
 /**
@@ -988,6 +992,11 @@ export interface NavigateToFacetBinding {
    * `ports` in `ports_<slug>`) for a field name that does not itself name the
    * element kind. Carried on the binding so every spread copy keeps them. */
   readonly kindHints?: readonly string[];
+  /** Declared wire type: the bound value is sent as a JSON number although the
+   * public input stays a string. */
+  readonly wire?: "number";
+  /** Declared transform applied to the caller's value before it is sent. */
+  readonly transform?: "utc-instant";
 }
 
 /** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
@@ -1051,6 +1060,8 @@ export function extractNavigateToFacetOrder(
         kind: facet.kind,
         ...(facet.origin === "step" ? { origin: facet.origin } : {}),
         ...(facet.kindHints.length > 0 ? { kindHints: facet.kindHints } : {}),
+        ...(facet.wire !== undefined ? { wire: facet.wire } : {}),
+        ...(facet.transform !== undefined ? { transform: facet.transform } : {}),
       };
       return binding;
     });
@@ -5815,6 +5826,139 @@ function substituteOrigin(value: string, baseUrl: string): string {
 }
 
 /**
+ * One resolution for an origin-derived per-call header, shared by the plain
+ * and multipart header builders. Origin / Referer values are rewritten onto
+ * `context.baseUrl`; a Referer's recorded path and query are never frozen: when
+ * the Referer is the step's own request URL it is rebuilt from the step's
+ * rendered URL (bound values), otherwise its recorded path/query is bound from
+ * caller payload accessors only. Prior responses are deliberately not read, so
+ * a Referer never dereferences a response field the server may not have sent.
+ */
+function resolveBaseUrlDerivedHeader(
+  headerName: string,
+  observedValue: string,
+  baseUrl: string,
+  cap: Capture,
+  renderedUrl: string,
+  payloadAccessorByValue: Map<string, string>
+): string {
+  if (headerName.toLowerCase() !== "referer") return substituteOrigin(observedValue, baseUrl);
+  if (observedValue === cap.url) return substituteOrigin(renderedUrl, baseUrl);
+  const bound = interpolateStateValues(observedValue, [], cap, payloadAccessorByValue, false);
+  // A recorded page instance no caller value binds (a date, an entity id) would
+  // replay that one page on every call: send only the origin, as a browser
+  // does under `strict-origin-when-cross-origin`.
+  if (baseUrl.length > 0 && refererNamesRecordedInstance(bound)) {
+    return `$${"{"}context.baseUrl${"}"}/`;
+  }
+  return substituteOrigin(bound, baseUrl);
+}
+
+/** A calendar date in a common written form: ISO, `dd.mm.yyyy`, `dd/mm/yyyy`, `yyyy/mm/dd`. */
+function isWrittenDateValue(v: string): boolean {
+  if (isDateWindowValue(v)) return true;
+  // Written month names: `15-Dec-2026`, `Dec 15, 2026`, `15 December 2026`.
+  const mon = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*";
+  if (
+    new RegExp(`^\\d{1,2}[ ./-]${mon}[ ,./-]*\\d{4}$`, "i").test(v) ||
+    new RegExp(`^${mon}[ ./-]\\d{1,2}[ ,./-]+\\d{4}$`, "i").test(v) ||
+    new RegExp(`^\\d{4}[ ./-]${mon}[ ./-]\\d{1,2}$`, "i").test(v)
+  )
+    return true;
+  const ymd = /^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/.exec(v);
+  if (ymd) {
+    const [m, d] = [Number(ymd[2]), Number(ymd[3])];
+    return m >= 1 && m <= 12 && d >= 1 && d <= 31;
+  }
+  const dmy = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/.exec(v);
+  if (!dmy) return false;
+  const [a, b] = [Number(dmy[1]), Number(dmy[2])];
+  // Day-first or month-first: both within day range, one of them a month.
+  return a >= 1 && b >= 1 && a <= 31 && b <= 31 && (a <= 12 || b <= 12);
+}
+
+/** A value that names one record: a UUID, a long hex id or a run of 4+ digits. */
+function isRecordedIdValue(v: string): boolean {
+  return /^\d{4,}$/.test(v) || (RESOURCE_ID_SEGMENT.test(v) && !/^\d+$/.test(v));
+}
+
+/**
+ * True when a Referer (after caller-value binding; bound `${...}` parts are
+ * ignored) still carries a recorded page instance: a path segment or query
+ * value that is a date or an entity id, or a value under an entity-id query key.
+ */
+function refererNamesRecordedInstance(referer: string): boolean {
+  let url: URL;
+  try {
+    // The origin may already be the `context.baseUrl` placeholder.
+    const originPlaceholder = `$${"{"}context.baseUrl${"}"}`;
+    const literal = referer.split(originPlaceholder).join("https://origin.invalid");
+    url = new URL(literal.replace(/\$\{[^}]*\}/g, "bound"), "https://origin.invalid");
+  } catch {
+    return false;
+  }
+  const segments = url.pathname.split("/").map(decodePathSegment);
+  if (segments.some((s) => s.length > 0 && (isWrittenDateValue(s) || isRecordedIdValue(s))))
+    return true;
+  // A multi-word slug beneath a collection segment names one recorded entity.
+  if (segments.some((s, i) => s.length > 0 && isInstanceSlug(i, s, segments[i + 1], false)))
+    return true;
+  // A top-level multi-word slug with a further action segment
+  // (`/<entity-slug>/book`) names one recorded entity.
+  if (
+    segments.length >= 3 &&
+    segments[0] === "" &&
+    !segments[1]!.includes(".") &&
+    isSlugSegment(segments[1]!) &&
+    !/^v\d+$/i.test(segments[1]!) &&
+    (segments[2] ?? "").length > 0 &&
+    /^[A-Za-z]+$/.test(segments[2]!)
+  )
+    return true;
+  // A single word between a plural collection word and a further segment
+  // (`/rooms/<name>/book`) names one recorded entity.
+  if (
+    segments.some(
+      (s, i) =>
+        i >= 2 &&
+        /^[A-Za-z]{3,}$/.test(s) &&
+        /^[A-Za-z]{2,}$/.test(segments[i - 1] ?? "") &&
+        // Either a plural collection word, or a singular one followed by a
+        // non-plural name (`/room/<name>/book`, not `/cart/items/checkout`).
+        (/s$/i.test(segments[i - 1] ?? "")
+          ? !/ss$/i.test(segments[i - 1] ?? "")
+          : !/s$/i.test(s)) &&
+        (segments[i + 1] ?? "").length > 0
+    )
+  )
+    return true;
+  // A trailing single word directly under a plural collection word
+  // (`/rooms/<name>`) names one recorded entity.
+  if (
+    segments.some(
+      (s, i) =>
+        i === 2 &&
+        i === segments.length - 1 &&
+        /^[A-Za-z]{3,}$/.test(s) &&
+        /^[A-Za-z]{2,}s$/i.test(segments[i - 1] ?? "") &&
+        !/ss$/i.test(segments[i - 1] ?? "") &&
+        !/s$/i.test(s)
+    )
+  )
+    return true;
+  // A query value that repeats a path segment echoes the recorded entity.
+  for (const [, value] of url.searchParams) {
+    if (value.length > 0 && value !== "bound" && segments.includes(value)) return true;
+  }
+  for (const [key, value] of url.searchParams) {
+    if (value === "" || value === "bound") continue;
+    if (isWrittenDateValue(value) || isRecordedIdValue(value) || isEntityIdQueryKey(key))
+      return true;
+  }
+  return false;
+}
+
+/**
  * True for a request header whose captured value is a per-session credential
  * (see CREDENTIAL_REQUEST_HEADERS) or a token-bearing custom header
  * (`api-token`, `x-*-token`, `*-api-token`).
@@ -7109,13 +7253,44 @@ function containsValueAtTokenBoundary(haystack: string, needle: string): boolean
 const structuredFieldSamples = new WeakMap<Map<string, string>, Map<string, unknown[]>>();
 
 /**
+ * Retracts a registered structured payload input that no emitted request reads
+ * and whose every recorded leaf is rebound to a declared scalar binding: the
+ * caller supplies those scalars, so the structure is not an input at all. A
+ * structured input any request still reads, or with any leaf no declared
+ * binding covers, stays registered.
+ */
+export function retractReboundStructuredInputs(
+  emitted: string,
+  outStructuredKeys: Map<string, string>,
+  facets: readonly NavigateToFacetBinding[]
+): void {
+  if (facets.length === 0) return;
+  const samplesByField = structuredFieldSamples.get(outStructuredKeys);
+  for (const field of [...outStructuredKeys.keys()]) {
+    const samples = samplesByField?.get(field);
+    if (samples === undefined || samples.length === 0) continue;
+    if (new RegExp(`payload\\.${field}(?![\\w$])`).test(emitted)) continue;
+    const everyLeafRebound = samples.every((sample) =>
+      [...walkAllPrimitiveLeaves(sample)].every(
+        ({ value }) =>
+          value !== null &&
+          matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false }) !== undefined
+      )
+    );
+    if (!everyLeafRebound) continue;
+    outStructuredKeys.delete(field);
+    samplesByField?.delete(field);
+  }
+}
+
+/**
  * Single registration point for a structured (array/object) payload field, so
  * the declared schema type is inferred from every captured body carrying the
  * field rather than from whichever body or visiting order reached it first.
  * Both the by-index accessor loop and the whole-field substitution pass go
  * through here, so an indexed accessor can never coexist with a string schema.
  */
-function registerStructuredPayloadField(
+export function registerStructuredPayloadField(
   outStructuredKeys: Map<string, string>,
   field: string,
   value: unknown
@@ -8472,6 +8647,12 @@ export function compileActionSteps(
   }
 
   let lastHost: string | null = null;
+  // Body-produce names claimed by EARLIER steps. A later response carrying a
+  // same-named field with a different value (an optimistic-locking token such
+  // as `updatedAt` rewritten by each PUT) is a distinct produce and must get
+  // its own var, else emission's name de-dup keeps the first producer and a
+  // later write re-sends a stale token.
+  const claimedBodyNames = new Set<string>();
   return actions.map(({ capture, index }, i) => {
     const varName = `r${i}`;
     const produces: Produce[] = [];
@@ -8554,11 +8735,12 @@ export function compileActionSteps(
         if (!sv || sv.originIndex !== index) continue;
         let name = pathToVarName(path);
         let suffix = 1;
-        while (seenNames.has(name)) {
+        while (seenNames.has(name) || claimedBodyNames.has(name)) {
           suffix++;
           name = `${pathToVarName(path)}${suffix}`;
         }
         seenNames.add(name);
+        claimedBodyNames.add(name);
         const leafType =
           typeof rawValue === "number"
             ? "number"
@@ -9821,7 +10003,7 @@ function applyScalarFacetSplicePayloadSubstitutions(
     const cased = casing ? `String(${expression}).${casing}()` : undefined;
     const replacement = cased
       ? `\${JSON.stringify(${cased})}`
-      : typeof value === "number" || facet.optional
+      : typeof value === "number" || facet.optional || facet.wire === "number"
         ? `\${JSON.stringify(${expression})}`
         : `"\${${expression}}"`;
     for (const sep of [":", ": "]) {
@@ -10961,7 +11143,9 @@ export function emitMultiStepExecuteHttp(
    * request-invariant by {@link isZeroVarianceRepeatCapture}. */
   submitPatterns: SubmitPatterns | null = null,
   /** Documents proven to serve the steps' bearers ({@link locateBearerSources}). */
-  bearerSources: BearerSources = new Map()
+  bearerSources: BearerSources = new Map(),
+  /** Read-back assertions, each emitted before the action it follows (see {@link AssertResponseSpec}). */
+  assertions: readonly AssertResponseSpec[] = []
 ): string {
   if (httpPrefixCount !== undefined) actions = actions.slice(0, httpPrefixCount);
   const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
@@ -11698,7 +11882,14 @@ export function emitMultiStepExecuteHttp(
     // generated plugin code. Built via concatenation so Biome doesn't mistake
     // it for a placeholder in THIS file's source.
     for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-      perCallHeaders[headerName] = substituteOrigin(observedValue, baseUrl);
+      perCallHeaders[headerName] = resolveBaseUrlDerivedHeader(
+        headerName,
+        observedValue,
+        baseUrl,
+        cap,
+        url,
+        payloadAccessorByValue
+      );
     }
     // G2: emit tenant-subdomain headers per-call from caller payload field
     // (e.g. API-ShortName → ${payload.ApiShortName}). The discoveredFields
@@ -11859,7 +12050,14 @@ export function emitMultiStepExecuteHttp(
       ...plan.absorbedIndices,
     ])
   );
+  const assertionsAt = (position: number): string[] =>
+    assertions.flatMap((spec, n) =>
+      Math.min(spec.afterAction ?? actions.length, actions.length) === position
+        ? emitAssertResponseLines(spec, n + 1, flowSteps, outDiscoveredFields)
+        : []
+    );
   for (let i = 0; i < actions.length; i++) {
+    for (const line of assertionsAt(i)) lines.push(line);
     const step = actions[i]!;
     const cap = step.capture;
     const r = rendered[i]!;
@@ -12561,7 +12759,14 @@ export function emitMultiStepExecuteHttp(
       // Build the placeholder via concatenation so Biome doesn't mistake it
       // for a template-literal in THIS file's source.
       for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
-        const v = substituteOrigin(observedValue, baseUrl);
+        const v = resolveBaseUrlDerivedHeader(
+          headerName,
+          observedValue,
+          baseUrl,
+          cap,
+          r.url,
+          payloadAccessorByValue
+        );
         perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`${v}\``);
       }
       for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
@@ -12662,6 +12867,7 @@ export function emitMultiStepExecuteHttp(
   // no ancestry TS can see, so a plain `as` needs the `as unknown as` detour.
   const castToResponseType = (expr: string): string =>
     pascalName ? `${expr} as unknown as ${pascalName}Response` : expr;
+  for (const line of assertionsAt(actions.length)) lines.push(line);
   if (httpPrefixCount !== undefined) {
     lines.push(`    return { cookies: prefixCookies };`);
   } else if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
@@ -12678,6 +12884,7 @@ export function emitMultiStepExecuteHttp(
   if (tokenBootstrap.used.value)
     lines.splice(bootstrapInsertAt, 0, ...tokenBootstrapHelperLines(baseUrl));
   const renderedMultiStepBody = lines.join("\n");
+  retractReboundStructuredInputs(renderedMultiStepBody, outStructuredKeys, navigateToFacetOrder);
   assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
   return renderedMultiStepBody;
 }
@@ -13182,9 +13389,23 @@ function abbreviates(code: string, value: string): boolean {
  */
 function facetPayloadExpression(facet: NavigateToFacetBinding, fallback = ""): string {
   const raw = `payload.${facet.field}${fallback}`;
-  if (!facet.valueMap || facet.valueMap.size === 0) return raw;
-  const entries = JSON.stringify([...facet.valueMap.entries()]);
-  return `(new Map(${entries}).get(String(payload.${facet.field})) ?? ${raw})`;
+  const mapped =
+    !facet.valueMap || facet.valueMap.size === 0
+      ? raw
+      : `(new Map(${JSON.stringify([...facet.valueMap.entries()])}).get(String(payload.${facet.field})) ?? ${raw})`;
+  return applyDeclaredBindingWire(mapped, facet);
+}
+
+/**
+ * Applies a binding's declared transform, then its declared wire type, to the
+ * caller's (string) value. A binding declaring neither is returned untouched.
+ */
+function applyDeclaredBindingWire(expression: string, binding: NavigateToFacetBinding): string {
+  const transformed =
+    binding.transform === "utc-instant"
+      ? `new Date(String(${expression})).toISOString().replace(/\\.000Z$/, "Z")`
+      : expression;
+  return binding.wire === "number" ? `Number(${transformed})` : transformed;
 }
 
 function renderFacetPayloadValue(captured: string, facet: NavigateToFacetBinding): string {
@@ -19166,11 +19387,9 @@ export function emitContractTsParts(opts: {
     );
   }
 
-  // A non-scalar (Mechanism B) field forces multipart wire encoding just like
-  // an upload step does: the multipart body encodes arrays/objects as
-  // JSON-stringified strings, so those fields need the same
-  // multipartJsonObject() parsing Answers already gets in basePayloadSchemaExpr.
-  const payloadNeedsMultipart = hasMultipartStep || (discoveredStructuredKeys?.size ?? 0) > 0;
+  // Multipart is decided by the recorded wire encoding only (hasMultipartStep):
+  // a non-scalar structured key in a JSON body is not proof of multipart.
+  const payloadNeedsMultipart = hasMultipartStep;
 
   // Phase F: additional-body keys (from action POSTs beyond r0). Each gets a
   // payload field of the appropriate Zod type. Site-agnostic.
@@ -20232,10 +20451,7 @@ ${sensitiveRedactionLiteral}    defaultBaseUrl: ${JSON.stringify(baseUrl)},
     // (hasMultipartStep), OR this is a job-application submission flow
     // (usesApplicantContactSchema) since basePayloadSchemaExpr requires a
     // real Resume Buffer via ApplicantContactSchema regardless of whether
-    // the recorded browser flow contained an upload step, OR the payload
-    // has a non-scalar discoveredStructuredKeys field (payloadNeedsMultipart),
-    // since the multipart wire format is what makes that field's
-    // JSON-stringified encoding parseable.
+    // the recorded browser flow contained an upload step.
     `
         : ""
     }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}${redactionLiteral}
@@ -20245,7 +20461,7 @@ ${executeDocComment}  async execute(
     payload: ${pascal}Payload,
     session: BrowserSession${executeContextArg}
   ): Promise<SitePluginResult<${pascal}Response>> {${mixedHttpPrefix ? "\n    const { cookies } = await runHttpPrefix(payload, context);" : ""}
-    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, payload, session.sessionProxy ?? null${mixedHttpPrefix ? ", cookies" : ""});
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, ${mixedHandoverOpt !== undefined && contractFlowSteps.length <= mixedHandoverOpt.tailFromStep ? "session.sessionProxy ?? null, cookies" : `payload, session.sessionProxy ?? null${mixedHttpPrefix ? ", cookies" : ""}`});
     return { data: raw as ${pascal}Response };
   },
 };
@@ -20651,11 +20867,25 @@ export function unreadPayloadFieldChecklistLines(fields: ReadonlySet<string>): s
   );
 }
 
+/**
+ * A read-back assertion declared by a flow step: issue `request`, then require
+ * every response field in `equals` (a dotted path) to equal the named payload
+ * input. `afterAction` is the number of HTTP action steps that run first
+ * (default: all of them). It is HTTP-only: recon and the browser flow never see it.
+ */
+export interface AssertResponseSpec {
+  request: { method: "GET" | "POST"; url: string };
+  equals: Record<string, string>;
+  afterAction?: number;
+}
+
 /** A flow step as read from recon-flow.json, carrying the optional splicer hints. */
-type FlowStepInput =
+export type FlowStepInput =
   | string
   | {
       step: string;
+      /** Marks an HTTP read-back assertion step; see {@link AssertResponseSpec}. */
+      assertResponse?: AssertResponseSpec;
       optional?: boolean;
       upload?: boolean;
       submitStep?: boolean;
@@ -20667,6 +20897,10 @@ type FlowStepInput =
       declareOnly?: boolean;
       payloadField?: string;
       payloadFieldNone?: boolean;
+      /** Wire type of the bound value: sent as a JSON number (public input stays a string). */
+      payloadWire?: "number";
+      /** Transform applied to the caller's value before it is sent. */
+      payloadTransform?: "utc-instant";
       sensitive?: "digits" | "word";
       emailStep?: boolean;
       emailStepConfig?: EmailStepConfig;
@@ -20674,6 +20908,115 @@ type FlowStepInput =
       /** Per-step cross-origin `<iframe>` selector; overrides the flow-level one. */
       frameSelector?: string;
     };
+
+/** Why a flow step's `assertResponse` is malformed, or null when it is well-formed. */
+export function assertResponseProblem(spec: unknown): string | null {
+  if (spec === null || typeof spec !== "object" || Array.isArray(spec))
+    return "assertResponse must be an object";
+  const { request, equals, afterAction } = spec as Record<string, unknown>;
+  if (request === null || typeof request !== "object" || Array.isArray(request))
+    return "assertResponse.request is required ({method, url})";
+  const { method, url } = request as Record<string, unknown>;
+  if (method !== "GET" && method !== "POST")
+    return "assertResponse.request.method must be GET or POST";
+  if (typeof url !== "string" || !/^(\/|https?:\/\/)/.test(url))
+    return "assertResponse.request.url must be an absolute http(s) URL or a /path";
+  if (equals === null || typeof equals !== "object" || Array.isArray(equals))
+    return "assertResponse.equals is required ({responseField: payloadField})";
+  const entries = Object.entries(equals);
+  if (entries.length === 0) return "assertResponse.equals must name at least one field";
+  for (const [field, payloadField] of entries) {
+    if (field === "" || typeof payloadField !== "string" || !isValidJsIdentifier(payloadField))
+      return `assertResponse.equals.${field} must name a payload field`;
+  }
+  if (afterAction !== undefined && (!Number.isInteger(afterAction) || (afterAction as number) < 0))
+    return "assertResponse.afterAction must be an integer >= 0";
+  return null;
+}
+
+/** Whether a flow step is a read-back assertion (an HTTP-only step with no browser instruction). */
+export function isAssertResponseStep(
+  step: FlowStepInput
+): step is Exclude<FlowStepInput, string> & { assertResponse: AssertResponseSpec } {
+  return typeof step !== "string" && step.assertResponse !== undefined;
+}
+
+/**
+ * Splits assertion steps off a flow. Throws on a malformed one. `tailFromStep`
+ * indexes the full list, so it is remapped onto the browser steps that remain.
+ */
+export function splitAssertResponseSteps(
+  steps: readonly FlowStepInput[],
+  tailFromStep?: number
+): { browserSteps: FlowStepInput[]; assertions: AssertResponseSpec[]; tailFromStep?: number } {
+  const browserSteps: FlowStepInput[] = [];
+  const assertions: AssertResponseSpec[] = [];
+  let tail = tailFromStep;
+  steps.forEach((step, index) => {
+    if (typeof step === "string" || step.assertResponse === undefined) {
+      browserSteps.push(step);
+      return;
+    }
+    const problem = assertResponseProblem(step.assertResponse);
+    if (problem !== null) throw new Error(`Flow step ${index} is invalid: ${problem}`);
+    assertions.push(step.assertResponse);
+    if (tail !== undefined && index < tailFromStep!) tail = tail - 1;
+  });
+  return { browserSteps, assertions, ...(tail !== undefined && { tailFromStep: tail }) };
+}
+
+/** Emitted lines for one read-back assertion; throws (naming fields only) on a difference. */
+function emitAssertResponseLines(
+  spec: AssertResponseSpec,
+  n: number,
+  flowSteps: readonly FlowStepInput[],
+  outDiscoveredFields: Set<string>
+): string[] {
+  const url = spec.request.url
+    .split(/\{([A-Za-z_$][A-Za-z0-9_$]*)\}/)
+    .map((part, idx) => {
+      if (idx % 2 === 0) return escapeForTemplateLiteral(part);
+      outDiscoveredFields.add(part);
+      return `\${encodeURIComponent(String(payload.${part}))}`;
+    })
+    .join("");
+  const target = spec.request.url.startsWith("/") ? `\${context.baseUrl}${url}` : url;
+  const resp = `assertResp${n}`;
+  const diff = `assertDiff${n}`;
+  const lines = [
+    `    const ${resp} = await httpClient(\`${target}\`, {`,
+    `      method: ${JSON.stringify(spec.request.method)},`,
+    `      schema: z.unknown(),`,
+    `    });`,
+    `    const ${diff}: string[] = [];`,
+  ];
+  for (const [path, field] of Object.entries(spec.equals)) {
+    outDiscoveredFields.add(field);
+    const declaring = flowSteps.find(
+      (st) => typeof st !== "string" && st.payloadField === field && !st.payloadFieldNone
+    ) as Exclude<FlowStepInput, string> | undefined;
+    const expected = applyDeclaredBindingWire(`payload.${field}`, {
+      value: "",
+      field,
+      optional: false,
+      origin: "step",
+      literals: [],
+      kind: "",
+      kindHints: [],
+      wire: declaring?.payloadWire,
+      transform: declaring?.payloadTransform,
+    });
+    const read = `${JSON.stringify(path.split("."))}.reduce<unknown>((o, k) => (o as Record<string, unknown> | null | undefined)?.[k], ${resp})`;
+    lines.push(
+      `    if (String(${read}) !== String(${expected})) ${diff}.push(${JSON.stringify(`${path} (payload.${field})`)});`
+    );
+  }
+  lines.push(
+    `    if (${diff}.length > 0) throw new Error(\`assertResponse step ${n}: response field(s) differ from payload: \${${diff}.join(", ")}\`);`,
+    ""
+  );
+  return lines;
+}
 
 /**
  * Redaction policy derived only from steps tagged `sensitive`: the tagged step's
@@ -21480,6 +21823,51 @@ export function emitBrowserFlowTs(opts: {
   );`
       : "";
 
+  if (mixedHandover !== undefined && flowSteps.length === 0) {
+    const entryParam = isSubmissionFlow ? "entryUrl" : "baseUrl";
+    const gotoExpr =
+      mixedHandover.handoverUrl !== undefined
+        ? JSON.stringify(mixedHandover.handoverUrl)
+        : entryParam;
+    const handoverCode = `/**
+ * Generated by recon-generate.ts — post-HTTP browser handover for ${siteId}.
+ * Every recorded step ran over HTTP, so there is no browser tail to replay:
+ * this module only hands the HTTP session cookies to the browser context and
+ * opens the page the session lands on.
+ */
+
+import type { Stagehand } from "@browserbasehq/stagehand";
+
+import { waitForSpaReady } from "${ENGINE_PKG}/scraper/spa-readiness";
+import { getLogger } from "${ENGINE_PKG}/lib/logging";
+import type { SessionProxyTuple } from "${ENGINE_PKG}/types/session-proxy";
+import type { ${pascal}Response } from "@/sites/${siteId}/contract";
+
+const logger = getLogger({ name: "${siteId}-browser-flow" });
+
+/** Hands the HTTP session to the browser and opens the post-HTTP page. */
+export async function run${pascal}BrowserFlow(
+  stagehand: Stagehand,
+  ${entryParam}: string,
+  sessionProxy: SessionProxyTuple | null,
+  sessionCookies: Record<string, string>
+): Promise<${pascal}Response> {${handoverBlock}
+  const page = await stagehand.context.awaitActivePage();
+
+  await page.goto(${gotoExpr}, { waitUntil: "domcontentloaded" });
+  await waitForSpaReady(page, logger);
+  void sessionProxy;
+  return {} as ${pascal}Response;
+}
+`;
+    return {
+      code: handoverCode,
+      payloadFieldNames,
+      optionalPayloadFieldNames,
+      usesThrowawayPassword,
+    };
+  }
+
   const code = `/**
  * Generated by recon-generate.ts — Stagehand browser fallback for ${siteId}.
  * Core invokes this automatically when executeHttp throws HttpSchemaError or
@@ -21672,16 +22060,28 @@ function readOnlyGetExtractPromptExpr(fields: readonly string[]): string {
 
 /** Generates the site's index.ts barrel — exported so the out-of-tree e2e
  * test can drive the emitter directly without spawning the CLI. */
-export function emitIndexTs(opts: { siteId: string; pascal: string }): string {
-  const { siteId, pascal } = opts;
+export function emitIndexTs(opts: {
+  siteId: string;
+  pascal: string;
+  mixedHandover?: boolean;
+}): string {
+  const { siteId, pascal, mixedHandover = false } = opts;
   const camel = camelFromPascal(pascal);
   return `/**
  * Generated by recon-generate.ts.
- * Build this package, then point BARNACLE_PLUGINS at the compiled module —
+${
+  mixedHandover
+    ? ` * This flow replays its leading steps over HTTP and then hands the session to
+ * the browser, and is meant to be wrapped: do not load this module alone via
+ * BARNACLE_PLUGINS. Build the package, wrap it, and point BARNACLE_PLUGINS at
+ * the wrapper's compiled output.
+`
+    : ` * Build this package, then point BARNACLE_PLUGINS at the compiled module —
  * no core edits required:
  *
  *   BARNACLE_PLUGINS=./dist/sites/${siteId}/index.js pnpm start
- *
+`
+} *
  * The loader resolves \`m.plugin ?? m.default ?? m\` — the \`plugin\` alias
  * below is what it finds.
  */
@@ -22203,7 +22603,7 @@ export async function main(): Promise<void> {
   })();
 
   const {
-    flowSteps,
+    flowSteps: declaredFlowSteps,
     frameSelector,
     submitEndpointPattern,
     submitBodyPattern,
@@ -22293,7 +22693,21 @@ export async function main(): Promise<void> {
   })();
 
   const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
-  const httpStepsOpt = existsSync(flowFile) ? readHttpSteps(flowFile) : null;
+  const declaredHttpSteps = existsSync(flowFile) ? readHttpSteps(flowFile) : null;
+  // Read-back assertions are HTTP-only: they leave the step list every browser
+  // consumer reads, and `tailFromStep` (which indexes the full list) follows.
+  const {
+    browserSteps: flowSteps,
+    assertions: assertResponses,
+    tailFromStep: browserTailFromStep,
+  } = splitAssertResponseSteps(declaredFlowSteps, declaredHttpSteps?.tailFromStep);
+  const httpStepsOpt =
+    declaredHttpSteps === null
+      ? null
+      : {
+          ...declaredHttpSteps,
+          tailFromStep: browserTailFromStep ?? declaredHttpSteps.tailFromStep,
+        };
   const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
   const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
 
@@ -23140,7 +23554,8 @@ export async function main(): Promise<void> {
             applicantContract,
             httpStepsOpt?.actions,
             submitPatterns,
-            locateBearerSources(activeCaptures, replays)
+            locateBearerSources(activeCaptures, replays),
+            assertResponses
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted
@@ -23535,11 +23950,16 @@ export async function main(): Promise<void> {
   writeFileSync(`${outDir}/flows/browser-flow.ts`, final.browserFlow.code);
   logger.info(`wrote ${outDir}/flows/browser-flow.ts`);
 
-  writeFileSync(`${outDir}/index.ts`, emitIndexTs({ siteId, pascal }));
+  writeFileSync(
+    `${outDir}/index.ts`,
+    emitIndexTs({ siteId, pascal, mixedHandover: httpStepsOpt !== null })
+  );
   logger.info(`wrote ${outDir}/index.ts`);
 
   logger.info(
-    `done — review ${outDir}/, build the package, then point BARNACLE_PLUGINS at the compiled module (no core edits required): BARNACLE_PLUGINS=./dist/sites/${siteId}/index.js pnpm start`
+    httpStepsOpt !== null
+      ? `done — review ${outDir}/, then build the package; this is a mixed HTTP+browser flow meant to be wrapped, so do not load the generated module alone via BARNACLE_PLUGINS until it is wrapped`
+      : `done — review ${outDir}/, build the package, then point BARNACLE_PLUGINS at the compiled module (no core edits required): BARNACLE_PLUGINS=./dist/sites/${siteId}/index.js pnpm start`
   );
 }
 
