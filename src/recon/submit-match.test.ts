@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isQualifyingSubmitCapture, matchesSubmitPattern } from "@/recon/submit-match";
+import { isQualifyingSubmitCapture, isReadCapture, matchesSubmitPattern } from "@/recon/submit-match";
 
 const rx = /\/api\/orders/;
 const hosts = ["shop.example.com"];
@@ -56,5 +56,24 @@ describe("matchesSubmitPattern", () => {
       false
     );
     expect(matchesSubmitPattern({ url }, /collect/, body)).toBe(false);
+  });
+});
+
+describe("isReadCapture truth table (made-up voyage site)", () => {
+  const url = "https://api.voyages.example.test/graphql";
+  const gql = (query: string) => JSON.stringify({ query });
+  it.each([
+    ["GET", { method: "GET", url }, true],
+    ["lowercase get", { method: "get", url }, true],
+    ["HEAD", { method: "HEAD", url }, true],
+    ["POST query", { method: "POST", url, requestPostData: gql("query Sailings { s }") }, true],
+    ["POST shorthand query", { method: "POST", url, requestPostData: gql("{ sailings }") }, true],
+    ["POST mutation", { method: "POST", url, requestPostData: gql("mutation Book { b }") }, false],
+    ["POST non-GraphQL body", { method: "POST", url, requestPostData: "a=1" }, false],
+    ["POST no body", { method: "POST", url }, false],
+    ["PUT", { method: "PUT", url }, false],
+    ["missing method", { url }, false],
+  ])("%s", (_n, cap, want) => {
+    expect(isReadCapture(cap)).toBe(want);
   });
 });
