@@ -273,11 +273,14 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     let timer: ReturnType<typeof setInterval> | undefined;
     if (leased && store.renew) {
       const renew = store.renew.bind(store);
-      timer = setInterval(() => {
-        Promise.resolve()
-          .then(() => renew(key, owner, leaseTtl))
-          .catch(() => undefined);
-      }, Math.max(1, Math.floor(leaseTtl / 3)));
+      timer = setInterval(
+        () => {
+          Promise.resolve()
+            .then(() => renew(key, owner, leaseTtl))
+            .catch(() => undefined);
+        },
+        Math.max(1, Math.floor(leaseTtl / 3))
+      );
       timer.unref?.();
     }
     // Releases only this run's own pending claim, never a new owner's.

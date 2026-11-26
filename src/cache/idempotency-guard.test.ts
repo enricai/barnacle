@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { UnknownOutcomeError } from "@/api/errors";
-import { registerSecretValue, resetSensitiveValuesForTests } from "@/lib/pii-redaction";
 import {
   createFileIdempotencyStore,
   createIdempotencyGuard,
@@ -13,6 +12,7 @@ import {
   deriveIdempotencyKey,
   deriveOperationId,
 } from "@/cache/idempotency-guard";
+import { registerSecretValue, resetSensitiveValuesForTests } from "@/lib/pii-redaction";
 
 afterEach(() => {
   vi.useRealTimers();
