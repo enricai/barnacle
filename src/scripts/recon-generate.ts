@@ -644,6 +644,8 @@ function walkNavigateToFacets(
           literals: collectStepFacetLiterals(step.step, env),
           kind: deriveFacetKind(step.payloadField),
           kindHints: collectStepFacetKindHints(step.step, env),
+          wire: step.payloadWire,
+          transform: step.payloadTransform,
         });
       }
       continue;
@@ -685,6 +687,8 @@ interface WalkedNavigateToFacet {
   literals: string[];
   kind: string;
   kindHints: string[];
+  wire?: "number";
+  transform?: "utc-instant";
 }
 
 /**
@@ -988,6 +992,11 @@ export interface NavigateToFacetBinding {
    * `ports` in `ports_<slug>`) for a field name that does not itself name the
    * element kind. Carried on the binding so every spread copy keeps them. */
   readonly kindHints?: readonly string[];
+  /** Declared wire type: the bound value is sent as a JSON number although the
+   * public input stays a string. */
+  readonly wire?: "number";
+  /** Declared transform applied to the caller's value before it is sent. */
+  readonly transform?: "utc-instant";
 }
 
 /** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
@@ -1051,6 +1060,8 @@ export function extractNavigateToFacetOrder(
         kind: facet.kind,
         ...(facet.origin === "step" ? { origin: facet.origin } : {}),
         ...(facet.kindHints.length > 0 ? { kindHints: facet.kindHints } : {}),
+        ...(facet.wire !== undefined ? { wire: facet.wire } : {}),
+        ...(facet.transform !== undefined ? { transform: facet.transform } : {}),
       };
       return binding;
     });
@@ -7132,6 +7143,38 @@ function containsValueAtTokenBoundary(haystack: string, needle: string): boolean
 const structuredFieldSamples = new WeakMap<Map<string, string>, Map<string, unknown[]>>();
 
 /**
+ * Retracts a registered structured payload input that no emitted request reads
+ * and whose every recorded leaf is rebound to a declared scalar binding: the
+ * caller supplies those scalars, so the structure is not an input at all. A
+ * structured input any request still reads, or with any leaf no declared
+ * binding covers, stays registered.
+ */
+function retractReboundStructuredInputs(
+  emitted: string,
+  outStructuredKeys: Map<string, string>,
+  facets: readonly NavigateToFacetBinding[]
+): void {
+  if (facets.length === 0) return;
+  const samplesByField = structuredFieldSamples.get(outStructuredKeys);
+  for (const field of [...outStructuredKeys.keys()]) {
+    const samples = samplesByField?.get(field);
+    if (samples === undefined || samples.length === 0) continue;
+    if (new RegExp(`payload\\.${field}(?![\\w$])`).test(emitted)) continue;
+    const everyLeafRebound = samples.every((sample) =>
+      [...walkAllPrimitiveLeaves(sample)].every(
+        ({ value }) =>
+          value !== null &&
+          matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false }) !==
+            undefined
+      )
+    );
+    if (!everyLeafRebound) continue;
+    outStructuredKeys.delete(field);
+    samplesByField?.delete(field);
+  }
+}
+
+/**
  * Single registration point for a structured (array/object) payload field, so
  * the declared schema type is inferred from every captured body carrying the
  * field rather than from whichever body or visiting order reached it first.
@@ -9851,7 +9894,7 @@ function applyScalarFacetSplicePayloadSubstitutions(
     const cased = casing ? `String(${expression}).${casing}()` : undefined;
     const replacement = cased
       ? `\${JSON.stringify(${cased})}`
-      : typeof value === "number" || facet.optional
+      : typeof value === "number" || facet.optional || facet.wire === "number"
         ? `\${JSON.stringify(${expression})}`
         : `"\${${expression}}"`;
     for (const sep of [":", ": "]) {
@@ -12722,6 +12765,7 @@ export function emitMultiStepExecuteHttp(
   if (tokenBootstrap.used.value)
     lines.splice(bootstrapInsertAt, 0, ...tokenBootstrapHelperLines(baseUrl));
   const renderedMultiStepBody = lines.join("\n");
+  retractReboundStructuredInputs(renderedMultiStepBody, outStructuredKeys, navigateToFacetOrder);
   assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
   return renderedMultiStepBody;
 }
@@ -13226,9 +13270,23 @@ function abbreviates(code: string, value: string): boolean {
  */
 function facetPayloadExpression(facet: NavigateToFacetBinding, fallback = ""): string {
   const raw = `payload.${facet.field}${fallback}`;
-  if (!facet.valueMap || facet.valueMap.size === 0) return raw;
-  const entries = JSON.stringify([...facet.valueMap.entries()]);
-  return `(new Map(${entries}).get(String(payload.${facet.field})) ?? ${raw})`;
+  const mapped =
+    !facet.valueMap || facet.valueMap.size === 0
+      ? raw
+      : `(new Map(${JSON.stringify([...facet.valueMap.entries()])}).get(String(payload.${facet.field})) ?? ${raw})`;
+  return applyDeclaredBindingWire(mapped, facet);
+}
+
+/**
+ * Applies a binding's declared transform, then its declared wire type, to the
+ * caller's (string) value. A binding declaring neither is returned untouched.
+ */
+function applyDeclaredBindingWire(expression: string, binding: NavigateToFacetBinding): string {
+  const transformed =
+    binding.transform === "utc-instant"
+      ? `new Date(String(${expression})).toISOString()`
+      : expression;
+  return binding.wire === "number" ? `Number(${transformed})` : transformed;
 }
 
 function renderFacetPayloadValue(captured: string, facet: NavigateToFacetBinding): string {
