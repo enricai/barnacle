@@ -27,8 +27,9 @@ const logger = getLogger({ name: "scraper/pool" });
 /**
  * Per-task hard timeout default. A hung Stagehand operation (infinite network wait,
  * frozen CDP connection) would otherwise block the queue slot indefinitely,
- * draining pool capacity without recovery. This ceiling converts a silent
- * hang into a SessionTimeoutError that the retry policy can act on.
+ * draining pool capacity without recovery. At this ceiling the task's signal is
+ * aborted with a TaskDeadlineError and the attempt fails as outcome-unknown, not
+ * retried, since the task may already have taken an irreversible step.
  * Individual plugins may override this via SitePluginMeta.taskTimeoutMs.
  */
 const TASK_TIMEOUT_MS = 60 * 60 * 1_000; // 60 minutes
@@ -47,10 +48,12 @@ const queue = new PQueue({ concurrency: config.scraper.poolSize });
  * supplied by `withScraperRetry` — `SessionTimeoutError` causes a session
  * tear-down and fresh re-creation for the next attempt.
  *
- * Each queued task is bounded by `TASK_TIMEOUT_MS`. A hung Stagehand
- * operation would otherwise block the queue slot indefinitely; the timeout
- * converts the hang into a `SessionTimeoutError` so the retry policy can
- * restart the session and try again.
+ * Each queued task is bounded by `taskTimeoutMs` (default `TASK_TIMEOUT_MS`).
+ * At the deadline the task's `ctx.signal` is aborted with a `TaskDeadlineError`,
+ * and the attempt rejects only once the task has stopped, or after `stopGraceMs`
+ * if it never does, so the session is not closed while the task still runs. The
+ * rejection is a `TaskDeadlineError` whose outcome is unknown (UNKNOWN_OUTCOME on
+ * the wire), even if the task settles after the signal; it is never retried.
  */
 export async function runWithSession<T>(
   task: (session: BrowserSession, ctx: TaskContext) => Promise<T>,
