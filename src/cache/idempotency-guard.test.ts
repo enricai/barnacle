@@ -246,3 +246,26 @@ describe("durable store reload", () => {
     }
   });
 });
+
+describe("guard refusalFor", () => {
+  const failingStore = () => ({
+    get: () => {
+      throw new Error("store down");
+    },
+    set: () => undefined,
+    delete: () => undefined,
+  });
+  it("maps a store.get failure in run() through refusalFor", async () => {
+    const guard = createIdempotencyGuard({ store: failingStore() });
+    const refusal = new Error("refused");
+    await expect(
+      guard.run("s", { keyFields: ["a"], refusalFor: async () => refusal }, { a: "1" }, async () => 1)
+    ).rejects.toBe(refusal);
+  });
+  it("leaves the error unchanged without refusalFor", async () => {
+    const guard = createIdempotencyGuard({ store: failingStore() });
+    await expect(
+      guard.run("s", { keyFields: ["a"] }, { a: "1" }, async () => 1)
+    ).rejects.toThrow("store down");
+  });
+});
