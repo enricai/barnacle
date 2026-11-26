@@ -1020,6 +1020,14 @@ interface NormalizedStep {
   // Per-step frame scope (see RECON_FLOW_STEP_SCHEMA). Overrides the flow-level
   // frameSelector for this step only.
   frameSelector?: string;
+  frameOrigin?: string;
+  completeSelector?: string;
+  verifyRequest?: {
+    urlTemplate: string;
+    method: "GET" | "POST";
+    jsonPath: string;
+    expect: string | number | boolean;
+  };
   origin: "original" | "replan";
   // See RECON_FLOW_STEP_SCHEMA in src/lib/llm/schemas.ts: opts this step into
   // executeNavigateStep (a direct page.goto) instead of the self-heal cascade.
@@ -1063,6 +1071,9 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           payloadFieldNone: s.payloadFieldNone,
           targetId: s.targetId,
           frameSelector: s.frameSelector,
+          frameOrigin: s.frameOrigin,
+          completeSelector: s.completeSelector,
+          verifyRequest: s.verifyRequest,
           // Preserve a persisted replan marker across runs; absence = authored.
           origin: s.origin ?? "original",
           navigateTo: s.navigateTo,
@@ -1113,6 +1124,9 @@ function denormalizeStep(step: NormalizedStep):
       payloadFieldNone?: true;
       targetId?: string;
       frameSelector?: string;
+      frameOrigin?: string;
+      completeSelector?: string;
+      verifyRequest?: NormalizedStep["verifyRequest"];
       origin?: "replan";
       navigateTo?: string;
       declareOnly?: true;
@@ -1130,7 +1144,10 @@ function denormalizeStep(step: NormalizedStep):
     step.navigateTo !== undefined ||
     step.declareOnly === true ||
     step.sensitive !== undefined ||
-    step.frameSelector !== undefined;
+    step.frameSelector !== undefined ||
+    step.frameOrigin !== undefined ||
+    step.completeSelector !== undefined ||
+    step.verifyRequest !== undefined;
   if (
     !step.optional &&
     !step.upload &&
@@ -1154,6 +1171,9 @@ function denormalizeStep(step: NormalizedStep):
     payloadFieldNone?: true;
     targetId?: string;
     frameSelector?: string;
+    frameOrigin?: string;
+    completeSelector?: string;
+    verifyRequest?: NormalizedStep["verifyRequest"];
     origin?: "replan";
     navigateTo?: string;
     declareOnly?: true;
@@ -1171,6 +1191,9 @@ function denormalizeStep(step: NormalizedStep):
   if (step.payloadFieldNone === true) out.payloadFieldNone = true;
   if (step.targetId !== undefined) out.targetId = step.targetId;
   if (step.frameSelector !== undefined) out.frameSelector = step.frameSelector;
+  if (step.frameOrigin !== undefined) out.frameOrigin = step.frameOrigin;
+  if (step.completeSelector !== undefined) out.completeSelector = step.completeSelector;
+  if (step.verifyRequest !== undefined) out.verifyRequest = step.verifyRequest;
   if (step.origin === "replan") out.origin = "replan";
   if (step.navigateTo !== undefined) out.navigateTo = step.navigateTo;
   if (step.declareOnly === true) out.declareOnly = true;

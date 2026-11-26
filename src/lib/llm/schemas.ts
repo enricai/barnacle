@@ -133,6 +133,30 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      */
     frameSelector: z.string().min(1).optional(),
     /**
+     * Origin (scheme://host) of the provider frame a sensitive declared step's
+     * field lives in. Declaration only; consumed by the generator/runtime.
+     */
+    frameOrigin: z.string().min(1).optional(),
+    /**
+     * Selector the provider sets when the field is valid; marks the step's
+     * value as complete.
+     */
+    completeSelector: z.string().min(1).optional(),
+    /**
+     * Request against the site's own order data that verifies a submit step:
+     * `urlTemplate` may reference payload fields (`${field}`), the response
+     * JSON at `jsonPath` must equal `expect`.
+     */
+    verifyRequest: z
+      .object({
+        urlTemplate: z.string().min(1),
+        method: z.enum(["GET", "POST"]).default("GET"),
+        jsonPath: z.string().min(1),
+        expect: z.union([z.string(), z.number(), z.boolean()]),
+      })
+      .strict()
+      .optional(),
+    /**
      * Provenance of the step: `"replan"` marks a step the LLM replanner
      * appended at a cascade-exhausted recovery point; `"original"` (or absent)
      * marks a hand-authored step. Persisted so accretion from a prior run can

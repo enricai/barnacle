@@ -178,6 +178,9 @@ function toHealingStep(
     emailStep: step.emailStep,
     emailStepConfig: step.emailStepConfig,
     frameSelector: step.frameSelector,
+    frameOrigin: step.frameOrigin,
+    completeSelector: step.completeSelector,
+    verifyRequest: step.verifyRequest,
     navigateTo:
       step.navigateTo !== undefined
         ? resolveTemplate(step.navigateTo, payload, declaredFields)
