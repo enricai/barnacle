@@ -142,10 +142,36 @@ function literalMatcher(value: string, label: string): BaseMatcher {
   return { pattern: new RegExp(escapeRegExp(value), "g"), label, valueLength: value.length };
 }
 
+/**
+ * Whole-run matcher for a 1-3 digit value, which `digitMatcher` rejects as too
+ * short. An unbounded literal would corrupt viewport sizes, clock times, dates
+ * and timestamp milliseconds the engine itself mints.
+ */
+function shortDigitMatcher(value: string, label: string): BaseMatcher | null {
+  if (!/^\d{1,3}$/.test(value)) return null;
+  // Not adjacent to digits; not between letters (order codes like "AB12CD").
+  const notBetweenLetters = `(?!(?<=\\p{L}[-_]?)${value}(?=[-_]?\\p{L}))`;
+  const context =
+    value.length === 3
+      ? // not inside timestamp milliseconds (".123")
+        "(?<!\\d[.,])"
+      : // not inside clock times or dates
+        "(?<!\\d[:./-])";
+  const after = value.length === 3 ? "" : "(?![:./-]\\d)";
+  return {
+    pattern: new RegExp(`${notBetweenLetters}(?<!\\d)${context}${value}(?!\\d)${after}`, "gu"),
+    label,
+    valueLength: value.length,
+  };
+}
+
 type MatchKind = "word" | "digit" | "literal";
 
 function baseMatcherFor(kind: MatchKind, value: string, label: string): BaseMatcher | null {
-  if (kind === "digit") return digitMatcher(value, label) ?? literalMatcher(value, label);
+  if (kind === "digit")
+    return (
+      digitMatcher(value, label) ?? shortDigitMatcher(value, label) ?? literalMatcher(value, label)
+    );
   if (kind === "word") return value.length >= MIN_WORD_LENGTH ? wordMatcher(value, label) : null;
   return value.length >= MIN_LITERAL_LENGTH ? literalMatcher(value, label) : null;
 }

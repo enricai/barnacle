@@ -80,6 +80,23 @@ describe("redactPii", () => {
     );
   });
 
+  it("bounds a short digit value to a standalone run", () => {
+    registerSensitiveValues("run-1", { n: "12" }, { digitKeys: ["n"] });
+    expect(redactPii("viewport 1280x720")).toBe("viewport 1280x720");
+    expect(redactPii("at 10:12:30 on 2024-12-05 12:30")).toBe("at 10:12:30 on 2024-12-05 12:30");
+    expect(redactPii("code AB12CD")).toBe("code AB12CD");
+    expect(redactPii("age 12.")).toBe("age <n>.");
+  });
+
+  it("bounds a 3-digit value to a standalone run", () => {
+    registerSensitiveValues("run-1", { n: "123" }, { digitKeys: ["n"] });
+    expect(redactPii("1234 and 51234 and 2024-01-01T00:00:00.123Z")).toBe(
+      "1234 and 51234 and 2024-01-01T00:00:00.123Z"
+    );
+    expect(redactPii("AB123CD")).toBe("AB123CD");
+    expect(redactPii("zip 123 ok")).toBe("zip <n> ok");
+  });
+
   it("matches an international digit value in its national format", () => {
     registerSensitiveValues("run-1", { tel: "+442079460958" }, { digitKeys: ["tel"] });
     for (const formatted of ["020 7946 0958", "+44 20 7946 0958", "+44 (0)20 7946 0958"]) {
