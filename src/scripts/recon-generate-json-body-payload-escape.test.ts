@@ -43,7 +43,9 @@ describe("fold drill-down still rebinds before escaping", () => {
       decodedParams: null,
     };
     const code = emitMultiStepExecuteHttp(
-      [{ capture: cap, varName: "r0", produces: [], isMultipart: false, isCrossDomain: false }] as never,
+      [
+        { capture: cap, varName: "r0", produces: [], isMultipart: false, isCrossDomain: false },
+      ] as never,
       {},
       { stringMessageKey: null, nestedErrorPaths: [] },
       new Map(),

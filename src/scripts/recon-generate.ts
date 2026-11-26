@@ -12643,7 +12643,9 @@ export function emitMultiStepExecuteHttp(
         lines.push(`    await httpClient(\`${r.url}\`, {`);
       }
       lines.push(`      method: ${JSON.stringify(r.method)},`);
-      const joined = [r.headersExpr, escapeJsonBodyPayloadSplices(r.bodyArg, r.jsonBody)].filter((s) => s !== "").join(" ");
+      const joined = [r.headersExpr, escapeJsonBodyPayloadSplices(r.bodyArg, r.jsonBody)]
+        .filter((s) => s !== "")
+        .join(" ");
       if (joined !== "") {
         lines.push(`      ${joined}`);
       }
