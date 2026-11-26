@@ -11,7 +11,7 @@ import { format } from "date-fns";
 import { z } from "zod";
 import { getScriptLogger } from "@/lib/logging";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
-import { matchesSubmitPattern, type SubmitMatchCapture } from "@/recon/submit-match";
+import { isReadCapture, matchesSubmitPattern, type SubmitMatchCapture } from "@/recon/submit-match";
 
 const logger = getScriptLogger("recon-shared");
 
@@ -443,9 +443,10 @@ export function readSubmitEndpointPattern(flowFile: string): string | undefined 
 }
 
 /**
- * Matches the search requests a flow file declares itself to be reading with:
- * `readOnly: true` plus the `submitEndpointPattern` (and `submitBodyPattern`,
- * when declared). Null without both declarations, and on an unreadable file or
+ * Matches the requests a flow file declares as reads: the `submitEndpointPattern`
+ * with `readOnly: true`, or, unflagged, only captures that are reads by evidence
+ * (GET or GraphQL query) —  the `submitEndpointPattern` (and `submitBodyPattern`,
+ * when declared). Null without a pattern, and on an unreadable file or
  * invalid pattern, so an undeclared write is never taken for a read.
  */
 export function readDeclaredReadMatcher(
@@ -458,11 +459,14 @@ export function readDeclaredReadMatcher(
       string,
       unknown
     >;
-    if (readOnly !== true) return null;
     if (typeof submitEndpointPattern !== "string" || submitEndpointPattern === "") return null;
     const endpointRx = new RegExp(submitEndpointPattern);
     const bodyRx = typeof submitBodyPattern === "string" ? new RegExp(submitBodyPattern) : null;
-    return (capture) => matchesSubmitPattern(capture, endpointRx, bodyRx);
+    // Explicit readOnly keeps every pattern match a read; otherwise only
+    // captures whose own evidence is a read (GET / GraphQL query) qualify.
+    return (capture) =>
+      matchesSubmitPattern(capture, endpointRx, bodyRx) &&
+      (readOnly === true || isReadCapture(capture));
   } catch (err) {
     logger.warn(
       `flow file '${flowFile}' declares no usable read endpoint: ${

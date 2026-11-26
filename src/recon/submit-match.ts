@@ -7,6 +7,7 @@
  * the pattern text never matches.
  */
 import { isHttpUrl } from "@/recon/capture-filters";
+import { isGraphqlQueryDocument } from "@/recon/replay-safety";
 
 export interface SubmitMatchCapture {
   method?: unknown;
@@ -26,6 +27,39 @@ export function matchesSubmitPattern(
     if (!bodyRx.test(body)) return false;
   }
   return true;
+}
+
+/** GraphQL `query` strings carried by a request body (single or batched); null when none. */
+function graphqlQueriesOf(body: unknown): string[] | null {
+  if (typeof body !== "string" || body === "") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  if (items.length === 0) return null;
+  const out: string[] = [];
+  for (const it of items) {
+    const q = (it as { query?: unknown } | null)?.query;
+    if (typeof q !== "string") return null;
+    out.push(q);
+  }
+  return out;
+}
+
+/**
+ * Capture-evidence read predicate: a GET/HEAD, or a POST whose body is a
+ * GraphQL document made only of query operations. Anything else (a mutation,
+ * a non-GraphQL POST, an unparseable body) is not evidence of a read.
+ */
+export function isReadCapture(capture: SubmitMatchCapture): boolean {
+  const method = typeof capture.method === "string" ? capture.method.toUpperCase() : "";
+  if (method === "GET" || method === "HEAD") return true;
+  if (method !== "POST") return false;
+  const queries = graphqlQueriesOf(capture.requestPostData);
+  return queries?.every((q) => isGraphqlQueryDocument(q)) === true;
 }
 
 /** True for a 2xx status; a missing or non-numeric status is not a success. */

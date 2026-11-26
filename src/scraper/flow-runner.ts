@@ -18,6 +18,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
+import { isReadCapture, matchesSubmitPattern } from "@/recon/submit-match";
 import type { NavigateSettle } from "@/scraper/navigate";
 import { SHADOW_XPATH_ALL_RESOLVER_SRC, SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
 import { fetchFollowingRedirectsPreservingMethod } from "./redirect-follow";
@@ -2776,12 +2777,14 @@ export function flowHasSubmitSemantics(params: {
   requireSubmitEndpointMatch: boolean;
   /** Flow declares itself read-only: the pattern alone never implies a submit. */
   readOnly?: boolean;
+  /** A matched capture was a read (see `isReadCapture`): the pattern alone never implies a submit. */
+  readEvidence?: boolean;
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
   const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
   if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
   if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
-  if (params.readOnly === true) return false;
+  if (params.readOnly === true || params.readEvidence === true) return false;
   // A flow whose every step is worded as plain navigation/reading (no data
   // entry, advance, or submit wording) supplies nothing to submit, so the
   // endpoint pattern alone must not make its final step a submission.
@@ -19048,6 +19051,18 @@ async function runHealingFlowScoped(
   // Seeded so the first step does not re-gate; the initial gate lives with the caller's goto.
   let lastOrigin = liveOriginOf(activePage);
 
+  // Read-versus-write from matched-capture evidence: set once a capture matching
+  // the declared pattern is a read, cleared for good by a matching non-read.
+  let sawMatchedRead = false;
+  let sawMatchedWrite = false;
+  const submitEndpointRx = (() => {
+    try {
+      return deps.submitEndpointPattern ? new RegExp(deps.submitEndpointPattern) : null;
+    } catch {
+      return null;
+    }
+  })();
+
   const wireCapture = (target: Page): (() => void) =>
     wireSignalCapture(target, {
       counter,
@@ -19055,7 +19070,13 @@ async function runHealingFlowScoped(
       recentCaptures,
       recentCaptureMeta,
       getCurrentPhase: () => "flow",
-      onCapture: (capture, filename) => recordRuntimeCapture(store, filename, capture),
+      onCapture: (capture, filename) => {
+        recordRuntimeCapture(store, filename, capture);
+        if (submitEndpointRx !== null && matchesSubmitPattern(capture, submitEndpointRx, null)) {
+          if (isReadCapture(capture)) sawMatchedRead = true;
+          else sawMatchedWrite = true;
+        }
+      },
       getCurrentPageOrigin: () => {
         try {
           return new URL(activePage.url()).origin;
@@ -19075,6 +19096,7 @@ async function runHealingFlowScoped(
       submitEndpointPattern: deps.submitEndpointPattern ?? null,
       requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
       readOnly: deps.readOnly ?? false,
+      readEvidence: sawMatchedRead && !sawMatchedWrite,
     });
   let flowHasSubmitSemanticsFlag = computeSubmitSemantics();
 
