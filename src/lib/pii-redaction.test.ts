@@ -89,6 +89,12 @@ describe("redactPii", () => {
     expect(redactPii("price 3,12 and 12,5")).toBe("price 3,12 and 12,5");
   });
 
+  it("masks a short digit value next to a slash", () => {
+    registerSensitiveValues("run-1", { m: "12", y: "25" }, { digitKeys: ["m", "y"] });
+    expect(redactPii("expiry 12/25")).toBe("expiry <m>/<y>");
+    expect(redactPii("112/250")).toBe("112/250");
+  });
+
   it("bounds a 3-digit value to a standalone run", () => {
     registerSensitiveValues("run-1", { n: "123" }, { digitKeys: ["n"] });
     expect(redactPii("1234 and 51234 and 2024-01-01T00:00:00.123Z")).toBe(

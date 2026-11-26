@@ -155,9 +155,10 @@ function shortDigitMatcher(value: string, label: string): BaseMatcher | null {
     value.length === 3
       ? // not inside timestamp milliseconds (".123")
         "(?<!\\d[.,x×X])"
-      : // not inside clock times or dates
-        "(?<!\\d[:./,x×X-])";
-  const after = value.length === 3 ? "(?![.,x×X]\\d)" : "(?![:./,x×X-]\\d)";
+      : // not inside clock times, dashed dates or decimals; "/" stays a boundary so a
+        // short secret in "12/25" (card expiry) is still masked
+        "(?<!\\d[:.,x×X-])";
+  const after = value.length === 3 ? "(?![.,x×X]\\d)" : "(?![:.,x×X-]\\d)";
   return {
     pattern: new RegExp(`${notBetweenLetters}(?<!\\d)${context}${value}(?!\\d)${after}`, "gu"),
     label,
