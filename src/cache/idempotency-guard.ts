@@ -90,7 +90,7 @@ export function createFileIdempotencyStore(dir: string): IdempotencyStore {
         // Unreadable or corrupt entry: it exists, so it is not "never ran".
         return {
           state: "unknown",
-          message: `idempotency entry could not be read: ${err instanceof Error ? err.message : String(err)}`,
+          message: `idempotency entry could not be read: ${redactPii(err instanceof Error ? err.message : String(err))}`,
         };
       }
     },
@@ -270,11 +270,17 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     const isSuccess = config.isSuccess ?? defaultIsSuccess;
     const leased = owner !== undefined;
     const leaseTtl = Math.min(LEASE_MS, ttlMs);
+    const renewUntil = Date.now() + ttlMs;
     let timer: ReturnType<typeof setInterval> | undefined;
     if (leased && store.renew) {
       const renew = store.renew.bind(store);
       timer = setInterval(
         () => {
+          if (Date.now() >= renewUntil) {
+            if (timer) clearInterval(timer);
+            timer = undefined;
+            return;
+          }
           Promise.resolve()
             .then(() => renew(key, owner, leaseTtl))
             .catch(() => undefined);
