@@ -5,7 +5,7 @@ import type { FastifyInstance, RawServerDefault } from "fastify";
 import type pino from "pino";
 import { z } from "zod/v4";
 
-import { FieldViolationError, toApiError } from "@/api/errors";
+import { FieldViolationError, toApiError, UnknownOutcomeError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
 import {
   createIdempotencyGuard,
@@ -454,6 +454,8 @@ export async function dispatch<TResult>(
   registerSensitiveValues(context.requestId, payload, plugin.meta.redaction);
 
   try {
+    // Before any queue slot or session: a refusal here costs nothing.
+    await plugin.preflight?.(payload, context);
     const result = await runPluginPipeline<TResult>(plugin, payload, context, options);
     const durationMs = Date.now() - startedAt;
 
@@ -514,7 +516,8 @@ export async function dispatch<TResult>(
     }
 
     return result;
-  } catch (err) {
+  } catch (caught) {
+    const err = await refusalFor(plugin, payload, context, caught);
     const durationMs = Date.now() - startedAt;
     const errorType = classifyDispatchError(err);
     const failureTags: FailureDispatchTags = {
@@ -647,7 +650,7 @@ export async function registerRoutes(
           idempotencyGuard ??= createIdempotencyGuard();
           const operationId = await idempotencyGuard.start(
             plugin.meta.siteId,
-            dataPredicate(declared),
+            guardConfig(plugin, declared, request.body, context),
             request.body,
             () => dispatch(plugin, request.body, context, { forceFallback })
           );
@@ -723,6 +726,45 @@ function dataPredicate(declared: PluginIdempotency): PluginIdempotency {
   return { ...declared, isSuccess: (r) => isSuccess((r as { data?: unknown } | null)?.data) };
 }
 
+function isUnknownOutcome(err: unknown): boolean {
+  if (err instanceof UnknownOutcomeError) return true;
+  const orig = (err as { originalError?: unknown } | null)?.originalError;
+  return orig instanceof UnknownOutcomeError;
+}
+
+/**
+ * Replaces an error with the plugin's preflight refusal when preflight says
+ * the operation may already have taken effect (UnknownOutcomeError); any other
+ * error, or a plugin without preflight, is returned unchanged.
+ */
+async function refusalFor(
+  plugin: SitePlugin<unknown, unknown>,
+  payload: unknown,
+  context: SitePluginContext,
+  err: unknown
+): Promise<unknown> {
+  if (!plugin.preflight || isUnknownOutcome(err)) return err;
+  try {
+    await plugin.preflight(payload, context);
+  } catch (pre) {
+    if (pre instanceof UnknownOutcomeError) return pre;
+  }
+  return err;
+}
+
+/** Idempotency config for the guard: result predicate plus preflight refusal mapping. */
+function guardConfig(
+  plugin: SitePlugin<unknown, unknown>,
+  declared: PluginIdempotency,
+  body: unknown,
+  context: SitePluginContext
+): PluginIdempotency {
+  return {
+    ...dataPredicate(declared),
+    refusalFor: (err) => refusalFor(plugin, body, context, err),
+  };
+}
+
 /**
  * dispatch() wrapped in the duplicate-submission guard when the plugin
  * declares `meta.idempotency`; otherwise exactly dispatch().
@@ -736,8 +778,11 @@ async function dispatchWithIdempotency(
   const declared = plugin.meta.idempotency;
   if (!declared) return dispatch(plugin, body, context, options);
   idempotencyGuard ??= createIdempotencyGuard();
-  return idempotencyGuard.run(plugin.meta.siteId, dataPredicate(declared), body, () =>
-    dispatch(plugin, body, context, options)
+  return idempotencyGuard.run(
+    plugin.meta.siteId,
+    guardConfig(plugin, declared, body, context),
+    body,
+    () => dispatch(plugin, body, context, options)
   );
 }
 
