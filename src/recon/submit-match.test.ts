@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isQualifyingSubmitCapture, isReadCapture, matchesSubmitPattern } from "@/recon/submit-match";
+import {
+  isQualifyingSubmitCapture,
+  isReadCapture,
+  matchesSubmitPattern,
+} from "@/recon/submit-match";
 
 const rx = /\/api\/orders/;
 const hosts = ["shop.example.com"];
