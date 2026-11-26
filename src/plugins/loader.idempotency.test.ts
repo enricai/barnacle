@@ -211,12 +211,15 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       });
 
     it("replaces a failure with the preflight UnknownOutcomeError", async () => {
-      const preflight = vi.fn(async () => {
-        throw new UnknownOutcomeError("already submitted");
-      });
+      // First call (dispatch preflight) passes so the run really fails; the
+      // re-check after the failure is what must produce the refusal.
+      const preflight = vi
+        .fn<() => Promise<void>>()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(new UnknownOutcomeError("already submitted"));
       const app = await appFailing(new Error("boom"), preflight, "idem-refuse-a");
       const res = await post(app, "idem-refuse-a");
-      expect(preflight).toHaveBeenCalled();
+      expect(preflight).toHaveBeenCalledTimes(2);
       expect(JSON.stringify(res.json())).toContain("already submitted");
       await app.close();
     });
