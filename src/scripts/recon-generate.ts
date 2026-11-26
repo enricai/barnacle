@@ -5986,6 +5986,11 @@ export function deriveReadFlowBearer(
   };
 }
 
+/** A literal "null" header value is an empty-token placeholder, not a credential. */
+function isEmptyTokenPlaceholderHeaderValue(value: string): boolean {
+  return value.trim().toLowerCase() === "null";
+}
+
 /**
  * Template-literal interpolation for a credential header. With a located
  * token source and a JWT-shaped captured value it mints the bearer at call
@@ -11678,6 +11683,7 @@ export function emitMultiStepExecuteHttp(
       if (
         isCredentialHeaderName(lower) &&
         interpolated === v &&
+        !isEmptyTokenPlaceholderHeaderValue(v) &&
         !joinCarryingHeaderNames?.has(k) &&
         !boundHeaderNames.has(lower)
       ) {
@@ -12550,7 +12556,11 @@ export function emitMultiStepExecuteHttp(
         // recognizes as a prior step's produced state var must thread
         // per-call too, or its custom name freezes into an invariant
         // BASE_HEADERS-equivalent literal.
-        if (isCredentialHeaderName(lower) && interpolated === v) {
+        if (
+          isCredentialHeaderName(lower) &&
+          interpolated === v &&
+          !isEmptyTokenPlaceholderHeaderValue(v)
+        ) {
           perCallHeaderEntries.push(
             `${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k, v, tokenBootstrap)}\``
           );
