@@ -13,6 +13,7 @@ import {
   deriveOperationId,
 } from "@/cache/idempotency-guard";
 import { registerSecretValue, resetSensitiveValuesForTests } from "@/lib/pii-redaction";
+import { TaskDeadlineError } from "@/scraper/errors";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -113,6 +114,21 @@ describe("createIdempotencyGuard", () => {
     await expect(g.run("s", c, { id: "3" }, ex)).rejects.toThrow(/raw/);
   });
 
+  it("treats TaskDeadlineError (direct or as originalError) as unknown outcome", async () => {
+    const c = { keyFields: ["id"] };
+    const wrapped = Object.assign(new Error("wrapped"), { originalError: new TaskDeadlineError() });
+    for (const [id, e] of [
+      ["1", new TaskDeadlineError()],
+      ["2", wrapped],
+    ] as const) {
+      const g = createIdempotencyGuard();
+      const ex = vi.fn().mockRejectedValue(e);
+      await expect(g.run("s", c, { id }, ex)).rejects.toBe(e);
+      await expect(g.run("s", c, { id }, ex)).rejects.toBeInstanceOf(UnknownOutcomeError);
+      expect(ex).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("honours custom store and ttl", async () => {
     vi.useFakeTimers();
     const g = createIdempotencyGuard({ ttlMs: 50 });
@@ -174,6 +190,50 @@ describe("async operations (start/status)", () => {
     expect(await g.status("s", idF)).toEqual({ status: "failed", message: "boom" });
     const u = await g.status("s", idU);
     expect(u?.status).toBe("unknown-outcome");
+  });
+
+  it("settles a reopened sync retry using its once-mapped refusal", async () => {
+    const g = createIdempotencyGuard({ store: createInMemoryIdempotencyStore() });
+    const id = (await g.start("s", cfg, { id: "1" }, async () => {
+      throw new Error("first failure");
+    })) as string;
+    await vi.waitFor(async () => expect((await g.status("s", id))?.status).toBe("failed"));
+
+    const refusal = new UnknownOutcomeError("verify the outcome");
+    const refusalFor = vi.fn(async () => refusal);
+    let rejectRetry!: (err: Error) => void;
+    const retry = g.run(
+      "s",
+      { ...cfg, refusalFor },
+      { id: "1" },
+      () => new Promise<string>((_, reject) => (rejectRetry = reject))
+    );
+    await vi.waitFor(async () => expect((await g.status("s", id))?.status).toBe("pending"));
+    rejectRetry(new Error("retry failure"));
+    await expect(retry).rejects.toBe(refusal);
+    expect(refusalFor).toHaveBeenCalledTimes(1);
+    expect(await g.status("s", id)).toEqual({
+      status: "unknown-outcome",
+      message: "verify the outcome",
+    });
+    const executeAgain = vi.fn(async () => "unexpected");
+    expect(await g.start("s", cfg, { id: "1" }, executeAgain)).toBe(id);
+    expect(executeAgain).not.toHaveBeenCalled();
+  });
+
+  it("settles an async start using its once-mapped refusal", async () => {
+    const g = createIdempotencyGuard({ store: createInMemoryIdempotencyStore() });
+    const refusalFor = vi.fn(async () => new UnknownOutcomeError("verify async outcome"));
+    const id = (await g.start("s", { ...cfg, refusalFor }, { id: "1" }, async () => {
+      throw new Error("failure");
+    })) as string;
+    await vi.waitFor(async () =>
+      expect(await g.status("s", id)).toEqual({
+        status: "unknown-outcome",
+        message: "verify async outcome",
+      })
+    );
+    expect(refusalFor).toHaveBeenCalledTimes(1);
   });
 
   it("reports pending records with no live run as interrupted; start does not re-run them", async () => {
@@ -338,5 +398,200 @@ describe("guard lifecycle", () => {
     release("done");
     await p;
     expect(await g.status("s", id)).toEqual({ status: "succeeded", value: "done" });
+  });
+});
+
+describe("record write isolation", () => {
+  const cfg = {
+    keyFields: ["id"],
+    classifyFailure: (e: unknown) =>
+      e instanceof Error && e.message === "boom" ? ("unknown" as const) : ("failed" as const),
+  };
+  const failingStore = () => {
+    const base = createInMemoryIdempotencyStore();
+    return {
+      ...base,
+      set: () => Promise.reject(new Error("disk full")),
+    };
+  };
+
+  it("keeps the run's error when recording an unknown outcome fails, and warns", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const g = createIdempotencyGuard({ store: failingStore() });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("boom")))
+    ).rejects.toThrow("boom");
+    expect(write).toHaveBeenCalledWith(
+      expect.stringContaining("failed to record unknown outcome: disk full")
+    );
+    write.mockRestore();
+  });
+
+  it("redacts secrets in write-failure warnings", async () => {
+    registerSecretValue("hunter2-secret");
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const base = createInMemoryIdempotencyStore();
+    const store = { ...base, set: () => Promise.reject(new Error("disk full hunter2-secret")) };
+    const g = createIdempotencyGuard({ store });
+    expect(await g.run("s", cfg, { id: "1" }, async () => 1)).toBe(1);
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("failed to record success outcome"));
+    expect(write).not.toHaveBeenCalledWith(expect.stringContaining("hunter2-secret"));
+    write.mockRestore();
+  });
+
+  it("returns the run's value when recording a success fails, and warns", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const g = createIdempotencyGuard({ store: failingStore() });
+    expect(await g.run("s", cfg, { id: "1" }, async () => ({ ok: 1 }))).toEqual({ ok: 1 });
+    expect(write).toHaveBeenCalledWith(
+      expect.stringContaining("failed to record success outcome: disk full")
+    );
+    write.mockRestore();
+  });
+  it("warns instead of swallowing when start() cannot record the final outcome", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const base = createInMemoryIdempotencyStore();
+    let calls = 0;
+    const store = {
+      ...base,
+      set: (...a: Parameters<typeof base.set>) =>
+        ++calls === 1 ? base.set(...a) : Promise.reject(new Error("disk full")),
+    };
+    const g = createIdempotencyGuard({ store });
+    await g.start("s", cfg, { id: "1" }, async () => 1);
+    await vi.waitFor(() =>
+      expect(write).toHaveBeenCalledWith(
+        expect.stringContaining("failed to record operation outcome: disk full")
+      )
+    );
+    write.mockRestore();
+  });
+});
+
+describe("leased runs release the lease", () => {
+  const cfg = { keyFields: ["id"] };
+  const leasedStore = () => {
+    const base = createInMemoryIdempotencyStore();
+    return {
+      ...base,
+      claim: vi.fn((key: string, ttl: number, owner?: string) => {
+        base.set(key, { state: "pending", owner }, ttl);
+        return true;
+      }),
+      delete: vi.fn(),
+    };
+  };
+
+  it("deletes the lease when the run fails with a known error", async () => {
+    const store = leasedStore();
+    const g = createIdempotencyGuard({ store });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("nope")))
+    ).rejects.toThrow("nope");
+    expect(store.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes the lease when the result is not a success", async () => {
+    const store = leasedStore();
+    const g = createIdempotencyGuard({ store });
+    await g.run("s", cfg, { id: "1" }, async () => ({ needsUserInfo: true }));
+    expect(store.delete).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("leased runs when the outcome write fails", () => {
+  const cfg = {
+    keyFields: ["id"],
+    classifyFailure: (e: unknown) =>
+      e instanceof Error && e.message === "boom" ? ("unknown" as const) : ("failed" as const),
+  };
+  const leasedFailingStore = () => {
+    const base = createInMemoryIdempotencyStore();
+    return {
+      ...base,
+      claim: vi.fn((key: string, ttl: number, owner?: string) => {
+        base.set(key, { state: "pending", owner }, ttl);
+        return true;
+      }),
+      delete: vi.fn(),
+      set: () => Promise.reject(new Error("disk full")),
+    };
+  };
+
+  it("returns the value and keeps the claim when set fails after success", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const store = leasedFailingStore();
+    const g = createIdempotencyGuard({ store });
+    expect(await g.run("s", cfg, { id: "1" }, async () => ({ ok: 1 }))).toEqual({ ok: 1 });
+    expect(store.delete).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it("rethrows the original error and keeps the claim when set fails after unknown error", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const store = leasedFailingStore();
+    const g = createIdempotencyGuard({ store });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("boom")))
+    ).rejects.toThrow("boom");
+    expect(store.delete).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it("still releases the claim for a known failure when set would fail", async () => {
+    const store = leasedFailingStore();
+    const g = createIdempotencyGuard({ store });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("nope")))
+    ).rejects.toThrow("nope");
+    expect(store.delete).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("guard refusalFor", () => {
+  const failingStore = () => ({
+    get: () => {
+      throw new Error("store down");
+    },
+    set: () => undefined,
+    delete: () => undefined,
+  });
+  it("maps a store.get failure in run() through refusalFor", async () => {
+    const guard = createIdempotencyGuard({ store: failingStore() });
+    const refusal = new Error("refused");
+    await expect(
+      guard.run(
+        "s",
+        { keyFields: ["a"], refusalFor: async () => refusal },
+        { a: "1" },
+        async () => 1
+      )
+    ).rejects.toBe(refusal);
+  });
+  it("maps a pre-run store.set failure in start() through refusalFor", async () => {
+    const guard = createIdempotencyGuard({
+      store: {
+        get: () => undefined,
+        set: () => {
+          throw new Error("store down");
+        },
+        delete: () => undefined,
+      },
+    });
+    const refusal = new Error("refused");
+    await expect(
+      guard.start(
+        "s",
+        { keyFields: ["a"], refusalFor: async () => refusal },
+        { a: "1" },
+        async () => 1
+      )
+    ).rejects.toBe(refusal);
+  });
+  it("leaves the error unchanged without refusalFor", async () => {
+    const guard = createIdempotencyGuard({ store: failingStore() });
+    await expect(guard.run("s", { keyFields: ["a"] }, { a: "1" }, async () => 1)).rejects.toThrow(
+      "store down"
+    );
   });
 });

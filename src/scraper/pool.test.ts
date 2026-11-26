@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CdpTransportClosedError,
+  isTaskDeadlineError,
   SelectorFailureError,
   SessionTimeoutError,
 } from "@/scraper/errors";
@@ -229,5 +230,56 @@ describe("scraper/pool", () => {
     expect(elapsed).toBeLessThan(500);
     // Abandon the hung task — no way to resolve it; vitest will GC it.
     void hung;
+  });
+
+  // Placed last: the drainPool tests above pause the shared queue.
+  describe("task deadline signal", () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    // drainPool() above leaves the shared queue paused; use a fresh module instance.
+    let runWithSession: typeof import("./pool.js").runWithSession;
+    beforeEach(async () => {
+      vi.resetModules();
+      ({ runWithSession } = await import("./pool.js"));
+    });
+
+    it("aborts a signal-honoring task, never runs the step, starts once, closes after settle", async () => {
+      const log: string[] = [];
+      vi.mocked(sessionModule.createBrowserSession).mockImplementation(async () =>
+        fakeSession(() => log.push("closed"))
+      );
+      let starts = 0;
+      await expect(
+        runWithSession(
+          async (_s, { signal }) => {
+            starts += 1;
+            await new Promise<void>((resolve) => {
+              const t = setTimeout(resolve, 300);
+              signal.addEventListener("abort", () => {
+                clearTimeout(t);
+                resolve();
+              });
+            });
+            if (signal.aborted) {
+              log.push("task stopped");
+              return;
+            }
+            log.push("irreversible step performed");
+          },
+          { maxAttempts: 2 },
+          100
+        )
+      ).rejects.toSatisfy(isTaskDeadlineError);
+      expect(starts).toBe(1);
+      expect(log).toEqual(["task stopped", "closed"]);
+    });
+
+    it("rejects with TaskDeadlineError after the grace period if the task ignores the signal", async () => {
+      vi.mocked(sessionModule.createBrowserSession).mockImplementation(async () =>
+        fakeSession(() => {})
+      );
+      await expect(
+        runWithSession(() => sleep(400), { maxAttempts: 2 }, 50, {}, 50)
+      ).rejects.toSatisfy(isTaskDeadlineError);
+    });
   });
 });

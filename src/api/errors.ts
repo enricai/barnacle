@@ -8,6 +8,7 @@ import {
   isHttpRateLimitError,
   isHttpUrlLockedError,
   isScraperError,
+  isTaskDeadlineError,
 } from "@/scraper/errors";
 
 /**
@@ -220,6 +221,7 @@ export function toApiError(err: unknown): ApiError | undefined {
   if (isEmptyResultsError(err)) return new EmptyResultsApiError(err.message);
   if (isHttpRateLimitError(err)) return new ThrottledRequestError(err.message);
   if (isHttpUrlLockedError(err)) return new UrlLockedError(err.message);
+  if (isTaskDeadlineError(err)) return new UnknownOutcomeError(err.message);
   if (isScraperError(err)) return new ScrapeFailureError(err.message);
   return undefined;
 }

@@ -2833,7 +2833,11 @@ export function gatherEntityVarianceEvidence(
       break;
     }
   }
-  return { entityParameterized: Object.keys(params).length > 0, params, singleEntity };
+  return {
+    entityParameterized: Object.keys(params).length > 0,
+    params,
+    singleEntity,
+  };
 }
 
 /**
@@ -3164,8 +3168,13 @@ function postBodyValueZod(seen: readonly unknown[]): string {
  * stay literal. Returns null when no body varies or bodies are not JSON objects.
  */
 function derivePostBodyModel(
-  captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
-  endpointPath: string
+  captures: readonly {
+    method?: string;
+    url: string;
+    requestPostData?: string | null;
+  }[],
+  endpointPath: string,
+  declared: readonly { name: string; observed: readonly string[] }[] = []
 ): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
   const bodies: Record<string, unknown>[] = [];
   for (const c of captures) {
@@ -3195,6 +3204,49 @@ function derivePostBodyModel(
     }
     const distinct = new Set(values.map((v) => JSON.stringify(v)));
     if (distinct.size === 1) return JSON.stringify(first);
+    const seen = values.filter((v) => v !== null && v !== undefined);
+    const listed = seen.length > 0 && seen.every(Array.isArray);
+    const elements = listed ? (seen as unknown[][]).flat() : seen;
+    const scalarLeaf = (v: unknown): v is string | number =>
+      typeof v === "string" || typeof v === "number";
+    // How a declared value sits at this path: as a whole leaf, or (`6_8`) split
+    // across the keys of one element (`{start:"6",end:"8"}`).
+    type Carried =
+      | { kind: "whole" }
+      | { kind: "parts"; keys: string[]; numeric: boolean[]; sep: string };
+    const carriedBy = (observed: string): Carried | undefined => {
+      const lo = observed.toLowerCase();
+      if (elements.some((e) => scalarLeaf(e) && String(e).toLowerCase() === lo))
+        return { kind: "whole" };
+      const sep = /^[A-Za-z0-9]+([^A-Za-z0-9]+)[A-Za-z0-9]/.exec(observed)?.[1];
+      if (sep === undefined) return undefined;
+      const parts = lo.split(sep);
+      for (const e of elements) {
+        if (!isObj(e)) continue;
+        const entries = Object.entries(e);
+        if (entries.length !== parts.length || !entries.every(([, v]) => scalarLeaf(v))) continue;
+        const keys: string[] = [];
+        const numeric: boolean[] = [];
+        for (const part of parts) {
+          const hit = entries.find(
+            ([k, v]) => !keys.includes(k) && String(v).toLowerCase() === part
+          );
+          if (hit === undefined) break;
+          keys.push(hit[0]);
+          numeric.push(typeof hit[1] === "number");
+        }
+        if (keys.length === parts.length) return { kind: "parts", keys, numeric, sep };
+      }
+      return undefined;
+    };
+    // A declared payloadField whose observed value (a step's navigateTo query
+    // value or quoted instruction value) is carried at this varying path tracks
+    // it: the field takes that value, and the body path is rebuilt around it
+    // instead of an invented path-named field.
+    const trackedCarry = (d: { observed: readonly string[] }): Carried | undefined =>
+      d.observed.map(carriedBy).find((c) => c !== undefined);
+    const tracked = declared.find((d) => !used.has(d.name) && trackedCarry(d) !== undefined);
+    const carried = tracked ? trackedCarry(tracked) : undefined;
     const base = path
       .map((seg, i) => {
         const w = seg
@@ -3205,20 +3257,72 @@ function derivePostBodyModel(
         return i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1);
       })
       .join("");
-    let field = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
-    for (let n = 2; used.has(field); n++) field = `${base}${n}`;
+    let field = tracked ? tracked.name : /^[A-Za-z_]/.test(base) ? base : `f${base}`;
+    for (let n = 2; !tracked && used.has(field); n++) field = `${base}${n}`;
     used.add(field);
     const def = JSON.stringify(first ?? null);
-    const seen = values.filter((v) => v !== null && v !== undefined);
-    const zod =
-      first === null || first === undefined
-        ? `${postBodyValueZod(seen)}.optional()`
-        : `${postBodyValueZod(seen)}.optional().default(${def})`;
-    bindings.push({ field, zod });
+    const unset = first === null || first === undefined;
+    const withDefault = (zod: string): string =>
+      unset ? `${zod}.optional()` : `${zod}.optional().default(${def})`;
+    // A list-valued path takes one value or several; an omitted field keeps the recorded list.
+    const guardUnset = (expr: string): string =>
+      unset ? `(payload.${field} === undefined ? undefined : ${expr})` : expr;
+    if (listed && carried?.kind === "whole") {
+      const item = postBodyValueZod(elements);
+      // The body path keeps its own path-named field (the recorded list, settable
+      // directly); the declared field overrides it only when the caller supplies it.
+      let pathField = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
+      for (let n = 2; used.has(pathField); n++) pathField = `${base}${n}`;
+      used.add(pathField);
+      bindings.push({ field: pathField, zod: withDefault(postBodyValueZod(seen)) });
+      bindings.push({ field, zod: `z.union([z.array(${item}), ${item}]).optional()` });
+      return `(payload.${field} === undefined ? payload.${pathField} : [payload.${field}].flat())`;
+    }
+    if (listed && carried?.kind === "parts") {
+      bindings.push({ field, zod: withDefault("z.union([z.array(z.unknown()), z.string()])") });
+      const piece = (i: number): string => {
+        const part = `v.split(${JSON.stringify(carried.sep)})[${i}]`;
+        return carried.numeric[i] ? `Number(${part})` : part;
+      };
+      const element = carried.keys.map((k, i) => `${JSON.stringify(k)}: ${piece(i)}`).join(", ");
+      return guardUnset(
+        `((v) => (typeof v === "string" ? [{ ${element} }] : v))(payload.${field})`
+      );
+    }
+    bindings.push({ field, zod: withDefault(postBodyValueZod(seen)) });
     return `payload.${field}`;
   };
   const bodyExpr = build([]);
   return bindings.length > 0 ? { bodyExpr, bindings } : null;
+}
+
+/** Values a declared payloadField was observed with: its steps' navigateTo query values and quoted instruction values. */
+function declaredFieldObservedValues(
+  flowSteps: readonly FlowStepInput[],
+  names: Iterable<string>
+): { name: string; observed: string[] }[] {
+  const out = new Map<string, string[]>();
+  for (const name of names) out.set(name, []);
+  // Faceted URLs accumulate earlier facets: only a pair new to this step is this step's own value.
+  const seenPairs = new Set<string>();
+  for (const step of flowSteps) {
+    if (typeof step === "string") continue;
+    const list = step.payloadField === undefined ? undefined : out.get(step.payloadField);
+    if (list) for (const m of step.step.matchAll(/['"]([^'"]+)['"]/g)) list.push(m[1]!);
+    if (step.navigateTo !== undefined) {
+      try {
+        for (const [k, v] of new URL(step.navigateTo).searchParams) {
+          const pair = `${k}\u0000${v}`;
+          if (v === "" || seenPairs.has(pair)) continue;
+          seenPairs.add(pair);
+          list?.push(v);
+        }
+      } catch {
+        // not an absolute URL: no observed value
+      }
+    }
+  }
+  return [...out].filter(([, v]) => v.length > 0).map(([name, observed]) => ({ name, observed }));
 }
 
 function safeUrlPathname(url: string): string {
@@ -3242,7 +3346,12 @@ export interface GetInputModel {
   /** Recorded values (queryKey -> ordered values) of a repeated query key (`ids[]=1&ids[]=2`), replayed as one pair each when the payload omits the input. */
   recordedQueryLists?: Record<string, string[]>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
-  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string; suffix?: string }>;
+  pathVars: Array<{
+    field: string;
+    segmentIndex: number;
+    queryKey: string;
+    suffix?: string;
+  }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
   pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
   /** Declared composite payload fields (`a_b`) whose parts bind separate path segments: `partField` (a pathVars field) takes part `index` of `field` when the caller supplies `field`. */
@@ -5411,7 +5520,10 @@ function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): Act
     arrayField.path,
     mergedItems
   );
-  return { ...representative, capture: { ...representative.capture, responseBody: mergedBody } };
+  return {
+    ...representative,
+    capture: { ...representative.capture, responseBody: mergedBody },
+  };
 }
 
 /**
@@ -7878,7 +7990,9 @@ function payloadAccessorForPath(path: string[]): {
   }
   const objectPath = path.slice(0, arrayIndexPos);
   const field = objectPath.length > 0 ? pathToPayloadFieldName(objectPath) : (path[0] ?? "");
-  const suffix = pathToAccessor(path.slice(arrayIndexPos), { assertNonNull: true });
+  const suffix = pathToAccessor(path.slice(arrayIndexPos), {
+    assertNonNull: true,
+  });
   return {
     accessor: `payload.${field}${suffix}`,
     field,
@@ -11018,7 +11132,11 @@ export function emitMultiStepExecuteHttp(
       if (isInsideOwnedArray(path, facetArrayPathKeys)) continue;
       // A leaf recurring as a declared facet literal binds to that facet's
       // payloadField via the persona pass, not to a by-index accessor.
-      if (matchFacetRecurrence(value, navigateToFacetOrder, { allowDelimiterSuffix: true })) {
+      if (
+        matchFacetRecurrence(value, navigateToFacetOrder, {
+          allowDelimiterSuffix: true,
+        })
+      ) {
         continue;
       }
       const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
@@ -11754,7 +11872,13 @@ export function emitMultiStepExecuteHttp(
     // contract would enforce that narrowed shape on every call in the chain.
     const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
-    rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
+    rendered.push({
+      url,
+      method: cap.method,
+      headersExpr,
+      bodyArg,
+      schemaExpr,
+    });
   }
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
@@ -11979,7 +12103,10 @@ export function emitMultiStepExecuteHttp(
         // (below) can lift the fetch above the per-item loop instead of
         // pinning it inside for byte-identical ancestor-scoped data.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          ...ancestorVars.map((varName) => ({
+            varName,
+            obj: ancestorObjByVar.get(varName)!,
+          })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -13205,7 +13332,9 @@ function spliceFacetRecurrenceIntoScalarVariable(
 ): string | null {
   if (facets.length === 0) return null;
   if (typeof value === "string" || typeof value === "number") {
-    const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
+    const facet = matchFacetRecurrence(String(value), facets, {
+      allowDelimiterSuffix: false,
+    });
     if (facet !== undefined) {
       const rendered = renderFacetPayloadValue(String(value), facet);
       return rendered === `\${${facetPayloadExpression(facet)}}`
@@ -14585,7 +14714,10 @@ function buildThreadedFieldPairs(
   ancestorScopes: readonly { varName: string; obj: Record<string, unknown> }[]
 ): { valueField: ThreadedField; accessorField: ThreadedField }[] {
   if (!isAncestorScoped) {
-    return rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
+    return rawThreadedFields.map((tf) => ({
+      valueField: tf,
+      accessorField: tf,
+    }));
   }
   return rawThreadedFields.map((tf) => ({
     valueField: tf,
@@ -15008,7 +15140,12 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       );
       if (primaryMatchedItemIndex === -1) continue;
       const joinFields = findThreadedJoinFields(
-        [{ varName: "item", obj: primaryArray.items[primaryMatchedItemIndex]! }],
+        [
+          {
+            varName: "item",
+            obj: primaryArray.items[primaryMatchedItemIndex]!,
+          },
+        ],
         drill.capture
       ).map((f) => f.field);
 
@@ -15111,7 +15248,11 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
     }
 
     if (targets.length > 0) {
-      groups.push({ primaryArrayPath: primaryArray.path, targets, absorbedIndices });
+      groups.push({
+        primaryArrayPath: primaryArray.path,
+        targets,
+        absorbedIndices,
+      });
     }
   }
 
@@ -18944,7 +19085,15 @@ export function emitContractTsParts(opts: {
   // the other sources unchanged.
   const postBodyModel =
     readOnlyPostSearch && !gql && !multiStepBody && !suppliedGetInputModel
-      ? derivePostBodyModel(allCaptures, endpointPath)
+      ? derivePostBodyModel(
+          allCaptures,
+          endpointPath,
+          declaredFieldObservedValues(contractFlowSteps, [
+            ...(payloadFieldNames ?? []),
+            ...optionalPayloadFieldNames,
+            ...extraPayloadFields.map((f) => f.name),
+          ])
+        )
       : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
@@ -19356,7 +19505,10 @@ export function emitContractTsParts(opts: {
   }
   if (postBodyModel) {
     for (const { field, zod } of postBodyModel.bindings) {
-      if (extendFields.has(field)) continue;
+      // A declared payloadField bound to a body path is typed by that path.
+      const declaredBound =
+        (payloadFieldNames?.has(field) ?? false) || optionalPayloadFieldNames.has(field);
+      if (extendFields.has(field) && !declaredBound) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: ${zod},`);
     }
@@ -19364,6 +19516,7 @@ export function emitContractTsParts(opts: {
   // Flow-declared extra payload fields: declared type/optionality are
   // authoritative and override a name discovered from captures (one entry per name).
   for (const f of extraPayloadFields) {
+    if (postBodyModel?.bindings.some((b) => b.field === f.name)) continue;
     extendFields.set(f.name, `  ${f.name}: z.${f.type}()${f.optional ? ".optional()" : ""},`);
   }
   const mergedExtension =
@@ -19662,7 +19815,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // instead of pinning it inside for byte-identical ancestor-scoped
         // data. Mirrors emitMultiStepExecuteHttp's identical hoist.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          ...ancestorVars.map((varName) => ({
+            varName,
+            obj: ancestorObjByVar.get(varName)!,
+          })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -21100,7 +21256,9 @@ export function emitConfigManifest(opts: {
         description: "TODO: declare the fields this site returns (recon leaves this empty).",
         properties: {},
       },
-      ...(sensitiveManifestPolicy !== undefined && { redaction: sensitiveManifestPolicy }),
+      ...(sensitiveManifestPolicy !== undefined && {
+        redaction: sensitiveManifestPolicy,
+      }),
       flow: { steps, ...(isSubmissionFlow ? { submissionFlow: true } : {}) },
       extract: {
         instruction: `extract the confirmation id and status for ${siteId}`,
@@ -21212,6 +21370,15 @@ function computeFlowPayloadFieldNames(
     }
   }
   return { payloadFieldNames, optionalPayloadFieldNames };
+}
+
+/** Per-step `frameSelector` property text (with its leading `, `), or "". */
+function stepFrameSelectorProp(step: unknown): string {
+  const fs =
+    typeof step === "object" && step !== null
+      ? (step as { frameSelector?: string }).frameSelector
+      : undefined;
+  return fs !== undefined ? `, frameSelector: ${JSON.stringify(fs)}` : "";
 }
 
 export function emitBrowserFlowTs(opts: {
@@ -21343,7 +21510,7 @@ export function emitBrowserFlowTs(opts: {
       );
       const hashAt = step.navigateTo.indexOf("#");
       if (hashAt !== -1) navigateBaselineHash = step.navigateTo.slice(hashAt + 1);
-      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${navigateToExpr} },`;
+      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${navigateToExpr}${stepFrameSelectorProp(step)} },`;
     }
     if (isObj && step.emailStep === true) {
       usesEmailStep = true;
@@ -21351,7 +21518,7 @@ export function emitBrowserFlowTs(opts: {
       const upload = step.upload === true;
       const submitStep = step.submitStep === true;
       const emailStepConfigExpr = JSON.stringify(step.emailStepConfig ?? {});
-      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}, emailStep: true, emailStepConfig: ${emailStepConfigExpr} },`;
+      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}, emailStep: true, emailStepConfig: ${emailStepConfigExpr}${stepFrameSelectorProp(step)} },`;
     }
     // ${RECON_PASSWORD} is reserved-tooling, not a domain-vocabulary concern —
     // it names a credential the recon capture needed to authenticate, not a
@@ -21364,7 +21531,7 @@ export function emitBrowserFlowTs(opts: {
       const optional = isObj ? step.optional === true : false;
       const upload = isObj ? step.upload === true : false;
       const submitStep = isObj ? step.submitStep === true : false;
-      return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
+      return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}${stepFrameSelectorProp(step)} },`;
     }
     const field = resolveStepPayloadField(
       instruction,
@@ -21390,7 +21557,7 @@ export function emitBrowserFlowTs(opts: {
           );
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
-    return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
+    return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}${stepFrameSelectorProp(step)} },`;
   });
 
   // The last step of a submission flow is structurally the submit — force
@@ -21404,24 +21571,17 @@ export function emitBrowserFlowTs(opts: {
   ) {
     // Flag sits before optional navigateTo/emailStep keys, so match it
     // anywhere (last occurrence) rather than only directly before ` },`.
-    const flagIdx = lastStepLiteral.lastIndexOf("submitStep: ");
-    if (flagIdx >= 0) {
-      stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
-        /^([\s\S]*)submitStep: (true|false)/,
-        "$1submitStep: true"
-      );
-    }
-  }
-
-  // Per-step frameSelector: emit it on the step object so the runtime's
-  // `s.frameSelector ?? deps.frameSelector` drives the frame this step names.
-  for (let i = 0; i < stepLiterals.length; i++) {
-    const st = flowSteps[i];
-    if (st !== undefined && typeof st !== "string" && st.frameSelector !== undefined) {
-      stepLiterals[i] = stepLiterals[i]!.replace(
-        / \},$/,
-        ` frameSelector: ${JSON.stringify(st.frameSelector)} },`
-      );
+    // The per-step frameSelector is a trailing, JSON-quoted property; patch
+    // only the text before it so a selector containing "submitStep: false"
+    // is never rewritten.
+    const tail = `${stepFrameSelectorProp(flowSteps.at(-1))} },`;
+    const head = lastStepLiteral.endsWith(tail)
+      ? lastStepLiteral.slice(0, -tail.length)
+      : lastStepLiteral;
+    const rest = head === lastStepLiteral ? "" : tail;
+    if (head.lastIndexOf("submitStep: ") >= 0) {
+      stepLiterals[stepLiterals.length - 1] =
+        head.replace(/^([\s\S]*)submitStep: (true|false)/, "$1submitStep: true") + rest;
     }
   }
 
@@ -21614,7 +21774,12 @@ ${flowStepsBlock}
     buildKnownFieldValues(allFlowSteps, vocabulary ?? EMPTY_VOCABULARY, env, canonicalise, false),
     flowSteps
   );
-  return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
+  return {
+    code,
+    payloadFieldNames,
+    optionalPayloadFieldNames,
+    usesThrowawayPassword,
+  };
 }
 
 /**
@@ -22761,7 +22926,10 @@ export async function main(): Promise<void> {
         ? null
         : detectFormSchemaFetchCapture(activeCaptures, baseUrl, formSchema);
     const schemaFetchCleaned: Capture | null = rawSchemaFetch
-      ? { ...rawSchemaFetch.capture, url: stripCacheBusterParams(rawSchemaFetch.capture.url) }
+      ? {
+          ...rawSchemaFetch.capture,
+          url: stripCacheBusterParams(rawSchemaFetch.capture.url),
+        }
       : null;
     const actionCaptures: ActionCapture[] = (() => {
       if (
