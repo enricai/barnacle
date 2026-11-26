@@ -48,7 +48,9 @@ describe("literal null credential header is an empty-token placeholder", () => {
       expect(out).toContain("` NULL `");
     });
     it(`${label}: a real credential value still takes the credential path`, () => {
-      const out = emit([mk({ "Content-Type": ct, Authorization: "Bearer abc.def.ghi" }, isMultipart, "r0")]);
+      const out = emit([
+        mk({ "Content-Type": ct, Authorization: "Bearer abc.def.ghi" }, isMultipart, "r0"),
+      ]);
       expect(out).not.toContain("abc.def.ghi");
       expect(out).toMatch(/Authorization/);
     });
