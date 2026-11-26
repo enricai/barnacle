@@ -5910,8 +5910,7 @@ function refererNamesRecordedInstance(referer: string): boolean {
       (s, i) =>
         i >= 2 &&
         /^[A-Za-z]{3,}$/.test(s) &&
-        /^[A-Za-z]{2,}s$/.test(segments[i - 1] ?? "") &&
-        !/ss$/i.test(segments[i - 1] ?? "") &&
+        /^[A-Za-z]{2,}$/.test(segments[i - 1] ?? "") &&
         (segments[i + 1] ?? "").length > 0
     )
   )
