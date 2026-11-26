@@ -227,8 +227,8 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
   ): Promise<T> {
     const isSuccess = config.isSuccess ?? defaultIsSuccess;
     const warn = (state: string, e: unknown) =>
-      console.warn(
-        `idempotency: failed to record ${state} outcome: ${e instanceof Error ? e.message : String(e)}`
+      process.stderr.write(
+        `idempotency: failed to record ${state} outcome: ${e instanceof Error ? e.message : String(e)}\n`
       );
     let value: T;
     try {
