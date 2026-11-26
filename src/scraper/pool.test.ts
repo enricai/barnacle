@@ -4,6 +4,7 @@ import {
   CdpTransportClosedError,
   SelectorFailureError,
   SessionTimeoutError,
+  TaskDeadlineError,
 } from "@/scraper/errors";
 import { drainPool, poolStats, runWithSession } from "@/scraper/pool";
 import * as sessionModule from "@/scraper/session";
@@ -214,6 +215,50 @@ describe("scraper/pool", () => {
     ]);
     expect(result).toBe("timeout");
     expect(timeoutError).toBeInstanceOf(SessionTimeoutError);
+  });
+
+  describe("task deadline signal", () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    it("aborts a signal-honoring task, never runs the step, starts once, closes after settle", async () => {
+      const log: string[] = [];
+      vi.mocked(sessionModule.createBrowserSession).mockImplementation(async () =>
+        fakeSession(() => log.push("closed"))
+      );
+      let starts = 0;
+      await expect(
+        runWithSession(
+          async (_s, { signal }) => {
+            starts += 1;
+            await new Promise<void>((resolve) => {
+              const t = setTimeout(resolve, 300);
+              signal.addEventListener("abort", () => {
+                clearTimeout(t);
+                resolve();
+              });
+            });
+            if (signal.aborted) {
+              log.push("task stopped");
+              return;
+            }
+            log.push("irreversible step performed");
+          },
+          { maxAttempts: 2 },
+          100
+        )
+      ).rejects.toBeInstanceOf(TaskDeadlineError);
+      expect(starts).toBe(1);
+      expect(log).toEqual(["task stopped", "closed"]);
+    });
+
+    it("rejects with TaskDeadlineError after the grace period if the task ignores the signal", async () => {
+      vi.mocked(sessionModule.createBrowserSession).mockImplementation(async () =>
+        fakeSession(() => {})
+      );
+      await expect(
+        runWithSession(() => sleep(400), { maxAttempts: 2 }, 50, {}, 50)
+      ).rejects.toBeInstanceOf(TaskDeadlineError);
+    });
   });
 
   it("drainPool bounds wait by timeoutMs so a hung task can't block shutdown forever", async () => {
