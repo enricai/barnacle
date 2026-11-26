@@ -1,21 +1,17 @@
 import Fastify from "fastify";
-import {
-  serializerCompiler,
-  validatorCompiler,
-} from "fastify-type-provider-zod";
+import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
-
+import { UnknownOutcomeError } from "@/api/errors";
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
-import { UnknownOutcomeError } from "@/api/errors";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { registerRoutes } from "@/plugins/loader";
 import type { SitePlugin } from "@/site-plugin";
 
 const mockRunWithSession = vi.hoisted(() =>
-  vi.fn(async (task: (s: unknown) => unknown) => task(null)),
+  vi.fn(async (task: (s: unknown) => unknown) => task(null))
 );
 vi.mock("@/scraper/pool", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/scraper/pool")>()),
@@ -23,9 +19,7 @@ vi.mock("@/scraper/pool", async (importOriginal) => ({
 }));
 
 vi.mock("@/lib/telemetry/submission-capture", async (importOriginal) => ({
-  ...(await importOriginal<
-    typeof import("@/lib/telemetry/submission-capture")
-  >()),
+  ...(await importOriginal<typeof import("@/lib/telemetry/submission-capture")>()),
   captureSubmissionEnvelope: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -103,9 +97,7 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
     expect(res.statusCode).toBe(202);
     const data = res.json();
     expect(data.operationStatus).toBe("pending");
-    expect(data.pollUrl).toBe(
-      `/v1/idem-site/run/operations/${data.operationId}`,
-    );
+    expect(data.pollUrl).toBe(`/v1/idem-site/run/operations/${data.operationId}`);
     let body: { operationStatus: string; result?: unknown } | undefined;
     for (let i = 0; i < 50; i++) {
       const poll = await app.inject({ method: "GET", url: data.pollUrl });
@@ -180,16 +172,12 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       expect.any(Function),
       expect.objectContaining({ maxAttempts: 1 }),
       undefined,
-      expect.anything(),
+      expect.anything()
     );
     await app.close();
   });
   describe("preflight refusal mapping", () => {
-    async function appFailing(
-      thrown: Error,
-      preflight: ReturnType<typeof vi.fn>,
-      siteId: string,
-    ) {
+    async function appFailing(thrown: Error, preflight: ReturnType<typeof vi.fn>, siteId: string) {
       const plugin = {
         meta: {
           siteId,
@@ -215,10 +203,7 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       await app.ready();
       return app;
     }
-    const post = (
-      app: Awaited<ReturnType<typeof appFailing>>,
-      siteId: string,
-    ) =>
+    const post = (app: Awaited<ReturnType<typeof appFailing>>, siteId: string) =>
       app.inject({
         method: "POST",
         url: `/v1/${siteId}/run`,
@@ -229,11 +214,7 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       const preflight = vi.fn(async () => {
         throw new UnknownOutcomeError("already submitted");
       });
-      const app = await appFailing(
-        new Error("boom"),
-        preflight,
-        "idem-refuse-a",
-      );
+      const app = await appFailing(new Error("boom"), preflight, "idem-refuse-a");
       const res = await post(app, "idem-refuse-a");
       expect(preflight).toHaveBeenCalled();
       expect(JSON.stringify(res.json())).toContain("already submitted");
@@ -261,11 +242,7 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
 
     it("keeps an UnknownOutcomeError failure as is", async () => {
       const preflight = vi.fn(async () => undefined);
-      const app = await appFailing(
-        new UnknownOutcomeError("direct"),
-        preflight,
-        "idem-refuse-d",
-      );
+      const app = await appFailing(new UnknownOutcomeError("direct"), preflight, "idem-refuse-d");
       const res = await post(app, "idem-refuse-d");
       expect(JSON.stringify(res.json())).toContain("direct");
       await app.close();
