@@ -399,7 +399,9 @@ export async function buildConfigPlugin(
         anthropic,
         rephraseModel,
         deathSignal,
-        abortSignal: deathAbortSignal,
+        abortSignal: context.signal
+          ? AbortSignal.any([deathAbortSignal, context.signal])
+          : deathAbortSignal,
         allocatedInbox,
         sessionProxy: session.sessionProxy ?? null,
         uploadFixture: buildUploadFixture(payload, hasUploadStep, spec.multipart ?? false),

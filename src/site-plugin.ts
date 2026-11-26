@@ -307,6 +307,14 @@ export interface SitePluginContext {
    * the submission envelope and the tracking-click/skipped-beacon record.
    */
   telemetry: RunTelemetryHandle;
+  /**
+   * Aborted when the current browser attempt exceeds the plugin's task
+   * timeout (`taskTimeoutMs`). Set only on the browser `execute()` path;
+   * plugins should stop work (and pass it to fetch/flow steps) when it fires.
+   */
+  signal?: AbortSignal;
+  /** Absolute deadline of the current browser attempt, epoch ms. Browser path only. */
+  deadlineAt?: number;
 }
 
 /**

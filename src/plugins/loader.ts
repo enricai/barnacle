@@ -55,7 +55,7 @@ import {
   recordHotPathSuccess,
   recordRateLimitRejection,
 } from "@/scraper/metrics";
-import { runWithSession } from "@/scraper/pool";
+import { runWithSession, type TaskContext } from "@/scraper/pool";
 import type { BrowserSession } from "@/scraper/session";
 import type {
   PluginIdempotency,
@@ -177,6 +177,11 @@ function isFallbackAllowed(plugin: SitePlugin<unknown, unknown>, err: ScraperErr
  * record audit, return" sequence rather than a `let result` mutated across
  * three branches.
  */
+/** Per-attempt shallow copy of the context carrying the pool's task signal and deadline. */
+function withTaskSignal(context: SitePluginContext, taskCtx: TaskContext): SitePluginContext {
+  return { ...context, signal: taskCtx.signal, deadlineAt: taskCtx.deadlineAt };
+}
+
 async function runPluginPipeline<TResult>(
   plugin: SitePlugin<unknown, unknown>,
   payload: unknown,
@@ -189,8 +194,12 @@ async function runPluginPipeline<TResult>(
       recordDdFallback(plugin.meta.siteId);
     }
     return (await runWithSession(
-      (session) =>
-        withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
+      (session, taskCtx) => {
+        const attemptContext = withTaskSignal(context, taskCtx);
+        return withSessionTelemetry(session, attemptContext, () =>
+          plugin.execute(payload, session, attemptContext)
+        );
+      },
       { onRetry: plugin.onRetry, maxAttempts: effectiveMaxAttempts(plugin) },
       plugin.meta.taskTimeoutMs,
       {
@@ -243,8 +252,12 @@ async function runPluginPipeline<TResult>(
       recordFallbackActivation(plugin.meta.siteId);
       recordDdFallback(plugin.meta.siteId);
       return (await runWithSession(
-        (session) =>
-          withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
+        (session, taskCtx) => {
+          const attemptContext = withTaskSignal(context, taskCtx);
+          return withSessionTelemetry(session, attemptContext, () =>
+            plugin.execute(payload, session, attemptContext)
+          );
+        },
         { onRetry: plugin.onRetry, maxAttempts: effectiveMaxAttempts(plugin) },
         plugin.meta.browserFallbackTaskTimeoutMs ?? plugin.meta.taskTimeoutMs,
         {
