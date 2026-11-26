@@ -19166,11 +19166,9 @@ export function emitContractTsParts(opts: {
     );
   }
 
-  // A non-scalar (Mechanism B) field forces multipart wire encoding just like
-  // an upload step does: the multipart body encodes arrays/objects as
-  // JSON-stringified strings, so those fields need the same
-  // multipartJsonObject() parsing Answers already gets in basePayloadSchemaExpr.
-  const payloadNeedsMultipart = hasMultipartStep || (discoveredStructuredKeys?.size ?? 0) > 0;
+  // Multipart is decided by the recorded wire encoding only (hasMultipartStep):
+  // a non-scalar structured key in a JSON body is not proof of multipart.
+  const payloadNeedsMultipart = hasMultipartStep;
 
   // Phase F: additional-body keys (from action POSTs beyond r0). Each gets a
   // payload field of the appropriate Zod type. Site-agnostic.
@@ -20232,10 +20230,7 @@ ${sensitiveRedactionLiteral}    defaultBaseUrl: ${JSON.stringify(baseUrl)},
     // (hasMultipartStep), OR this is a job-application submission flow
     // (usesApplicantContactSchema) since basePayloadSchemaExpr requires a
     // real Resume Buffer via ApplicantContactSchema regardless of whether
-    // the recorded browser flow contained an upload step, OR the payload
-    // has a non-scalar discoveredStructuredKeys field (payloadNeedsMultipart),
-    // since the multipart wire format is what makes that field's
-    // JSON-stringified encoding parseable.
+    // the recorded browser flow contained an upload step.
     `
         : ""
     }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}${redactionLiteral}
