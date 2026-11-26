@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { UnknownOutcomeError } from "@/api/errors";
+import { registerSecretValue, resetSensitiveValuesForTests } from "@/lib/pii-redaction";
 import {
   createFileIdempotencyStore,
   createIdempotencyGuard,
@@ -13,7 +14,10 @@ import {
   deriveOperationId,
 } from "@/cache/idempotency-guard";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  resetSensitiveValuesForTests();
+});
 
 describe("deriveIdempotencyKey", () => {
   it("returns null without fields, body, or with missing/blank/invalid fields", () => {
@@ -270,6 +274,7 @@ describe("guard lifecycle", () => {
       await vi.advanceTimersByTimeAsync(1000);
       expect(ex2).not.toHaveBeenCalled();
       release("first");
+      await vi.advanceTimersByTimeAsync(100);
       expect(await p1).toBe("first");
       expect(await p2).toBe("first");
       expect(ex2).not.toHaveBeenCalled();
@@ -314,17 +319,18 @@ describe("guard lifecycle", () => {
   });
 
   it("redacts async failure messages and a sync resend settles the reopened op", async () => {
+    registerSecretValue("hunter2-secret");
     const store = createInMemoryIdempotencyStore();
     const g = createIdempotencyGuard({ store });
     const tick = () => new Promise((r) => setTimeout(r, 0));
     const id = (await g.start("s", cfg, { id: "1" }, async () => {
-      throw new Error("bad user@example.com");
+      throw new Error("bad hunter2-secret");
     })) as string;
     await tick();
     await tick();
     const failed = await g.status("s", id);
     expect(failed?.status).toBe("failed");
-    expect(JSON.stringify(failed)).not.toContain("user@example.com");
+    expect(JSON.stringify(failed)).not.toContain("hunter2-secret");
     let release!: (v: string) => void;
     const p = g.run("s", cfg, { id: "1" }, () => new Promise<string>((r) => (release = r)));
     await tick();
