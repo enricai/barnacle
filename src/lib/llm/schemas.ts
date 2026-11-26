@@ -110,6 +110,18 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      */
     payloadFieldNone: z.boolean().optional(),
     /**
+     * Wire type of the value bound by this step's `payloadField`: `"number"`
+     * sends it as a JSON number while the public input stays a string.
+     * Ignored by the recon runtime; consumed only by recon-generate.ts.
+     */
+    payloadWire: z.literal("number").optional(),
+    /**
+     * Transform applied to the caller's value bound by this step's
+     * `payloadField`: `"utc-instant"` sends an offset timestamp as its UTC
+     * instant. Ignored by the recon runtime; consumed only by recon-generate.ts.
+     */
+    payloadTransform: z.literal("utc-instant").optional(),
+    /**
      * Marks the payload field this step types (its `payloadField`) as sensitive.
      * The value names the redaction rule: `"digits"` (matched by digits in any
      * formatting) or `"word"` (case-insensitive word match). The generator emits
