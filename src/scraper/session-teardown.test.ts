@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { UnknownOutcomeError } from "@/api/errors";
 import { CdpTransportClosedError, SessionLifetimeExceededError } from "@/scraper/errors";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import {
@@ -236,6 +237,23 @@ describe("session-teardown/resolveSessionDeathError", () => {
     const out = resolveSessionDeathError(
       { getSessionTimeoutHit: () => ({ configuredTimeoutSeconds: 300, elapsedSeconds: 302 }) },
       original
+    );
+    expect(out).toBeInstanceOf(SessionLifetimeExceededError);
+  });
+
+  it("passes a typed ApiError through unchanged even with a lifetime hit", () => {
+    const apiErr = new UnknownOutcomeError();
+    const out = resolveSessionDeathError(
+      { getSessionTimeoutHit: () => ({ configuredTimeoutSeconds: 300, elapsedSeconds: 302 }) },
+      apiErr
+    );
+    expect(out).toBe(apiErr);
+  });
+
+  it("still maps a plain Error to SessionLifetimeExceededError on a hit", () => {
+    const out = resolveSessionDeathError(
+      { getSessionTimeoutHit: () => ({ configuredTimeoutSeconds: 300, elapsedSeconds: 302 }) },
+      new Error("boom")
     );
     expect(out).toBeInstanceOf(SessionLifetimeExceededError);
   });
