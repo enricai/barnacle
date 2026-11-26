@@ -2,8 +2,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { readDeclaredReadMatcher } from "@/scripts/recon-shared";
 import { flowHasSubmitSemantics } from "@/scraper/flow-runner";
+import { readDeclaredReadMatcher } from "@/scripts/recon-shared";
 import { isReadCapture } from "./submit-match";
 
 const gql = (query: string) => JSON.stringify({ query });
@@ -12,8 +12,12 @@ const url = "https://api.shop.example.test/graphql";
 describe("isReadCapture", () => {
   it("treats GET and GraphQL queries as reads, mutations and plain POSTs as not", () => {
     expect(isReadCapture({ method: "GET", url })).toBe(true);
-    expect(isReadCapture({ method: "POST", url, requestPostData: gql("query Q { a }") })).toBe(true);
-    expect(isReadCapture({ method: "POST", url, requestPostData: gql("mutation M { a }") })).toBe(false);
+    expect(isReadCapture({ method: "POST", url, requestPostData: gql("query Q { a }") })).toBe(
+      true
+    );
+    expect(isReadCapture({ method: "POST", url, requestPostData: gql("mutation M { a }") })).toBe(
+      false
+    );
     expect(isReadCapture({ method: "POST", url, requestPostData: "a=1" })).toBe(false);
   });
 });
@@ -37,7 +41,7 @@ describe("readDeclaredReadMatcher without readOnly", () => {
     writeFileSync(f, JSON.stringify({ submitEndpointPattern: "/graphql" }));
     const m = readDeclaredReadMatcher(f);
     expect(m).not.toBeNull();
-    expect(m!({ method: "POST", url, requestPostData: gql("{ a }") })).toBe(true);
-    expect(m!({ method: "POST", url, requestPostData: gql("mutation M { a }") })).toBe(false);
+    expect(m?.({ method: "POST", url, requestPostData: gql("{ a }") })).toBe(true);
+    expect(m?.({ method: "POST", url, requestPostData: gql("mutation M { a }") })).toBe(false);
   });
 });

@@ -59,7 +59,7 @@ export function isReadCapture(capture: SubmitMatchCapture): boolean {
   if (method === "GET" || method === "HEAD") return true;
   if (method !== "POST") return false;
   const queries = graphqlQueriesOf(capture.requestPostData);
-  return queries !== null && queries.every((q) => isGraphqlQueryDocument(q));
+  return queries?.every((q) => isGraphqlQueryDocument(q)) === true;
 }
 
 /** True for a 2xx status; a missing or non-numeric status is not a success. */
