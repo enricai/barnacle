@@ -226,7 +226,8 @@ export function deriveOperationId(key: string): string {
   return createHash("sha256").update(key).digest("hex").slice(0, 32);
 }
 
-const writeChains = new WeakMap<object, Map<string, Promise<void>>>();
+/** One chain per key for the whole process: stores wrapping one backing dir are distinct objects. */
+const writeChains = new Map<string, Promise<void>>();
 
 export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): IdempotencyGuard {
   const store = options.store ?? createConfiguredIdempotencyStore();
@@ -253,17 +254,13 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
   const msgOf = (err: unknown) => redactPii(err instanceof Error ? err.message : String(err));
 
   /**
-   * Settled writes to one key are serialized per store across every guard in
+   * Settled writes to one key are serialized per key across every guard and store in
    * this process, so an `unknown` write can neither be issued from a stale read
    * nor land after a success. Across processes the store contract has no
    * compare-and-set, so only the leased claim protects that case.
    */
   function serialized(key: string, fn: () => Promise<void>): Promise<void> {
-    let chains = writeChains.get(store);
-    if (!chains) {
-      chains = new Map();
-      writeChains.set(store, chains);
-    }
+    const chains = writeChains;
     const prev = chains.get(key) ?? Promise.resolve();
     const next = prev.then(fn, fn);
     chains.set(key, next);
