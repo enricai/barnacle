@@ -12,8 +12,12 @@ import {
   deriveIdempotencyKey,
   deriveOperationId,
 } from "@/cache/idempotency-guard";
+import { registerSecretValue, resetSensitiveValuesForTests } from "@/lib/pii-redaction";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  resetSensitiveValuesForTests();
+});
 
 describe("deriveIdempotencyKey", () => {
   it("returns null without fields, body, or with missing/blank/invalid fields", () => {
@@ -244,5 +248,95 @@ describe("durable store reload", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("guard lifecycle", () => {
+  const cfg = { keyFields: ["id"] };
+  const flush = async () => {
+    for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
+  };
+
+  it("renews the lease past 5 minutes so a second guard does not take it", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "idem-"));
+    try {
+      const store = createFileIdempotencyStore(dir);
+      let release!: (v: string) => void;
+      const ex1 = vi.fn(() => new Promise<string>((r) => (release = r)));
+      const ex2 = vi.fn().mockResolvedValue("second");
+      const g1 = createIdempotencyGuard({ store });
+      const g2 = createIdempotencyGuard({ store });
+      const p1 = g1.run("s", cfg, { id: "1" }, ex1);
+      await flush();
+      await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+      const p2 = g2.run("s", cfg, { id: "1" }, ex2);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ex2).not.toHaveBeenCalled();
+      release("first");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await p1).toBe("first");
+      expect(await p2).toBe("first");
+      expect(ex2).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a run that lost its lease failing does not delete the new owner's claim", async () => {
+    const store = createInMemoryIdempotencyStore();
+    store.claim = (key, ttl, owner) => {
+      if (store.get(key)) return false;
+      store.set(key, { state: "pending", owner }, ttl);
+      return true;
+    };
+    const g = createIdempotencyGuard({ store });
+    let fail!: (e: Error) => void;
+    const p = g.run("s", cfg, { id: "1" }, () => new Promise<string>((_, rej) => (fail = rej)));
+    await new Promise((r) => setTimeout(r, 5));
+    const key = JSON.stringify(["s", "1"]);
+    store.set(key, { state: "pending", owner: "other" }, 1000);
+    fail(new Error("x"));
+    await expect(p).rejects.toThrow("x");
+    expect(store.get(key)).toEqual({ state: "pending", owner: "other" });
+  });
+
+  it("unknown never overwrites success", async () => {
+    const store = createInMemoryIdempotencyStore();
+    const g = createIdempotencyGuard({ store });
+    const key = JSON.stringify(["s", "1"]);
+    const p = g.run(
+      "s",
+      { ...cfg, classifyFailure: () => "unknown" as const },
+      { id: "1" },
+      async () => {
+        store.set(key, { state: "success", value: "ok" }, 1000);
+        throw new Error("late");
+      }
+    );
+    await expect(p).rejects.toThrow("late");
+    expect(store.get(key)).toEqual({ state: "success", value: "ok" });
+  });
+
+  it("redacts async failure messages and a sync resend settles the reopened op", async () => {
+    registerSecretValue("hunter2-secret");
+    const store = createInMemoryIdempotencyStore();
+    const g = createIdempotencyGuard({ store });
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    const id = (await g.start("s", cfg, { id: "1" }, async () => {
+      throw new Error("bad hunter2-secret");
+    })) as string;
+    await tick();
+    await tick();
+    const failed = await g.status("s", id);
+    expect(failed?.status).toBe("failed");
+    expect(JSON.stringify(failed)).not.toContain("hunter2-secret");
+    let release!: (v: string) => void;
+    const p = g.run("s", cfg, { id: "1" }, () => new Promise<string>((r) => (release = r)));
+    await tick();
+    expect(await g.status("s", id)).toEqual({ status: "pending" });
+    release("done");
+    await p;
+    expect(await g.status("s", id)).toEqual({ status: "succeeded", value: "done" });
   });
 });

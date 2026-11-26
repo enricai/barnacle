@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { UnknownOutcomeError } from "@/api/errors";
 
 import { config } from "@/config";
+import { redactPii } from "@/lib/pii-redaction";
 import { resolveIdempotencyEntryPath } from "@/lib/telemetry/telemetry-paths";
 import type { PluginIdempotency } from "@/site-plugin";
 
@@ -247,32 +248,134 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     throw new Error("unexpected idempotency record state");
   }
 
+  const msgOf = (err: unknown) => redactPii(err instanceof Error ? err.message : String(err));
+
+  /** Writes a settled record unless the key already holds a success. */
+  async function setUnlessSuccess(key: string, record: IdempotencyRecord): Promise<void> {
+    try {
+      const cur = await store.get(key);
+      if (cur?.state === "success") return;
+      await store.set(key, record, ttlMs);
+    } catch {
+      // A store failure must not replace the run's own result.
+    }
+  }
+
   async function execAndRecord<T>(
     key: string,
     config: PluginIdempotency,
     execute: () => Promise<T>,
-    leased = false
+    owner?: string
   ): Promise<T> {
     const isSuccess = config.isSuccess ?? defaultIsSuccess;
+    const leased = owner !== undefined;
+    const leaseTtl = Math.min(LEASE_MS, ttlMs);
+    let timer: ReturnType<typeof setInterval> | undefined;
+    if (leased && store.renew) {
+      const renew = store.renew.bind(store);
+      timer = setInterval(
+        () => {
+          Promise.resolve()
+            .then(() => renew(key, owner, leaseTtl))
+            .catch(() => undefined);
+        },
+        Math.max(1, Math.floor(leaseTtl / 3))
+      );
+      timer.unref?.();
+    }
+    // Releases only this run's own pending claim, never a new owner's.
+    const release = async () => {
+      try {
+        const cur = await store.get(key);
+        if (cur?.state === "pending" && (cur.owner === undefined || cur.owner === owner)) {
+          await store.delete(key);
+        }
+      } catch {
+        // ignore
+      }
+    };
     try {
       const value = await execute();
-      if (isSuccess(value)) await store.set(key, { state: "success", value }, ttlMs);
-      else if (leased) await store.delete(key);
+      if (timer) clearInterval(timer);
+      timer = undefined;
+      if (isSuccess(value)) {
+        try {
+          await store.set(key, { state: "success", value }, ttlMs);
+        } catch {
+          // keep the run result
+        }
+      } else if (leased) await release();
       return value;
     } catch (err) {
+      if (timer) clearInterval(timer);
+      timer = undefined;
       if (classifyUnknown(config, err)) {
-        await store.set(
-          key,
-          {
-            state: "unknown",
-            message: `previous run ended with an unknown outcome: ${err instanceof Error ? err.message : String(err)}`,
-          },
-          ttlMs
-        );
-      } else if (leased) {
-        await Promise.resolve(store.delete(key)).catch(() => undefined);
-      }
+        await setUnlessSuccess(key, {
+          state: "unknown",
+          message: `previous run ended with an unknown outcome: ${msgOf(err)}`,
+        });
+      } else if (leased) await release();
       throw err;
+    } finally {
+      if (timer) clearInterval(timer);
+    }
+  }
+
+  /** Settles an async operation record; an existing success is never overwritten. */
+  async function settleOp(
+    k: string,
+    config: PluginIdempotency,
+    outcome: { ok: true; value: unknown } | { ok: false; err: unknown }
+  ): Promise<void> {
+    if (outcome.ok) {
+      await setUnlessSuccess(
+        k,
+        (config.isSuccess ?? defaultIsSuccess)(outcome.value)
+          ? { state: "success", value: outcome.value }
+          : { state: "failed", message: "operation did not succeed" }
+      );
+      return;
+    }
+    const err = outcome.err;
+    await setUnlessSuccess(
+      k,
+      err instanceof UnknownOutcomeError || classifyUnknown(config, err)
+        ? { state: "unknown", message: msgOf(err) }
+        : { state: "failed", message: msgOf(err) }
+    );
+  }
+
+  /** Runs execute; a failed async operation is reopened as pending for the duration. */
+  async function execReopening<T>(
+    siteId: string,
+    key: string,
+    config: PluginIdempotency,
+    exec: () => Promise<T>
+  ): Promise<T> {
+    const k = opKey(siteId, deriveOperationId(key));
+    let reopened = false;
+    try {
+      if (!activeOps.has(k)) {
+        const op = await store.get(k);
+        if (op?.state === "failed") {
+          await store.set(k, { state: "pending" }, ttlMs);
+          activeOps.add(k);
+          reopened = true;
+        }
+      }
+    } catch {
+      // best effort
+    }
+    if (!reopened) return exec();
+    try {
+      const value = await exec();
+      await settleOp(k, config, { ok: true, value });
+      return value;
+    } catch (err) {
+      await settleOp(k, config, { ok: false, err });
+      throw err;
+    } finally {
+      activeOps.delete(k);
     }
   }
 
@@ -297,10 +400,13 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
         if (recorded && recorded.state !== "pending") return replay(recorded) as T;
         if (!store.claim) {
           if (recorded) throw new Error("unexpected idempotency record state");
-          return execAndRecord(key, config, execute);
+          return execReopening(siteId, key, config, () => execAndRecord(key, config, execute));
         }
-        if (!recorded && (await store.claim(key, LEASE_MS))) {
-          return execAndRecord(key, config, execute, true);
+        const owner = randomUUID();
+        if (!recorded && (await store.claim(key, Math.min(LEASE_MS, ttlMs), owner))) {
+          return execReopening(siteId, key, config, () =>
+            execAndRecord(key, config, execute, owner)
+          );
         }
         // Another process holds the lease: wait for its outcome.
         await new Promise((r) => setTimeout(r, LEASE_POLL_MS));
@@ -341,24 +447,8 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     }
     void run(siteId, config, body, execute)
       .then(
-        (value) =>
-          (config.isSuccess ?? defaultIsSuccess)(value)
-            ? store.set(k, { state: "success", value }, ttlMs)
-            : store.set(k, { state: "failed", message: "operation did not succeed" }, ttlMs),
-        (err) =>
-          store.set(
-            k,
-            err instanceof UnknownOutcomeError || classifyUnknown(config, err)
-              ? {
-                  state: "unknown",
-                  message: err instanceof Error ? err.message : String(err),
-                }
-              : {
-                  state: "failed",
-                  message: err instanceof Error ? err.message : String(err),
-                },
-            ttlMs
-          )
+        (value) => settleOp(k, config, { ok: true, value }),
+        (err) => settleOp(k, config, { ok: false, err })
       )
       .catch(() => undefined)
       .finally(() => activeOps.delete(k));
