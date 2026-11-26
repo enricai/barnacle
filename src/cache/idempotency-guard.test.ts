@@ -325,3 +325,49 @@ describe("leased runs release the lease", () => {
     expect(store.delete).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("leased runs when the outcome write fails", () => {
+  const cfg = {
+    keyFields: ["id"],
+    classifyFailure: (e: unknown) =>
+      e instanceof Error && e.message === "boom" ? ("unknown" as const) : ("failed" as const),
+  };
+  const leasedFailingStore = () => {
+    const base = createInMemoryIdempotencyStore();
+    return {
+      ...base,
+      claim: vi.fn().mockResolvedValue(true),
+      delete: vi.fn(),
+      set: () => Promise.reject(new Error("disk full")),
+    };
+  };
+
+  it("returns the value and keeps the claim when set fails after success", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const store = leasedFailingStore();
+    const g = createIdempotencyGuard({ store });
+    expect(await g.run("s", cfg, { id: "1" }, async () => ({ ok: 1 }))).toEqual({ ok: 1 });
+    expect(store.delete).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it("rethrows the original error and keeps the claim when set fails after unknown error", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const store = leasedFailingStore();
+    const g = createIdempotencyGuard({ store });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("boom")))
+    ).rejects.toThrow("boom");
+    expect(store.delete).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it("still releases the claim for a known failure when set would fail", async () => {
+    const store = leasedFailingStore();
+    const g = createIdempotencyGuard({ store });
+    await expect(
+      g.run("s", cfg, { id: "1" }, () => Promise.reject(new Error("nope")))
+    ).rejects.toThrow("nope");
+    expect(store.delete).toHaveBeenCalledTimes(1);
+  });
+});
