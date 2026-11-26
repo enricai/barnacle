@@ -70,3 +70,20 @@ describe("navigateActivePage", () => {
     });
   });
 });
+
+describe("buildNavigateSettle body precision", () => {
+  it("a URL-matching capture failing bodyPattern does not settle; the matching one does", async () => {
+    const { buildNavigateSettle, createCaptureTracker } = await import("./navigate.js");
+    const tracker = createCaptureTracker();
+    const wait = buildNavigateSettle(tracker, "/graphql", "OpA")?.();
+    tracker.observe("https://x.test/graphql", '{"operationName":"OpB"}');
+    expect(await wait?.wait({ timeoutMs: 60, quietMs: 10 })).toBe("timeout");
+    const wait2 = buildNavigateSettle(tracker, "/graphql", "OpA")?.();
+    tracker.observe("https://x.test/graphql", '{"operationName":"OpA"}');
+    expect(await wait2?.wait({ timeoutMs: 200, quietMs: 10 })).toBe("settled");
+  });
+  it("returns undefined with no endpoint pattern", async () => {
+    const { buildNavigateSettle, createCaptureTracker } = await import("./navigate.js");
+    expect(buildNavigateSettle(createCaptureTracker(), null)).toBeUndefined();
+  });
+});
