@@ -168,7 +168,10 @@ function shortDigitMatcher(value: string, label: string): BaseMatcher | null {
 type MatchKind = "word" | "digit" | "literal";
 
 function baseMatcherFor(kind: MatchKind, value: string, label: string): BaseMatcher | null {
-  if (kind === "digit") return digitMatcher(value, label) ?? shortDigitMatcher(value, label) ?? literalMatcher(value, label);
+  if (kind === "digit")
+    return (
+      digitMatcher(value, label) ?? shortDigitMatcher(value, label) ?? literalMatcher(value, label)
+    );
   if (kind === "word") return value.length >= MIN_WORD_LENGTH ? wordMatcher(value, label) : null;
   return value.length >= MIN_LITERAL_LENGTH ? literalMatcher(value, label) : null;
 }
