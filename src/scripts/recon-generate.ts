@@ -3019,11 +3019,7 @@ export function selectPrimaryGraphQLOperation(
       )
   );
 
-  return {
-    capture: winner.capture,
-    endpointPath,
-    unpopulatedDeclaredVariables,
-  };
+  return { capture: winner.capture, endpointPath, unpopulatedDeclaredVariables };
 }
 
 /**
@@ -3535,11 +3531,7 @@ export function deriveGetInputModel(
     const boundField = boundSegments.get(segIdx);
     if (segIdx >= 0 && boundField !== undefined) {
       // Another query key repeating an already-bound path segment follows the same caller input.
-      pathTwins.push({
-        field: boundField,
-        segmentIndex: segIdx,
-        queryKey: key,
-      });
+      pathTwins.push({ field: boundField, segmentIndex: segIdx, queryKey: key });
     } else if (segIdx >= 0) {
       const field = nameFor(key);
       boundSegments.set(segIdx, field);
@@ -6145,9 +6137,7 @@ function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
 
     for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
       if (KNOWN_TOP_LEVEL_ERROR_KEYS.has(k.toLowerCase())) {
-        const existing = candidateTopLevelKeys.get(k) ?? {
-          presentInSuccess: false,
-        };
+        const existing = candidateTopLevelKeys.get(k) ?? { presentInSuccess: false };
         if (typeof v === "string" && v.length > 0) existing.presentInSuccess = true;
         candidateTopLevelKeys.set(k, existing);
       }
@@ -6166,10 +6156,7 @@ function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
   const nestedErrorPaths: ErrorSignals["nestedErrorPaths"] = [];
   for (const info of candidateNestedPaths.values()) {
     if (!info.presentInSuccess) {
-      nestedErrorPaths.push({
-        parentPath: info.parentPath,
-        errorKey: info.errorKey,
-      });
+      nestedErrorPaths.push({ parentPath: info.parentPath, errorKey: info.errorKey });
     }
   }
 
@@ -6935,10 +6922,7 @@ export function buildSelectOptionResolutions(
       // channel emits a caller-supplied default.
       if (usableOptions.length === 0 && schema.codes.length > 0) {
         const fallbackIdx = idx >= 0 ? idx : schema.codes.length - 1;
-        rawCodeFields.set(semanticName, {
-          wireKey,
-          code: schema.codes[fallbackIdx]!,
-        });
+        rawCodeFields.set(semanticName, { wireKey, code: schema.codes[fallbackIdx]! });
         seenWireKeys.add(wireKey);
       }
       continue;
@@ -6962,13 +6946,7 @@ export function buildSelectOptionResolutions(
     // The {label,value} map only reliably yields the one answered label→code
     // pair here; emit a single-choice enum so the field still binds (the caller
     // can widen it). Co-located labels aren't safely attributable to this field.
-    resolutions.push({
-      wireKey,
-      semanticName,
-      code,
-      label,
-      options: [{ label, code }],
-    });
+    resolutions.push({ wireKey, semanticName, code, label, options: [{ label, code }] });
     seenWireKeys.add(wireKey);
   }
   return { resolutions, rawCodeFields };
@@ -9346,11 +9324,7 @@ export function deriveProducerBoundaryBindings(
       // higher-priority accessor is a real declared field, so only veto the
       // sentinel when the name came from `p.name`.
       if (existing === undefined && field === "value") continue;
-      bindings.set(value, {
-        accessor: `payload.${field}`,
-        field,
-        producerIndex: i,
-      });
+      bindings.set(value, { accessor: `payload.${field}`, field, producerIndex: i });
     }
   }
   // Drop per-step position constants: a field bound to ≥2 distinct values across
@@ -15778,11 +15752,7 @@ function parseDrillParamBindings(raw: unknown): FoldReturnSpec["drillParamBindin
     ) {
       return null;
     }
-    parsed[paramName] = {
-      payloadField,
-      type,
-      default: defaultValue as string | number | boolean,
-    };
+    parsed[paramName] = { payloadField, type, default: defaultValue as string | number | boolean };
   }
   return parsed;
 }
@@ -17711,15 +17681,9 @@ export function foldOneDrillOccurrence(
   // Mirrors emitFoldMatchAndMergeLines: a declared attach key carries the
   // matched answer as one value instead of flat-merging its fields.
   if (matchAttachKey !== null) {
-    return replaceByReference(body, matchedItem, {
-      [matchAttachKey]: drillMatch,
-      ...matchedItem,
-    });
+    return replaceByReference(body, matchedItem, { [matchAttachKey]: drillMatch, ...matchedItem });
   }
-  return replaceByReference(body, matchedItem, {
-    ...drillMatch,
-    ...matchedItem,
-  });
+  return replaceByReference(body, matchedItem, { ...drillMatch, ...matchedItem });
 }
 
 function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
