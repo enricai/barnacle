@@ -18,7 +18,9 @@ const gen = (hasMultipartStep: boolean) =>
     inputBody: { cart: { items_attributes: [{ roomId: 9, playersCount: 2 }] } },
     discoveredFormFields: new Set(),
     discoveredAdditionalBodyKeys: new Map(),
-    discoveredStructuredKeys: new Map([["items_attributes", "z.array(z.object({ roomId: z.number() }))"]]),
+    discoveredStructuredKeys: new Map([
+      ["items_attributes", "z.array(z.object({ roomId: z.number() }))"],
+    ]),
     discoveredRawOptionFields: new Map(),
     payloadFieldNames: new Set(),
     hasMultipartStep,
