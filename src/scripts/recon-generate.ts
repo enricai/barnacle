@@ -5992,6 +5992,10 @@ export function deriveReadFlowBearer(
  * time from the HTML document (claims-selected); otherwise it throws at call
  * time instead of freezing a captured credential into generated source.
  */
+function isEmptyTokenPlaceholderHeaderValue(value: string): boolean {
+  return value.trim().toLowerCase() === "null";
+}
+
 function credentialHeaderThrowExpr(
   headerName: string,
   capturedValue?: string,
@@ -11678,6 +11682,7 @@ export function emitMultiStepExecuteHttp(
       if (
         isCredentialHeaderName(lower) &&
         interpolated === v &&
+        !isEmptyTokenPlaceholderHeaderValue(v) &&
         !joinCarryingHeaderNames?.has(k) &&
         !boundHeaderNames.has(lower)
       ) {
@@ -12550,7 +12555,7 @@ export function emitMultiStepExecuteHttp(
         // recognizes as a prior step's produced state var must thread
         // per-call too, or its custom name freezes into an invariant
         // BASE_HEADERS-equivalent literal.
-        if (isCredentialHeaderName(lower) && interpolated === v) {
+        if (isCredentialHeaderName(lower) && interpolated === v && !isEmptyTokenPlaceholderHeaderValue(v)) {
           perCallHeaderEntries.push(
             `${JSON.stringify(k)}: \`${credentialHeaderThrowExpr(k, v, tokenBootstrap)}\``
           );
