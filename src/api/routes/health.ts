@@ -62,7 +62,10 @@ interface ReadinessReport {
  */
 export interface HealthConfig {
   scraper: {
+    provider: "browserbase" | "steel";
     steelApiKey: string | undefined;
+    browserbaseApiKey: string | undefined;
+    browserbaseProjectId: string | undefined;
     anthropicApiKey: string | undefined;
     readinessQueueThreshold: number;
     useBedrock: boolean;
@@ -105,7 +108,12 @@ interface HealthRoutesOptions {
  */
 function checkScraperCredentials(cfg: HealthConfig): DependencyStatus {
   const missing: string[] = [];
-  if (!cfg.scraper.steelApiKey) missing.push("STEEL_API_KEY");
+  if (cfg.scraper.provider === "browserbase") {
+    if (!cfg.scraper.browserbaseApiKey) missing.push("BROWSERBASE_API_KEY");
+    if (!cfg.scraper.browserbaseProjectId) missing.push("BROWSERBASE_PROJECT_ID");
+  } else if (!cfg.scraper.steelApiKey) {
+    missing.push("STEEL_API_KEY");
+  }
 
   if (cfg.scraper.useBedrock) {
     if (cfg.bedrock.accessKeyId && !cfg.bedrock.secretAccessKey) {
