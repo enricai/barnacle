@@ -58,7 +58,12 @@ const mockCaptureBeaconEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefi
 const mockRecordDdFailure = vi.hoisted(() => vi.fn());
 
 const mockRunWithSession = vi.hoisted(() =>
-  vi.fn().mockImplementation((task: (s: null) => Promise<unknown>) => task(null))
+  vi
+    .fn()
+    .mockImplementation(
+      (task: (s: null, c: { signal: AbortSignal; deadlineAt: number }) => Promise<unknown>) =>
+        task(null, { signal: new AbortController().signal, deadlineAt: 123 })
+    )
 );
 
 // Stub runWithSession to invoke the task synchronously with a null session so
@@ -190,7 +195,11 @@ describe("dispatch", () => {
     const payload = { field: "value" };
     await dispatch(stubPlugin, payload, stubContext);
     expect(mockPluginExecute).toHaveBeenCalledTimes(1);
-    expect(mockPluginExecute).toHaveBeenCalledWith(payload, null, stubContext);
+    expect(mockPluginExecute).toHaveBeenCalledWith(
+      payload,
+      null,
+      expect.objectContaining(stubContext)
+    );
   });
 
   it("emits a submission envelope with status=submitted, siteId, and requestId on success", async () => {
@@ -671,6 +680,19 @@ describe("dispatch — executeHttp hot-path branches", () => {
       expect(mockPluginExecute).not.toHaveBeenCalled();
       expect(mockRecordFallbackActivation).not.toHaveBeenCalled();
     });
+  });
+
+  it("passes the pool task signal and deadline to plugin.execute via the context", async () => {
+    const pluginNoHttp: SitePlugin<unknown, unknown> = {
+      ...httpPlugin,
+      meta: { ...httpPlugin.meta, siteId: "signal-site" },
+      executeHttp: undefined,
+    };
+    await dispatch(pluginNoHttp, {}, stubContext);
+    const ctx = mockPluginExecute.mock.calls.at(-1)?.[2];
+    expect(ctx.signal).toBeInstanceOf(AbortSignal);
+    expect(ctx.deadlineAt).toBe(123);
+    expect(ctx.baseUrl).toBe(stubContext.baseUrl);
   });
 
   it("forwards plugin.onRetry to runWithSession when plugin defines it", async () => {

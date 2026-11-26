@@ -53,6 +53,10 @@ export interface RunTelemetryHandle {
 export interface SitePluginContext {
   recordBeaconOutcome(input: BeaconOutcomeInput): Promise<void>;
   telemetry: RunTelemetryHandle;
+  /** Aborted at the browser attempt's task deadline. */
+  signal?: AbortSignal;
+  /** Absolute deadline of the attempt, epoch ms. */
+  deadlineAt?: number;
 }
 
 /**
