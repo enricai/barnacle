@@ -137,9 +137,10 @@ export function isSessionLifetimeExceededError(err: unknown): err is SessionLife
 }
 
 /**
- * A task exceeded its per-task deadline. The task was not told to stop, so its
- * outcome is UNKNOWN: it may still be running or may have completed. Non-
- * retryable — a retry on a new session could duplicate its effects.
+ * A task exceeded its per-task deadline. The task is signalled to stop, but it
+ * may not have honored the signal, so its outcome is UNKNOWN: it may still be
+ * running or may have completed. Non-retryable — a retry on a new session
+ * could duplicate its effects.
  */
 export class TaskDeadlineError extends ScraperError {
   constructor(message = "task exceeded its deadline; its outcome is unknown") {

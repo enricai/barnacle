@@ -8,8 +8,12 @@ import { type BrowserSession, createBrowserSession } from "@/scraper/session";
 import type { BrowserSessionOptions } from "@/scraper/session-shared";
 import { resolveSessionDeathError } from "@/scraper/session-teardown";
 
-/** How long a task may take to settle after its signal is aborted before we give up on it. */
-const TASK_STOP_GRACE_MS = 30_000;
+/**
+ * How long a task may take to settle after its signal is aborted before we give up on it.
+ * Short on purpose: a task wedged inside a browser call only unblocks once its
+ * session is closed, which happens after this grace expires.
+ */
+const TASK_STOP_GRACE_MS = 2_000;
 
 /** Second argument handed to every task: aborted with TaskDeadlineError at the deadline. */
 export interface TaskContext {
