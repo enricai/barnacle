@@ -307,6 +307,13 @@ export interface SitePluginContext {
    * the submission envelope and the tracking-click/skipped-beacon record.
    */
   telemetry: RunTelemetryHandle;
+  /**
+   * Durably records, before an irreversible submit, that step `stepIndex` is
+   * about to fire: siteId, requestId, step index, timestamp and the payload's
+   * key names only (never values). Resolves once the record is persisted in
+   * the idempotency store, so await it before submitting.
+   */
+  recordPreSubmit: (input: { stepIndex: number; payload?: unknown }) => Promise<void>;
 }
 
 /**

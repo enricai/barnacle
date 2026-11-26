@@ -8,7 +8,10 @@ import { z } from "zod/v4";
 import { FieldViolationError, toApiError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
 import {
+  createConfiguredIdempotencyStore,
   createIdempotencyGuard,
+  type IdempotencyStore,
+  writePreSubmitRecord,
   defaultIsSuccess,
   type IdempotencyGuard,
 } from "@/cache/idempotency-guard";
@@ -88,6 +91,13 @@ export interface BuildPluginContextInput {
   logger: Logger;
   /** Overrides the `cfg.scraper.siteBaseUrls` / `plugin.meta.defaultBaseUrl` resolution; used by the integration-test harness, which supplies its own job-derived `baseUrl`. */
   baseUrl?: string;
+  /** Store for pre-submit records; defaults to the shared configured idempotency store. */
+  preSubmitStore?: IdempotencyStore;
+}
+
+let sharedIdempotencyStore: IdempotencyStore | undefined;
+function getSharedIdempotencyStore(): IdempotencyStore {
+  return (sharedIdempotencyStore ??= createConfiguredIdempotencyStore());
 }
 
 /**
@@ -110,6 +120,14 @@ export function buildPluginContext(input: BuildPluginContextInput): SitePluginCo
       siteId: plugin.meta.siteId,
     }),
     telemetry: new RunTelemetry(),
+    recordPreSubmit: async ({ stepIndex, payload }) => {
+      await writePreSubmitRecord(input.preSubmitStore ?? getSharedIdempotencyStore(), {
+        siteId: plugin.meta.siteId,
+        requestId,
+        stepIndex,
+        payload,
+      });
+    },
   };
 }
 
@@ -644,7 +662,7 @@ export async function registerRoutes(
           declared &&
           (declared.async === true || request.headers["x-barnacle-async"] === "true")
         ) {
-          idempotencyGuard ??= createIdempotencyGuard();
+          idempotencyGuard ??= createIdempotencyGuard({ store: getSharedIdempotencyStore() });
           const operationId = await idempotencyGuard.start(
             plugin.meta.siteId,
             dataPredicate(declared),
@@ -682,7 +700,7 @@ export async function registerRoutes(
         { onRequest: [app.authenticate] },
         async (request) => {
           const { operationId } = request.params as { operationId: string };
-          idempotencyGuard ??= createIdempotencyGuard();
+          idempotencyGuard ??= createIdempotencyGuard({ store: getSharedIdempotencyStore() });
           const st = await idempotencyGuard.status(plugin.meta.siteId, operationId);
           if (!st)
             throw new FieldViolationError(`unknown operation ${JSON.stringify(operationId)}`);
@@ -735,7 +753,7 @@ async function dispatchWithIdempotency(
 ): Promise<Awaited<ReturnType<typeof dispatch>>> {
   const declared = plugin.meta.idempotency;
   if (!declared) return dispatch(plugin, body, context, options);
-  idempotencyGuard ??= createIdempotencyGuard();
+  idempotencyGuard ??= createIdempotencyGuard({ store: getSharedIdempotencyStore() });
   return idempotencyGuard.run(plugin.meta.siteId, dataPredicate(declared), body, () =>
     dispatch(plugin, body, context, options)
   );
