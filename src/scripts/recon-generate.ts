@@ -19418,7 +19418,9 @@ export function emitContractTsParts(opts: {
   }
   if (postBodyModel) {
     for (const { field, zod } of postBodyModel.bindings) {
-      if (extendFields.has(field)) continue;
+      // A declared payloadField was registered as a bare required string; an
+      // array-typed body leaf must keep its array schema or the wire shape breaks.
+      if (extendFields.has(field) && !zod.startsWith("z.array(")) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: ${zod},`);
     }
