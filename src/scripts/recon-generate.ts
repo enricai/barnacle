@@ -8326,8 +8326,18 @@ export function actionSequenceIsReadSamplesFor(o: {
   // A declared 2xx GET is a read, not a write: a mint feeding only it is not a submit feeder.
   const matchesDeclaredWrite = (c: Capture): boolean =>
     o.matchesDeclaredSubmit(c) && !(c.method === "GET" && c.status >= 200 && c.status < 300);
+  // Only a header/cookie mint is replayed by the client's `bind`; a body/HTML token the
+  // read re-sends would be frozen on the single-endpoint path, so that mint stays a feeder.
+  const mintsOnlyHeaders = (capture: Capture): boolean =>
+    (compiledActionSteps.find((s) => s.capture === capture)?.produces ?? []).every(
+      (p) => p.kind === "header"
+    );
   const feedsDeclaredStep = (capture: Capture): boolean =>
-    stepFeedsDeclaredSubmit(capture, compiledActionSteps, matchesDeclaredWrite);
+    stepFeedsDeclaredSubmit(
+      capture,
+      compiledActionSteps,
+      mintsOnlyHeaders(capture) ? matchesDeclaredWrite : o.matchesDeclaredSubmit
+    );
   const feedsLaterStep = (capture: Capture): boolean =>
     compiledActionSteps.find((s) => s.capture === capture)?.consumers?.some((c) => c !== capture) ??
     false;
