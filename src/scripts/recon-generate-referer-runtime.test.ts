@@ -73,3 +73,51 @@ describe("Referer derived per call", () => {
     }
   });
 });
+
+describe("Referer never reads prior responses", () => {
+  it("uses only payload accessors and context.baseUrl for the Referer lines", () => {
+    const refLines = emit()
+      .split("\n")
+      .filter((l) => /Referer/.test(l));
+    expect(refLines.length).toBeGreaterThan(0);
+    for (const l of refLines) {
+      expect(l).not.toMatch(/\br[01]\b\s*(\.|\?\.|\[)/);
+      expect(l).not.toMatch(/response|\.json\(\)|\.body/i);
+    }
+    expect(refLines.join("\n")).toContain("payload.slug");
+  });
+
+  it("keeps an unrelated recorded Referer path literal, rebased on baseUrl", () => {
+    const body = emitMultiStepExecuteHttp(
+      [
+        mk(
+          "https://api.example.test/jobs/recorded-slug/apply",
+          "https://api.example.test/elsewhere/page?x=1",
+          false,
+          "r0"
+        ),
+      ] as never,
+      {},
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.test",
+      new Map([["Referer", "https://api.example.test/elsewhere/page?x=1"]]),
+      new Map(),
+      null,
+      new Map(),
+      new Map([["recorded-slug", "payload.slug"]])
+    );
+    const refLines = body.split("\n").filter((l) => /Referer/.test(l));
+    expect(refLines.length).toBeGreaterThan(0);
+    const joined = refLines.join("\n");
+    expect(joined).toContain("context.baseUrl");
+    expect(joined).toContain("/elsewhere/page?x=1");
+    expect(joined).not.toContain("payload.slug");
+    expect(joined).not.toMatch(/\br0\b\s*(\.|\?\.|\[)/);
+  });
+});
