@@ -5845,7 +5845,56 @@ function resolveBaseUrlDerivedHeader(
   if (headerName.toLowerCase() !== "referer") return substituteOrigin(observedValue, baseUrl);
   if (observedValue === cap.url) return substituteOrigin(renderedUrl, baseUrl);
   const bound = interpolateStateValues(observedValue, [], cap, payloadAccessorByValue, false);
+  // A recorded page instance no caller value binds (a date, an entity id) would
+  // replay that one page on every call: send only the origin, as a browser
+  // does under `strict-origin-when-cross-origin`.
+  if (baseUrl.length > 0 && refererNamesRecordedInstance(bound)) {
+    return `$${"{"}context.baseUrl${"}"}/`;
+  }
   return substituteOrigin(bound, baseUrl);
+}
+
+/** A calendar date in a common written form: ISO, `dd.mm.yyyy`, `dd/mm/yyyy`, `yyyy/mm/dd`. */
+function isWrittenDateValue(v: string): boolean {
+  if (isDateWindowValue(v)) return true;
+  const ymd = /^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/.exec(v);
+  if (ymd) {
+    const [m, d] = [Number(ymd[2]), Number(ymd[3])];
+    return m >= 1 && m <= 12 && d >= 1 && d <= 31;
+  }
+  const dmy = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/.exec(v);
+  if (!dmy) return false;
+  const [a, b] = [Number(dmy[1]), Number(dmy[2])];
+  // Day-first or month-first: both within day range, one of them a month.
+  return a >= 1 && b >= 1 && a <= 31 && b <= 31 && (a <= 12 || b <= 12);
+}
+
+/** A value that names one record: a UUID, a long hex id or a run of 4+ digits. */
+function isRecordedIdValue(v: string): boolean {
+  return /^\d{4,}$/.test(v) || (RESOURCE_ID_SEGMENT.test(v) && !/^\d+$/.test(v));
+}
+
+/**
+ * True when a Referer (after caller-value binding; bound `${...}` parts are
+ * ignored) still carries a recorded page instance: a path segment or query
+ * value that is a date or an entity id, or a value under an entity-id query key.
+ */
+function refererNamesRecordedInstance(referer: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(referer.replace(/\$\{[^}]*\}/g, "bound"));
+  } catch {
+    return false;
+  }
+  const segments = url.pathname.split("/").map(decodePathSegment);
+  if (segments.some((s) => s.length > 0 && (isWrittenDateValue(s) || isRecordedIdValue(s))))
+    return true;
+  for (const [key, value] of url.searchParams) {
+    if (value === "" || value === "bound") continue;
+    if (isWrittenDateValue(value) || isRecordedIdValue(value) || isEntityIdQueryKey(key))
+      return true;
+  }
+  return false;
 }
 
 /**
