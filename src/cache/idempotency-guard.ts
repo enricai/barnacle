@@ -254,7 +254,14 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
       }
       throw err;
     }
-    if (isSuccess(value)) {
+    let ok: boolean;
+    try {
+      ok = isSuccess(value);
+    } catch (err) {
+      if (leased) await Promise.resolve(store.delete(key)).catch(() => undefined);
+      throw err;
+    }
+    if (ok) {
       try {
         await store.set(key, { state: "success", value }, ttlMs);
       } catch (e) {
