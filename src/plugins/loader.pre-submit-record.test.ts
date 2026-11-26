@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  createInMemoryIdempotencyStore,
-  preSubmitStoreKey,
-} from "@/cache/idempotency-guard";
+import { createInMemoryIdempotencyStore, preSubmitStoreKey } from "@/cache/idempotency-guard";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { buildPluginContext } from "@/plugins/loader";
@@ -16,7 +13,7 @@ describe("buildPluginContext — recordPreSubmit", () => {
       plugin: { meta: { siteId: "s1" } } as unknown as SitePlugin<unknown, unknown>,
       cfg: { scraper: { siteBaseUrls: {} } } as unknown as AppConfig,
       requestId: "r1",
-      logger: getLogger(),
+      logger: getLogger({ name: "pre-submit-test" }),
       preSubmitStore: store,
     });
     await ctx.recordPreSubmit({ stepIndex: 2, payload: { ssn: "123-45-6789", name: "Zed" } });

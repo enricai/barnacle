@@ -147,6 +147,7 @@ const stubPlugin: SitePlugin<unknown, unknown> = {
 
 const stubContext: SitePluginContext = {
   baseUrl: "https://example.com",
+  recordPreSubmit: vi.fn(async () => {}),
   logger: {
     info: vi.fn(),
     error: vi.fn(),
