@@ -5,6 +5,7 @@ import { UnknownOutcomeError } from "@/api/errors";
 
 import { config } from "@/config";
 import { resolveIdempotencyEntryPath } from "@/lib/telemetry/telemetry-paths";
+import { isTaskDeadlineError } from "@/scraper/errors";
 import type { PluginIdempotency } from "@/site-plugin";
 
 /**
@@ -209,6 +210,8 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
   // on `originalError`; the plugin's classifier must see what it threw.
   function classifyUnknown(config: PluginIdempotency, err: unknown): boolean {
     const original = (err as { originalError?: unknown } | null)?.originalError;
+    // The engine's deadline error means the task may still be running: always unknown.
+    if (isTaskDeadlineError(err) || isTaskDeadlineError(original)) return true;
     if (original !== undefined && config.classifyFailure?.(original) === "unknown") return true;
     return config.classifyFailure?.(err) === "unknown";
   }
