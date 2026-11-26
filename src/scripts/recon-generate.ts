@@ -5903,6 +5903,18 @@ function refererNamesRecordedInstance(referer: string): boolean {
   // A multi-word slug beneath a collection segment names one recorded entity.
   if (segments.some((s, i) => s.length > 0 && isInstanceSlug(i, s, segments[i + 1], false)))
     return true;
+  // A top-level multi-word slug with a further action segment
+  // (`/<entity-slug>/book`) names one recorded entity.
+  if (
+    segments.length >= 3 &&
+    segments[0] === "" &&
+    !segments[1]!.includes(".") &&
+    isSlugSegment(segments[1]!) &&
+    !/^v\d+$/i.test(segments[1]!) &&
+    (segments[2] ?? "").length > 0 &&
+    /^[A-Za-z]+$/.test(segments[2]!)
+  )
+    return true;
   // A single word between a plural collection word and a further segment
   // (`/rooms/<name>/book`) names one recorded entity.
   if (
