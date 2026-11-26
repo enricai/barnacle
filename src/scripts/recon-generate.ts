@@ -3225,15 +3225,16 @@ function derivePostBodyModel(
       .join("");
     // The declared per-step field whose step introduced this change owns the leaf.
     let declaredField: string | undefined;
-    for (let j = 1; j < bodies.length && declaredField === undefined; j++) {
+    for (let j = 1; j < bodies.length; j++) {
       const now = JSON.stringify(values[j]);
       if (now === JSON.stringify(values[j - 1])) continue;
       const free = declared.filter((d) => !used.has(d.field));
       const phase = phases[j];
       declaredField = (
         free.find((d) => d.phase !== "" && d.phase === phase) ??
-        free.find((d) => d.value !== "" && now?.includes(d.value) === true)
+        free.find((d) => d.value !== "" && leafHoldsValue(values[j], d.value))
       )?.field;
+      break; // only the step that first changed the leaf can own it
     }
     let field = declaredField ?? (/^[A-Za-z_]/.test(base) ? base : `f${base}`);
     if (declaredField === undefined) for (let n = 2; used.has(field); n++) field = `${base}${n}`;
@@ -3271,6 +3272,11 @@ function declaredBodyStepFields(
     out.push({ field: step.payloadField, phase, value: values.get(step.payloadField) ?? "" });
   }
   return out;
+}
+
+/** True when a body leaf is the declared facet value or an array containing it. */
+function leafHoldsValue(leaf: unknown, value: string): boolean {
+  return Array.isArray(leaf) ? leaf.some((e) => String(e) === value) : String(leaf) === value;
 }
 
 function safeUrlPathname(url: string): string {
