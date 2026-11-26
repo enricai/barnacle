@@ -8495,6 +8495,12 @@ export function compileActionSteps(
   }
 
   let lastHost: string | null = null;
+  // Body-produce names claimed by EARLIER steps. A later response carrying a
+  // same-named field with a different value (an optimistic-locking token such
+  // as `updatedAt` rewritten by each PUT) is a distinct produce and must get
+  // its own var, else emission's name de-dup keeps the first producer and a
+  // later write re-sends a stale token.
+  const claimedBodyNames = new Set<string>();
   return actions.map(({ capture, index }, i) => {
     const varName = `r${i}`;
     const produces: Produce[] = [];
@@ -8577,11 +8583,12 @@ export function compileActionSteps(
         if (!sv || sv.originIndex !== index) continue;
         let name = pathToVarName(path);
         let suffix = 1;
-        while (seenNames.has(name)) {
+        while (seenNames.has(name) || claimedBodyNames.has(name)) {
           suffix++;
           name = `${pathToVarName(path)}${suffix}`;
         }
         seenNames.add(name);
+        claimedBodyNames.add(name);
         const leafType =
           typeof rawValue === "number"
             ? "number"
