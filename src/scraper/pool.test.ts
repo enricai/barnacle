@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CdpTransportClosedError,
+  isTaskDeadlineError,
   SelectorFailureError,
   SessionTimeoutError,
-  isTaskDeadlineError,
 } from "@/scraper/errors";
 import { drainPool, poolStats, runWithSession } from "@/scraper/pool";
 import * as sessionModule from "@/scraper/session";
