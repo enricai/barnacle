@@ -145,10 +145,11 @@ class EnvelopeTransient extends Error {
  * Retries a Stagehand call that failed with a transient provider error so a
  * blip is not recorded as a failed technique. Wrap it OUTSIDE `withWatchdog`:
  * each try gets its own watchdog timeout and the backoff is not charged to it.
- * Safe for `act` because the provider 5xx is raised during Stagehand's
- * inference request, before it performs any page action; the narrow
- * classifier never matches selector, timeout, or schema errors raised after
- * one.
+ * Safe for `act` with a string instruction only: the provider 5xx is raised
+ * during Stagehand's inference request, before it performs any page action;
+ * the narrow classifier never matches selector, timeout, or schema errors
+ * raised after one. An Action is replayed without inference, so it is never
+ * retried.
  */
 function retryTransient<T>(call: () => Promise<T>): Promise<T> {
   return pRetry(call, {
@@ -439,7 +440,7 @@ export async function guardedAct(
     // `stagehand.act` to a variable then calling it as a standalone function
     // loses `this` in strict mode, which crashes inside Stagehand's
     // `withInstanceLogContext(this.instanceId, ...)` wrapper on entry.
-    const raw = await retryTransient(async () => {
+    const attemptAct = async () => {
       const result = await withWatchdog(
         () =>
           typeof sendInput === "string"
@@ -452,6 +453,7 @@ export async function guardedAct(
       // action performed it is the same transient blip: surface it to retry.
       const env = result as { success?: unknown; message?: unknown; actions?: unknown };
       if (
+        typeof sendInput === "string" &&
         env &&
         env.success === false &&
         typeof env.message === "string" &&
@@ -461,7 +463,13 @@ export async function guardedAct(
         throw new EnvelopeTransient(env.message, result);
       }
       return result;
-    }).catch((err) => {
+    };
+    // An Action is a replayed side-effecting request with no inference step,
+    // so it is attempted exactly once; only a string instruction is retried.
+    const raw = await (typeof sendInput === "string"
+      ? retryTransient(attemptAct)
+      : attemptAct()
+    ).catch((err) => {
       // Retries exhausted on an envelope-borne transient: hand back the
       // failure envelope as before instead of turning it into a throw.
       if (err instanceof EnvelopeTransient) return err.envelope;

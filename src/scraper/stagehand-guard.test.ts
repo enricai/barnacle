@@ -703,6 +703,30 @@ describe("transient provider retry", () => {
     expect(okAct).toHaveBeenCalledTimes(1);
   });
 
+  it("act attempts an Action exactly once when the provider returns a 502", async () => {
+    const action = { selector: "xpath=/button", description: "pay", method: "click" };
+    const err = Object.assign(new Error("bad gateway"), { status: 502 });
+    const act = vi.fn().mockRejectedValue(err);
+    await expect(
+      guardedAct({ act } as unknown as Stagehand, action, undefined, undefined, undefined, true)
+    ).rejects.toThrow("bad gateway");
+    expect(act).toHaveBeenCalledTimes(1);
+  });
+
+  it("act attempts an Action exactly once on a transient-message failure envelope", async () => {
+    const action = { selector: "xpath=/button", description: "pay", method: "click" };
+    const act = vi.fn().mockResolvedValue({ success: false, message: TRANSIENT, actions: [] });
+    await guardedAct(
+      { act } as unknown as Stagehand,
+      action,
+      undefined,
+      undefined,
+      undefined,
+      true
+    ).catch(() => undefined);
+    expect(act).toHaveBeenCalledTimes(1);
+  });
+
   it("act does not retry a StagehandSchemaError", async () => {
     const act = vi.fn().mockResolvedValue({ bogus: true });
     await expect(guardedAct({ act } as unknown as Stagehand, "click")).rejects.toBeInstanceOf(
