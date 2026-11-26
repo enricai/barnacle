@@ -13,6 +13,6 @@ describe("buildSensitiveRedactionPolicy", () => {
         { step: "a", payloadField: "Ssn", sensitive: "digits" },
         { step: "b", payloadField: "Ssn", sensitive: "digits" },
       ])
-    ).toEqual({ digitKeys: ["Ssn"] });
+    ).toEqual({ digitKeys: ["Ssn"], tokenizeKeys: ["Ssn"] });
   });
 });

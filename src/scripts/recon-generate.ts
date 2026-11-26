@@ -20694,7 +20694,7 @@ type FlowStepInput =
 export function buildSensitiveRedactionPolicy(
   flowSteps: readonly FlowStepInput[],
   canonicalise = false
-): { digitKeys?: string[]; wordKeys?: string[] } | undefined {
+): { digitKeys?: string[]; wordKeys?: string[]; tokenizeKeys?: string[] } | undefined {
   const digitKeys = new Set<string>();
   const wordKeys = new Set<string>();
   for (const step of flowSteps) {
@@ -20706,6 +20706,7 @@ export function buildSensitiveRedactionPolicy(
   return {
     ...(digitKeys.size > 0 && { digitKeys: [...digitKeys].sort() }),
     ...(wordKeys.size > 0 && { wordKeys: [...wordKeys].sort() }),
+    tokenizeKeys: [...new Set([...digitKeys, ...wordKeys])].sort(),
   };
 }
 
