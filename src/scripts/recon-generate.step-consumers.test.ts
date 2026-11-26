@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   actionSequenceIsReadSamplesFor,
+  classifySubmissionFlow,
   compileActionSteps,
+  emitBrowserFlowTs,
   extractActionSequence,
   indexStateValues,
   stepFeedsDeclaredSubmit,
@@ -214,5 +216,110 @@ describe("read-only GET classification inputs: incidental mint GET and beacon PO
 
   it("a mint GET feeding a declared write is not a read sample", () => {
     expect(classifyNoPattern((c) => c.url.includes("/session/token"))).toBe(false);
+  });
+});
+
+describe("mint GET then declared GET read: classification and browser flow", () => {
+  const MINT = "Zk9qXv81T3mWb7LpR2dYc5Hn";
+  const isRead = (c: { url: string }) => c.url.includes("/schedule/items.json");
+  const mint = buildCapture({
+    url: "https://shop.example.test/schedule/start",
+    requestPostData: null,
+    method: "GET",
+    responseBody: {},
+    responseHeaders: { "set-cookie": `sid=${MINT}; Path=/` },
+    timestamp: "2024-01-01T00:00:01Z",
+  });
+  const read = buildCapture({
+    url: "https://shop.example.test/schedule/items.json?from=a&to=b",
+    requestPostData: null,
+    method: "GET",
+    requestHeaders: { Cookie: `sid=${MINT}` },
+    responseBody: { items: [1, 2] },
+    timestamp: "2024-01-01T00:00:04Z",
+  });
+  const post = buildCapture({
+    url: "https://shop.example.test/analytics/ping",
+    requestPostData: JSON.stringify({ b: 1 }),
+    responseBody: { ok: true },
+    timestamp: "2024-01-01T00:00:02Z",
+  });
+
+  const run = (caps: ReturnType<typeof buildCapture>[]) => {
+    const seq = caps.map((capture, index) => ({ capture, index }));
+    const steps = compileActionSteps(
+      seq,
+      indexStateValues(caps, new Set(), new Set(seq.map((a) => a.index)))
+    );
+    const isReadFlow = actionSequenceIsReadSamplesFor({
+      compiledActionSteps: steps,
+      actionCaptures: caps.map((capture) => ({ capture })),
+      readSiblings: [read],
+      declaresSubmitPattern: true,
+      matchesDeclaredSubmit: isRead,
+      isRecurringReadFlowBeacon: () => false,
+      isDeclaredDrillCapture: () => false,
+    });
+    const submission = classifySubmissionFlow({
+      noReplayableActionFlow: false,
+      isReadOnlyGetFlow: isReadFlow,
+      actionStepCount: steps.length,
+      gql: false,
+      actionCaptureMethods: caps.map((c) => c.method),
+      graphqlActionSequenceHasMutation: false,
+    });
+    return { isReadFlow, submission };
+  };
+
+  it("is a read flow, not a submission, with and without analytics POSTs", () => {
+    expect(run([mint, read])).toEqual({ isReadFlow: true, submission: false });
+    expect(run([mint, post, read])).toEqual({ isReadFlow: true, submission: false });
+  });
+
+  it("a mint feeding a declared POST submit is not a read", () => {
+    const submit = buildCapture({
+      url: "https://shop.example.test/schedule/book",
+      requestPostData: JSON.stringify({ x: 1 }),
+      requestHeaders: { Cookie: `sid=${MINT}` },
+      responseBody: { ok: true },
+      timestamp: "2024-01-01T00:00:05Z",
+    });
+    const caps = [mint, submit];
+    const seq = caps.map((capture, index) => ({ capture, index }));
+    const steps = compileActionSteps(
+      seq,
+      indexStateValues(caps, new Set(), new Set(seq.map((a) => a.index)))
+    );
+    expect(
+      actionSequenceIsReadSamplesFor({
+        compiledActionSteps: steps,
+        actionCaptures: caps.map((capture) => ({ capture })),
+        readSiblings: [],
+        declaresSubmitPattern: true,
+        matchesDeclaredSubmit: (c) => c.url.includes("/schedule/book"),
+        isRecurringReadFlowBeacon: () => false,
+        isDeclaredDrillCapture: () => false,
+      })
+    ).toBe(false);
+  });
+
+  it("emits the GET input fields in the browser flow, never payload.query", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "shop-fixture",
+      pascal: "ShopFixture",
+      baseUrl: "https://shop.example.test",
+      flowSteps: [
+        {
+          step: "Open the schedule",
+          navigateTo: "https://shop.example.test/schedule#/from/a/to/b",
+          payloadField: "from",
+        },
+      ],
+      isSubmissionFlow: false,
+      readOnlyGetFlow: true,
+      getInputFields: ["from", "to"],
+    });
+    expect(code).toContain("payload.from");
+    expect(code).not.toContain("payload.query");
   });
 });
