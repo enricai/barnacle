@@ -101,7 +101,10 @@ export async function runWithSession<T>(
           });
           deadline.catch(() => {});
           try {
-            return await Promise.race([taskPromise, deadline]);
+            const value = await Promise.race([taskPromise, deadline]);
+            // The task settled after being signalled: the deadline still failed the attempt.
+            if (deadlineHit) throw new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms`);
+            return value;
           } catch (err) {
             if (deadlineHit) throw new TaskDeadlineError(`task exceeded ${taskTimeoutMs}ms`);
             // Must run before onSessionRestart: closeSession() nulls sessionRef.

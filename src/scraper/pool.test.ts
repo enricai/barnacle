@@ -4,7 +4,7 @@ import {
   CdpTransportClosedError,
   SelectorFailureError,
   SessionTimeoutError,
-  TaskDeadlineError,
+  isTaskDeadlineError,
 } from "@/scraper/errors";
 import { drainPool, poolStats, runWithSession } from "@/scraper/pool";
 import * as sessionModule from "@/scraper/session";
@@ -217,8 +217,30 @@ describe("scraper/pool", () => {
     expect(timeoutError).toBeInstanceOf(SessionTimeoutError);
   });
 
+  it("drainPool bounds wait by timeoutMs so a hung task can't block shutdown forever", async () => {
+    // Start a task that never resolves; drain should still return
+    // within the timeout window.
+    vi.mocked(sessionModule.createBrowserSession).mockImplementation(async () =>
+      fakeSession(() => {})
+    );
+    const hung = runWithSession(async () => new Promise<never>(() => {}));
+    const start = Date.now();
+    await drainPool(50);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(500);
+    // Abandon the hung task — no way to resolve it; vitest will GC it.
+    void hung;
+  });
+
+  // Placed last: the drainPool tests above pause the shared queue.
   describe("task deadline signal", () => {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    // drainPool() above leaves the shared queue paused; use a fresh module instance.
+    let runWithSession: typeof import("./pool").runWithSession;
+    beforeEach(async () => {
+      vi.resetModules();
+      ({ runWithSession } = await import("./pool"));
+    });
 
     it("aborts a signal-honoring task, never runs the step, starts once, closes after settle", async () => {
       const log: string[] = [];
@@ -246,7 +268,7 @@ describe("scraper/pool", () => {
           { maxAttempts: 2 },
           100
         )
-      ).rejects.toBeInstanceOf(TaskDeadlineError);
+      ).rejects.toSatisfy(isTaskDeadlineError);
       expect(starts).toBe(1);
       expect(log).toEqual(["task stopped", "closed"]);
     });
@@ -257,22 +279,7 @@ describe("scraper/pool", () => {
       );
       await expect(
         runWithSession(() => sleep(400), { maxAttempts: 2 }, 50, {}, 50)
-      ).rejects.toBeInstanceOf(TaskDeadlineError);
+      ).rejects.toSatisfy(isTaskDeadlineError);
     });
-  });
-
-  it("drainPool bounds wait by timeoutMs so a hung task can't block shutdown forever", async () => {
-    // Start a task that never resolves; drain should still return
-    // within the timeout window.
-    vi.mocked(sessionModule.createBrowserSession).mockImplementation(async () =>
-      fakeSession(() => {})
-    );
-    const hung = runWithSession(async () => new Promise<never>(() => {}));
-    const start = Date.now();
-    await drainPool(50);
-    const elapsed = Date.now() - start;
-    expect(elapsed).toBeLessThan(500);
-    // Abandon the hung task — no way to resolve it; vitest will GC it.
-    void hung;
   });
 });
