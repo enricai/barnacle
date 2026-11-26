@@ -21249,6 +21249,9 @@ function computeFlowPayloadFieldNames(
   return { payloadFieldNames, optionalPayloadFieldNames };
 }
 
+const DEFAULT_CARD_COMPLETE_SELECTOR =
+  '.is-complete, [data-complete="true"], [aria-invalid="false"]';
+
 export function emitBrowserFlowTs(opts: {
   siteId: string;
   pascal: string;
@@ -21401,11 +21404,14 @@ export function emitBrowserFlowTs(opts: {
       const cardSpec = [
         `value: payload.${cardField}`,
         `frameOrigin: ${JSON.stringify(step.frameOrigin)}`,
-        ...(step.completeSelector !== undefined
-          ? [`completeSelector: ${JSON.stringify(step.completeSelector)}`]
-          : []),
+        // Never emit a card step without a completeness check: fall back to the
+        // generic provider-complete marker when none was declared.
+        `completeSelector: ${JSON.stringify(step.completeSelector ?? DEFAULT_CARD_COMPLETE_SELECTOR)}`,
       ].join(", ");
-      return `  { instruction: ${JSON.stringify(`Type ${step.payloadField} into the payment frame`)}, optional: false, upload: false, submitStep: false, card: { ${cardSpec} } },`;
+      // The frame the step lives in is always named: declared > flow-level > the
+      // iframe whose src starts with the declared origin.
+      const cardFrameSelector = frameSelector ?? `iframe[src^=${JSON.stringify(step.frameOrigin)}]`;
+      return `  { instruction: ${JSON.stringify(`Type ${step.payloadField} into the payment frame`)}, optional: false, upload: false, submitStep: false,${step.frameSelector === undefined ? ` frameSelector: ${JSON.stringify(cardFrameSelector)},` : ""} card: { ${cardSpec} } },`;
     }
     // ${RECON_PASSWORD} is reserved-tooling, not a domain-vocabulary concern —
     // it names a credential the recon capture needed to authenticate, not a
