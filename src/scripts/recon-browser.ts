@@ -63,27 +63,14 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import type {
-  Action,
-  LoadState,
-  Page,
-  Stagehand,
-} from "@browserbasehq/stagehand";
+import type { Action, LoadState, Page, Stagehand } from "@browserbasehq/stagehand";
 import { formatISO } from "date-fns";
-import {
-  type Element,
-  type HTMLInputElement,
-  type HTMLTextAreaElement,
-  Window,
-} from "happy-dom";
+import { type Element, type HTMLInputElement, type HTMLTextAreaElement, Window } from "happy-dom";
 import { z } from "zod/v4";
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
-import {
-  buildAnthropicClient,
-  buildRephraseModel,
-} from "@/lib/llm/anthropic-client";
+import { buildAnthropicClient, buildRephraseModel } from "@/lib/llm/anthropic-client";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
 import {
@@ -92,10 +79,7 @@ import {
   REPLAN_RESPONSE_SCHEMA,
 } from "@/lib/llm/schemas";
 import { getScriptLogger } from "@/lib/logging";
-import {
-  captureLlmCall,
-  classifyLlmCallFailure,
-} from "@/lib/telemetry/call-capture";
+import { captureLlmCall, classifyLlmCallFailure } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import {
   resolveRunCallsPath,
@@ -158,11 +142,7 @@ import {
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
-import {
-  buildNavigateSettle,
-  type CaptureTracker,
-  createCaptureTracker,
-} from "@/scraper/navigate";
+import { buildNavigateSettle, type CaptureTracker, createCaptureTracker } from "@/scraper/navigate";
 import {
   isPassiveNoopInstruction,
   isPlausibleStepDestination,
@@ -172,24 +152,15 @@ import {
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
-import {
-  raceAgainstTeardown,
-  resolveSessionDeathError,
-} from "@/scraper/session-teardown";
-import {
-  regateSpaAfterOriginChange,
-  waitForSpaReady,
-} from "@/scraper/spa-readiness";
+import { raceAgainstTeardown, resolveSessionDeathError } from "@/scraper/session-teardown";
+import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import type { TargetResolutionDiagnosticSnapshot } from "@/scraper/target-resolution-diagnostic";
 import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { createCaptureRebinder } from "@/scripts/recon-capture-rebind";
-import {
-  EXTRA_PAYLOAD_FIELD_SCHEMA,
-  resolveReconRunDir,
-} from "@/scripts/recon-shared";
+import { EXTRA_PAYLOAD_FIELD_SCHEMA, resolveReconRunDir } from "@/scripts/recon-shared";
 import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
 import { allocateTestmailInbox, type TestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
@@ -239,9 +210,7 @@ const HTML_STATIC_TOLERANCE = 100;
  * (url-/base64-decoded text) is not JSON, so it goes raw to `<name>.decoded.txt`
  * — every `.json` file in the dir therefore parses with JSON.parse.
  */
-export function compileOptionalRegex(
-  pattern: string | undefined | null,
-): RegExp | null {
+export function compileOptionalRegex(pattern: string | undefined | null): RegExp | null {
   try {
     return pattern ? new RegExp(pattern) : null;
   } catch {
@@ -253,10 +222,9 @@ export function recordMatchedCapture(
   c: Parameters<typeof matchesSubmitPattern>[0],
   endpointRx: RegExp | null,
   bodyRx: RegExp | null,
-  evidence: { sawMatchedRead: boolean; sawMatchedWrite: boolean },
+  evidence: { sawMatchedRead: boolean; sawMatchedWrite: boolean }
 ): void {
-  if (endpointRx === null || !matchesSubmitPattern(c, endpointRx, bodyRx))
-    return;
+  if (endpointRx === null || !matchesSubmitPattern(c, endpointRx, bodyRx)) return;
   if (isReadCapture(c)) evidence.sawMatchedRead = true;
   else evidence.sawMatchedWrite = true;
 }
@@ -264,22 +232,19 @@ export function recordMatchedCapture(
 export function writeCaptureFiles(
   graphqlDir: string,
   capture: { decodedParams: unknown; requestPostData: unknown },
-  filename: string,
+  filename: string
 ): void {
   writeFileSync(join(graphqlDir, filename), JSON.stringify(capture, null, 2));
-  if (
-    capture.decodedParams !== null &&
-    capture.decodedParams !== capture.requestPostData
-  ) {
+  if (capture.decodedParams !== null && capture.decodedParams !== capture.requestPostData) {
     if (typeof capture.decodedParams === "string") {
       writeFileSync(
         join(graphqlDir, filename.replace(/\.json$/, ".decoded.txt")),
-        capture.decodedParams,
+        capture.decodedParams
       );
     } else {
       writeFileSync(
         join(graphqlDir, filename.replace(/\.json$/, ".decoded.json")),
-        JSON.stringify(capture.decodedParams, null, 2),
+        JSON.stringify(capture.decodedParams, null, 2)
       );
     }
   }
@@ -320,7 +285,7 @@ export function wireNetworkCapture(
     method?: unknown;
     url: string;
     requestPostData?: unknown;
-  }) => void,
+  }) => void
 ): () => void {
   const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
@@ -335,15 +300,14 @@ export function wireNetworkCapture(
       // shouldn't crash the whole recon run. Drop the capture, log loudly,
       // and let the cascade continue. The capture is forensic-only — the
       // happy-path doesn't read these files until something else fails.
-      if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE)
-        bodyUnavailableCounter.n++;
+      if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) bodyUnavailableCounter.n++;
       captureTracker?.observe(capture.url, capture.requestPostData);
       onObservedCapture?.(capture);
       try {
         writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
         logger.warn(
-          `capture-write skipped for ${capture.url.slice(0, 80)}: ${err instanceof Error ? err.message : String(err)}`,
+          `capture-write skipped for ${capture.url.slice(0, 80)}: ${err instanceof Error ? err.message : String(err)}`
         );
       }
     },
@@ -365,26 +329,16 @@ async function snapshotAndPersistCookieJar(
   counter: { n: number },
   label: string,
   phase: string,
-  stepIndex: number,
+  stepIndex: number
 ): Promise<void> {
-  const snapshot = await captureCookieJarSnapshot(
-    page,
-    label,
-    phase,
-    stepIndex,
-  );
+  const snapshot = await captureCookieJarSnapshot(page, label, phase, stepIndex);
   const idx = String(counter.n++).padStart(3, "0");
   const filename = `${idx}-${label}-${phase}.json`;
   const { cookiesDir } = resolveReconRunDir();
   try {
-    writeFileSync(
-      join(cookiesDir, filename),
-      JSON.stringify(snapshot, null, 2),
-    );
+    writeFileSync(join(cookiesDir, filename), JSON.stringify(snapshot, null, 2));
   } catch (err) {
-    logger.warn(
-      `cookie-snapshot-write skipped for ${filename}: ${toErrorMessage(err)}`,
-    );
+    logger.warn(`cookie-snapshot-write skipped for ${filename}: ${toErrorMessage(err)}`);
   }
 }
 
@@ -394,20 +348,12 @@ async function snapshotAndPersistCookieJar(
  * is valid in Playwright and rejected here. A typo warns and falls back rather
  * than failing the run at navigation.
  */
-export function resolveGotoWaitUntil(
-  raw: string | undefined,
-  log: Logger = logger,
-): LoadState {
+export function resolveGotoWaitUntil(raw: string | undefined, log: Logger = logger): LoadState {
   const value = raw?.trim();
   if (!value) return "domcontentloaded";
-  if (
-    value === "load" ||
-    value === "domcontentloaded" ||
-    value === "networkidle"
-  )
-    return value;
+  if (value === "load" || value === "domcontentloaded" || value === "networkidle") return value;
   log.warn(
-    `RECON_GOTO_WAIT_UNTIL=${JSON.stringify(value)} is not a valid load state — falling back to "domcontentloaded"`,
+    `RECON_GOTO_WAIT_UNTIL=${JSON.stringify(value)} is not a valid load state — falling back to "domcontentloaded"`
   );
   return "domcontentloaded";
 }
@@ -425,16 +371,13 @@ export function resolveGotoWaitUntil(
  * Override with RECON_GOTO_WAIT_UNTIL for a site that genuinely needs the
  * stricter wait (e.g. a form whose scripts must settle before step 1).
  */
-const GOTO_WAIT_UNTIL: LoadState = resolveGotoWaitUntil(
-  process.env.RECON_GOTO_WAIT_UNTIL,
-);
+const GOTO_WAIT_UNTIL: LoadState = resolveGotoWaitUntil(process.env.RECON_GOTO_WAIT_UNTIL);
 
 export function detectRejectionInResponseBody(body: unknown): {
   rejected: boolean;
   reason: string | null;
 } {
-  if (!body || typeof body !== "object")
-    return { rejected: false, reason: null };
+  if (!body || typeof body !== "object") return { rejected: false, reason: null };
   const rec = body as Record<string, unknown>;
   if (rec.not_qualified === true) {
     return {
@@ -496,15 +439,10 @@ export function isFlowTruncated(params: {
   planLength: number;
   exitedViaTrailingGrace: boolean;
 }): boolean {
-  return (
-    !params.exitedViaTrailingGrace &&
-    params.completedStepCount !== params.planLength
-  );
+  return !params.exitedViaTrailingGrace && params.completedStepCount !== params.planLength;
 }
 
-function normalizeResponseBodyForAudit(data: {
-  responseBody?: unknown;
-}): unknown {
+function normalizeResponseBodyForAudit(data: { responseBody?: unknown }): unknown {
   const body = data.responseBody;
   if (body && typeof body === "object") return body;
   if (typeof body === "string") {
@@ -557,26 +495,19 @@ function auditFinalSubmitMatch(params: {
 }): { auditFailed: boolean; rejectionReason: string | null } {
   const { capturesDir, logger } = params;
   const ownBackendHostnames = params.ownBackendHostnames ?? [];
-  if (
-    ownBackendHostnames.length === 0 &&
-    params.submitEndpointPattern == null
-  ) {
+  if (ownBackendHostnames.length === 0 && params.submitEndpointPattern == null) {
     return { auditFailed: true, rejectionReason: null };
   }
   const auditEndpointRx =
-    params.submitEndpointPattern != null
-      ? new RegExp(params.submitEndpointPattern)
-      : null;
+    params.submitEndpointPattern != null ? new RegExp(params.submitEndpointPattern) : null;
   const auditBodyRx =
-    params.submitBodyPattern != null
-      ? new RegExp(params.submitBodyPattern)
-      : null;
+    params.submitBodyPattern != null ? new RegExp(params.submitBodyPattern) : null;
   let entries: string[];
   try {
     entries = readdirSync(capturesDir).filter(isRawCaptureFilename);
   } catch (err) {
     logger.warn(
-      `end-of-run audit: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`,
+      `end-of-run audit: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
     );
     return { auditFailed: true, rejectionReason: null };
   }
@@ -661,24 +592,17 @@ function writeSubmitManifest(params: {
   ownBackendHostnames?: readonly string[];
   logger: Logger;
 }): SubmitManifestOutcome {
-  const {
-    runRoot,
-    capturesDir,
-    submitEndpointPattern,
-    submitBodyPattern,
-    logger,
-  } = params;
+  const { runRoot, capturesDir, submitEndpointPattern, submitBodyPattern, logger } = params;
   const ownBackendHostnames = params.ownBackendHostnames ?? [];
   if (submitEndpointPattern === null) return "no-pattern";
   const endpointRx = new RegExp(submitEndpointPattern);
-  const bodyRx =
-    submitBodyPattern === null ? null : new RegExp(submitBodyPattern);
+  const bodyRx = submitBodyPattern === null ? null : new RegExp(submitBodyPattern);
   let entries: string[];
   try {
     entries = readdirSync(capturesDir).filter(isRawCaptureFilename).sort();
   } catch (err) {
     logger.warn(
-      `submit-manifest: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`,
+      `submit-manifest: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
     );
     return "unreadable";
   }
@@ -688,9 +612,7 @@ function writeSubmitManifest(params: {
   const getMatched: SubmitManifestEntry[] = [];
   for (const [index, filename] of entries.entries()) {
     try {
-      const data = JSON.parse(
-        readFileSync(join(capturesDir, filename), "utf8"),
-      ) as {
+      const data = JSON.parse(readFileSync(join(capturesDir, filename), "utf8")) as {
         method?: string;
         url?: string;
         requestPostData?: string | null;
@@ -706,8 +628,7 @@ function writeSubmitManifest(params: {
       )
         continue;
       if (data.method === "GET") {
-        if (isSuccessStatus(data.status))
-          getMatched.push({ index, filename, url: data.url });
+        if (isSuccessStatus(data.status)) getMatched.push({ index, filename, url: data.url });
         else getSkipped++;
         continue;
       }
@@ -724,7 +645,7 @@ function writeSubmitManifest(params: {
     outcome = "get-fallback";
     matched.push(...getMatched);
     logger.info(
-      `submit-manifest: no non-GET capture matched; recording ${getMatched.length} 2xx GET capture(s) (read flow)`,
+      `submit-manifest: no non-GET capture matched; recording ${getMatched.length} 2xx GET capture(s) (read flow)`
     );
   }
   if (matched.length === 0) {
@@ -732,21 +653,16 @@ function writeSubmitManifest(params: {
     const patterns = `submitEndpointPattern${submitBodyPattern !== null ? " + submitBodyPattern" : ""}`;
     if (getSkipped > 0) {
       logger.warn(
-        `submit-manifest: ${getSkipped} GET capture(s) matched ${patterns} but were skipped for a non-2xx status — writing empty manifest so generate reports the gap rather than silently re-guessing`,
+        `submit-manifest: ${getSkipped} GET capture(s) matched ${patterns} but were skipped for a non-2xx status — writing empty manifest so generate reports the gap rather than silently re-guessing`
       );
     } else {
       logger.warn(
-        `submit-manifest: no capture matched ${patterns} — writing empty manifest so generate reports the gap rather than silently re-guessing`,
+        `submit-manifest: no capture matched ${patterns} — writing empty manifest so generate reports the gap rather than silently re-guessing`
       );
     }
   }
-  writeFileSync(
-    join(runRoot, "submit-manifest.json"),
-    `${JSON.stringify(matched, null, 2)}\n`,
-  );
-  logger.info(
-    `submit-manifest: recorded ${matched.length} submission capture(s)`,
-  );
+  writeFileSync(join(runRoot, "submit-manifest.json"), `${JSON.stringify(matched, null, 2)}\n`);
+  logger.info(`submit-manifest: recorded ${matched.length} submission capture(s)`);
   return outcome;
 }
 
@@ -779,12 +695,10 @@ export function isStructurallyBlocked(
   attempts: readonly {
     triedSelectors: readonly string[];
     verifiedBy: string | null;
-  }[],
+  }[]
 ): boolean {
   if (attempts.length === 0) return false;
-  return attempts.every(
-    (a) => a.triedSelectors.length === 0 && a.verifiedBy === null,
-  );
+  return attempts.every((a) => a.triedSelectors.length === 0 && a.verifiedBy === null);
 }
 
 export function summarizeReplanFailureKinds(params: {
@@ -800,9 +714,7 @@ export function summarizeReplanFailureKinds(params: {
     return "";
   }
   const matching = filterByCallType(parseSamples(ndjsonContent), callType);
-  const failures = matching
-    .filter((s) => s.success === false)
-    .slice(-tailCount);
+  const failures = matching.filter((s) => s.success === false).slice(-tailCount);
   if (failures.length === 0) return "";
   const counts: Record<string, number> = {};
   for (const s of failures) {
@@ -826,20 +738,17 @@ export function summarizeReplanFailureKinds(params: {
 export function isReplanCycle(
   priorReplans: readonly ReplanEvent[],
   newSteps: readonly NormalizedStep[],
-  currentState: { url: string; htmlLength: number },
+  currentState: { url: string; htmlLength: number }
 ): boolean {
   if (priorReplans.length < REPLAN_CYCLE_THRESHOLD) return false;
   const newSig = newSteps.map((s) => stepSignature(s.instruction)).join("|||");
   let identicalCount = 0;
   for (const prior of priorReplans) {
-    const priorSig = prior.replanSteps
-      .map((s) => stepSignature(s.instruction))
-      .join("|||");
+    const priorSig = prior.replanSteps.map((s) => stepSignature(s.instruction)).join("|||");
     if (priorSig !== newSig) continue;
     const urlSame = prior.pageState.url === currentState.url;
     const htmlStatic =
-      Math.abs(prior.pageState.htmlLength - currentState.htmlLength) <
-      HTML_STATIC_TOLERANCE;
+      Math.abs(prior.pageState.htmlLength - currentState.htmlLength) < HTML_STATIC_TOLERANCE;
     if (urlSame && htmlStatic) identicalCount++;
   }
   return identicalCount >= REPLAN_CYCLE_THRESHOLD;
@@ -894,7 +803,7 @@ const RECON_FOLD_RETURN_ENTRY_SCHEMA = z
           payloadField: z.string().min(1),
           type: z.enum(["int", "string", "boolean"]),
           default: z.union([z.string(), z.number(), z.boolean()]),
-        }),
+        })
       )
       .optional(),
   })
@@ -937,14 +846,9 @@ export const RECON_FLOW_HTTP_STEPS_SCHEMA = z.object({
  * The flow file's object form: the declared keys, plus the retry budget and the
  * mixed-flow `httpSteps` declaration checked on the raw object.
  */
-function flowFileObjectSchema<Shape extends z.core.$ZodLooseShape>(
-  shape: Shape,
-) {
+function flowFileObjectSchema<Shape extends z.core.$ZodLooseShape>(shape: Shape) {
   return z.looseObject(shape).superRefine((flow, ctx) => {
-    for (const schema of [
-      RECON_FLOW_RETRY_BUDGET_SCHEMA,
-      RECON_FLOW_HTTP_STEPS_SCHEMA,
-    ]) {
+    for (const schema of [RECON_FLOW_RETRY_BUDGET_SCHEMA, RECON_FLOW_HTTP_STEPS_SCHEMA]) {
       const result = schema.safeParse(flow);
       if (result.success) continue;
       for (const issue of result.error.issues) {
@@ -1102,10 +1006,7 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * heuristic can see structurally are applied.
      */
     foldReturn: z
-      .union([
-        RECON_FOLD_RETURN_ENTRY_SCHEMA,
-        z.array(RECON_FOLD_RETURN_ENTRY_SCHEMA).min(1),
-      ])
+      .union([RECON_FOLD_RETURN_ENTRY_SCHEMA, z.array(RECON_FOLD_RETURN_ENTRY_SCHEMA).min(1)])
       .optional(),
   }),
 ]);
@@ -1172,19 +1073,15 @@ interface NormalizedStep {
  */
 export function inheritStepFrameSelector(
   steps: NormalizedStep[],
-  failedStepFrameSelector: string | undefined,
+  failedStepFrameSelector: string | undefined
 ): NormalizedStep[] {
   if (failedStepFrameSelector === undefined) return steps;
   return steps.map((s) =>
-    s.frameSelector === undefined
-      ? { ...s, frameSelector: failedStepFrameSelector }
-      : s,
+    s.frameSelector === undefined ? { ...s, frameSelector: failedStepFrameSelector } : s
   );
 }
 
-function normalizeFlow(
-  steps: z.infer<typeof RECON_FLOW_SCHEMA>,
-): NormalizedStep[] {
+function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep[] {
   return steps.map((s) =>
     typeof s === "string"
       ? { instruction: s, optional: false, upload: false, origin: "original" }
@@ -1205,7 +1102,7 @@ function normalizeFlow(
           navigateTo: s.navigateTo,
           declareOnly: s.declareOnly,
           sensitive: s.sensitive,
-        },
+        }
   );
 }
 
@@ -1255,8 +1152,7 @@ function denormalizeStep(step: NormalizedStep):
       declareOnly?: true;
       sensitive?: "digits" | "word";
     } {
-  const hasSplicerHint =
-    step.payloadField !== undefined || step.payloadFieldNone === true;
+  const hasSplicerHint = step.payloadField !== undefined || step.payloadFieldNone === true;
   // targetId, a "replan" origin, and navigateTo are load-bearing identity that
   // must survive the round-trip, so a step carrying any of them is forced to
   // object form even when it has no flags. Authored ("original") origin stays
@@ -1304,8 +1200,7 @@ function denormalizeStep(step: NormalizedStep):
   if (step.submitStep) out.submitStep = true;
   if (step.captchaGated) out.captchaGated = true;
   if (step.emailStep) out.emailStep = true;
-  if (step.emailStepConfig !== undefined)
-    out.emailStepConfig = step.emailStepConfig;
+  if (step.emailStepConfig !== undefined) out.emailStepConfig = step.emailStepConfig;
   if (step.payloadField !== undefined) out.payloadField = step.payloadField;
   if (step.payloadFieldNone === true) out.payloadFieldNone = true;
   if (step.targetId !== undefined) out.targetId = step.targetId;
@@ -1355,17 +1250,11 @@ export function dedupeIdenticalSteps<T>(items: T[]): T[] {
  * dropped here; they fall through to the structural pass. First occurrence
  * wins.
  */
-export function dedupeReplanStepsByTarget(
-  steps: NormalizedStep[],
-): NormalizedStep[] {
+export function dedupeReplanStepsByTarget(steps: NormalizedStep[]): NormalizedStep[] {
   const seenTargets = new Set<string>();
   const out: NormalizedStep[] = [];
   for (const step of steps) {
-    if (
-      step.origin === "replan" &&
-      step.targetId !== undefined &&
-      seenTargets.has(step.targetId)
-    ) {
+    if (step.origin === "replan" && step.targetId !== undefined && seenTargets.has(step.targetId)) {
       continue;
     }
     if (step.targetId !== undefined) seenTargets.add(step.targetId);
@@ -1426,9 +1315,7 @@ function accessibleNameForControl(el: Element, window: Window): string {
   if (ariaLabel?.trim()) return ariaLabel;
   const id = el.getAttribute("id");
   if (id) {
-    const label = document.querySelector(
-      `label[for="${window.CSS.escape(id)}"]`,
-    );
+    const label = document.querySelector(`label[for="${window.CSS.escape(id)}"]`);
     if (label?.textContent?.trim()) return label.textContent;
   }
   const wrappingLabel = el.closest("label");
@@ -1443,29 +1330,20 @@ function accessibleNameForControl(el: Element, window: Window): string {
  */
 function matchByNormalizedLabel<T>(
   entries: readonly { text: string; value: T }[],
-  normalizedLabel: string,
+  normalizedLabel: string
 ): T | null {
   const named = entries.filter((entry) => entry.text.length > 0);
   const exact = named.find((entry) => entry.text === normalizedLabel);
   if (exact) return exact.value;
   const candidates = named.filter(
-    (entry) =>
-      entry.text.includes(normalizedLabel) ||
-      normalizedLabel.includes(entry.text),
+    (entry) => entry.text.includes(normalizedLabel) || normalizedLabel.includes(entry.text)
   );
-  const mostSpecific = candidates.reduce<{ text: string; value: T } | null>(
-    (closest, entry) => {
-      if (!closest) return entry;
-      const entryDistance = Math.abs(
-        entry.text.length - normalizedLabel.length,
-      );
-      const closestDistance = Math.abs(
-        closest.text.length - normalizedLabel.length,
-      );
-      return entryDistance < closestDistance ? entry : closest;
-    },
-    null,
-  );
+  const mostSpecific = candidates.reduce<{ text: string; value: T } | null>((closest, entry) => {
+    if (!closest) return entry;
+    const entryDistance = Math.abs(entry.text.length - normalizedLabel.length);
+    const closestDistance = Math.abs(closest.text.length - normalizedLabel.length);
+    return entryDistance < closestDistance ? entry : closest;
+  }, null);
   return mostSpecific?.value ?? null;
 }
 
@@ -1477,18 +1355,13 @@ function matchByNormalizedLabel<T>(
  * when no control's accessible name relates to `fieldLabel` at all, or when
  * `bodyHtmlAtFailure` fails to parse.
  */
-function resolveFieldElementValue(
-  bodyHtmlAtFailure: string,
-  fieldLabel: string,
-): string | null {
+function resolveFieldElementValue(bodyHtmlAtFailure: string, fieldLabel: string): string | null {
   const normalizedLabel = normalizeStaleFillLabel(fieldLabel);
   if (!normalizedLabel) return null;
   const window = new Window();
   try {
     window.document.body.innerHTML = bodyHtmlAtFailure;
-    const controls = Array.from(
-      window.document.querySelectorAll("input,textarea,select"),
-    );
+    const controls = Array.from(window.document.querySelectorAll("input,textarea,select"));
     const entries = controls.map((control) => ({
       text: normalizeStaleFillLabel(accessibleNameForControl(control, window)),
       value: (control as HTMLInputElement | HTMLTextAreaElement).value,
@@ -1512,7 +1385,7 @@ function resolveFieldElementValue(
  */
 function resolveFieldValueFromCapture(
   fieldValuesAtFailure: readonly FieldValueAtFailure[],
-  fieldLabel: string,
+  fieldLabel: string
 ): string | null {
   const normalizedLabel = normalizeStaleFillLabel(fieldLabel);
   if (!normalizedLabel) return null;
@@ -1528,7 +1401,7 @@ export function filterCompletedFromReplan(
   completedSteps: readonly string[],
   failedStep: string,
   bodyHtmlAtFailure?: string | null,
-  fieldValuesAtFailure?: readonly FieldValueAtFailure[] | null,
+  fieldValuesAtFailure?: readonly FieldValueAtFailure[] | null
 ): NormalizedStep[] {
   const isStaleFill = (step: string): boolean => {
     if (!bodyHtmlAtFailure && !fieldValuesAtFailure) return false;
@@ -1559,9 +1432,7 @@ export function filterCompletedFromReplan(
     return true;
   };
   const completed = new Set(completedSteps.filter((s) => !isStaleFill(s)));
-  return newSteps.filter(
-    (s) => s.instruction === failedStep || !completed.has(s.instruction),
-  );
+  return newSteps.filter((s) => s.instruction === failedStep || !completed.has(s.instruction));
 }
 
 /** Whitespace/case-insensitive normalization for comparing step instructions. */
@@ -1601,9 +1472,7 @@ function extractQuotedLabels(instruction: string): string[] {
  * this same array also carries structurally unrelated reasons (selector
  * failures, timeouts, internal errors).
  */
-export function extractSubmitJudgeRequiredFields(
-  reasons: readonly string[],
-): string[] {
+export function extractSubmitJudgeRequiredFields(reasons: readonly string[]): string[] {
   const pattern = /submit-judge-rejected:.*\(([^()]+?)\s+fields?\)/;
   return reasons.flatMap((reason) => {
     const match = pattern.exec(reason);
@@ -1626,9 +1495,7 @@ export function extractSubmitJudgeRequiredFields(
  */
 function stepSignature(instruction: string): string {
   const labels = extractQuotedLabels(instruction);
-  return labels.length > 0
-    ? [...labels].sort().join(",")
-    : normalizeInstruction(instruction);
+  return labels.length > 0 ? [...labels].sort().join(",") : normalizeInstruction(instruction);
 }
 
 /**
@@ -1652,7 +1519,7 @@ function stepSignature(instruction: string): string {
  */
 function isReplanStepDuplicatingNextAuthoredStep(
   bridgeStep: string,
-  nextAuthoredStep: string,
+  nextAuthoredStep: string
 ): boolean {
   const bridgeLabels = extractQuotedLabels(bridgeStep);
   const nextLabels = extractQuotedLabels(nextAuthoredStep);
@@ -1668,10 +1535,7 @@ function isReplanStepDuplicatingNextAuthoredStep(
  * {@link isReplanStepDuplicatingNextAuthoredStep}, applied against the failed
  * step's instruction instead of the next authored one.
  */
-function isReplanStepResumingFailedStep(
-  bridgeStep: string,
-  failedStep: string,
-): boolean {
+function isReplanStepResumingFailedStep(bridgeStep: string, failedStep: string): boolean {
   const bridgeLabels = extractQuotedLabels(bridgeStep);
   const failedLabels = extractQuotedLabels(failedStep);
   if (bridgeLabels.length === 0 || failedLabels.length === 0) return false;
@@ -1708,26 +1572,24 @@ function isReplanStepResumingFailedStep(
  */
 export function applyFailedStepFlagsToResumingBridgeStep(
   newSteps: readonly NormalizedStep[],
-  failedStep: NormalizedStep,
+  failedStep: NormalizedStep
 ): NormalizedStep[] {
   if (!failedStep.captchaGated && !failedStep.submitStep) return [...newSteps];
   const hasLabelMatch = newSteps.some((s) =>
-    isReplanStepResumingFailedStep(s.instruction, failedStep.instruction),
+    isReplanStepResumingFailedStep(s.instruction, failedStep.instruction)
   );
   const fallbackIndex = !hasLabelMatch && newSteps.length > 0 ? 0 : -1;
   return newSteps.map((s, idx) =>
-    isReplanStepResumingFailedStep(s.instruction, failedStep.instruction) ||
-    idx === fallbackIndex
+    isReplanStepResumingFailedStep(s.instruction, failedStep.instruction) || idx === fallbackIndex
       ? {
           ...s,
           captchaGated: s.captchaGated || failedStep.captchaGated,
           submitStep:
             s.submitStep ||
             (failedStep.submitStep &&
-              (failedStep.captchaGated ||
-                isSubmitShapedInstructionText(s.instruction))),
+              (failedStep.captchaGated || isSubmitShapedInstructionText(s.instruction))),
         }
-      : s,
+      : s
   );
 }
 
@@ -1744,13 +1606,12 @@ export function applyFailedStepFlagsToResumingBridgeStep(
  */
 export function filterReplanDuplicatingNextAuthored(
   newSteps: readonly NormalizedStep[],
-  originalRemaining: readonly NormalizedStep[],
+  originalRemaining: readonly NormalizedStep[]
 ): NormalizedStep[] {
   const nextAuthored = originalRemaining[0]?.instruction;
   if (nextAuthored === undefined) return [...newSteps];
   return newSteps.filter(
-    (s) =>
-      !isReplanStepDuplicatingNextAuthoredStep(s.instruction, nextAuthored),
+    (s) => !isReplanStepDuplicatingNextAuthoredStep(s.instruction, nextAuthored)
   );
 }
 
@@ -1799,14 +1660,12 @@ function hasCompoundBridgeClause(instruction: string): boolean {
  */
 export function isReplanReproposingFailedStep(
   newSteps: readonly NormalizedStep[],
-  failedStep: string,
+  failedStep: string
 ): boolean {
   if (newSteps.length === 0) return false;
   const failedSig = stepSignature(failedStep);
   return newSteps.every(
-    (s) =>
-      stepSignature(s.instruction) === failedSig &&
-      !hasCompoundBridgeClause(s.instruction),
+    (s) => stepSignature(s.instruction) === failedSig && !hasCompoundBridgeClause(s.instruction)
   );
 }
 
@@ -1825,7 +1684,7 @@ export function decideReplanNoProgress(
   newSteps: readonly NormalizedStep[],
   failedStep: string,
   attempts: ReadonlyArray<{ errorMessage?: string | null }> | null | undefined,
-  retryCounts: Map<string, number>,
+  retryCounts: Map<string, number>
 ): "proceed" | "retry" | "abort" {
   if (!isReplanReproposingFailedStep(newSteps, failedStep)) return "proceed";
   if (!attempts || !summarizeAttemptTransience(attempts).all) return "abort";
@@ -1871,7 +1730,7 @@ function originAndPath(url: string): string | null {
 export function hasPageAlreadyAdvancedPastStep(
   stepStartUrl: string,
   currentUrl: string,
-  stepInstruction: string,
+  stepInstruction: string
 ): boolean {
   const start = originAndPath(stepStartUrl);
   const current = originAndPath(currentUrl);
@@ -1910,18 +1769,18 @@ const ACCOUNT_CREATION_PATTERNS = [
  */
 export function isReplanRegressingAcrossAuthBoundary(
   newSteps: readonly NormalizedStep[],
-  completedSteps: readonly string[],
+  completedSteps: readonly string[]
 ): boolean {
   const hasAccountCreation = completedSteps.some((s) =>
     splitIntoActionClauses(s).some((clause) =>
-      ACCOUNT_CREATION_PATTERNS.some((p) => p.test(clause)),
-    ),
+      ACCOUNT_CREATION_PATTERNS.some((p) => p.test(clause))
+    )
   );
   if (!hasAccountCreation) return false;
   return newSteps.some((s) =>
     splitIntoActionClauses(s.instruction).some((clause) =>
-      SIGN_IN_PATTERNS.some((p) => p.test(clause)),
-    ),
+      SIGN_IN_PATTERNS.some((p) => p.test(clause))
+    )
   );
 }
 
@@ -1970,12 +1829,10 @@ export function isSubmitShapedInstructionText(instruction: string): boolean {
  * to what this function decides. Pure: same inputs, same output.
  */
 export function seedSubmitStepFromOwnInstructionText(
-  steps: readonly NormalizedStep[],
+  steps: readonly NormalizedStep[]
 ): NormalizedStep[] {
   return steps.map((s) =>
-    s.submitStep || !isSubmitShapedInstructionText(s.instruction)
-      ? s
-      : { ...s, submitStep: true },
+    s.submitStep || !isSubmitShapedInstructionText(s.instruction) ? s : { ...s, submitStep: true }
   );
 }
 
@@ -2000,17 +1857,14 @@ const MANAGED_FLOW_FILE_KEYS = new Set([
  * original (bare array, or unparseable bytes) yields no extra keys — the
  * caller's explicit params remain the sole source of truth in that case.
  */
-function extractUnmanagedFlowFileKeys(
-  originalBytes: Buffer,
-): Record<string, unknown> {
+function extractUnmanagedFlowFileKeys(originalBytes: Buffer): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(originalBytes.toString("utf8"));
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
-      return {};
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     return Object.fromEntries(
       Object.entries(parsed as Record<string, unknown>).filter(
-        ([key]) => !MANAGED_FLOW_FILE_KEYS.has(key),
-      ),
+        ([key]) => !MANAGED_FLOW_FILE_KEYS.has(key)
+      )
     );
   } catch {
     return {};
@@ -2080,7 +1934,7 @@ function persistReplannedFlow(params: {
     originalBytes = readFileSync(flowFile);
   } catch (err) {
     logger.error(
-      `persistReplannedFlow: failed to read original ${flowFile}: ${toErrorMessage(err)} — skipping write-back (${replanEvents.length} replan event(s) left in memory)`,
+      `persistReplannedFlow: failed to read original ${flowFile}: ${toErrorMessage(err)} — skipping write-back (${replanEvents.length} replan event(s) left in memory)`
     );
     return;
   }
@@ -2101,11 +1955,7 @@ function persistReplannedFlow(params: {
   // by denormalizeStep.
   const targetDeduped = dedupeReplanStepsByTarget(finalPlan);
   const denormalizedSteps = targetDeduped.map((step) =>
-    denormalizeStep(
-      step.origin === "replan" && !step.optional
-        ? { ...step, optional: true }
-        : step,
-    ),
+    denormalizeStep(step.origin === "replan" && !step.optional ? { ...step, optional: true } : step)
   );
   // Then a global structural pass for identical blocks that carry no targetId
   // (e.g. label-less clickable bridges): each cascade-exhausted replan re-appends
@@ -2121,25 +1971,19 @@ function persistReplannedFlow(params: {
           ...extractUnmanagedFlowFileKeys(originalBytes),
           steps: dedupedSteps,
           ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
-          ...(submittedStateSelectors.length > 0
-            ? { submittedStateSelectors }
-            : {}),
+          ...(submittedStateSelectors.length > 0 ? { submittedStateSelectors } : {}),
           ...(requireSubmitEndpointMatch ? { requireSubmitEndpointMatch } : {}),
           ...(successUrlFragments.length > 0 ? { successUrlFragments } : {}),
-          ...(successPageTitleHints.length > 0
-            ? { successPageTitleHints }
-            : {}),
+          ...(successPageTitleHints.length > 0 ? { successPageTitleHints } : {}),
           ...(ownBackendHostnames.length > 0 ? { ownBackendHostnames } : {}),
-          ...(knownErrorClassPrefixes.length > 0
-            ? { knownErrorClassPrefixes }
-            : {}),
+          ...(knownErrorClassPrefixes.length > 0 ? { knownErrorClassPrefixes } : {}),
         }
       : dedupedSteps;
   mkdirSync(runDir, { recursive: true });
   writeFileSync(outPath, `${JSON.stringify(payload, null, 2)}\n`);
   if (dedupedSteps.length !== denormalizedSteps.length) {
     logger.info(
-      `dedupe collapsed ${denormalizedSteps.length - dedupedSteps.length} consecutive identical step(s) before write-back`,
+      `dedupe collapsed ${denormalizedSteps.length - dedupedSteps.length} consecutive identical step(s) before write-back`
     );
   }
 
@@ -2148,19 +1992,17 @@ function persistReplannedFlow(params: {
   // Lines call out the failed instruction string verbatim + the bridge that
   // took its place so a reviewer can diff intent without opening both files.
   logger.info("── replanned flow written ─────────────────────────────────");
-  logger.info(
-    `replanned flow written to run dir: ${outPath} (input ${flowFile} untouched)`,
-  );
+  logger.info(`replanned flow written to run dir: ${outPath} (input ${flowFile} untouched)`);
   logger.info(`replacements (${replanEvents.length}):`);
   for (const ev of replanEvents) {
     logger.info(
-      `  - replan #${ev.replanIndex} (${ev.cause}) at step ${ev.indexAtFailure + 1} @ ${ev.timestamp}`,
+      `  - replan #${ev.replanIndex} (${ev.cause}) at step ${ev.indexAtFailure + 1} @ ${ev.timestamp}`
     );
     logger.info(`      failed: ${ev.failedInstruction}`);
     logger.info(`      replaced with ${ev.replanSteps.length} step(s):`);
     for (const s of ev.replanSteps) {
       logger.info(
-        `        • ${s.instruction}${s.optional ? " (optional)" : ""}${s.upload ? " (upload)" : ""}`,
+        `        • ${s.instruction}${s.optional ? " (optional)" : ""}${s.upload ? " (upload)" : ""}`
       );
     }
   }
@@ -2170,7 +2012,7 @@ function persistReplannedFlow(params: {
 
 export function renderStepWindow(
   steps: readonly string[],
-  options: { head?: number; tail?: number } = {},
+  options: { head?: number; tail?: number } = {}
 ): string {
   const { head = 0, tail = 10 } = options;
   if (steps.length === 0) return "(none)";
@@ -2210,7 +2052,7 @@ export function renderStepWindow(
  */
 export function countSlugPrefixMatches(
   currentFailedStep: string,
-  priorReplans: readonly ReplanEvent[],
+  priorReplans: readonly ReplanEvent[]
 ): number {
   const slugOf = (s: string): string =>
     s
@@ -2249,7 +2091,7 @@ async function readFailureDumpEvidence(
      * no-op for flows without a `frameSelector`.
      */
     frameSelector?: string | null;
-  },
+  }
 ): Promise<{
   bodyExcerpt: string;
   unfocusedList: string;
@@ -2264,8 +2106,7 @@ async function readFailureDumpEvidence(
       attempts?: { errorMessage?: string | null }[];
     };
     const rawBody = dump.bodyOuterHtml;
-    const bodyExcerpt =
-      typeof rawBody === "string" ? selectBodyExcerpt(rawBody) : "";
+    const bodyExcerpt = typeof rawBody === "string" ? selectBodyExcerpt(rawBody) : "";
 
     const client = options?.client ?? null;
     const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
@@ -2281,9 +2122,7 @@ async function readFailureDumpEvidence(
     // flow whose form lives inside a declared iframe probes that document
     // instead of always querying the top document.
     const leafFields = page
-      ? await probeLeafInvalidContainers(
-          await resolveFrameTarget(page, frameSelector),
-        )
+      ? await probeLeafInvalidContainers(await resolveFrameTarget(page, frameSelector))
       : [];
 
     const [unfocusedList, invalidVerdict, errorVerdict] = await Promise.all([
@@ -2330,9 +2169,7 @@ async function readFailureDumpEvidence(
     // rephrase prompt sees. Surfacing them here gives the replan LLM the
     // same context.
     const recentFailureReasons = (dump.attempts ?? [])
-      .map((a) =>
-        typeof a.errorMessage === "string" ? a.errorMessage.trim() : "",
-      )
+      .map((a) => (typeof a.errorMessage === "string" ? a.errorMessage.trim() : ""))
       .filter((r): r is string => r.length > 0)
       .slice(-5);
 
@@ -2441,8 +2278,7 @@ async function replanRemainingFlow(params: {
       ? trajectory
           .slice(-5)
           .map(
-            (t) =>
-              `step ${t.stepIndex + 1} verified via ${t.verifiedBy ?? "(no signal recorded)"}`,
+            (t) => `step ${t.stepIndex + 1} verified via ${t.verifiedBy ?? "(no signal recorded)"}`
           )
           .join("; ")
       : "";
@@ -2453,7 +2289,7 @@ async function replanRemainingFlow(params: {
             (ev) =>
               `replan #${ev.replanIndex} (failed on: ${ev.failedInstruction})\nproposed:\n${ev.replanSteps
                 .map((s, i) => `  ${i + 1}. ${s.instruction}`)
-                .join("\n")}`,
+                .join("\n")}`
           )
           .join("\n\n")
       : "";
@@ -2461,7 +2297,7 @@ async function replanRemainingFlow(params: {
     stagehand,
     undefined,
     { timeout: STEP_WATCHDOG_MS },
-    captureFn,
+    captureFn
   ).catch(() => [] as Action[]);
   const candidateList = await renderUnfocusedObserve(candidates, {
     client,
@@ -2475,26 +2311,16 @@ async function replanRemainingFlow(params: {
   // Without raw DOM in the prompt, the LLM only sees stagehand.observe()'s
   // filtered candidate list and hallucinates about surrounding state
   // (auth-wall reset, closed-message interstitial, etc.).
-  const {
-    bodyExcerpt,
-    unfocusedList,
-    invalidFieldList,
-    errorTextList,
-    recentFailureReasons,
-  } = await readFailureDumpEvidence(failureDumpPath, {
-    client,
-    knownErrorClassPrefixes: replanKnownErrorClassPrefixes,
-    captureFn,
-    page,
-    frameSelector,
-  });
-  const failureReasonList = recentFailureReasons
-    .map((r, i) => `${i + 1}. ${r}`)
-    .join("\n");
-  const submitFailureList = extractSubmitFailureEvidence(
-    recentCaptures,
-    ownBackendHostnames,
-  );
+  const { bodyExcerpt, unfocusedList, invalidFieldList, errorTextList, recentFailureReasons } =
+    await readFailureDumpEvidence(failureDumpPath, {
+      client,
+      knownErrorClassPrefixes: replanKnownErrorClassPrefixes,
+      captureFn,
+      page,
+      frameSelector,
+    });
+  const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
+  const submitFailureList = extractSubmitFailureEvidence(recentCaptures, ownBackendHostnames);
   const gaEventList = extractGaEventEvidence(recentCaptures);
 
   // False-premise meta-signal: when 2+ prior replans failed on a step
@@ -2538,8 +2364,7 @@ async function replanRemainingFlow(params: {
   // fields are still missing/invalid. Without a dedicated directive, that
   // detail sits inside the generic WHY VERIFICATION FAILED prose and the LLM
   // has re-proposed the identical just-failed step instead of acting on it.
-  const stillRequiredFields =
-    extractSubmitJudgeRequiredFields(recentFailureReasons);
+  const stillRequiredFields = extractSubmitJudgeRequiredFields(recentFailureReasons);
   const stillRequiredFieldsCheck =
     stillRequiredFields.length > 0
       ? `STILL-REQUIRED FIELDS (per the site's own submit validator) — these fields were explicitly named by the submit-judge as still missing/invalid; your bridge MUST include one fill step per named field below instead of re-proposing the step that just failed:\n${stillRequiredFields.map((field) => `- ${field}`).join("\n")}`
@@ -2554,21 +2379,18 @@ async function replanRemainingFlow(params: {
     .map((step) => ({ step, parsed: parseFillStep(step) }))
     .filter(
       (
-        entry,
+        entry
       ): entry is {
         step: string;
         parsed: { fieldLabel: string; value: string };
-      } => entry.parsed !== null,
+      } => entry.parsed !== null
     );
   const fillReverificationCheck =
     completedFillSteps.length > 0
       ? `FILL-STEP RE-VERIFICATION — Some of the STEPS ALREADY COMPLETED are fills (they wrote a specific value into a field). An intervening navigation or panel toggle can silently reset a filled field without producing a failure of its own, so "already completed" does NOT guarantee "still true" for fills. For each of these completed fill steps, check PAGE BODY HTML AT FAILURE for that field still showing the value it was filled with:\n${completedFillSteps
-          .map(
-            ({ parsed }) =>
-              `- ${parsed.fieldLabel}: expected value '${parsed.value}'`,
-          )
+          .map(({ parsed }) => `- ${parsed.fieldLabel}: expected value '${parsed.value}'`)
           .join(
-            "\n",
+            "\n"
           )}\nIf a field's value is no longer present in PAGE BODY HTML AT FAILURE, include a fresh fill step for that field in your recovery bridge — do not assume it's still filled just because it appears in STEPS ALREADY COMPLETED.`
       : "";
 
@@ -2803,8 +2625,8 @@ function dumpReplanRecord(params: {
         newRemaining: params.newRemaining,
       },
       null,
-      2,
-    ),
+      2
+    )
   );
   return target;
 }
@@ -2948,8 +2770,7 @@ function parseCli(): {
   let flowFile: string | null = null;
   let provider: ProviderName | undefined;
   // Precedence: --upload-fixture flag > UPLOAD_FIXTURE_PATH env > default path.
-  let uploadFixturePath =
-    process.env.UPLOAD_FIXTURE_PATH || DEFAULT_UPLOAD_FIXTURE_PATH;
+  let uploadFixturePath = process.env.UPLOAD_FIXTURE_PATH || DEFAULT_UPLOAD_FIXTURE_PATH;
   let saveReplan = true;
   let advancedStealth = false;
   let dumpDomBeforeStep: number | null = null;
@@ -2969,9 +2790,7 @@ function parseCli(): {
     } else if (args[i] === "--provider" && args[i + 1]) {
       const raw = args[++i]!.toLowerCase();
       if (raw !== "browserbase" && raw !== "steel") {
-        logger.error(
-          `--provider must be "browserbase" or "steel" (got ${JSON.stringify(raw)})`,
-        );
+        logger.error(`--provider must be "browserbase" or "steel" (got ${JSON.stringify(raw)})`);
         process.exit(1);
       }
       provider = raw;
@@ -2985,7 +2804,7 @@ function parseCli(): {
       const n = Number.parseInt(args[++i]!, 10);
       if (!Number.isInteger(n) || n < 1) {
         logger.error(
-          `--dump-dom-before-step must be a positive integer (got ${JSON.stringify(args[i])})`,
+          `--dump-dom-before-step must be a positive integer (got ${JSON.stringify(args[i])})`
         );
         process.exit(1);
       }
@@ -2994,7 +2813,7 @@ function parseCli(): {
       const name = args[++i]!;
       if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) {
         logger.error(
-          `--allocate-email value must be an UPPERCASE_SNAKE_CASE env var name (got ${JSON.stringify(name)})`,
+          `--allocate-email value must be an UPPERCASE_SNAKE_CASE env var name (got ${JSON.stringify(name)})`
         );
         process.exit(1);
       }
@@ -3003,7 +2822,7 @@ function parseCli(): {
       const name = args[++i]!;
       if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) {
         logger.error(
-          `--allocate-phone value must be an UPPERCASE_SNAKE_CASE env var name (got ${JSON.stringify(name)})`,
+          `--allocate-phone value must be an UPPERCASE_SNAKE_CASE env var name (got ${JSON.stringify(name)})`
         );
         process.exit(1);
       }
@@ -3012,7 +2831,7 @@ function parseCli(): {
       const n = Number.parseInt(args[++i]!, 10);
       if (!Number.isInteger(n) || n < 1) {
         logger.error(
-          `--max-cascade-replans must be a positive integer (got ${JSON.stringify(args[i])})`,
+          `--max-cascade-replans must be a positive integer (got ${JSON.stringify(args[i])})`
         );
         process.exit(1);
       }
@@ -3021,7 +2840,7 @@ function parseCli(): {
       const n = Number.parseInt(args[++i]!, 10);
       if (!Number.isInteger(n) || n < 1) {
         logger.error(
-          `--max-probe-replans must be a positive integer (got ${JSON.stringify(args[i])})`,
+          `--max-probe-replans must be a positive integer (got ${JSON.stringify(args[i])})`
         );
         process.exit(1);
       }
@@ -3033,7 +2852,7 @@ function parseCli(): {
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>] [--allocate-phone <ENV_VAR_NAME>] [--max-cascade-replans <N>] [--max-probe-replans <N>] [--allow-empty-flow]',
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>] [--allocate-phone <ENV_VAR_NAME>] [--max-cascade-replans <N>] [--max-probe-replans <N>] [--allow-empty-flow]'
     );
     process.exit(1);
   }
@@ -3045,9 +2864,7 @@ function parseCli(): {
     try {
       rawFlow = JSON.parse(readFileSync(flowFile, "utf8"));
     } catch (err) {
-      logger.error(
-        `failed to read --flow-file ${flowFile}: ${toErrorMessage(err)}`,
-      );
+      logger.error(`failed to read --flow-file ${flowFile}: ${toErrorMessage(err)}`);
       process.exit(1);
     }
   }
@@ -3085,15 +2902,11 @@ function parseCli(): {
   }
   const parsed = RECON_FLOW_FILE_SCHEMA.safeParse(rawFlow);
   if (!parsed.success) {
-    logger.error(
-      `flow file/arg failed schema validation: ${parsed.error.message}`,
-    );
+    logger.error(`flow file/arg failed schema validation: ${parsed.error.message}`);
     process.exit(1);
   }
   const stepsRaw = Array.isArray(parsed.data) ? parsed.data : parsed.data.steps;
-  const frameSelector = Array.isArray(parsed.data)
-    ? null
-    : (parsed.data.frameSelector ?? null);
+  const frameSelector = Array.isArray(parsed.data) ? null : (parsed.data.frameSelector ?? null);
   const submitEndpointPattern = Array.isArray(parsed.data)
     ? null
     : (parsed.data.submitEndpointPattern ?? null);
@@ -3106,9 +2919,7 @@ function parseCli(): {
   const requireSubmitEndpointMatch = Array.isArray(parsed.data)
     ? false
     : (parsed.data.requireSubmitEndpointMatch ?? false);
-  const readOnly = Array.isArray(parsed.data)
-    ? false
-    : (parsed.data.readOnly ?? false);
+  const readOnly = Array.isArray(parsed.data) ? false : (parsed.data.readOnly ?? false);
   const advanceTransitionBodyPattern = Array.isArray(parsed.data)
     ? null
     : (parsed.data.advanceTransitionBodyPattern ?? null);
@@ -3137,9 +2948,7 @@ function parseCli(): {
     try {
       new RegExp(submitEndpointPattern);
     } catch (err) {
-      logger.error(
-        `flow file: submitEndpointPattern is not a valid regex: ${toErrorMessage(err)}`,
-      );
+      logger.error(`flow file: submitEndpointPattern is not a valid regex: ${toErrorMessage(err)}`);
       process.exit(1);
     }
   }
@@ -3147,9 +2956,7 @@ function parseCli(): {
     try {
       new RegExp(submitBodyPattern);
     } catch (err) {
-      logger.error(
-        `flow file: submitBodyPattern is not a valid regex: ${toErrorMessage(err)}`,
-      );
+      logger.error(`flow file: submitBodyPattern is not a valid regex: ${toErrorMessage(err)}`);
       process.exit(1);
     }
   }
@@ -3192,7 +2999,7 @@ function parseCli(): {
  * involve an upload step aren't affected by a missing fixture).
  */
 function loadUploadFixture(
-  path: string,
+  path: string
 ): { buffer: Buffer; name: string; mimeType: string } | null {
   try {
     const buffer = readFileSync(path);
@@ -3205,7 +3012,7 @@ function loadUploadFixture(
     return { buffer, name, mimeType };
   } catch (err) {
     logger.warn(
-      `upload fixture not loaded from ${path}: ${toErrorMessage(err)} — upload primitive will fall through`,
+      `upload fixture not loaded from ${path}: ${toErrorMessage(err)} — upload primitive will fall through`
     );
     return null;
   }
@@ -3220,7 +3027,7 @@ export async function replanForFailedStep(
   args: Omit<Parameters<typeof replanRemainingFlow>[0], "frameSelector"> & {
     failedStepFrameSelector: string | undefined;
     flowFrameSelector: string | null | undefined;
-  },
+  }
 ): ReturnType<typeof replanRemainingFlow> {
   const { failedStepFrameSelector, flowFrameSelector, ...rest } = args;
   const raw = await replanRemainingFlow({
@@ -3248,16 +3055,10 @@ export function collectAllocatedPersonaEnv(opts: {
 }
 
 /** Writes persona-env.json under the run root; no-op when empty. */
-export function persistPersonaEnv(
-  root: string,
-  env: Record<string, string>,
-): void {
+export function persistPersonaEnv(root: string, env: Record<string, string>): void {
   if (Object.keys(env).length === 0) return;
   mkdirSync(root, { recursive: true });
-  writeFileSync(
-    join(root, "persona-env.json"),
-    `${JSON.stringify(env, null, 2)}\n`,
-  );
+  writeFileSync(join(root, "persona-env.json"), `${JSON.stringify(env, null, 2)}\n`);
 }
 
 async function main(): Promise<void> {
@@ -3295,8 +3096,7 @@ async function main(): Promise<void> {
   // (config.scraper.max*Replans) > the built-in default constants. A known-deep
   // wizard can raise its own ceiling per-run without a code change; nothing set
   // preserves the historical budget of 5.
-  const resolvedCascadeBudget =
-    maxCascadeReplans ?? config.scraper.maxCascadeReplans;
+  const resolvedCascadeBudget = maxCascadeReplans ?? config.scraper.maxCascadeReplans;
   const resolvedProbeBudget = maxProbeReplans ?? config.scraper.maxProbeReplans;
 
   // Allocate a fresh testmail.app inbox + bind it to the requested env var
@@ -3308,7 +3108,7 @@ async function main(): Promise<void> {
     allocatedInbox = allocateTestmailInbox();
     process.env[allocateEmailEnvVar] = allocatedInbox.address;
     logger.info(
-      `bound allocated testmail address to env var ${allocateEmailEnvVar}=${allocatedInbox.address}`,
+      `bound allocated testmail address to env var ${allocateEmailEnvVar}=${allocatedInbox.address}`
     );
   }
 
@@ -3320,9 +3120,7 @@ async function main(): Promise<void> {
     allocatePhone: () => {
       const phone = allocateFictionalPhone();
       process.env[allocatePhoneEnvVar as string] = phone;
-      logger.info(
-        `bound allocated phone number to env var ${allocatePhoneEnvVar}=${phone}`,
-      );
+      logger.info(`bound allocated phone number to env var ${allocatePhoneEnvVar}=${phone}`);
       return phone;
     },
   });
@@ -3337,12 +3135,12 @@ async function main(): Promise<void> {
   if (flow.length === 0) {
     if (!allowEmptyFlow) {
       logger.error(
-        "recon-browser: no flow steps supplied — a landing-only capture cannot scaffold a submission plugin. Pass --flow/--flow-file, or --allow-empty-flow to override.",
+        "recon-browser: no flow steps supplied — a landing-only capture cannot scaffold a submission plugin. Pass --flow/--flow-file, or --allow-empty-flow to override."
       );
       process.exit(1);
     }
     logger.warn(
-      "WARN --allow-empty-flow set with zero steps: capturing landing-page traffic only. Do NOT feed this run dir to recon:generate as a submission flow.",
+      "WARN --allow-empty-flow set with zero steps: capturing landing-page traffic only. Do NOT feed this run dir to recon:generate as a submission flow."
     );
   }
 
@@ -3358,27 +3156,20 @@ async function main(): Promise<void> {
   // sidecar resolve to the same directory.
   const runTimestampMs = Date.now();
   const callsNdjsonPath =
-    siteTelemetryDir !== null
-      ? resolveRunCallsPath(siteTelemetryDir, runTimestampMs, url)
-      : null;
+    siteTelemetryDir !== null ? resolveRunCallsPath(siteTelemetryDir, runTimestampMs, url) : null;
   if (siteTelemetryDir !== null && callsNdjsonPath !== null) {
     mkdirSync(dirname(callsNdjsonPath), { recursive: true });
-    writeFileSync(
-      resolveRunUrlPath(siteTelemetryDir, runTimestampMs, url),
-      `${url}\n`,
-    );
+    writeFileSync(resolveRunUrlPath(siteTelemetryDir, runTimestampMs, url), `${url}\n`);
     logger.info(`telemetry: per-URL partition at ${callsNdjsonPath}`);
   } else {
-    logger.info(
-      "telemetry: no flow file path — call capture disabled for this run",
-    );
+    logger.info("telemetry: no flow file path — call capture disabled for this run");
   }
   const captureFn: CaptureFn =
     callsNdjsonPath !== null
       ? (input) => captureLlmCall(input, { sinkPath: callsNdjsonPath })
       : async () => {};
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} upload_fixture=${uploadFixture ? `${uploadFixturePath} (${uploadFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`,
+    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} upload_fixture=${uploadFixture ? `${uploadFixturePath} (${uploadFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`
   );
 
   // Run-wide replan budgets: declared here (not inside runFlowAttempt) so a
@@ -3419,8 +3210,7 @@ async function main(): Promise<void> {
     // file may have included for sites where it's actually needed). GETs are
     // filtered at the push site so the window isn't washed out by SPA chunk
     // loads — see the comment in wireNetworkCapture's onFinished.
-    const recentCaptureMeta: { method: string; status: number; url: string }[] =
-      [];
+    const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
     // Read-versus-write evidence from captures matching the declared submit
     // pattern (GETs included, which recentCaptureMeta filters out): a matching
     // read sets sawMatchedRead; a matching non-read sets sawMatchedWrite.
@@ -3431,8 +3221,7 @@ async function main(): Promise<void> {
     const matchedEndpointRx = compileOptionalRegex(submitEndpointPattern);
     const matchedBodyRx = compileOptionalRegex(submitBodyPattern);
     const readEvidenceNow = (): boolean =>
-      matchedCaptureEvidence.sawMatchedRead &&
-      !matchedCaptureEvidence.sawMatchedWrite;
+      matchedCaptureEvidence.sawMatchedRead && !matchedCaptureEvidence.sawMatchedWrite;
 
     // Hoisted out of the try block so the finally can run the replan
     // write-back even when the cascade throws — replan-discovered steps
@@ -3475,14 +3264,8 @@ async function main(): Promise<void> {
           () => currentPhase,
           currentPageOrigin,
           captureTracker,
-          (c) =>
-            recordMatchedCapture(
-              c,
-              matchedEndpointRx,
-              matchedBodyRx,
-              matchedCaptureEvidence,
-            ),
-        ),
+          (c) => recordMatchedCapture(c, matchedEndpointRx, matchedBodyRx, matchedCaptureEvidence)
+        )
       );
       const stopCapture = capture.stopAll;
 
@@ -3500,16 +3283,10 @@ async function main(): Promise<void> {
         });
       } catch (err) {
         logger.warn(
-          `navigation wait (${GOTO_WAIT_UNTIL}) did not settle: ${toErrorMessage(err)} — continuing; the SPA readiness probe below decides whether the page is usable`,
+          `navigation wait (${GOTO_WAIT_UNTIL}) did not settle: ${toErrorMessage(err)} — continuing; the SPA readiness probe below decides whether the page is usable`
         );
       }
-      await snapshotAndPersistCookieJar(
-        page,
-        jarCounter,
-        "goto",
-        currentPhase,
-        -1,
-      );
+      await snapshotAndPersistCookieJar(page, jarCounter, "goto", currentPhase, -1);
 
       await waitForSpaReady(page, logger);
 
@@ -3517,7 +3294,7 @@ async function main(): Promise<void> {
       const rephraseModel = buildRephraseModel();
       if (!anthropic) {
         logger.warn(
-          "bedrock-only deployment: global replan will be skipped on step failures (attempt-5 llm rephrase still runs on the Bedrock-backed model)",
+          "bedrock-only deployment: global replan will be skipped on step failures (attempt-5 llm rephrase still runs on the Bedrock-backed model)"
         );
       }
 
@@ -3553,7 +3330,7 @@ async function main(): Promise<void> {
           // Declare-only: persisted with the flow but never dispatched to any
           // executor, submit verification, or replan at record time.
           logger.info(
-            `${formatStepPrefix(i, () => plan.length)}: declareOnly — recorded without executing: ${step.instruction}`,
+            `${formatStepPrefix(i, () => plan.length)}: declareOnly — recorded without executing: ${step.instruction}`
           );
           completedSteps.push(step.instruction);
           continue;
@@ -3570,7 +3347,7 @@ async function main(): Promise<void> {
             return page.url();
           } catch (err) {
             throw new SessionTimeoutError(
-              `${formatStepPrefix(i, () => plan.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${plan.length} steps completed`,
+              `${formatStepPrefix(i, () => plan.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${plan.length} steps completed`
             );
           }
         };
@@ -3581,15 +3358,9 @@ async function main(): Promise<void> {
             .replace(/^-|-$/g, "")
             .slice(0, 24) || `step-${i}`;
         logger.info(
-          `${formatStepPrefix(i, () => plan.length)} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`,
+          `${formatStepPrefix(i, () => plan.length)} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
         );
-        await snapshotAndPersistCookieJar(
-          page,
-          jarCounter,
-          "pre-step",
-          currentPhase,
-          i,
-        );
+        await snapshotAndPersistCookieJar(page, jarCounter, "pre-step", currentPhase, i);
         // Re-gate on SPA hydration when the origin changed since the last step —
         // the wizard SPA (e.g. apply.<ats>.com after the Apply click) boots on
         // a new origin the initial-goto readiness gate never covered, so wait for
@@ -3597,7 +3368,7 @@ async function main(): Promise<void> {
         const currentOrigin = originOf(readLiveUrl());
         if (currentOrigin !== "" && currentOrigin !== lastOrigin) {
           logger.info(
-            `origin changed ${lastOrigin || "(none)"} → ${currentOrigin}; re-gating on SPA hydration`,
+            `origin changed ${lastOrigin || "(none)"} → ${currentOrigin}; re-gating on SPA hydration`
           );
           await regateSpaAfterOriginChange(page, logger);
           lastOrigin = currentOrigin;
@@ -3609,28 +3380,26 @@ async function main(): Promise<void> {
           try {
             const html = await withWatchdog(
               () =>
-                page.evaluate(
-                  "document.documentElement ? document.documentElement.outerHTML : ''",
-                ),
+                page.evaluate("document.documentElement ? document.documentElement.outerHTML : ''"),
               {
                 timeoutMs: config.scraper.frameEvaluateTimeoutMs,
                 label: "dump-dom-before-step: evaluate",
-              },
+              }
             );
             if (typeof html === "string" && html.length > 0) {
               const dumpPath = join(runDir.root, `dom-dump-step-${i + 1}.html`);
               writeFileSync(dumpPath, html);
               logger.info(
-                `${formatStepPrefix(i, () => plan.length)}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`,
+                `${formatStepPrefix(i, () => plan.length)}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`
               );
             } else {
               logger.warn(
-                `${formatStepPrefix(i, () => plan.length)}: DOM dump returned empty content; skipping write`,
+                `${formatStepPrefix(i, () => plan.length)}: DOM dump returned empty content; skipping write`
               );
             }
           } catch (err) {
             logger.warn(
-              `${formatStepPrefix(i, () => plan.length)}: DOM dump failed: ${toErrorMessage(err)}`,
+              `${formatStepPrefix(i, () => plan.length)}: DOM dump failed: ${toErrorMessage(err)}`
             );
           }
         }
@@ -3646,10 +3415,7 @@ async function main(): Promise<void> {
         // silently reverting to the main frame. `resolveFrameTarget` falls back
         // to the main-frame target when `frameSelector` is null/unresolvable,
         // so this is a no-op for every flow that doesn't declare one.
-        const frameTarget = await resolveFrameTarget(
-          page,
-          step.frameSelector ?? frameSelector,
-        );
+        const frameTarget = await resolveFrameTarget(page, step.frameSelector ?? frameSelector);
         // Captured against the step's resolved frameTarget (not raw page.url())
         // so hasPageAlreadyAdvancedPastStep's before/after comparison below
         // reflects the frame the step actually ran against — a same-origin
@@ -3672,15 +3438,12 @@ async function main(): Promise<void> {
           isFinalStep: i === plan.length - 1,
           flowHasSubmitSemantics: stepFlowHasSubmitSemantics,
         });
-        let elementBaseline:
-          Awaited<ReturnType<typeof snapshotPage>> | undefined;
+        let elementBaseline: Awaited<ReturnType<typeof snapshotPage>> | undefined;
         const textAtStepStart =
           midFlowSubmitShaped ||
           step.submitStep === true ||
           (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW)
-            ? await snapshotPage(frameTarget, signalCounter).catch(
-                () => undefined,
-              )
+            ? await snapshotPage(frameTarget, signalCounter).catch(() => undefined)
             : undefined;
         // A child frame CDP has just attached to may still be sitting on
         // about:blank (the moment right after Target.setAutoAttach fires and
@@ -3714,7 +3477,7 @@ async function main(): Promise<void> {
                     settle: buildNavigateSettle(
                       captureTracker,
                       submitEndpointPattern,
-                      submitBodyPattern,
+                      submitBodyPattern
                     ),
                   })
                 : executeStepWithHealing({
@@ -3791,13 +3554,7 @@ async function main(): Promise<void> {
           // probe. Re-check here so a swallowed mid-step death is still caught at
           // the loop boundary rather than let the loop run to completion.
           readLiveUrl();
-          await snapshotAndPersistCookieJar(
-            page,
-            jarCounter,
-            "post-step",
-            currentPhase,
-            i,
-          );
+          await snapshotAndPersistCookieJar(page, jarCounter, "post-step", currentPhase, i);
 
           // Stamp the step's stable DOM identity from the fast primitive that just
           // resolved it (pushed onto trajectory), so persistReplannedFlow can dedup
@@ -3825,25 +3582,24 @@ async function main(): Promise<void> {
           if (restartUrl !== null) {
             throw new StepVerificationError(
               `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) triggered a wizard restart (${restartUrl.slice(0, 120)}) — the application reset to the first page; aborting`,
-              "wizard-regression",
+              "wizard-regression"
             );
           }
 
           if (stepOutcome === "skipped") {
             const pageStagnant =
-              signalCounter.n === lastSuccessNetworkCount &&
-              readLiveUrl() === lastSuccessUrl;
+              signalCounter.n === lastSuccessNetworkCount && readLiveUrl() === lastSuccessUrl;
             if (pageStagnant) {
               consecutiveStaleSkips++;
             }
             if (consecutiveStaleSkips >= STUCK_SKIP_THRESHOLD) {
               logger.warn(
-                `stuck detection: ${consecutiveStaleSkips} consecutive optional steps skipped with no page advancement (url=${lastSuccessUrl}, networkCount=${lastSuccessNetworkCount}) — treating as probe-absent failure to trigger replan`,
+                `stuck detection: ${consecutiveStaleSkips} consecutive optional steps skipped with no page advancement (url=${lastSuccessUrl}, networkCount=${lastSuccessNetworkCount}) — treating as probe-absent failure to trigger replan`
               );
               consecutiveStaleSkips = 0;
               throw new StepVerificationError(
                 `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) stuck: ${STUCK_SKIP_THRESHOLD}+ consecutive optional skips with stagnant page`,
-                "probe-absent",
+                "probe-absent"
               );
             }
           } else {
@@ -3865,9 +3621,7 @@ async function main(): Promise<void> {
           // entirely. (The cascade-exhausted and probe-absent kinds fall
           // through to the existing dispatcher below.)
           if (err.kind === "backend-error-unrecoverable") {
-            logger.error(
-              `backend error unrecoverable: ${err.message}; aborting run`,
-            );
+            logger.error(`backend error unrecoverable: ${err.message}; aborting run`);
             throw err;
           }
           if (err.kind === "wizard-regression") {
@@ -3899,11 +3653,7 @@ async function main(): Promise<void> {
           const baselineEligible = midFlowSubmit;
           const urlAdvanced =
             (!step.submitStep || midFlowSubmit) &&
-            hasPageAlreadyAdvancedPastStep(
-              urlAtStepStart,
-              urlAfterFailure,
-              step.instruction,
-            );
+            hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction);
           const settledAdvance =
             !urlAdvanced && baselineEligible && baselineText !== undefined
               ? await readMidFlowPostClickAdvance({
@@ -3922,7 +3672,7 @@ async function main(): Promise<void> {
                   },
                 }).catch((err: unknown) => {
                   logger.warn(
-                    `${formatStepPrefix(i, () => plan.length)} post-failure settle failed: ${err instanceof Error ? err.message : String(err)}; not crediting an unsettled read`,
+                    `${formatStepPrefix(i, () => plan.length)} post-failure settle failed: ${err instanceof Error ? err.message : String(err)}; not crediting an unsettled read`
                   );
                   return undefined;
                 })
@@ -3930,7 +3680,7 @@ async function main(): Promise<void> {
           const domAdvanced = settledAdvance?.pageAdvanced === true;
           if (urlAdvanced || domAdvanced) {
             logger.info(
-              `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`,
+              `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`
             );
             consecutiveStaleSkips = 0;
             lastSuccessNetworkCount = signalCounter.n;
@@ -3964,11 +3714,7 @@ async function main(): Promise<void> {
             step: step.instruction,
             submitStep: step.submitStep ?? false,
           });
-          if (
-            step.optional &&
-            !stepDeclaredNonSubmit &&
-            i >= plan.length - TRAILING_GRACE_WINDOW
-          ) {
+          if (step.optional && !stepDeclaredNonSubmit && i >= plan.length - TRAILING_GRACE_WINDOW) {
             // Trailing-grace check: did the submit actually land somewhere in
             // the recent capture history? Ask the same Haiku judge — it has
             // multi-signal reasoning to distinguish real submit POSTs from
@@ -4008,8 +3754,7 @@ async function main(): Promise<void> {
                     page,
                     pre: {
                       ...baselineText,
-                      networkCount:
-                        baselineText.networkCount ?? signalCounter.n,
+                      networkCount: baselineText.networkCount ?? signalCounter.n,
                     },
                     stepStartSnapshot: baselineText,
                     midFlowSubmit,
@@ -4032,13 +3777,11 @@ async function main(): Promise<void> {
                     page,
                     target: mainFrameTarget(page),
                     signalCounter,
-                    preNetworkCount:
-                      baselineText.networkCount ?? signalCounter.n,
+                    preNetworkCount: baselineText.networkCount ?? signalCounter.n,
                     preVisibleTextSignature: baselineText.visibleTextSignature,
                     preVisibleText: baselineText.visibleText,
                     preVisibleTextDigest: baselineText.visibleTextDigest,
-                    settledPostVisibleText:
-                      trailingGraceSettled?.post.visibleText ?? "",
+                    settledPostVisibleText: trailingGraceSettled?.post.visibleText ?? "",
                     submitInput: {
                       pageUrl: trailingGracePageUrl,
                       pageTitle,
@@ -4053,7 +3796,7 @@ async function main(): Promise<void> {
                   });
             if (trailingGraceVerdict?.verified) {
               logger.info(
-                `${formatStepPrefix(i, () => plan.length)} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`,
+                `${formatStepPrefix(i, () => plan.length)} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
               );
               exitedViaTrailingGrace = true;
               break;
@@ -4065,7 +3808,7 @@ async function main(): Promise<void> {
           // trailing window) instead of replanning or aborting the run.
           if (step.optional && err.kind === "cascade-exhausted") {
             logger.warn(
-              `${formatStepPrefix(i, () => plan.length)} optional step cascade exhausted; logged and skipped (${step.instruction.slice(0, 60)})`,
+              `${formatStepPrefix(i, () => plan.length)} optional step cascade exhausted; logged and skipped (${step.instruction.slice(0, 60)})`
             );
             consecutiveStaleSkips = 0;
             completedSteps.push(step.instruction);
@@ -4094,7 +3837,7 @@ async function main(): Promise<void> {
                 : "";
             const kindsSuffix = kindsSummary ? ` — ${kindsSummary}` : "";
             logger.error(
-              `${formatStepPrefix(i, () => plan.length)} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`,
+              `${formatStepPrefix(i, () => plan.length)} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
             );
             throw err;
           }
@@ -4104,7 +3847,7 @@ async function main(): Promise<void> {
           const dumpMatch = err.message.match(/see (\/[^\s]+)$/);
           const dumpPath = dumpMatch ? dumpMatch[1]! : "";
           logger.warn(
-            `${formatStepPrefix(i, () => plan.length)} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`,
+            `${formatStepPrefix(i, () => plan.length)} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
           );
 
           const rawNewSteps = await replanForFailedStep({
@@ -4126,7 +3869,7 @@ async function main(): Promise<void> {
           });
           if (!rawNewSteps) {
             logger.error(
-              `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`,
+              `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`
             );
             throw err;
           }
@@ -4136,43 +3879,42 @@ async function main(): Promise<void> {
           // failed step's re-emission. originalRemaining is re-appended below.
           // The untruncated failure-time DOM re-verifies completed fills so a
           // silently-reset field isn't trusted as still-completed.
-          const { bodyHtmlAtFailure, fieldValuesAtFailure, attemptsAtFailure } =
-            (() => {
-              try {
-                const dump = JSON.parse(readFileSync(dumpPath, "utf8")) as {
-                  bodyOuterHtml?: string | null;
-                  fieldValuesAtFailure?: FieldValueAtFailure[] | null;
-                  attempts?: { errorMessage?: string | null }[];
-                };
-                return {
-                  attemptsAtFailure: dump.attempts ?? null,
-                  bodyHtmlAtFailure: dump.bodyOuterHtml ?? null,
-                  fieldValuesAtFailure: dump.fieldValuesAtFailure ?? null,
-                };
-              } catch {
-                return {
-                  bodyHtmlAtFailure: null,
-                  fieldValuesAtFailure: null,
-                  attemptsAtFailure: null,
-                };
-              }
-            })();
+          const { bodyHtmlAtFailure, fieldValuesAtFailure, attemptsAtFailure } = (() => {
+            try {
+              const dump = JSON.parse(readFileSync(dumpPath, "utf8")) as {
+                bodyOuterHtml?: string | null;
+                fieldValuesAtFailure?: FieldValueAtFailure[] | null;
+                attempts?: { errorMessage?: string | null }[];
+              };
+              return {
+                attemptsAtFailure: dump.attempts ?? null,
+                bodyHtmlAtFailure: dump.bodyOuterHtml ?? null,
+                fieldValuesAtFailure: dump.fieldValuesAtFailure ?? null,
+              };
+            } catch {
+              return {
+                bodyHtmlAtFailure: null,
+                fieldValuesAtFailure: null,
+                attemptsAtFailure: null,
+              };
+            }
+          })();
           const newSteps = filterCompletedFromReplan(
             rawNewSteps,
             completedSteps,
             step.instruction,
             bodyHtmlAtFailure,
-            fieldValuesAtFailure,
+            fieldValuesAtFailure
           );
           const droppedCompleted = rawNewSteps.length - newSteps.length;
           if (droppedCompleted > 0) {
             logger.info(
-              `replan #${replanIndex}: dropped ${droppedCompleted} bridge step(s) that re-ran already-completed steps`,
+              `replan #${replanIndex}: dropped ${droppedCompleted} bridge step(s) that re-ran already-completed steps`
             );
           }
           if (newSteps.length === 0) {
             logger.error(
-              `replan #${replanIndex} produced only already-completed steps (nothing new to bridge); aborting`,
+              `replan #${replanIndex} produced only already-completed steps (nothing new to bridge); aborting`
             );
             throw err;
           }
@@ -4186,20 +3928,17 @@ async function main(): Promise<void> {
             newSteps,
             step.instruction,
             attemptsAtFailure,
-            transientStepRetries,
+            transientStepRetries
           );
           if (noProgressDecision === "retry") {
             logger.warn(
-              `replan #${replanIndex} re-proposed the failed step after provider-transient errors only; allowing bounded re-run`,
+              `replan #${replanIndex} re-proposed the failed step after provider-transient errors only; allowing bounded re-run`
             );
           }
           if (noProgressDecision === "abort") {
             const noProgressMessage = `replan #${replanIndex} re-proposed only the just-failed step ("${step.instruction.slice(0, 60)}") with no new bridge; resuming would re-fail identically — aborting`;
             logger.error(noProgressMessage);
-            throw new StepVerificationError(
-              noProgressMessage,
-              "replan-cycle-detected",
-            );
+            throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");
           }
 
           // Auth-boundary guard: a Sign-In/Log-In bridge proposed after an
@@ -4208,27 +3947,23 @@ async function main(): Promise<void> {
           if (isReplanRegressingAcrossAuthBoundary(newSteps, completedSteps)) {
             const authBoundaryMessage = `replan #${replanIndex} proposed a Sign-In/Log-In step after an account-creation step already completed; resuming through Sign-In would strand the original remaining tail on an incompatible page — aborting`;
             logger.error(authBoundaryMessage);
-            throw new StepVerificationError(
-              authBoundaryMessage,
-              "replan-cycle-detected",
-            );
+            throw new StepVerificationError(authBoundaryMessage, "replan-cycle-detected");
           }
 
-          const currentPageState = await snapshotPage(
-            mainFrameTarget(page),
-            signalCounter,
-          ).catch(() => ({
-            // page.url() throws synchronously on a dead session — a raw call
-            // here would turn this fallback itself into an unhandled throw.
-            url: (() => {
-              try {
-                return page.url();
-              } catch {
-                return "";
-              }
-            })(),
-            bodyHtmlLength: 0,
-          }));
+          const currentPageState = await snapshotPage(mainFrameTarget(page), signalCounter).catch(
+            () => ({
+              // page.url() throws synchronously on a dead session — a raw call
+              // here would turn this fallback itself into an unhandled throw.
+              url: (() => {
+                try {
+                  return page.url();
+                } catch {
+                  return "";
+                }
+              })(),
+              bodyHtmlLength: 0,
+            })
+          );
           if (
             isReplanCycle(replanEvents, newSteps, {
               url: currentPageState.url,
@@ -4237,10 +3972,7 @@ async function main(): Promise<void> {
           ) {
             const cycleMessage = `replan cycle detected: identical proposal × ${REPLAN_CYCLE_THRESHOLD} under static page state; aborting`;
             logger.error(cycleMessage);
-            throw new StepVerificationError(
-              cycleMessage,
-              "replan-cycle-detected",
-            );
+            throw new StepVerificationError(cycleMessage, "replan-cycle-detected");
           }
 
           if (isProbe) {
@@ -4274,11 +4006,11 @@ async function main(): Promise<void> {
             newRemaining: newSteps.map((s) => s.instruction),
           });
           logger.info(
-            `replan #${replanIndex} produced ${newSteps.length} new step(s); resuming (record: ${replanPath})`,
+            `replan #${replanIndex} produced ${newSteps.length} new step(s); resuming (record: ${replanPath})`
           );
           for (const [j, s] of newSteps.entries()) {
             logger.info(
-              `  replanned step ${j + 1}${s.optional ? " (optional)" : ""}: ${s.instruction}`,
+              `  replanned step ${j + 1}${s.optional ? " (optional)" : ""}: ${s.instruction}`
             );
           }
 
@@ -4302,10 +4034,10 @@ async function main(): Promise<void> {
           // spliced plan.
           const survivingNewSteps = filterReplanDuplicatingNextAuthored(
             newSteps.map((s) => ({ ...s, origin: "replan" as const })),
-            originalRemaining,
+            originalRemaining
           );
           const taggedNewSteps = seedSubmitStepFromOwnInstructionText(
-            applyFailedStepFlagsToResumingBridgeStep(survivingNewSteps, step),
+            applyFailedStepFlagsToResumingBridgeStep(survivingNewSteps, step)
           );
           // If every bridge step duplicated the next authored step, the
           // filter above drops them all and originalRemaining[0] itself is
@@ -4319,25 +4051,17 @@ async function main(): Promise<void> {
               ? [
                   {
                     ...resumeTarget,
-                    captchaGated:
-                      resumeTarget.captchaGated || step.captchaGated,
+                    captchaGated: resumeTarget.captchaGated || step.captchaGated,
                     submitStep:
                       resumeTarget.submitStep ||
                       (step.submitStep &&
                         (step.captchaGated ||
-                          isSubmitShapedInstructionText(
-                            resumeTarget.instruction,
-                          ))),
+                          isSubmitShapedInstructionText(resumeTarget.instruction))),
                   },
                   ...originalRemaining.slice(1),
                 ]
               : originalRemaining;
-          plan.splice(
-            i,
-            plan.length - i,
-            ...taggedNewSteps,
-            ...patchedOriginalRemaining,
-          );
+          plan.splice(i, plan.length - i, ...taggedNewSteps, ...patchedOriginalRemaining);
           i--;
         }
       }
@@ -4350,7 +4074,7 @@ async function main(): Promise<void> {
         })
       ) {
         logger.error(
-          `flow truncated: only ${completedSteps.length}/${plan.length} steps completed and no legitimate early-exit occurred — refusing to report success`,
+          `flow truncated: only ${completedSteps.length}/${plan.length} steps completed and no legitimate early-exit occurred — refusing to report success`
         );
         process.exit(1);
       }
@@ -4370,14 +4094,14 @@ async function main(): Promise<void> {
       const sessionTimeoutHit = session.getSessionTimeoutHit?.();
       if (sessionTimeoutHit) {
         throw new SessionLifetimeExceededError(
-          `Browserbase session hit its timeout (${sessionTimeoutHit.configuredTimeoutSeconds}s) after ${completedSteps.length} steps`,
+          `Browserbase session hit its timeout (${sessionTimeoutHit.configuredTimeoutSeconds}s) after ${completedSteps.length} steps`
         );
       }
 
       const cdpTransportClosedError = session.getCdpTransportClosedError?.();
       if (cdpTransportClosedError) {
         throw new CdpTransportClosedError(
-          `Stagehand tore down the CDP transport mid-flow: ${cdpTransportClosedError.message}`,
+          `Stagehand tore down the CDP transport mid-flow: ${cdpTransportClosedError.message}`
         );
       }
 
@@ -4426,7 +4150,7 @@ async function main(): Promise<void> {
           process.exit(1);
         }
         logger.info(
-          `end-of-run audit PASSED: at least one captured 2xx${ownBackendHostnames.length > 0 ? " on an own-backend host" : ""}${submitEndpointPattern != null ? ` matching submitEndpointPattern${submitBodyPattern != null ? " + submitBodyPattern" : ""}` : " (no submitEndpointPattern declared)"} had a clean response body`,
+          `end-of-run audit PASSED: at least one captured 2xx${ownBackendHostnames.length > 0 ? " on an own-backend host" : ""}${submitEndpointPattern != null ? ` matching submitEndpointPattern${submitBodyPattern != null ? " + submitBodyPattern" : ""}` : " (no submitEndpointPattern declared)"} had a clean response body`
         );
       }
 
@@ -4435,25 +4159,19 @@ async function main(): Promise<void> {
         jarCounter,
         "run-complete",
         currentPhase,
-        plan.length - 1,
+        plan.length - 1
       );
 
       runSucceeded = true;
-      logger.info(
-        `recon complete — ${counter.n} captures written to ${runDir.root}`,
-      );
-      const bodyWarning = formatBodyUnavailableWarning(
-        bodyUnavailableCounter.n,
-      );
+      logger.info(`recon complete — ${counter.n} captures written to ${runDir.root}`);
+      const bodyWarning = formatBodyUnavailableWarning(bodyUnavailableCounter.n);
       if (bodyWarning) logger.warn(bodyWarning);
     } catch (err) {
       // Runs before the finally closes the session so any error that escaped
       // the step loop (deathSignal rejection, page.url() timeout, uninitialized
       // Stagehand) is upgraded to the non-retryable lifetime error when the
       // session died of its own configured lifetime.
-      throw isSessionLifetimeExceededError(err)
-        ? err
-        : resolveSessionDeathError(session, err);
+      throw isSessionLifetimeExceededError(err) ? err : resolveSessionDeathError(session, err);
     } finally {
       // Replay-the-discovered-path: if any replan fired and the user provided
       // a flow file, write the improved plan back so the next run starts
@@ -4466,21 +4184,19 @@ async function main(): Promise<void> {
       if (replanEvents.length > 0 && !runSucceeded) {
         // A failed run must leave the author's flow file byte-identical.
         logger.info(
-          `run failed with ${replanEvents.length} replan event(s); not writing replan steps back over the flow file`,
+          `run failed with ${replanEvents.length} replan event(s); not writing replan steps back over the flow file`
         );
       } else if (replanEvents.length > 0) {
         if (!saveReplan) {
           logger.info(
-            `run done with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`,
+            `run done with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`
           );
         } else if (!flowFile) {
           logger.info(
-            `run done with ${replanEvents.length} replan event(s); --flow used (no file to write back to)`,
+            `run done with ${replanEvents.length} replan event(s); --flow used (no file to write back to)`
           );
         } else {
-          logger.info(
-            `run done; writing flow.json with ${replanEvents.length} replan event(s)`,
-          );
+          logger.info(`run done; writing flow.json with ${replanEvents.length} replan event(s)`);
           try {
             persistReplannedFlow({
               flowFile,
@@ -4500,9 +4216,7 @@ async function main(): Promise<void> {
           } catch (err) {
             // Persistence is best-effort in the finally block — a write
             // failure here must not eat the original cascade error.
-            logger.error(
-              `persistReplannedFlow threw in finally: ${toErrorMessage(err)}`,
-            );
+            logger.error(`persistReplannedFlow threw in finally: ${toErrorMessage(err)}`);
           }
         }
       }
@@ -4536,18 +4250,16 @@ async function main(): Promise<void> {
           nonTransportError = err;
         }
       },
-      { maxAttempts: config.scraper.maxTransportRetries },
+      { maxAttempts: config.scraper.maxTransportRetries }
     );
   } catch (err) {
     if (lifetimeError) {
-      logger.error(
-        `${lifetimeError.message} — raise BROWSERBASE_SESSION_TIMEOUT_SECONDS`,
-      );
+      logger.error(`${lifetimeError.message} — raise BROWSERBASE_SESSION_TIMEOUT_SECONDS`);
       process.exit(1);
     }
     if (isCdpTransportClosedError(err)) {
       logger.error(
-        `Stagehand tore down the CDP transport mid-flow on every attempt (${config.scraper.maxTransportRetries} of ${config.scraper.maxTransportRetries}): ${err.message} — refusing to report success`,
+        `Stagehand tore down the CDP transport mid-flow on every attempt (${config.scraper.maxTransportRetries} of ${config.scraper.maxTransportRetries}): ${err.message} — refusing to report success`
       );
       process.exit(1);
     }
@@ -4558,16 +4270,13 @@ async function main(): Promise<void> {
 
 if (
   process.argv[1] !== undefined &&
-  (process.argv[1].endsWith("recon-browser.ts") ||
-    process.argv[1].endsWith("recon-browser.js"))
+  (process.argv[1].endsWith("recon-browser.ts") || process.argv[1].endsWith("recon-browser.js"))
 ) {
   main().catch((err) => {
     // StagehandDefaultError wraps the real cause with a verbose "Hey! We're sorry..." banner.
     // Unwrap it so the log shows just the meaningful error message.
     const message =
-      err instanceof Error && err.cause instanceof Error
-        ? err.cause.message
-        : toErrorMessage(err);
+      err instanceof Error && err.cause instanceof Error ? err.cause.message : toErrorMessage(err);
     logger.error(`recon-browser failed: ${message}`);
     process.exit(1);
   });
