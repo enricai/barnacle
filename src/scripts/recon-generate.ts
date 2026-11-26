@@ -5925,7 +5925,7 @@ function refererNamesRecordedInstance(referer: string): boolean {
   if (
     segments.some(
       (s, i) =>
-        i >= 2 &&
+        i === 2 &&
         i === segments.length - 1 &&
         /^[A-Za-z]{3,}$/.test(s) &&
         /^[A-Za-z]{2,}s$/i.test(segments[i - 1] ?? "") &&
