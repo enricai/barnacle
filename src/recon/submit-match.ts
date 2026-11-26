@@ -13,6 +13,7 @@ export interface SubmitMatchCapture {
   method?: unknown;
   url?: unknown;
   requestPostData?: unknown;
+  requestHeaders?: unknown;
 }
 
 export function matchesSubmitPattern(
@@ -60,6 +61,22 @@ export function isReadCapture(capture: SubmitMatchCapture): boolean {
   if (method !== "POST") return false;
   const queries = graphqlQueriesOf(capture.requestPostData);
   return queries?.every((q) => isGraphqlQueryDocument(q)) === true;
+}
+
+/**
+ * A page load (browser navigation) of a URL that happens to match the submit
+ * pattern is not evidence the flow is read-only: the form page itself loads
+ * before any submit fires. Detected from the request's own headers.
+ */
+export function isDocumentNavigation(capture: SubmitMatchCapture): boolean {
+  const h = capture.requestHeaders;
+  if (typeof h !== "object" || h === null) return false;
+  for (const [k, v] of Object.entries(h as Record<string, unknown>)) {
+    const key = k.toLowerCase();
+    if (key === "sec-fetch-dest" && typeof v === "string" && /^(document|iframe|frame)$/i.test(v)) return true;
+    if (key === "upgrade-insecure-requests" && String(v) === "1") return true;
+  }
+  return false;
 }
 
 /** True for a 2xx status; a missing or non-numeric status is not a success. */

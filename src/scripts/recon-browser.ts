@@ -89,6 +89,7 @@ import {
 import { isRawCaptureFilename } from "@/recon/capture-filters";
 import {
   isQualifyingSubmitCapture,
+  isDocumentNavigation,
   isReadCapture,
   isSuccessStatus,
   matchesSubmitPattern,
@@ -225,6 +226,7 @@ export function recordMatchedCapture(
   evidence: { sawMatchedRead: boolean; sawMatchedWrite: boolean }
 ): void {
   if (endpointRx === null || !matchesSubmitPattern(c, endpointRx, bodyRx)) return;
+  if (isDocumentNavigation(c)) return;
   if (isReadCapture(c)) evidence.sawMatchedRead = true;
   else evidence.sawMatchedWrite = true;
 }

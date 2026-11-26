@@ -18,7 +18,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
-import { isReadCapture, matchesSubmitPattern } from "@/recon/submit-match";
+import { isDocumentNavigation, isReadCapture, matchesSubmitPattern } from "@/recon/submit-match";
 import type { NavigateSettle } from "@/scraper/navigate";
 import { SHADOW_XPATH_ALL_RESOLVER_SRC, SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
 import { fetchFollowingRedirectsPreservingMethod } from "./redirect-follow";
@@ -19073,6 +19073,7 @@ async function runHealingFlowScoped(
       onCapture: (capture, filename) => {
         recordRuntimeCapture(store, filename, capture);
         if (submitEndpointRx !== null && matchesSubmitPattern(capture, submitEndpointRx, null)) {
+          if (isDocumentNavigation(capture)) return;
           if (isReadCapture(capture)) sawMatchedRead = true;
           else sawMatchedWrite = true;
         }
