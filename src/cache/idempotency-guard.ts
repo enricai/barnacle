@@ -219,6 +219,11 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     throw new Error("unexpected idempotency record state");
   }
 
+  const warn = (state: string, e: unknown) =>
+    process.stderr.write(
+      `idempotency: failed to record ${state} outcome: ${e instanceof Error ? e.message : String(e)}\n`
+    );
+
   async function execAndRecord<T>(
     key: string,
     config: PluginIdempotency,
@@ -226,10 +231,6 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     leased = false
   ): Promise<T> {
     const isSuccess = config.isSuccess ?? defaultIsSuccess;
-    const warn = (state: string, e: unknown) =>
-      process.stderr.write(
-        `idempotency: failed to record ${state} outcome: ${e instanceof Error ? e.message : String(e)}\n`
-      );
     let value: T;
     try {
       value = await execute();
@@ -349,7 +350,7 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
             ttlMs
           )
       )
-      .catch(() => undefined)
+      .catch((e) => warn("operation", e))
       .finally(() => activeOps.delete(k));
     return id;
   }

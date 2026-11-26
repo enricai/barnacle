@@ -282,6 +282,24 @@ describe("record write isolation", () => {
     );
     write.mockRestore();
   });
+  it("warns instead of swallowing when start() cannot record the final outcome", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const base = createInMemoryIdempotencyStore();
+    let calls = 0;
+    const store = {
+      ...base,
+      set: (...a: Parameters<typeof base.set>) =>
+        ++calls === 1 ? base.set(...a) : Promise.reject(new Error("disk full")),
+    };
+    const g = createIdempotencyGuard({ store });
+    await g.start("s", cfg, { id: "1" }, async () => 1);
+    await vi.waitFor(() =>
+      expect(write).toHaveBeenCalledWith(
+        expect.stringContaining("failed to record operation outcome: disk full")
+      )
+    );
+    write.mockRestore();
+  });
 });
 
 describe("leased runs release the lease", () => {
