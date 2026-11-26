@@ -232,8 +232,10 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
   ): Promise<T> {
     const isSuccess = config.isSuccess ?? defaultIsSuccess;
     let value: T;
+    let ok: boolean;
     try {
       value = await execute();
+      ok = isSuccess(value);
     } catch (err) {
       // Record writes are isolated: a store failure never replaces the run's error.
       if (classifyUnknown(config, err)) {
@@ -252,13 +254,6 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
       } else if (leased) {
         await Promise.resolve(store.delete(key)).catch(() => undefined);
       }
-      throw err;
-    }
-    let ok: boolean;
-    try {
-      ok = isSuccess(value);
-    } catch (err) {
-      if (leased) await Promise.resolve(store.delete(key)).catch(() => undefined);
       throw err;
     }
     if (ok) {
