@@ -226,6 +226,8 @@ export function deriveOperationId(key: string): string {
   return createHash("sha256").update(key).digest("hex").slice(0, 32);
 }
 
+const writeChains = new WeakMap<object, Map<string, Promise<void>>>();
+
 export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): IdempotencyGuard {
   const store = options.store ?? createConfiguredIdempotencyStore();
   const ttlMs = options.ttlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS;
@@ -250,19 +252,41 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
 
   const msgOf = (err: unknown) => redactPii(err instanceof Error ? err.message : String(err));
 
-  /** Writes a settled record unless the key already holds a success. */
-  async function setUnlessSuccess(key: string, record: IdempotencyRecord): Promise<void> {
-    try {
-      // A read can return a value observed before an overlapping run (in this
-      // or another process) recorded its success, so the guard is read twice:
-      // the second read is taken after the first has fully settled. The store
-      // contract has no compare-and-set, so this narrows the window only.
-      if ((await store.get(key))?.state === "success") return;
-      if ((await store.get(key))?.state === "success") return;
-      await store.set(key, record, ttlMs);
-    } catch {
-      // A store failure must not replace the run's own result.
+  /**
+   * Settled writes to one key are serialized per store across every guard in
+   * this process, so an `unknown` write can neither be issued from a stale read
+   * nor land after a success. Across processes the store contract has no
+   * compare-and-set, so only the leased claim protects that case.
+   */
+  function serialized(key: string, fn: () => Promise<void>): Promise<void> {
+    let chains = writeChains.get(store);
+    if (!chains) {
+      chains = new Map();
+      writeChains.set(store, chains);
     }
+    const prev = chains.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    chains.set(key, next);
+    void next.then(() => {
+      if (chains.get(key) === next) chains.delete(key);
+    });
+    return next;
+  }
+
+  /** Writes a settled record unless the key already holds a success. */
+  function setUnlessSuccess(key: string, record: IdempotencyRecord): Promise<void> {
+    return serialized(key, async () => {
+      try {
+        if ((await store.get(key))?.state === "success") return;
+        await store.set(key, record, ttlMs);
+      } catch {
+        // A store failure must not replace the run's own result.
+      }
+    });
+  }
+
+  function setSuccess(key: string, record: IdempotencyRecord): Promise<void> {
+    return serialized(key, () => Promise.resolve(store.set(key, record, ttlMs)));
   }
 
   async function execAndRecord<T>(
@@ -311,7 +335,7 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
       if (isSuccess(value)) {
         try {
           const rec: IdempotencyRecord = { state: "success", value };
-          await store.set(key, rec, ttlMs);
+          await setSuccess(key, rec);
         } catch {
           // keep the run result
         }
