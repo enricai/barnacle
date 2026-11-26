@@ -89,7 +89,11 @@ describe("redactPii", () => {
   });
 
   it("matches nothing for a blank digit value", () => {
-    registerSensitiveValues("run-1", { postalField: "", cvcField: "123" }, { digitKeys: ["postalField", "cvcField"] });
+    registerSensitiveValues(
+      "run-1",
+      { postalField: "", cvcField: "123" },
+      { digitKeys: ["postalField", "cvcField"] }
+    );
     expect(redactPii("ab 123")).toBe("ab <cvcField>");
   });
 
