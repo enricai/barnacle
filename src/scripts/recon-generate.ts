@@ -7164,8 +7164,7 @@ function retractReboundStructuredInputs(
       [...walkAllPrimitiveLeaves(sample)].every(
         ({ value }) =>
           value !== null &&
-          matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false }) !==
-            undefined
+          matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false }) !== undefined
       )
     );
     if (!everyLeafRebound) continue;
@@ -20764,6 +20763,10 @@ type FlowStepInput =
       declareOnly?: boolean;
       payloadField?: string;
       payloadFieldNone?: boolean;
+      /** Wire type of the bound value: sent as a JSON number (public input stays a string). */
+      payloadWire?: "number";
+      /** Transform applied to the caller's value before it is sent. */
+      payloadTransform?: "utc-instant";
       sensitive?: "digits" | "word";
       emailStep?: boolean;
       emailStepConfig?: EmailStepConfig;

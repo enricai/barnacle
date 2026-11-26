@@ -36,7 +36,8 @@ afterEach(() => {
 function generate(steps: unknown[], tag: string): string {
   workDir = mkdtempSync(join(tmpdir(), "barnacle-typed-bindings-"));
   const runRoot = join(workDir, "run");
-  for (const dir of ["graphql", "replays", "aux"]) mkdirSync(join(runRoot, dir), { recursive: true });
+  for (const dir of ["graphql", "replays", "aux"])
+    mkdirSync(join(runRoot, dir), { recursive: true });
   writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
   const captures = [
     buildCapture({
@@ -66,7 +67,11 @@ function generate(steps: unknown[], tag: string): string {
     JSON.stringify({
       steps,
       submitEndpointPattern: "/order.json",
-      httpSteps: { actions: 2, tailFromStep: 5, handoverUrl: `https://${HOST}/order/edit` },
+      httpSteps: {
+        actions: 2,
+        tailFromStep: steps.length,
+        handoverUrl: `https://${HOST}/order/edit`,
+      },
       requireSubmitEndpointMatch: true,
     })
   );
@@ -76,13 +81,16 @@ function generate(steps: unknown[], tag: string): string {
     { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-  if (process.env.DUMP) writeFileSync("/tmp/dump-" + tag + ".txt", result.stdout + result.stderr + readFileSync(join(siteOutDir!, "contract.ts"), "utf8"));
   return readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 }
 
 const declared = (extra: Record<string, unknown> = {}) => [
   { step: "choose room '9'", payloadField: "roomId", ...(extra.room as object) },
-  { step: "choose time '2026-12-15T19:30:00Z'", payloadField: "reservedTo", ...(extra.time as object) },
+  {
+    step: "choose time '2026-12-15T19:30:00Z'",
+    payloadField: "reservedTo",
+    ...(extra.time as object),
+  },
   { step: "choose party size '2'", payloadField: "count", ...(extra.count as object) },
   { step: "open the cart page" },
   { step: "submit order", submitStep: true },
@@ -102,7 +110,20 @@ describe("typed payload bindings", () => {
     expect(contract).toMatch(/"count":\$\{JSON\.stringify\(Number\(payload\.count\)\)\}/);
     expect(contract).toContain("new Date(String(payload.reservedTo)).toISOString()");
     expect(contract).toMatch(/roomId: z\.string\(\)/);
-    expect(contract).not.toContain("items_attributes");
+    expect(contract).not.toMatch(/\border: z\./);
+    expect(contract).not.toContain("payload.order");
+  });
+
+  it("keeps the structured input registered when an occurrence is not rebound", () => {
+    const contract = generate(
+      [
+        { step: "choose room '9'", payloadField: "roomId", payloadWire: "number" },
+        { step: "open the cart page" },
+        { step: "submit order", submitStep: true },
+      ],
+      "partial"
+    );
+    expect(contract).toMatch(/\border: z\./);
   });
 
   it("leaves output unchanged without declarations", () => {
