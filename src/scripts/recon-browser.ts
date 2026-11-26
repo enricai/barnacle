@@ -87,7 +87,13 @@ import {
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
 import { isRawCaptureFilename } from "@/recon/capture-filters";
-import { isQualifyingSubmitCapture, isSuccessStatus } from "@/recon/submit-match";
+import {
+  isDocumentNavigation,
+  isQualifyingSubmitCapture,
+  isReadCapture,
+  isSuccessStatus,
+  matchesSubmitPattern,
+} from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
@@ -205,6 +211,26 @@ const HTML_STATIC_TOLERANCE = 100;
  * (url-/base64-decoded text) is not JSON, so it goes raw to `<name>.decoded.txt`
  * — every `.json` file in the dir therefore parses with JSON.parse.
  */
+export function compileOptionalRegex(pattern: string | undefined | null): RegExp | null {
+  try {
+    return pattern ? new RegExp(pattern) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function recordMatchedCapture(
+  c: Parameters<typeof matchesSubmitPattern>[0],
+  endpointRx: RegExp | null,
+  bodyRx: RegExp | null,
+  evidence: { sawMatchedRead: boolean; sawMatchedWrite: boolean }
+): void {
+  if (endpointRx === null || !matchesSubmitPattern(c, endpointRx, bodyRx)) return;
+  if (isDocumentNavigation(c)) return;
+  if (isReadCapture(c)) evidence.sawMatchedRead = true;
+  else evidence.sawMatchedWrite = true;
+}
+
 export function writeCaptureFiles(
   graphqlDir: string,
   capture: { decodedParams: unknown; requestPostData: unknown },
@@ -256,7 +282,12 @@ export function wireNetworkCapture(
   recentCaptureMeta: { method: string; status: number; url: string }[],
   getCurrentPhase: () => string,
   getCurrentPageOrigin: () => string,
-  captureTracker?: CaptureTracker
+  captureTracker?: CaptureTracker,
+  onObservedCapture?: (capture: {
+    method?: unknown;
+    url: string;
+    requestPostData?: unknown;
+  }) => void
 ): () => void {
   const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
@@ -273,6 +304,7 @@ export function wireNetworkCapture(
       // happy-path doesn't read these files until something else fails.
       if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) bodyUnavailableCounter.n++;
       captureTracker?.observe(capture.url, capture.requestPostData);
+      onObservedCapture?.(capture);
       try {
         writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
@@ -822,7 +854,11 @@ function flowFileObjectSchema<Shape extends z.core.$ZodLooseShape>(shape: Shape)
       const result = schema.safeParse(flow);
       if (result.success) continue;
       for (const issue of result.error.issues) {
-        ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
+        ctx.addIssue({
+          code: "custom",
+          message: issue.message,
+          path: issue.path,
+        });
       }
     }
   });
@@ -1025,6 +1061,8 @@ interface NormalizedStep {
   // executeNavigateStep (a direct page.goto) instead of the self-heal cascade.
   // Optional for the same reason as submitStep — absence is treated as false.
   navigateTo?: string;
+  // Regex the navigateTo settle waits on instead of the flow-level submit patterns.
+  settleOn?: string;
   // See RECON_FLOW_STEP_SCHEMA: recorded into the persisted flow but never
   // executed, verified, or replanned at record time. Absence = false.
   declareOnly?: boolean;
@@ -1066,6 +1104,7 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           // Preserve a persisted replan marker across runs; absence = authored.
           origin: s.origin ?? "original",
           navigateTo: s.navigateTo,
+          settleOn: s.settleOn,
           declareOnly: s.declareOnly,
           sensitive: s.sensitive,
         }
@@ -1115,6 +1154,7 @@ function denormalizeStep(step: NormalizedStep):
       frameSelector?: string;
       origin?: "replan";
       navigateTo?: string;
+      settleOn?: string;
       declareOnly?: true;
       sensitive?: "digits" | "word";
     } {
@@ -1128,6 +1168,7 @@ function denormalizeStep(step: NormalizedStep):
     step.targetId !== undefined ||
     step.origin === "replan" ||
     step.navigateTo !== undefined ||
+    step.settleOn !== undefined ||
     step.declareOnly === true ||
     step.sensitive !== undefined ||
     step.frameSelector !== undefined;
@@ -1156,6 +1197,7 @@ function denormalizeStep(step: NormalizedStep):
     frameSelector?: string;
     origin?: "replan";
     navigateTo?: string;
+    settleOn?: string;
     declareOnly?: true;
     sensitive?: "digits" | "word";
   } = {
@@ -1173,6 +1215,7 @@ function denormalizeStep(step: NormalizedStep):
   if (step.frameSelector !== undefined) out.frameSelector = step.frameSelector;
   if (step.origin === "replan") out.origin = "replan";
   if (step.navigateTo !== undefined) out.navigateTo = step.navigateTo;
+  if (step.settleOn !== undefined) out.settleOn = step.settleOn;
   if (step.declareOnly === true) out.declareOnly = true;
   if (step.sensitive !== undefined) out.sensitive = step.sensitive;
   return out;
@@ -3177,6 +3220,17 @@ async function main(): Promise<void> {
     // filtered at the push site so the window isn't washed out by SPA chunk
     // loads — see the comment in wireNetworkCapture's onFinished.
     const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+    // Read-versus-write evidence from captures matching the declared submit
+    // pattern (GETs included, which recentCaptureMeta filters out): a matching
+    // read sets sawMatchedRead; a matching non-read sets sawMatchedWrite.
+    const matchedCaptureEvidence = {
+      sawMatchedRead: false,
+      sawMatchedWrite: false,
+    };
+    const matchedEndpointRx = compileOptionalRegex(submitEndpointPattern);
+    const matchedBodyRx = compileOptionalRegex(submitBodyPattern);
+    const readEvidenceNow = (): boolean =>
+      matchedCaptureEvidence.sawMatchedRead && !matchedCaptureEvidence.sawMatchedWrite;
 
     // Hoisted out of the try block so the finally can run the replan
     // write-back even when the cascade throws — replan-discovered steps
@@ -3218,7 +3272,8 @@ async function main(): Promise<void> {
           recentCaptureMeta,
           () => currentPhase,
           currentPageOrigin,
-          captureTracker
+          captureTracker,
+          (c) => recordMatchedCapture(c, matchedEndpointRx, matchedBodyRx, matchedCaptureEvidence)
         )
       );
       const stopCapture = capture.stopAll;
@@ -3384,6 +3439,7 @@ async function main(): Promise<void> {
           submitEndpointPattern,
           requireSubmitEndpointMatch,
           readOnly,
+          readEvidence: readEvidenceNow(),
         });
         const midFlowSubmitShaped = isMidFlowSubmitShapedStep({
           step: step.instruction,
@@ -3429,8 +3485,10 @@ async function main(): Promise<void> {
                     timeoutMs: GOTO_TIMEOUT_MS,
                     settle: buildNavigateSettle(
                       captureTracker,
-                      submitEndpointPattern,
-                      submitBodyPattern
+                      step.settleOn ?? submitEndpointPattern,
+                      step.settleOn !== undefined && step.settleOn !== submitEndpointPattern
+                        ? null
+                        : submitBodyPattern
                     ),
                   })
                 : executeStepWithHealing({
@@ -3459,6 +3517,7 @@ async function main(): Promise<void> {
                       submitEndpointPattern,
                       requireSubmitEndpointMatch,
                       readOnly,
+                      readEvidence: readEvidenceNow(),
                     }),
                     stepIndex: i,
                     totalSteps: () => plan.length,
@@ -3683,6 +3742,7 @@ async function main(): Promise<void> {
               submitEndpointPattern,
               requireSubmitEndpointMatch,
               readOnly,
+              readEvidence: readEvidenceNow(),
             });
             // A dead session throws synchronously here too — fall back to ""
             // rather than let the trailing-grace check itself crash the run.
@@ -3709,7 +3769,10 @@ async function main(): Promise<void> {
                     },
                     stepStartSnapshot: baselineText,
                     midFlowSubmit,
-                    io: { settle: settleWithPageQuiescence, snapshot: snapshotPage },
+                    io: {
+                      settle: settleWithPageQuiescence,
+                      snapshot: snapshotPage,
+                    },
                   }).catch(() => undefined);
             const trailingGraceVerdict =
               baselineText === undefined

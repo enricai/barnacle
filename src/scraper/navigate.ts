@@ -64,8 +64,18 @@ export function createCaptureTracker(): CaptureTracker {
       let matchedAt: number | null = null;
       let wake: (() => void) | null = null;
       const listener = (url: string, body: string): void => {
-        if (!endpointRx.test(url)) return;
-        if (bodyRx !== null && !bodyRx.test(body)) return;
+        if (bodyRx !== null) {
+          if (!endpointRx.test(url) || !bodyRx.test(body.replace(/https?:\/\/[^\s"'\\]+/g, "")))
+            return;
+        } else if (
+          !endpointRx.test(url) &&
+          !endpointRx.test(body.replace(/https?:\/\/[^\s"'\\]+/g, ""))
+        ) {
+          // URLs quoted inside a body (beacons, referrers) are not operations.
+          // A declared settle regex with no separate body pattern may name the
+          // operation in the request body of a multiplexed endpoint.
+          return;
+        }
         matchedAt = Date.now();
         wake?.();
       };

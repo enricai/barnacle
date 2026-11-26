@@ -2672,6 +2672,25 @@ function isGraphQLCapture(capture: Capture): boolean {
   return capture.query !== null || capture.operationName !== null;
 }
 
+function sameQueryText(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (a === null || a === undefined || b === null || b === undefined) return a === b;
+  return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+}
+
+/** The GraphQL document of a capture: the parsed `query`, else the one
+ * carried in a raw JSON `requestPostData` body (captures not yet normalised). */
+function captureQueryText(capture: Capture): string | null {
+  if (capture.query != null) return capture.query;
+  const raw = capture.requestPostData;
+  if (typeof raw !== "string") return null;
+  try {
+    const q = (JSON.parse(raw) as { query?: unknown } | null)?.query;
+    return typeof q === "string" ? q : null;
+  } catch {
+    return null;
+  }
+}
+
 function operationGroupKey(capture: Capture): string {
   const endpointPath = (() => {
     try {
@@ -2680,7 +2699,8 @@ function operationGroupKey(capture: Capture): string {
       return "";
     }
   })();
-  const name = capture.operationName ?? parsedOperationName(capture.query ?? "") ?? "anonymous";
+  const name =
+    capture.operationName ?? parsedOperationName(captureQueryText(capture) ?? "") ?? "anonymous";
   return `${endpointPath}::${name}`;
 }
 
@@ -3165,8 +3185,9 @@ function postBodyValueZod(seen: readonly unknown[]): string {
  */
 function derivePostBodyModel(
   captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
-  endpointPath: string
-): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
+  endpointPath: string,
+  flowSteps: readonly FlowStepInput[] = []
+): { bodyExpr: string; bindings: PostBodyBinding[]; wiredFields: ReadonlySet<string> } | null {
   const bodies: Record<string, unknown>[] = [];
   for (const c of captures) {
     if (c.method !== undefined && c.method.toUpperCase() !== "POST") continue;
@@ -3182,6 +3203,16 @@ function derivePostBodyModel(
   if (bodies.length < 2) return null;
   const bindings: PostBodyBinding[] = [];
   const used = new Set<string>();
+  // A varying leaf whose value sequence co-varies with a navigateTo URL param
+  // takes the step's declared payloadField as its name.
+  const declaredByPath = new Map<string, string>();
+  for (const [declared, path] of correlateNavigateToParamsWithValueSets(
+    flowSteps,
+    bodies,
+    bodies[0]
+  )) {
+    declaredByPath.set(path.join("\u0000"), declared);
+  }
   const isObj = (v: unknown): v is Record<string, unknown> =>
     v !== null && typeof v === "object" && !Array.isArray(v);
   const at = (b: unknown, path: string[]): unknown =>
@@ -3205,8 +3236,9 @@ function derivePostBodyModel(
         return i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1);
       })
       .join("");
-    let field = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
-    for (let n = 2; used.has(field); n++) field = `${base}${n}`;
+    const declaredField = declaredByPath.get(path.join("\u0000"));
+    let field = declaredField ?? (/^[A-Za-z_]/.test(base) ? base : `f${base}`);
+    for (let n = 2; declaredField === undefined && used.has(field); n++) field = `${base}${n}`;
     used.add(field);
     const def = JSON.stringify(first ?? null);
     const seen = values.filter((v) => v !== null && v !== undefined);
@@ -3218,7 +3250,9 @@ function derivePostBodyModel(
     return `payload.${field}`;
   };
   const bodyExpr = build([]);
-  return bindings.length > 0 ? { bodyExpr, bindings } : null;
+  return bindings.length > 0
+    ? { bodyExpr, bindings, wiredFields: new Set(declaredByPath.values()) }
+    : null;
 }
 
 function safeUrlPathname(url: string): string {
@@ -13306,6 +13340,24 @@ export function correlateNavigateToParamsWithVariables(
   const identity = operationGroupKey(primary);
   const group = allCaptures.filter((c) => c.variables != null && operationGroupKey(c) === identity);
   if (group.length < 2) return wired;
+  return correlateNavigateToParamsWithValueSets(
+    flowSteps,
+    group.map((c) => c.variables ?? {}),
+    primary.variables ?? {}
+  );
+}
+
+/**
+ * Value-sequence correlation shared by the GraphQL-variables path and the
+ * REST JSON-body path: `valueSets[i]` is the i-th capture's variables (or
+ * body) object, `shape` the object whose primitive leaves are candidates.
+ */
+export function correlateNavigateToParamsWithValueSets(
+  flowSteps: readonly FlowStepInput[],
+  valueSets: readonly unknown[],
+  shape: unknown
+): Map<string, string[]> {
+  const wired = new Map<string, string[]>();
   const collapse = (values: string[]): string =>
     JSON.stringify(values.filter((v, i) => i === 0 || values[i - 1] !== v));
   const steps = flowSteps.filter(
@@ -13313,8 +13365,8 @@ export function correlateNavigateToParamsWithVariables(
   );
   const queries = steps.map((s) => parseUrlQueryParams(s.navigateTo!));
   const varSeq = new Map<string, string>();
-  for (const { path } of walkAllPrimitiveLeaves(primary.variables ?? {})) {
-    const seq = group.map((c) => readValueAtPath(c.variables ?? {}, path));
+  for (const { path } of walkAllPrimitiveLeaves(shape)) {
+    const seq = valueSets.map((v) => readValueAtPath(v, path));
     if (seq.some((v) => v === undefined || (v !== null && typeof v === "object"))) continue;
     varSeq.set(path.join("."), collapse(seq.map(String)));
   }
@@ -14988,6 +15040,14 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // capture a payload variant of the primary: it differs only in
       // variables, is evidence for payload fields, and is never a drill.
       if (
+        isGraphQLCapture(primary.capture) &&
+        endpointKey(drill.capture.url) === primaryEndpointKey &&
+        operationGroupKey(drill.capture) === operationGroupKey(primary.capture) &&
+        sameQueryText(captureQueryText(drill.capture), captureQueryText(primary.capture))
+      ) {
+        continue;
+      }
+      if (
         !(typeof allowSelfEndpointDrill === "function"
           ? allowSelfEndpointDrill(drill.capture)
           : allowSelfEndpointDrill) &&
@@ -16469,6 +16529,23 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     const matchedItemIndexCache = new Map<number, number | null>();
     for (const drillStepIndex of drillStepIndicesToTry) {
       const drill = actions[drillStepIndex]!;
+      // Same GraphQL operation (same text) as the primary, matched only by
+      // response echo: a payload variant of the primary, not a drill.
+      const primaryCap = actions[primaryStepIndex]!.capture;
+      if (
+        captureQueryText(primaryCap) != null &&
+        sameQueryText(captureQueryText(primaryCap), captureQueryText(drill.capture)) &&
+        operationGroupKey(primaryCap) === operationGroupKey(drill.capture) &&
+        (drillStepIndex !== primaryStepIndex ||
+          actions.some(
+            (a, i) =>
+              i !== primaryStepIndex &&
+              sameQueryText(captureQueryText(a.capture), captureQueryText(primaryCap)) &&
+              operationGroupKey(a.capture) === operationGroupKey(primaryCap)
+          ))
+      ) {
+        continue;
+      }
       // Widened to a flat (non-array) object response the same way the
       // structural heuristic is (see findAllObjectArrayFieldsOrWholeObject):
       // an explicit foldReturn declaration must be able to express a
@@ -18439,7 +18516,21 @@ export function classifySubmissionFlow(o: {
           const u = (m ?? "").toUpperCase();
           return u === "GET" || u === "OPTIONS";
         }));
-  if (o.noReplayableActionFlow) return o.declaresSubmitStep === true || !readsOnly;
+  // Several bare POSTs with no replayable action step and no declared submit are
+  // re-queries (e.g. GraphQL query operations whose gql detection did not resolve),
+  // not a lone submission; a single POST stays a submission.
+  const repeatedUndeclaredPosts =
+    o.actionStepCount === 0 &&
+    o.actionCaptureMethods.length >= 2 &&
+    o.actionCaptureMethods.every((m) => {
+      const u = (m ?? "").toUpperCase();
+      return u === "POST" || u === "GET" || u === "OPTIONS";
+    });
+  if (o.noReplayableActionFlow)
+    return (
+      o.declaresSubmitStep === true ||
+      !(readsOnly || repeatedUndeclaredPosts || o.isDeclaredPostSearchRead === true)
+    );
   if (o.isReadOnlyGetFlow || o.isDeclaredPostSearchRead || o.actionStepCount <= 1) return false;
   return o.gql
     ? o.graphqlActionSequenceHasMutation
@@ -18944,7 +19035,7 @@ export function emitContractTsParts(opts: {
   // the other sources unchanged.
   const postBodyModel =
     readOnlyPostSearch && !gql && !multiStepBody && !suppliedGetInputModel
-      ? derivePostBodyModel(allCaptures, endpointPath)
+      ? derivePostBodyModel(allCaptures, endpointPath, contractFlowSteps)
       : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
@@ -19356,7 +19447,7 @@ export function emitContractTsParts(opts: {
   }
   if (postBodyModel) {
     for (const { field, zod } of postBodyModel.bindings) {
-      if (extendFields.has(field)) continue;
+      if (extendFields.has(field) && !postBodyModel.wiredFields.has(field)) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: ${zod},`);
     }

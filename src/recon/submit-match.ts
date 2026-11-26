@@ -7,11 +7,13 @@
  * the pattern text never matches.
  */
 import { isHttpUrl } from "@/recon/capture-filters";
+import { isGraphqlQueryDocument } from "@/recon/replay-safety";
 
 export interface SubmitMatchCapture {
   method?: unknown;
   url?: unknown;
   requestPostData?: unknown;
+  requestHeaders?: unknown;
 }
 
 export function matchesSubmitPattern(
@@ -26,6 +28,56 @@ export function matchesSubmitPattern(
     if (!bodyRx.test(body)) return false;
   }
   return true;
+}
+
+/** GraphQL `query` strings carried by a request body (single or batched); null when none. */
+function graphqlQueriesOf(body: unknown): string[] | null {
+  if (typeof body !== "string" || body === "") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  if (items.length === 0) return null;
+  const out: string[] = [];
+  for (const it of items) {
+    const q = (it as { query?: unknown } | null)?.query;
+    if (typeof q !== "string") return null;
+    out.push(q);
+  }
+  return out;
+}
+
+/**
+ * Capture-evidence read predicate: a GET/HEAD, or a POST whose body is a
+ * GraphQL document made only of query operations. Anything else (a mutation,
+ * a non-GraphQL POST, an unparseable body) is not evidence of a read.
+ */
+export function isReadCapture(capture: SubmitMatchCapture): boolean {
+  const method = typeof capture.method === "string" ? capture.method.toUpperCase() : "";
+  if (method === "GET" || method === "HEAD") return true;
+  if (method !== "POST") return false;
+  const queries = graphqlQueriesOf(capture.requestPostData);
+  return queries?.every((q) => isGraphqlQueryDocument(q)) === true;
+}
+
+/**
+ * A page load (browser navigation) of a URL that happens to match the submit
+ * pattern is not evidence the flow is read-only: the form page itself loads
+ * before any submit fires. Detected from the request's own headers.
+ */
+export function isDocumentNavigation(capture: SubmitMatchCapture): boolean {
+  const h = capture.requestHeaders;
+  if (typeof h !== "object" || h === null) return false;
+  for (const [k, v] of Object.entries(h as Record<string, unknown>)) {
+    const key = k.toLowerCase();
+    if (key === "sec-fetch-dest" && typeof v === "string" && /^(document|iframe|frame)$/i.test(v))
+      return true;
+    if (key === "upgrade-insecure-requests" && String(v) === "1") return true;
+  }
+  return false;
 }
 
 /** True for a 2xx status; a missing or non-numeric status is not a success. */
