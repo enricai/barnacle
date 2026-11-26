@@ -40,6 +40,7 @@ import {
 } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { navigateActivePage } from "@/scraper/navigate";
+import { verifyOrderData } from "@/scraper/order-verification";
 import { createTimeoutFetch } from "@/scraper/session-shared";
 import { guardedExtract } from "@/scraper/stagehand-guard";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
@@ -432,6 +433,40 @@ export async function buildConfigPlugin(
         );
       }
 
+      const verifyStep = steps.find((st) => st.verifyRequest !== undefined);
+      if (verifyStep?.verifyRequest !== undefined) {
+        // Deterministic check against the site's own order data; no model call.
+        const origin = new URL(page.url()).origin;
+        const host = new URL(origin).hostname;
+        const jar =
+          (await (
+            stagehand.context as unknown as {
+              cookies?: () => Promise<Array<{ name: string; value: string; domain: string }>>;
+            }
+          )
+            .cookies?.()
+            .catch(() => [])) ?? [];
+        const cookieHeader = jar
+          .filter(
+            (c) =>
+              host === c.domain.replace(/^\./, "") ||
+              host.endsWith(c.domain.startsWith(".") ? c.domain : `.${c.domain}`)
+          )
+          .map((c) => `${c.name}=${c.value}`)
+          .join("; ");
+        const check = await verifyOrderData(verifyStep.verifyRequest, {
+          origin,
+          cookieHeader,
+          payload,
+        });
+        if (!check.verified) {
+          throw new StepVerificationError(
+            `${metadata.siteId} config plugin: order verification failed (${check.reason})`,
+            "submit-skipped"
+          );
+        }
+        return { data: { verified: true } as never };
+      }
       const data = await guardedExtract(stagehand, spec.extract.instruction, extractSchema);
       return { data };
     },

@@ -21395,7 +21395,15 @@ export function emitBrowserFlowTs(opts: {
     // is typed by fixed code in the payment provider's frame (card-step.ts), so the
     // instruction here is a value-free label.
     if (isObj && step.sensitive !== undefined && step.declareOnly === true) {
-      if (!step.payloadField || !step.frameOrigin) {
+      // The provider origin is declared directly or read from the declared
+      // frame selector's `src^=` prefix.
+      const declaredOrigin =
+        step.frameOrigin ??
+        (step.frameSelector?.match(/src\^=\s*(['"])(https?:\/\/[^'"]+)\1/)?.[2] !== undefined
+          ? new URL(step.frameSelector.match(/src\^=\s*(['"])(https?:\/\/[^'"]+)\1/)?.[2] as string)
+              .origin
+          : undefined);
+      if (!step.payloadField || !declaredOrigin) {
         throw new Error(
           `declared card step ${JSON.stringify(step.payloadField ?? "(no payloadField)")} needs payloadField and frameOrigin; refusing to emit it as a model instruction`
         );
@@ -21403,15 +21411,19 @@ export function emitBrowserFlowTs(opts: {
       const cardField = canonicalise ? canonicalPayloadField(step.payloadField) : step.payloadField;
       const cardSpec = [
         `value: payload.${cardField}`,
-        `frameOrigin: ${JSON.stringify(step.frameOrigin)}`,
+        `frameOrigin: ${JSON.stringify(declaredOrigin)}`,
         // Never emit a card step without a completeness check: fall back to the
         // generic provider-complete marker when none was declared.
         `completeSelector: ${JSON.stringify(step.completeSelector ?? DEFAULT_CARD_COMPLETE_SELECTOR)}`,
       ].join(", ");
       // The frame the step lives in is always named: declared > flow-level > the
       // iframe whose src starts with the declared origin.
-      const cardFrameSelector = frameSelector ?? `iframe[src^=${JSON.stringify(step.frameOrigin)}]`;
-      return `  { instruction: ${JSON.stringify(`Type ${step.payloadField} into the payment frame`)}, optional: false, upload: false, submitStep: false,${step.frameSelector === undefined ? ` frameSelector: ${JSON.stringify(cardFrameSelector)},` : ""} card: { ${cardSpec} } },`;
+      const cardFrameSelector = frameSelector ?? `iframe[src^=${JSON.stringify(declaredOrigin)}]`;
+      const frameAttr =
+        step.frameSelector === undefined
+          ? ` frameSelector: ${JSON.stringify(cardFrameSelector)},`
+          : "";
+      return `  { instruction: "Type the card value into the payment frame", optional: false, upload: false, submitStep: false,${frameAttr}\n    card: { ${cardSpec} },\n  },`;
     }
     // ${RECON_PASSWORD} is reserved-tooling, not a domain-vocabulary concern —
     // it names a credential the recon capture needed to authenticate, not a
