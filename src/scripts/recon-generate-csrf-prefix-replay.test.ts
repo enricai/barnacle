@@ -112,12 +112,12 @@ describe("emitMultiStepExecuteHttp — CSRF prefix replay end to end", () => {
     const actions = raw.map((s, index) => ({ capture: s.capture, index }));
     const compiled = compileActionSteps(actions, indexStateValues(raw.map((s) => s.capture)));
     // Derive produces from the real indexer->compiler path, not by hand.
-    expect(compiled[0].produces).toMatchObject([{ kind: "body", path: ["csrf", "token"] }]);
-    expect(compiled[3].produces).toMatchObject([
+    expect(compiled[0]!.produces).toMatchObject([{ kind: "body", path: ["csrf", "token"] }]);
+    expect(compiled[3]!.produces).toMatchObject([
       { kind: "html", element: "meta", locatorName: "csrf-token", value: T2 },
     ]);
     raw.forEach((s, i) => {
-      s.produces = compiled[i].produces as unknown as typeof s.produces;
+      s.produces = compiled[i]!.produces as unknown as typeof s.produces;
     });
     return emitMultiStepExecuteHttp(
       raw as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
