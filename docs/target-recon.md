@@ -296,6 +296,32 @@ in the prefix cannot be traced to a producing step, or `--emit config` is used (
 cookies to the browser). `httpSteps` cannot be combined with `browserFlowOnly: true`. Run with
 `--emit ts`.
 
+## Read-back assertions (`assertResponse`)
+
+A flow step carrying `assertResponse` issues a request over HTTP and requires response fields to equal
+payload inputs. It has no browser instruction: recon-generate removes it from the step list the browser
+flow reads (and `tailFromStep` indexes the full list, assertions included).
+
+```json
+{
+  "step": "read the order back",
+  "assertResponse": {
+    "request": { "method": "GET", "url": "/api/orders/{OrderId}" },
+    "equals": { "customer.email": "Email" },
+    "afterAction": 2
+  }
+}
+```
+
+- `request.method` (`GET` | `POST`) and `request.url` (a `/path` on the site origin or an absolute
+  http(s) URL; `{Field}` is replaced by that payload input, URL-encoded).
+- `equals`: response field (dotted path) → payload field name. At least one. The payload value is compared
+  after the wire type/transform declared by the step that binds that payload field.
+- `afterAction` (integer ≥ 0, default: after every action): the number of HTTP actions that run first.
+
+The emitted contract throws before the next action when a field differs; the message names the fields
+only, never the values. A malformed declaration fails generation. A flow without it generates unchanged.
+
 ## Typed payload bindings (`wire`, `transform`)
 
 A flow-file payload binding (a flow field bound to a path in the recorded request body) may declare

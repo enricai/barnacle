@@ -11033,7 +11033,9 @@ export function emitMultiStepExecuteHttp(
    * request-invariant by {@link isZeroVarianceRepeatCapture}. */
   submitPatterns: SubmitPatterns | null = null,
   /** Documents proven to serve the steps' bearers ({@link locateBearerSources}). */
-  bearerSources: BearerSources = new Map()
+  bearerSources: BearerSources = new Map(),
+  /** Read-back assertions, each emitted before the action it follows (see {@link AssertResponseSpec}). */
+  assertions: readonly AssertResponseSpec[] = []
 ): string {
   if (httpPrefixCount !== undefined) actions = actions.slice(0, httpPrefixCount);
   const isDeclaredSubmit = compileDeclaredSubmitMatcher(submitPatterns);
@@ -11938,7 +11940,14 @@ export function emitMultiStepExecuteHttp(
       ...plan.absorbedIndices,
     ])
   );
+  const assertionsAt = (position: number): string[] =>
+    assertions.flatMap((spec, n) =>
+      Math.min(spec.afterAction ?? actions.length, actions.length) === position
+        ? emitAssertResponseLines(spec, n + 1, flowSteps, outDiscoveredFields)
+        : []
+    );
   for (let i = 0; i < actions.length; i++) {
+    for (const line of assertionsAt(i)) lines.push(line);
     const step = actions[i]!;
     const cap = step.capture;
     const r = rendered[i]!;
@@ -12748,6 +12757,7 @@ export function emitMultiStepExecuteHttp(
   // no ancestry TS can see, so a plain `as` needs the `as unknown as` detour.
   const castToResponseType = (expr: string): string =>
     pascalName ? `${expr} as unknown as ${pascalName}Response` : expr;
+  for (const line of assertionsAt(actions.length)) lines.push(line);
   if (httpPrefixCount !== undefined) {
     lines.push(`    return { cookies: prefixCookies };`);
   } else if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
@@ -20747,11 +20757,25 @@ export function unreadPayloadFieldChecklistLines(fields: ReadonlySet<string>): s
   );
 }
 
+/**
+ * A read-back assertion declared by a flow step: issue `request`, then require
+ * every response field in `equals` (a dotted path) to equal the named payload
+ * input. `afterAction` is the number of HTTP action steps that run first
+ * (default: all of them). It is HTTP-only: recon and the browser flow never see it.
+ */
+export interface AssertResponseSpec {
+  request: { method: "GET" | "POST"; url: string };
+  equals: Record<string, string>;
+  afterAction?: number;
+}
+
 /** A flow step as read from recon-flow.json, carrying the optional splicer hints. */
-type FlowStepInput =
+export type FlowStepInput =
   | string
   | {
       step: string;
+      /** Marks an HTTP read-back assertion step; see {@link AssertResponseSpec}. */
+      assertResponse?: AssertResponseSpec;
       optional?: boolean;
       upload?: boolean;
       submitStep?: boolean;
@@ -20774,6 +20798,114 @@ type FlowStepInput =
       /** Per-step cross-origin `<iframe>` selector; overrides the flow-level one. */
       frameSelector?: string;
     };
+
+/** Why a flow step's `assertResponse` is malformed, or null when it is well-formed. */
+export function assertResponseProblem(spec: unknown): string | null {
+  if (spec === null || typeof spec !== "object" || Array.isArray(spec))
+    return "assertResponse must be an object";
+  const { request, equals, afterAction } = spec as Record<string, unknown>;
+  if (request === null || typeof request !== "object" || Array.isArray(request))
+    return "assertResponse.request is required ({method, url})";
+  const { method, url } = request as Record<string, unknown>;
+  if (method !== "GET" && method !== "POST") return "assertResponse.request.method must be GET or POST";
+  if (typeof url !== "string" || !/^(\/|https?:\/\/)/.test(url))
+    return "assertResponse.request.url must be an absolute http(s) URL or a /path";
+  if (equals === null || typeof equals !== "object" || Array.isArray(equals))
+    return "assertResponse.equals is required ({responseField: payloadField})";
+  const entries = Object.entries(equals);
+  if (entries.length === 0) return "assertResponse.equals must name at least one field";
+  for (const [field, payloadField] of entries) {
+    if (field === "" || typeof payloadField !== "string" || !isValidJsIdentifier(payloadField))
+      return `assertResponse.equals.${field} must name a payload field`;
+  }
+  if (afterAction !== undefined && (!Number.isInteger(afterAction) || (afterAction as number) < 0))
+    return "assertResponse.afterAction must be an integer >= 0";
+  return null;
+}
+
+/** Whether a flow step is a read-back assertion (an HTTP-only step with no browser instruction). */
+export function isAssertResponseStep(
+  step: FlowStepInput
+): step is Exclude<FlowStepInput, string> & { assertResponse: AssertResponseSpec } {
+  return typeof step !== "string" && step.assertResponse !== undefined;
+}
+
+/**
+ * Splits assertion steps off a flow. Throws on a malformed one. `tailFromStep`
+ * indexes the full list, so it is remapped onto the browser steps that remain.
+ */
+export function splitAssertResponseSteps(
+  steps: readonly FlowStepInput[],
+  tailFromStep?: number
+): { browserSteps: FlowStepInput[]; assertions: AssertResponseSpec[]; tailFromStep?: number } {
+  const browserSteps: FlowStepInput[] = [];
+  const assertions: AssertResponseSpec[] = [];
+  let tail = tailFromStep;
+  steps.forEach((step, index) => {
+    if (typeof step === "string" || step.assertResponse === undefined) {
+      browserSteps.push(step);
+      return;
+    }
+    const problem = assertResponseProblem(step.assertResponse);
+    if (problem !== null) throw new Error(`Flow step ${index} is invalid: ${problem}`);
+    assertions.push(step.assertResponse);
+    if (tail !== undefined && index < tailFromStep!) tail = tail - 1;
+  });
+  return { browserSteps, assertions, ...(tail !== undefined && { tailFromStep: tail }) };
+}
+
+/** Emitted lines for one read-back assertion; throws (naming fields only) on a difference. */
+function emitAssertResponseLines(
+  spec: AssertResponseSpec,
+  n: number,
+  flowSteps: readonly FlowStepInput[],
+  outDiscoveredFields: Set<string>
+): string[] {
+  const url = spec.request.url
+    .split(/\{([A-Za-z_$][A-Za-z0-9_$]*)\}/)
+    .map((part, idx) => {
+      if (idx % 2 === 0) return escapeForTemplateLiteral(part);
+      outDiscoveredFields.add(part);
+      return `\${encodeURIComponent(String(payload.${part}))}`;
+    })
+    .join("");
+  const target = spec.request.url.startsWith("/") ? `\${context.baseUrl}${url}` : url;
+  const resp = `assertResp${n}`;
+  const diff = `assertDiff${n}`;
+  const lines = [
+    `    const ${resp} = await httpClient(\`${target}\`, {`,
+    `      method: ${JSON.stringify(spec.request.method)},`,
+    `      schema: z.unknown(),`,
+    `    });`,
+    `    const ${diff}: string[] = [];`,
+  ];
+  for (const [path, field] of Object.entries(spec.equals)) {
+    outDiscoveredFields.add(field);
+    const declaring = flowSteps.find(
+      (st) => typeof st !== "string" && st.payloadField === field && !st.payloadFieldNone
+    ) as Exclude<FlowStepInput, string> | undefined;
+    const expected = applyDeclaredBindingWire(`payload.${field}`, {
+      value: null,
+      field,
+      optional: false,
+      origin: "step",
+      literals: [],
+      kind: "",
+      kindHints: [],
+      wire: declaring?.payloadWire,
+      transform: declaring?.payloadTransform,
+    } as NavigateToFacetBinding);
+    const read = `${JSON.stringify(path.split("."))}.reduce<unknown>((o, k) => (o as Record<string, unknown> | null | undefined)?.[k], ${resp})`;
+    lines.push(
+      `    if (String(${read}) !== String(${expected})) ${diff}.push(${JSON.stringify(`${path} (payload.${field})`)});`
+    );
+  }
+  lines.push(
+    `    if (${diff}.length > 0) throw new Error(\`assertResponse step ${n}: response field(s) differ from payload: \${${diff}.join(", ")}\`);`,
+    ""
+  );
+  return lines;
+}
 
 /**
  * Redaction policy derived only from steps tagged `sensitive`: the tagged step's
@@ -22358,7 +22490,7 @@ export async function main(): Promise<void> {
   })();
 
   const {
-    flowSteps,
+    flowSteps: declaredFlowSteps,
     frameSelector,
     submitEndpointPattern,
     submitBodyPattern,
@@ -22448,7 +22580,18 @@ export async function main(): Promise<void> {
   })();
 
   const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
-  const httpStepsOpt = existsSync(flowFile) ? readHttpSteps(flowFile) : null;
+  const declaredHttpSteps = existsSync(flowFile) ? readHttpSteps(flowFile) : null;
+  // Read-back assertions are HTTP-only: they leave the step list every browser
+  // consumer reads, and `tailFromStep` (which indexes the full list) follows.
+  const {
+    browserSteps: flowSteps,
+    assertions: assertResponses,
+    tailFromStep: browserTailFromStep,
+  } = splitAssertResponseSteps(declaredFlowSteps, declaredHttpSteps?.tailFromStep);
+  const httpStepsOpt =
+    declaredHttpSteps === null
+      ? null
+      : { ...declaredHttpSteps, tailFromStep: browserTailFromStep ?? declaredHttpSteps.tailFromStep };
   const applicantContract = existsSync(flowFile) ? readApplicantContract(flowFile) : undefined;
   const declaredMaxAttempts = existsSync(flowFile) ? readDeclaredMaxAttempts(flowFile) : null;
 
@@ -23295,7 +23438,8 @@ export async function main(): Promise<void> {
             applicantContract,
             httpStepsOpt?.actions,
             submitPatterns,
-            locateBearerSources(activeCaptures, replays)
+            locateBearerSources(activeCaptures, replays),
+            assertResponses
           )
         : undefined;
     // A per-request token the recording re-sends that no step of the emitted

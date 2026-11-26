@@ -110,6 +110,25 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      */
     payloadFieldNone: z.boolean().optional(),
     /**
+     * Marks this step an HTTP read-back assertion: issue `request`, then require
+     * each response field in `equals` (dotted path -> payload field name) to equal
+     * that payload input, throwing before the next step otherwise. `afterAction` is
+     * how many HTTP action steps run first (default: all). Carries no browser
+     * instruction; ignored by the recon runtime, consumed only by recon-generate.ts.
+     */
+    assertResponse: z
+      .object({
+        request: z.object({
+          method: z.enum(["GET", "POST"]),
+          url: z.string().regex(/^(\/|https?:\/\/)/),
+        }),
+        equals: z
+          .record(z.string().min(1), z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/))
+          .refine((e) => Object.keys(e).length > 0, "equals must name at least one field"),
+        afterAction: z.number().int().min(0).optional(),
+      })
+      .optional(),
+    /**
      * Wire type of the value bound by this step's `payloadField`: `"number"`
      * sends it as a JSON number while the public input stays a string.
      * Ignored by the recon runtime; consumed only by recon-generate.ts.
