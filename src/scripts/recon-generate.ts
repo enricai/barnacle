@@ -2833,7 +2833,11 @@ export function gatherEntityVarianceEvidence(
       break;
     }
   }
-  return { entityParameterized: Object.keys(params).length > 0, params, singleEntity };
+  return {
+    entityParameterized: Object.keys(params).length > 0,
+    params,
+    singleEntity,
+  };
 }
 
 /**
@@ -3164,8 +3168,13 @@ function postBodyValueZod(seen: readonly unknown[]): string {
  * stay literal. Returns null when no body varies or bodies are not JSON objects.
  */
 function derivePostBodyModel(
-  captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
-  endpointPath: string
+  captures: readonly {
+    method?: string;
+    url: string;
+    requestPostData?: string | null;
+  }[],
+  endpointPath: string,
+  declared: readonly { name: string; observed: readonly string[] }[] = []
 ): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
   const bodies: Record<string, unknown>[] = [];
   for (const c of captures) {
@@ -3195,6 +3204,17 @@ function derivePostBodyModel(
     }
     const distinct = new Set(values.map((v) => JSON.stringify(v)));
     if (distinct.size === 1) return JSON.stringify(first);
+    // A declared payloadField whose observed value (a step's navigateTo query
+    // value or quoted instruction value) appears at this varying path tracks it:
+    // bind the declared name instead of inventing a path-named field.
+    const seenAll = values.flatMap((v) => (Array.isArray(v) ? v : [v]));
+    const tracked = declared.find(
+      (d) =>
+        !used.has(d.name) &&
+        d.observed.some((o) =>
+          seenAll.some((v) => typeof v === "string" && v.toLowerCase() === o.toLowerCase())
+        )
+    );
     const base = path
       .map((seg, i) => {
         const w = seg
@@ -3205,8 +3225,8 @@ function derivePostBodyModel(
         return i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1);
       })
       .join("");
-    let field = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
-    for (let n = 2; used.has(field); n++) field = `${base}${n}`;
+    let field = tracked ? tracked.name : /^[A-Za-z_]/.test(base) ? base : `f${base}`;
+    for (let n = 2; !tracked && used.has(field); n++) field = `${base}${n}`;
     used.add(field);
     const def = JSON.stringify(first ?? null);
     const seen = values.filter((v) => v !== null && v !== undefined);
@@ -3219,6 +3239,29 @@ function derivePostBodyModel(
   };
   const bodyExpr = build([]);
   return bindings.length > 0 ? { bodyExpr, bindings } : null;
+}
+
+/** Values a declared payloadField was observed with: its steps' navigateTo query values and quoted instruction values. */
+function declaredFieldObservedValues(
+  flowSteps: readonly FlowStepInput[],
+  names: Iterable<string>
+): { name: string; observed: string[] }[] {
+  const out = new Map<string, string[]>();
+  for (const name of names) out.set(name, []);
+  for (const step of flowSteps) {
+    if (typeof step === "string" || step.payloadField === undefined) continue;
+    const list = out.get(step.payloadField);
+    if (!list) continue;
+    for (const m of step.step.matchAll(/['"]([^'"]+)['"]/g)) list.push(m[1]!);
+    if (step.navigateTo !== undefined) {
+      try {
+        for (const [, v] of new URL(step.navigateTo).searchParams) if (v !== "") list.push(v);
+      } catch {
+        // not an absolute URL: no observed value
+      }
+    }
+  }
+  return [...out].filter(([, v]) => v.length > 0).map(([name, observed]) => ({ name, observed }));
 }
 
 function safeUrlPathname(url: string): string {
@@ -3242,7 +3285,12 @@ export interface GetInputModel {
   /** Recorded values (queryKey -> ordered values) of a repeated query key (`ids[]=1&ids[]=2`), replayed as one pair each when the payload omits the input. */
   recordedQueryLists?: Record<string, string[]>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
-  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string; suffix?: string }>;
+  pathVars: Array<{
+    field: string;
+    segmentIndex: number;
+    queryKey: string;
+    suffix?: string;
+  }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
   pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
   /** Declared composite payload fields (`a_b`) whose parts bind separate path segments: `partField` (a pathVars field) takes part `index` of `field` when the caller supplies `field`. */
@@ -5411,7 +5459,10 @@ function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): Act
     arrayField.path,
     mergedItems
   );
-  return { ...representative, capture: { ...representative.capture, responseBody: mergedBody } };
+  return {
+    ...representative,
+    capture: { ...representative.capture, responseBody: mergedBody },
+  };
 }
 
 /**
@@ -7878,7 +7929,9 @@ function payloadAccessorForPath(path: string[]): {
   }
   const objectPath = path.slice(0, arrayIndexPos);
   const field = objectPath.length > 0 ? pathToPayloadFieldName(objectPath) : (path[0] ?? "");
-  const suffix = pathToAccessor(path.slice(arrayIndexPos), { assertNonNull: true });
+  const suffix = pathToAccessor(path.slice(arrayIndexPos), {
+    assertNonNull: true,
+  });
   return {
     accessor: `payload.${field}${suffix}`,
     field,
@@ -11018,7 +11071,11 @@ export function emitMultiStepExecuteHttp(
       if (isInsideOwnedArray(path, facetArrayPathKeys)) continue;
       // A leaf recurring as a declared facet literal binds to that facet's
       // payloadField via the persona pass, not to a by-index accessor.
-      if (matchFacetRecurrence(value, navigateToFacetOrder, { allowDelimiterSuffix: true })) {
+      if (
+        matchFacetRecurrence(value, navigateToFacetOrder, {
+          allowDelimiterSuffix: true,
+        })
+      ) {
         continue;
       }
       const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
@@ -11754,7 +11811,13 @@ export function emitMultiStepExecuteHttp(
     // contract would enforce that narrowed shape on every call in the chain.
     const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
-    rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
+    rendered.push({
+      url,
+      method: cap.method,
+      headersExpr,
+      bodyArg,
+      schemaExpr,
+    });
   }
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
@@ -11979,7 +12042,10 @@ export function emitMultiStepExecuteHttp(
         // (below) can lift the fetch above the per-item loop instead of
         // pinning it inside for byte-identical ancestor-scoped data.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          ...ancestorVars.map((varName) => ({
+            varName,
+            obj: ancestorObjByVar.get(varName)!,
+          })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -13205,7 +13271,9 @@ function spliceFacetRecurrenceIntoScalarVariable(
 ): string | null {
   if (facets.length === 0) return null;
   if (typeof value === "string" || typeof value === "number") {
-    const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
+    const facet = matchFacetRecurrence(String(value), facets, {
+      allowDelimiterSuffix: false,
+    });
     if (facet !== undefined) {
       const rendered = renderFacetPayloadValue(String(value), facet);
       return rendered === `\${${facetPayloadExpression(facet)}}`
@@ -14585,7 +14653,10 @@ function buildThreadedFieldPairs(
   ancestorScopes: readonly { varName: string; obj: Record<string, unknown> }[]
 ): { valueField: ThreadedField; accessorField: ThreadedField }[] {
   if (!isAncestorScoped) {
-    return rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
+    return rawThreadedFields.map((tf) => ({
+      valueField: tf,
+      accessorField: tf,
+    }));
   }
   return rawThreadedFields.map((tf) => ({
     valueField: tf,
@@ -15008,7 +15079,12 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       );
       if (primaryMatchedItemIndex === -1) continue;
       const joinFields = findThreadedJoinFields(
-        [{ varName: "item", obj: primaryArray.items[primaryMatchedItemIndex]! }],
+        [
+          {
+            varName: "item",
+            obj: primaryArray.items[primaryMatchedItemIndex]!,
+          },
+        ],
         drill.capture
       ).map((f) => f.field);
 
@@ -15111,7 +15187,11 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
     }
 
     if (targets.length > 0) {
-      groups.push({ primaryArrayPath: primaryArray.path, targets, absorbedIndices });
+      groups.push({
+        primaryArrayPath: primaryArray.path,
+        targets,
+        absorbedIndices,
+      });
     }
   }
 
@@ -18944,7 +19024,15 @@ export function emitContractTsParts(opts: {
   // the other sources unchanged.
   const postBodyModel =
     readOnlyPostSearch && !gql && !multiStepBody && !suppliedGetInputModel
-      ? derivePostBodyModel(allCaptures, endpointPath)
+      ? derivePostBodyModel(
+          allCaptures,
+          endpointPath,
+          declaredFieldObservedValues(contractFlowSteps, [
+            ...(payloadFieldNames ?? []),
+            ...optionalPayloadFieldNames,
+            ...extraPayloadFields.map((f) => f.name),
+          ])
+        )
       : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
@@ -19356,7 +19444,10 @@ export function emitContractTsParts(opts: {
   }
   if (postBodyModel) {
     for (const { field, zod } of postBodyModel.bindings) {
-      if (extendFields.has(field)) continue;
+      // A declared payloadField bound to a body path is typed by that path.
+      const declaredBound =
+        (payloadFieldNames?.has(field) ?? false) || optionalPayloadFieldNames.has(field);
+      if (extendFields.has(field) && !declaredBound) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: ${zod},`);
     }
@@ -19364,6 +19455,7 @@ export function emitContractTsParts(opts: {
   // Flow-declared extra payload fields: declared type/optionality are
   // authoritative and override a name discovered from captures (one entry per name).
   for (const f of extraPayloadFields) {
+    if (postBodyModel?.bindings.some((b) => b.field === f.name)) continue;
     extendFields.set(f.name, `  ${f.name}: z.${f.type}()${f.optional ? ".optional()" : ""},`);
   }
   const mergedExtension =
@@ -19662,7 +19754,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // instead of pinning it inside for byte-identical ancestor-scoped
         // data. Mirrors emitMultiStepExecuteHttp's identical hoist.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          ...ancestorVars.map((varName) => ({
+            varName,
+            obj: ancestorObjByVar.get(varName)!,
+          })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -21100,7 +21195,9 @@ export function emitConfigManifest(opts: {
         description: "TODO: declare the fields this site returns (recon leaves this empty).",
         properties: {},
       },
-      ...(sensitiveManifestPolicy !== undefined && { redaction: sensitiveManifestPolicy }),
+      ...(sensitiveManifestPolicy !== undefined && {
+        redaction: sensitiveManifestPolicy,
+      }),
       flow: { steps, ...(isSubmissionFlow ? { submissionFlow: true } : {}) },
       extract: {
         instruction: `extract the confirmation id and status for ${siteId}`,
@@ -21614,7 +21711,12 @@ ${flowStepsBlock}
     buildKnownFieldValues(allFlowSteps, vocabulary ?? EMPTY_VOCABULARY, env, canonicalise, false),
     flowSteps
   );
-  return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
+  return {
+    code,
+    payloadFieldNames,
+    optionalPayloadFieldNames,
+    usesThrowawayPassword,
+  };
 }
 
 /**
@@ -22761,7 +22863,10 @@ export async function main(): Promise<void> {
         ? null
         : detectFormSchemaFetchCapture(activeCaptures, baseUrl, formSchema);
     const schemaFetchCleaned: Capture | null = rawSchemaFetch
-      ? { ...rawSchemaFetch.capture, url: stripCacheBusterParams(rawSchemaFetch.capture.url) }
+      ? {
+          ...rawSchemaFetch.capture,
+          url: stripCacheBusterParams(rawSchemaFetch.capture.url),
+        }
       : null;
     const actionCaptures: ActionCapture[] = (() => {
       if (
