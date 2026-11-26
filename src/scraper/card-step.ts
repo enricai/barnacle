@@ -15,6 +15,8 @@ export interface CardStepSpec {
   value: string | undefined;
   /** Origin of the payment provider frame the field must live in. */
   frameOrigin: string;
+  /** Selector of the provider frame the field lives in (informational; the runner resolves it). */
+  frameSelector?: string;
   /** Selector the provider sets when the field is valid. */
   completeSelector?: string;
   /** Field inside the frame; defaults to the first enabled visible input. */

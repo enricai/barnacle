@@ -20686,6 +20686,13 @@ type FlowStepInput =
       };
     };
 
+/** Provider origin of a declared card step: declared directly or read from its `src^=` frame selector. */
+function resolveCardFrameOrigin(step: Exclude<FlowStepInput, string>): string | undefined {
+  if (step.frameOrigin) return step.frameOrigin;
+  const m = step.frameSelector?.match(/src\^=\s*(['"])(https?:\/\/[^'"]+)\1/);
+  return m?.[2] !== undefined ? new URL(m[2]).origin : undefined;
+}
+
 /** A step the emitted flow must wire fixed code for: card typing, or an order-data verify request. */
 function flowStepNeedsContext(step: FlowStepInput): boolean {
   return (
@@ -21001,6 +21008,27 @@ export function emitConfigManifest(opts: {
         submitStep,
         ...(frameSelector ? { frameSelector } : {}),
         ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
+      };
+    }
+    if (isObj && step.sensitive !== undefined && step.declareOnly === true) {
+      const origin = resolveCardFrameOrigin(step);
+      if (!step.payloadField || !origin) {
+        throw new Error(
+          `declared card step ${JSON.stringify(step.payloadField ?? "(no payloadField)")} needs payloadField and frameOrigin; refusing to emit it as a model instruction`
+        );
+      }
+      const cardField = canonicalise ? canonicalPayloadField(step.payloadField) : step.payloadField;
+      payloadFieldNames.add(cardField);
+      return {
+        step: "Type the card value into the payment frame",
+        optional: false,
+        upload: false,
+        submitStep: false,
+        sensitive: step.sensitive,
+        payloadField: cardField,
+        frameOrigin: origin,
+        frameSelector: step.frameSelector ?? `iframe[src^=${JSON.stringify(origin)}]`,
+        completeSelector: step.completeSelector ?? DEFAULT_CARD_COMPLETE_SELECTOR,
       };
     }
     const field = resolveStepPayloadField(
@@ -21395,14 +21423,7 @@ export function emitBrowserFlowTs(opts: {
     // is typed by fixed code in the payment provider's frame (card-step.ts), so the
     // instruction here is a value-free label.
     if (isObj && step.sensitive !== undefined && step.declareOnly === true) {
-      // The provider origin is declared directly or read from the declared
-      // frame selector's `src^=` prefix.
-      const declaredOrigin =
-        step.frameOrigin ??
-        (step.frameSelector?.match(/src\^=\s*(['"])(https?:\/\/[^'"]+)\1/)?.[2] !== undefined
-          ? new URL(step.frameSelector.match(/src\^=\s*(['"])(https?:\/\/[^'"]+)\1/)?.[2] as string)
-              .origin
-          : undefined);
+      const declaredOrigin = resolveCardFrameOrigin(step);
       if (!step.payloadField || !declaredOrigin) {
         throw new Error(
           `declared card step ${JSON.stringify(step.payloadField ?? "(no payloadField)")} needs payloadField and frameOrigin; refusing to emit it as a model instruction`
@@ -21412,6 +21433,7 @@ export function emitBrowserFlowTs(opts: {
       const cardSpec = [
         `value: payload.${cardField}`,
         `frameOrigin: ${JSON.stringify(declaredOrigin)}`,
+        `frameSelector: ${JSON.stringify(frameSelector ?? `iframe[src^=${JSON.stringify(declaredOrigin)}]`)}`,
         // Never emit a card step without a completeness check: fall back to the
         // generic provider-complete marker when none was declared.
         `completeSelector: ${JSON.stringify(step.completeSelector ?? DEFAULT_CARD_COMPLETE_SELECTOR)}`,

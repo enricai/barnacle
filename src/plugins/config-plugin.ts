@@ -170,8 +170,20 @@ function toHealingStep(
       captchaGated: false,
     };
   }
+  // A declared card step is typed by fixed code; its value never enters the instruction.
+  const card =
+    step.sensitive !== undefined && step.payloadField && step.frameOrigin
+      ? {
+          value: step.payloadField in payload ? String(payload[step.payloadField]) : undefined,
+          frameOrigin: step.frameOrigin,
+          frameSelector: step.frameSelector,
+          completeSelector: step.completeSelector,
+        }
+      : undefined;
   return {
-    instruction: resolveTemplate(step.step, payload, declaredFields),
+    instruction:
+      card !== undefined ? step.step : resolveTemplate(step.step, payload, declaredFields),
+    ...(card !== undefined ? { card } : {}),
     optional: step.optional,
     upload: step.upload,
     submitStep: step.submitStep,
