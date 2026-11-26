@@ -2833,7 +2833,11 @@ export function gatherEntityVarianceEvidence(
       break;
     }
   }
-  return { entityParameterized: Object.keys(params).length > 0, params, singleEntity };
+  return {
+    entityParameterized: Object.keys(params).length > 0,
+    params,
+    singleEntity,
+  };
 }
 
 /**
@@ -3015,7 +3019,11 @@ export function selectPrimaryGraphQLOperation(
       )
   );
 
-  return { capture: winner.capture, endpointPath, unpopulatedDeclaredVariables };
+  return {
+    capture: winner.capture,
+    endpointPath,
+    unpopulatedDeclaredVariables,
+  };
 }
 
 /**
@@ -3135,6 +3143,15 @@ export function firstEndpointCapture(
   return pool.find(valid) ?? null;
 }
 
+/** A flow step's declared payloadField with the capture phase and facet value of its step. */
+interface DeclaredBodyStepField {
+  field: string;
+  /** Capture phase the step produces (slug of its instruction); "" when unknown. */
+  phase: string;
+  /** Facet value the step introduces; "" when unknown. */
+  value: string;
+}
+
 interface PostBodyBinding {
   field: string;
   zod: string;
@@ -3164,17 +3181,26 @@ function postBodyValueZod(seen: readonly unknown[]): string {
  * stay literal. Returns null when no body varies or bodies are not JSON objects.
  */
 function derivePostBodyModel(
-  captures: readonly { method?: string; url: string; requestPostData?: string | null }[],
-  endpointPath: string
+  captures: readonly {
+    method?: string;
+    url: string;
+    requestPostData?: string | null;
+    phase?: string;
+  }[],
+  endpointPath: string,
+  declared: readonly DeclaredBodyStepField[] = []
 ): { bodyExpr: string; bindings: PostBodyBinding[] } | null {
   const bodies: Record<string, unknown>[] = [];
+  const phases: (string | undefined)[] = [];
   for (const c of captures) {
     if (c.method !== undefined && c.method.toUpperCase() !== "POST") continue;
     if (safeUrlPathname(c.url) !== endpointPath) continue;
     try {
       const parsed: unknown = JSON.parse(c.requestPostData ?? "");
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed))
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
         bodies.push(parsed as Record<string, unknown>);
+        phases.push(c.phase);
+      }
     } catch {
       // non-JSON body: not modelled
     }
@@ -3205,8 +3231,22 @@ function derivePostBodyModel(
         return i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1);
       })
       .join("");
-    let field = /^[A-Za-z_]/.test(base) ? base : `f${base}`;
-    for (let n = 2; used.has(field); n++) field = `${base}${n}`;
+    // The declared per-step field whose step introduced this change owns the leaf.
+    let declaredField: string | undefined;
+    for (let j = 1; j < bodies.length; j++) {
+      const now = JSON.stringify(values[j]);
+      if (now === JSON.stringify(values[j - 1])) continue;
+      const free = declared.filter((d) => !used.has(d.field));
+      const phase = phases[j];
+      const byValue = free.filter((d) => d.value !== "" && leafHoldsValue(values[j], d.value));
+      // Phases are 24-char slugs, so steps sharing an opening collide: a phase
+      // only identifies the owner when exactly one free declared field has it.
+      const byPhase = free.filter((d) => d.phase !== "" && d.phase === phase);
+      declaredField = (byValue[0] ?? (byPhase.length === 1 ? byPhase[0] : undefined))?.field;
+      break; // only the step that first changed the leaf can own it
+    }
+    let field = declaredField ?? (/^[A-Za-z_]/.test(base) ? base : `f${base}`);
+    if (declaredField === undefined) for (let n = 2; used.has(field); n++) field = `${base}${n}`;
     used.add(field);
     const def = JSON.stringify(first ?? null);
     const seen = values.filter((v) => v !== null && v !== undefined);
@@ -3219,6 +3259,37 @@ function derivePostBodyModel(
   };
   const bodyExpr = build([]);
   return bindings.length > 0 ? { bodyExpr, bindings } : null;
+}
+
+/** Declared per-step payloadFields keyed by the capture phase their step records (recon-browser slugs the instruction to 24 chars). */
+function declaredBodyStepFields(
+  flowSteps: FlowStepInput[],
+  env: NodeJS.ProcessEnv
+): DeclaredBodyStepField[] {
+  const values = new Map<string, string>();
+  for (const f of extractNavigateToFacetOrder(flowSteps, env))
+    if (!values.has(f.field)) values.set(f.field, f.value);
+  const out: DeclaredBodyStepField[] = [];
+  for (const step of flowSteps) {
+    if (typeof step === "string" || !step.payloadField || step.payloadFieldNone) continue;
+    if (out.some((d) => d.field === step.payloadField)) continue;
+    const phase = step.step
+      .replace(/[^a-z0-9]+/gi, "-")
+      .toLowerCase()
+      .replace(/^-|-$/g, "")
+      .slice(0, 24);
+    out.push({
+      field: step.payloadField,
+      phase,
+      value: values.get(step.payloadField) ?? "",
+    });
+  }
+  return out;
+}
+
+/** True when a body leaf is the declared facet value or an array containing it. */
+function leafHoldsValue(leaf: unknown, value: string): boolean {
+  return Array.isArray(leaf) ? leaf.some((e) => String(e) === value) : String(leaf) === value;
 }
 
 function safeUrlPathname(url: string): string {
@@ -3242,7 +3313,12 @@ export interface GetInputModel {
   /** Recorded values (queryKey -> ordered values) of a repeated query key (`ids[]=1&ids[]=2`), replayed as one pair each when the payload omits the input. */
   recordedQueryLists?: Record<string, string[]>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
-  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string; suffix?: string }>;
+  pathVars: Array<{
+    field: string;
+    segmentIndex: number;
+    queryKey: string;
+    suffix?: string;
+  }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
   pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
   /** Declared composite payload fields (`a_b`) whose parts bind separate path segments: `partField` (a pathVars field) takes part `index` of `field` when the caller supplies `field`. */
@@ -3483,7 +3559,11 @@ export function deriveGetInputModel(
     const boundField = boundSegments.get(segIdx);
     if (segIdx >= 0 && boundField !== undefined) {
       // Another query key repeating an already-bound path segment follows the same caller input.
-      pathTwins.push({ field: boundField, segmentIndex: segIdx, queryKey: key });
+      pathTwins.push({
+        field: boundField,
+        segmentIndex: segIdx,
+        queryKey: key,
+      });
     } else if (segIdx >= 0) {
       const field = nameFor(key);
       boundSegments.set(segIdx, field);
@@ -5411,7 +5491,10 @@ function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): Act
     arrayField.path,
     mergedItems
   );
-  return { ...representative, capture: { ...representative.capture, responseBody: mergedBody } };
+  return {
+    ...representative,
+    capture: { ...representative.capture, responseBody: mergedBody },
+  };
 }
 
 /**
@@ -6086,7 +6169,9 @@ function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
 
     for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
       if (KNOWN_TOP_LEVEL_ERROR_KEYS.has(k.toLowerCase())) {
-        const existing = candidateTopLevelKeys.get(k) ?? { presentInSuccess: false };
+        const existing = candidateTopLevelKeys.get(k) ?? {
+          presentInSuccess: false,
+        };
         if (typeof v === "string" && v.length > 0) existing.presentInSuccess = true;
         candidateTopLevelKeys.set(k, existing);
       }
@@ -6105,7 +6190,10 @@ function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
   const nestedErrorPaths: ErrorSignals["nestedErrorPaths"] = [];
   for (const info of candidateNestedPaths.values()) {
     if (!info.presentInSuccess) {
-      nestedErrorPaths.push({ parentPath: info.parentPath, errorKey: info.errorKey });
+      nestedErrorPaths.push({
+        parentPath: info.parentPath,
+        errorKey: info.errorKey,
+      });
     }
   }
 
@@ -6871,7 +6959,10 @@ export function buildSelectOptionResolutions(
       // channel emits a caller-supplied default.
       if (usableOptions.length === 0 && schema.codes.length > 0) {
         const fallbackIdx = idx >= 0 ? idx : schema.codes.length - 1;
-        rawCodeFields.set(semanticName, { wireKey, code: schema.codes[fallbackIdx]! });
+        rawCodeFields.set(semanticName, {
+          wireKey,
+          code: schema.codes[fallbackIdx]!,
+        });
         seenWireKeys.add(wireKey);
       }
       continue;
@@ -6895,7 +6986,13 @@ export function buildSelectOptionResolutions(
     // The {label,value} map only reliably yields the one answered label→code
     // pair here; emit a single-choice enum so the field still binds (the caller
     // can widen it). Co-located labels aren't safely attributable to this field.
-    resolutions.push({ wireKey, semanticName, code, label, options: [{ label, code }] });
+    resolutions.push({
+      wireKey,
+      semanticName,
+      code,
+      label,
+      options: [{ label, code }],
+    });
     seenWireKeys.add(wireKey);
   }
   return { resolutions, rawCodeFields };
@@ -7878,7 +7975,9 @@ function payloadAccessorForPath(path: string[]): {
   }
   const objectPath = path.slice(0, arrayIndexPos);
   const field = objectPath.length > 0 ? pathToPayloadFieldName(objectPath) : (path[0] ?? "");
-  const suffix = pathToAccessor(path.slice(arrayIndexPos), { assertNonNull: true });
+  const suffix = pathToAccessor(path.slice(arrayIndexPos), {
+    assertNonNull: true,
+  });
   return {
     accessor: `payload.${field}${suffix}`,
     field,
@@ -9271,7 +9370,11 @@ export function deriveProducerBoundaryBindings(
       // higher-priority accessor is a real declared field, so only veto the
       // sentinel when the name came from `p.name`.
       if (existing === undefined && field === "value") continue;
-      bindings.set(value, { accessor: `payload.${field}`, field, producerIndex: i });
+      bindings.set(value, {
+        accessor: `payload.${field}`,
+        field,
+        producerIndex: i,
+      });
     }
   }
   // Drop per-step position constants: a field bound to ≥2 distinct values across
@@ -11018,7 +11121,11 @@ export function emitMultiStepExecuteHttp(
       if (isInsideOwnedArray(path, facetArrayPathKeys)) continue;
       // A leaf recurring as a declared facet literal binds to that facet's
       // payloadField via the persona pass, not to a by-index accessor.
-      if (matchFacetRecurrence(value, navigateToFacetOrder, { allowDelimiterSuffix: true })) {
+      if (
+        matchFacetRecurrence(value, navigateToFacetOrder, {
+          allowDelimiterSuffix: true,
+        })
+      ) {
         continue;
       }
       const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
@@ -11754,7 +11861,13 @@ export function emitMultiStepExecuteHttp(
     // contract would enforce that narrowed shape on every call in the chain.
     const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
-    rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
+    rendered.push({
+      url,
+      method: cap.method,
+      headersExpr,
+      bodyArg,
+      schemaExpr,
+    });
   }
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
@@ -11979,7 +12092,10 @@ export function emitMultiStepExecuteHttp(
         // (below) can lift the fetch above the per-item loop instead of
         // pinning it inside for byte-identical ancestor-scoped data.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          ...ancestorVars.map((varName) => ({
+            varName,
+            obj: ancestorObjByVar.get(varName)!,
+          })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -13205,7 +13321,9 @@ function spliceFacetRecurrenceIntoScalarVariable(
 ): string | null {
   if (facets.length === 0) return null;
   if (typeof value === "string" || typeof value === "number") {
-    const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
+    const facet = matchFacetRecurrence(String(value), facets, {
+      allowDelimiterSuffix: false,
+    });
     if (facet !== undefined) {
       const rendered = renderFacetPayloadValue(String(value), facet);
       return rendered === `\${${facetPayloadExpression(facet)}}`
@@ -14585,7 +14703,10 @@ function buildThreadedFieldPairs(
   ancestorScopes: readonly { varName: string; obj: Record<string, unknown> }[]
 ): { valueField: ThreadedField; accessorField: ThreadedField }[] {
   if (!isAncestorScoped) {
-    return rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
+    return rawThreadedFields.map((tf) => ({
+      valueField: tf,
+      accessorField: tf,
+    }));
   }
   return rawThreadedFields.map((tf) => ({
     valueField: tf,
@@ -15008,7 +15129,12 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       );
       if (primaryMatchedItemIndex === -1) continue;
       const joinFields = findThreadedJoinFields(
-        [{ varName: "item", obj: primaryArray.items[primaryMatchedItemIndex]! }],
+        [
+          {
+            varName: "item",
+            obj: primaryArray.items[primaryMatchedItemIndex]!,
+          },
+        ],
         drill.capture
       ).map((f) => f.field);
 
@@ -15111,7 +15237,11 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
     }
 
     if (targets.length > 0) {
-      groups.push({ primaryArrayPath: primaryArray.path, targets, absorbedIndices });
+      groups.push({
+        primaryArrayPath: primaryArray.path,
+        targets,
+        absorbedIndices,
+      });
     }
   }
 
@@ -15672,7 +15802,11 @@ function parseDrillParamBindings(raw: unknown): FoldReturnSpec["drillParamBindin
     ) {
       return null;
     }
-    parsed[paramName] = { payloadField, type, default: defaultValue as string | number | boolean };
+    parsed[paramName] = {
+      payloadField,
+      type,
+      default: defaultValue as string | number | boolean,
+    };
   }
   return parsed;
 }
@@ -17601,9 +17735,15 @@ export function foldOneDrillOccurrence(
   // Mirrors emitFoldMatchAndMergeLines: a declared attach key carries the
   // matched answer as one value instead of flat-merging its fields.
   if (matchAttachKey !== null) {
-    return replaceByReference(body, matchedItem, { [matchAttachKey]: drillMatch, ...matchedItem });
+    return replaceByReference(body, matchedItem, {
+      [matchAttachKey]: drillMatch,
+      ...matchedItem,
+    });
   }
-  return replaceByReference(body, matchedItem, { ...drillMatch, ...matchedItem });
+  return replaceByReference(body, matchedItem, {
+    ...drillMatch,
+    ...matchedItem,
+  });
 }
 
 function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
@@ -18944,7 +19084,11 @@ export function emitContractTsParts(opts: {
   // the other sources unchanged.
   const postBodyModel =
     readOnlyPostSearch && !gql && !multiStepBody && !suppliedGetInputModel
-      ? derivePostBodyModel(allCaptures, endpointPath)
+      ? derivePostBodyModel(
+          allCaptures,
+          endpointPath,
+          declaredBodyStepFields(contractFlowSteps, process.env)
+        )
       : null;
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
@@ -19356,7 +19500,9 @@ export function emitContractTsParts(opts: {
   }
   if (postBodyModel) {
     for (const { field, zod } of postBodyModel.bindings) {
-      if (extendFields.has(field)) continue;
+      // A declared payloadField was registered as a bare required string; an
+      // array-typed body leaf must keep its array schema or the wire shape breaks.
+      if (extendFields.has(field) && !zod.startsWith("z.array(")) continue;
       const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
       extendFields.set(field, `  ${key}: ${zod},`);
     }
@@ -19662,7 +19808,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // instead of pinning it inside for byte-identical ancestor-scoped
         // data. Mirrors emitMultiStepExecuteHttp's identical hoist.
         const threadingScopes = [
-          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          ...ancestorVars.map((varName) => ({
+            varName,
+            obj: ancestorObjByVar.get(varName)!,
+          })),
           { varName: itemVar, obj: firstItem },
         ];
         const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
@@ -21100,7 +21249,9 @@ export function emitConfigManifest(opts: {
         description: "TODO: declare the fields this site returns (recon leaves this empty).",
         properties: {},
       },
-      ...(sensitiveManifestPolicy !== undefined && { redaction: sensitiveManifestPolicy }),
+      ...(sensitiveManifestPolicy !== undefined && {
+        redaction: sensitiveManifestPolicy,
+      }),
       flow: { steps, ...(isSubmissionFlow ? { submissionFlow: true } : {}) },
       extract: {
         instruction: `extract the confirmation id and status for ${siteId}`,
@@ -21616,7 +21767,12 @@ ${flowStepsBlock}
     buildKnownFieldValues(allFlowSteps, vocabulary ?? EMPTY_VOCABULARY, env, canonicalise, false),
     flowSteps
   );
-  return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
+  return {
+    code,
+    payloadFieldNames,
+    optionalPayloadFieldNames,
+    usesThrowawayPassword,
+  };
 }
 
 /**
@@ -22763,7 +22919,10 @@ export async function main(): Promise<void> {
         ? null
         : detectFormSchemaFetchCapture(activeCaptures, baseUrl, formSchema);
     const schemaFetchCleaned: Capture | null = rawSchemaFetch
-      ? { ...rawSchemaFetch.capture, url: stripCacheBusterParams(rawSchemaFetch.capture.url) }
+      ? {
+          ...rawSchemaFetch.capture,
+          url: stripCacheBusterParams(rawSchemaFetch.capture.url),
+        }
       : null;
     const actionCaptures: ActionCapture[] = (() => {
       if (
