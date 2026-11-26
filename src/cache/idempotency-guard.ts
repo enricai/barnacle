@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { UnknownOutcomeError } from "@/api/errors";
@@ -21,7 +21,7 @@ import type { PluginIdempotency } from "@/site-plugin";
 export type IdempotencyRecord =
   | { state: "success"; value: unknown }
   | { state: "unknown"; message: string }
-  | { state: "pending" }
+  | { state: "pending"; owner?: string }
   | { state: "failed"; message: string };
 
 /** Poll view of an async operation. */
@@ -40,7 +40,12 @@ export interface IdempotencyStore {
    * Optional cross-process lease: atomically writes a `pending` record only if
    * no live record exists. Returns false when another holder owns the key.
    */
-  claim?(key: string, ttlMs: number): boolean | Promise<boolean>;
+  claim?(key: string, ttlMs: number, owner?: string): boolean | Promise<boolean>;
+  /**
+   * Optional: extends the live `pending` claim held by `owner`. Returns false
+   * when the record is missing, expired, settled, or owned by someone else.
+   */
+  renew?(key: string, owner: string, ttlMs: number): boolean | Promise<boolean>;
 }
 
 export function createInMemoryIdempotencyStore(): IdempotencyStore {
@@ -79,27 +84,50 @@ export function createFileIdempotencyStore(dir: string): IdempotencyStore {
           return undefined;
         }
         return e.record;
-      } catch {
-        return undefined;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        // Unreadable or corrupt entry: it exists, so it is not "never ran".
+        return {
+          state: "unknown",
+          message: `idempotency entry could not be read: ${err instanceof Error ? err.message : String(err)}`,
+        };
       }
     },
     set(key, record, ttlMs) {
       const path = resolveIdempotencyEntryPath(dir, key);
       mkdirSync(dirname(path), { recursive: true });
-      const tmp = `${path}.${process.pid}.tmp`;
+      const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
       writeFileSync(tmp, JSON.stringify({ record, expiresAt: Date.now() + ttlMs }));
       renameSync(tmp, path);
     },
     delete(key) {
       rmSync(resolveIdempotencyEntryPath(dir, key), { force: true });
     },
-    claim(key, ttlMs) {
+    renew(key, owner, ttlMs) {
+      const path = resolveIdempotencyEntryPath(dir, key);
+      let e: { record: IdempotencyRecord; expiresAt: number };
+      try {
+        e = JSON.parse(readFileSync(path, "utf8"));
+      } catch {
+        return false;
+      }
+      if (e.record.state !== "pending" || e.record.owner !== owner) return false;
+      if (e.expiresAt <= Date.now()) return false;
+      const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ record: e.record, expiresAt: Date.now() + ttlMs }));
+      renameSync(tmp, path);
+      return true;
+    },
+    claim(key, ttlMs, owner) {
       const path = resolveIdempotencyEntryPath(dir, key);
       mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.claim`;
       writeFileSync(
         tmp,
-        JSON.stringify({ record: { state: "pending" }, expiresAt: Date.now() + ttlMs })
+        JSON.stringify({
+          record: owner === undefined ? { state: "pending" } : { state: "pending", owner },
+          expiresAt: Date.now() + ttlMs,
+        })
       );
       try {
         for (let attempt = 0; attempt < 2; attempt++) {
