@@ -5882,7 +5882,10 @@ function isRecordedIdValue(v: string): boolean {
 function refererNamesRecordedInstance(referer: string): boolean {
   let url: URL;
   try {
-    url = new URL(referer.replace(/\$\{[^}]*\}/g, "bound"));
+    // The origin may already be the `context.baseUrl` placeholder.
+    const originPlaceholder = `$${"{"}context.baseUrl${"}"}`;
+    const literal = referer.split(originPlaceholder).join("https://origin.invalid");
+    url = new URL(literal.replace(/\$\{[^}]*\}/g, "bound"), "https://origin.invalid");
   } catch {
     return false;
   }
