@@ -125,12 +125,6 @@ const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
 const DOUBLE_QUOTED_SPAN = /"([^"]+)"/g;
 
 /**
- * Quoted spans of a flow-step instruction. The runtime parsers only understand
- * single quotes, so a double-quoted span is consulted only when the step has no
- * single-quoted one — a mixed instruction keeps its single-quote grammar, and a
- * double-quoted-only step still has a spliceable value instead of being skipped.
- */
-/**
  * Set a per-call header once, case-insensitively. The first writer wins, so an
  * explicit capture value beats a later baseUrl/tenant-derived default and two
  * captured casings of one name collapse to a single entry.
@@ -141,6 +135,12 @@ function setHeaderOnce(target: Record<string, string>, name: string, value: stri
   target[name] = value;
 }
 
+/**
+ * Quoted spans of a flow-step instruction. The runtime parsers only understand
+ * single quotes, so a double-quoted span is consulted only when the step has no
+ * single-quoted one — a mixed instruction keeps its single-quote grammar, and a
+ * double-quoted-only step still has a spliceable value instead of being skipped.
+ */
 function findInstructionSpans(instruction: string): QuotedSpan[] {
   const single = findQuotedSpans(instruction);
   if (single.length > 0) return single;
