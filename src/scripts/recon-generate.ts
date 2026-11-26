@@ -16501,6 +16501,17 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     const matchedItemIndexCache = new Map<number, number | null>();
     for (const drillStepIndex of drillStepIndicesToTry) {
       const drill = actions[drillStepIndex]!;
+      // Same GraphQL operation (same text) as the primary, matched only by
+      // response echo: a payload variant of the primary, not a drill.
+      const primaryCap = actions[primaryStepIndex]!.capture;
+      if (
+        drillStepIndex !== primaryStepIndex &&
+        primaryCap.query != null &&
+        primaryCap.query === drill.capture.query &&
+        operationGroupKey(primaryCap) === operationGroupKey(drill.capture)
+      ) {
+        continue;
+      }
       // Widened to a flat (non-array) object response the same way the
       // structural heuristic is (see findAllObjectArrayFieldsOrWholeObject):
       // an explicit foldReturn declaration must be able to express a
@@ -16531,17 +16542,6 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       const matchResult =
         chainMatchResult ??
         ((): { entryIndex: number; primaryMatchedItemIndex: number } | null => {
-          // Same GraphQL operation (same text) as the primary, matched only by
-          // response echo: a payload variant of the primary, not a drill.
-          const primaryCap = actions[primaryStepIndex]!.capture;
-          if (
-            drillStepIndex !== primaryStepIndex &&
-            primaryCap.query != null &&
-            primaryCap.query === drill.capture.query &&
-            operationGroupKey(primaryCap) === operationGroupKey(drill.capture)
-          ) {
-            return null;
-          }
           const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndexFromResponse(
             primaryItems,
             spec.joinFields,
