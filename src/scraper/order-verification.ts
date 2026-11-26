@@ -7,7 +7,7 @@
 
 import { fetch as undiciFetch } from "undici";
 
-import { type FetchImpl } from "@/scraper/raw-fetch";
+import type { FetchImpl } from "@/scraper/raw-fetch";
 
 export interface VerifyRequestSpec {
   urlTemplate: string;
@@ -20,7 +20,14 @@ export type OrderVerificationResult =
   | { verified: true }
   | {
       verified: false;
-      reason: "cross-origin" | "bad-url" | "missing-payload-field" | "network" | "http-status" | "bad-json" | "mismatch";
+      reason:
+        | "cross-origin"
+        | "bad-url"
+        | "missing-payload-field"
+        | "network"
+        | "http-status"
+        | "bad-json"
+        | "mismatch";
     };
 
 export interface VerifyOrderOptions {
@@ -45,7 +52,12 @@ export async function verifyOrderData(
   spec: VerifyRequestSpec,
   options: VerifyOrderOptions
 ): Promise<OrderVerificationResult> {
-  const { origin, cookieHeader, payload, fetchImpl = undiciFetch as unknown as FetchImpl } = options;
+  const {
+    origin,
+    cookieHeader,
+    payload,
+    fetchImpl = undiciFetch as unknown as FetchImpl,
+  } = options;
 
   let missing = false;
   const filled = spec.urlTemplate.replace(/\$\{([^}]+)\}/g, (_m, key: string) => {
@@ -74,7 +86,11 @@ export async function verifyOrderData(
   let status: number;
   let text: string;
   try {
-    const res = await fetchImpl(url.toString(), { method: spec.method, headers, redirect: "manual" });
+    const res = await fetchImpl(url.toString(), {
+      method: spec.method,
+      headers,
+      redirect: "manual",
+    });
     status = res.status;
     text = await res.text();
   } catch {
