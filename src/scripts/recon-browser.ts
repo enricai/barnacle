@@ -262,7 +262,11 @@ export function wireNetworkCapture(
   getCurrentPhase: () => string,
   getCurrentPageOrigin: () => string,
   captureTracker?: CaptureTracker,
-  onObservedCapture?: (capture: { method?: unknown; url: string; requestPostData?: unknown }) => void
+  onObservedCapture?: (capture: {
+    method?: unknown;
+    url: string;
+    requestPostData?: unknown;
+  }) => void
 ): () => void {
   const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
@@ -3247,7 +3251,11 @@ async function main(): Promise<void> {
           currentPageOrigin,
           captureTracker,
           (c) => {
-            if (matchedEndpointRx === null || !matchesSubmitPattern(c, matchedEndpointRx, matchedBodyRx)) return;
+            if (
+              matchedEndpointRx === null ||
+              !matchesSubmitPattern(c, matchedEndpointRx, matchedBodyRx)
+            )
+              return;
             if (isReadCapture(c)) matchedCaptureEvidence.sawMatchedRead = true;
             else matchedCaptureEvidence.sawMatchedWrite = true;
           }
