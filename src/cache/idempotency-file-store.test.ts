@@ -1,10 +1,22 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createFileIdempotencyStore } from "@/cache/idempotency-guard";
 import { resolveIdempotencyEntryPath } from "@/lib/telemetry/telemetry-paths";
+
+const renamed: string[] = [];
+vi.mock("node:fs", async (orig) => {
+  const actual = await orig<typeof import("node:fs")>();
+  return {
+    ...actual,
+    renameSync: (a: string, b: string) => {
+      renamed.push(a);
+      return actual.renameSync(a, b);
+    },
+  };
+});
 
 const dirs: string[] = [];
 const mk = () => {
@@ -43,5 +55,38 @@ describe("createFileIdempotencyStore", () => {
     const p = resolveIdempotencyEntryPath("/d", "a/../b");
     expect(p).toMatch(/^\/d\/[0-9a-f]{64}\.json$/);
     expect(resolveIdempotencyEntryPath("/d", "a/../b")).toBe(p);
+  });
+});
+
+describe("file store owner/renew/read safety", () => {
+  it("surfaces a truncated entry as unknown and claim followers terminate", () => {
+    const dir = mk();
+    const s = createFileIdempotencyStore(dir);
+    s.set("k", { state: "success", value: 1 }, 1000);
+    writeFileSync(resolveIdempotencyEntryPath(dir, "k"), '{"record":');
+    expect((s.get("k") as { state: string } | undefined)?.state).toBe("unknown");
+    expect(s.claim?.("k", 1000, "a")).toBe(false);
+  });
+
+  it("renew extends only the owner's live pending claim", () => {
+    vi.useFakeTimers();
+    const s = createFileIdempotencyStore(mk());
+    expect(s.claim?.("k", 100, "a")).toBe(true);
+    expect(s.renew?.("k", "b", 1000)).toBe(false);
+    vi.advanceTimersByTime(90);
+    expect(s.renew?.("k", "a", 1000)).toBe(true);
+    vi.advanceTimersByTime(500);
+    expect(s.get("k")).toEqual({ state: "pending", owner: "a" });
+    s.set("k", { state: "success", value: 1 }, 1000);
+    expect(s.renew?.("k", "a", 1000)).toBe(false);
+  });
+
+  it("uses distinct temp files for concurrent sets", () => {
+    const dir = mk();
+    const s = createFileIdempotencyStore(dir);
+    renamed.length = 0;
+    s.set("k", { state: "pending" }, 1000);
+    s.set("k", { state: "pending" }, 1000);
+    expect(new Set(renamed).size).toBe(2);
   });
 });

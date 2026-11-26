@@ -101,15 +101,16 @@ export async function captureSubmissionEnvelope(
 ): Promise<void> {
   if (config.telemetry.enabled === false) return;
   const sinkPath = opts.sinkPath ?? config.telemetry.submissionsNdjsonPath;
-  const sample = redactPiiDeep({
+  const redacted = redactPiiDeep({
     ...input,
     inboundPayload: summarizeInboundPayload(
       input.inboundPayload,
       redactionPolicyFor(input.siteId)?.persistKeys
     ),
     kind: "submit",
-    ts: formatISO(new Date()),
-  }) as SubmissionEnvelopeSample;
+  }) as Omit<SubmissionEnvelopeSample, "ts">;
+  // ts is engine-minted: set it after redaction so a short-digit rule cannot mangle it.
+  const sample = { ...redacted, ts: formatISO(new Date()) } as SubmissionEnvelopeSample;
 
   try {
     const line = `${JSON.stringify(sample)}\n`;
