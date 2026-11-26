@@ -219,7 +219,7 @@ describe("recon-generate: faceted POST search with a GET drill", () => {
     const contractPath = await generate();
     const contract = readFileSync(contractPath, "utf8");
     expect(contract.match(/pricing\/v1\/trips`/g)).toHaveLength(1);
-    expect(contract).toContain("filtersTrades: z.array(z.string()).optional().default");
+    expect(contract).toContain("trade: z.array(z.string()).optional().default");
     expect(contract).toContain("filtersShips: z.array(z.string()).optional()");
     expect(contract).toContain("filtersLength: z.array(z.unknown()).optional()");
     expect(contract).toContain("bookingGuests: z.array(z.unknown()).optional().default");
@@ -261,7 +261,7 @@ describe("recon-generate: faceted POST search with a GET drill", () => {
     const recorded = await run({});
     expect(recorded.searches).toEqual([searchBody(SEARCHES[0]!)]);
     const faceted = await run({
-      filtersTrades: ["A"],
+      trade: ["A"],
       filtersShips: ["XP"],
       filtersLength: [{ start: "7", end: "10" }],
       filtersMeta: "B",
