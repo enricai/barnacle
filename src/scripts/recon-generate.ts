@@ -3207,14 +3207,21 @@ function derivePostBodyModel(
     // A declared payloadField whose observed value (a step's navigateTo query
     // value or quoted instruction value) appears at this varying path tracks it:
     // bind the declared name instead of inventing a path-named field.
-    const seenAll = values.flatMap((v) => (Array.isArray(v) ? v : [v]));
-    const tracked = declared.find(
-      (d) =>
-        !used.has(d.name) &&
-        d.observed.some((o) =>
-          seenAll.some((v) => typeof v === "string" && v.toLowerCase() === o.toLowerCase())
-        )
-    );
+    const leaves: string[] = [];
+    const collect = (v: unknown): void => {
+      if (typeof v === "string" || typeof v === "number") leaves.push(String(v).toLowerCase());
+      else if (Array.isArray(v)) v.forEach(collect);
+      else if (isObj(v)) Object.values(v).forEach(collect);
+    };
+    values.forEach(collect);
+    // A composite value (`6_8`) binds when every part is a leaf (`{start:"6",end:"8"}`).
+    const matches = (o: string): boolean => {
+      const lo = o.toLowerCase();
+      if (leaves.includes(lo)) return true;
+      const parts = lo.split("_");
+      return parts.length > 1 && parts.every((p) => p !== "" && leaves.includes(p));
+    };
+    const tracked = declared.find((d) => !used.has(d.name) && d.observed.some(matches));
     const base = path
       .map((seg, i) => {
         const w = seg
