@@ -76,6 +76,7 @@ import {
   HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
 } from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
+import { type CardStepSpec, executeCardStep } from "@/scraper/card-step";
 import {
   type PageQuiescence,
   QUIESCENCE_PROBE_EXPR,
@@ -18868,6 +18869,11 @@ export interface HealingFlowStep {
    * `deps.frameSelector` for this step only; absent falls back to it.
    */
   frameSelector?: string;
+  /**
+   * Fixed model-free card typing (see `card-step.ts`). The runtime value lives
+   * only here; `instruction` is a value-free label.
+   */
+  card?: CardStepSpec;
   /** Provider frame origin a sensitive declared step's field lives in. */
   frameOrigin?: string;
   /** Selector the provider sets when the field is valid. */
@@ -19011,6 +19017,11 @@ export interface RunHealingFlowDeps {
    * the solve runs proxyless.
    */
   sessionProxy?: SessionProxyTuple | null;
+  /**
+   * Awaited before each `submitStep` fires so a durable record exists before the
+   * irreversible click. A rejection aborts the step.
+   */
+  recordPreSubmit?: (input: { stepIndex: number }) => Promise<void>;
 }
 
 /**
@@ -19143,7 +19154,22 @@ async function runHealingFlowScoped(
       // the current DOM, so it has no target frame to resolve and skips
       // straight to executeNavigateStep instead of the self-heal cascade.
       let stepPromise: Promise<"completed" | "skipped">;
-      if (s.navigateTo !== undefined) {
+      if (s.submitStep === true && deps.recordPreSubmit !== undefined) {
+        await deps.recordPreSubmit({ stepIndex: i });
+      }
+      if (s.card !== undefined) {
+        if (s.card.value) registerSecretValue(s.card.value);
+        const cardTarget = await resolveFrameTarget(
+          activePage,
+          s.frameSelector ?? deps.frameSelector
+        );
+        await waitForChildFrameReady(cardTarget);
+        stepPromise = executeCardStep({
+          page: activePage,
+          target: cardTarget,
+          spec: s.card,
+        }).then(() => "completed" as const);
+      } else if (s.navigateTo !== undefined) {
         stepPromise = executeNavigateStep({
           page: activePage,
           url: s.navigateTo,

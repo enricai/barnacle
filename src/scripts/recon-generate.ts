@@ -20132,11 +20132,11 @@ ${executeHttpBody}
     : omitExecuteHttp
       ? ""
       : `,\n    _context: SitePluginContext`;
-  const executeContextArg = mixedHttpPrefix
-    ? `,\n    context: SitePluginContext`
-    : executeContextParam;
+  const secureFlow = contractFlowSteps.some(flowStepNeedsContext);
+  const executeContextArg =
+    mixedHttpPrefix || secureFlow ? `,\n    context: SitePluginContext` : executeContextParam;
   const sitePluginImports =
-    executeUsesContext || !omitExecuteHttp
+    executeUsesContext || !omitExecuteHttp || secureFlow
       ? "SitePlugin, SitePluginContext, SitePluginResult"
       : "SitePlugin, SitePluginResult";
   const executeDocComment = omitExecuteHttp
@@ -20245,7 +20245,7 @@ ${executeDocComment}  async execute(
     payload: ${pascal}Payload,
     session: BrowserSession${executeContextArg}
   ): Promise<SitePluginResult<${pascal}Response>> {${mixedHttpPrefix ? "\n    const { cookies } = await runHttpPrefix(payload, context);" : ""}
-    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, payload, session.sessionProxy ?? null${mixedHttpPrefix ? ", cookies" : ""});
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, payload, session.sessionProxy ?? null${mixedHttpPrefix ? ", cookies" : ""}${secureFlow ? ", context" : ""});
     return { data: raw as ${pascal}Response };
   },
 };
@@ -20685,6 +20685,15 @@ type FlowStepInput =
         expect: string | number | boolean;
       };
     };
+
+/** A step the emitted flow must wire fixed code for: card typing, or an order-data verify request. */
+function flowStepNeedsContext(step: FlowStepInput): boolean {
+  return (
+    typeof step !== "string" &&
+    ((step.sensitive !== undefined && step.declareOnly === true) ||
+      step.verifyRequest !== undefined)
+  );
+}
 
 /**
  * Redaction policy derived only from steps tagged `sensitive`: the tagged step's
@@ -21365,6 +21374,25 @@ export function emitBrowserFlowTs(opts: {
       const emailStepConfigExpr = JSON.stringify(step.emailStepConfig ?? {});
       return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}, emailStep: true, emailStepConfig: ${emailStepConfigExpr} },`;
     }
+    // A declared sensitive (card) step never becomes a model instruction: its value
+    // is typed by fixed code in the payment provider's frame (card-step.ts), so the
+    // instruction here is a value-free label.
+    if (isObj && step.sensitive !== undefined && step.declareOnly === true) {
+      if (!step.payloadField || !step.frameOrigin) {
+        throw new Error(
+          `declared card step ${JSON.stringify(step.payloadField ?? "(no payloadField)")} needs payloadField and frameOrigin; refusing to emit it as a model instruction`
+        );
+      }
+      const cardField = canonicalise ? canonicalPayloadField(step.payloadField) : step.payloadField;
+      const cardSpec = [
+        `value: payload.${cardField}`,
+        `frameOrigin: ${JSON.stringify(step.frameOrigin)}`,
+        ...(step.completeSelector !== undefined
+          ? [`completeSelector: ${JSON.stringify(step.completeSelector)}`]
+          : []),
+      ].join(", ");
+      return `  { instruction: ${JSON.stringify(`Type ${step.payloadField} into the payment frame`)}, optional: false, upload: false, submitStep: false, card: { ${cardSpec} } },`;
+    }
     // ${RECON_PASSWORD} is reserved-tooling, not a domain-vocabulary concern —
     // it names a credential the recon capture needed to authenticate, not a
     // piece of the caller's applicant identity, so it never reaches
@@ -21443,6 +21471,37 @@ export function emitBrowserFlowTs(opts: {
   // force-marked above, which must not by itself count as a declared submit.
   const hasSubmitStep = flowSteps.some((st) => typeof st !== "string" && st.submitStep === true);
 
+  const secureFlow = flowSteps.some(flowStepNeedsContext);
+  const verifyStep = flowSteps.find(
+    (st) => typeof st !== "string" && st.verifyRequest !== undefined
+  );
+  const verifyReq = typeof verifyStep === "string" ? undefined : verifyStep?.verifyRequest;
+  // Payment verification reads the site's OWN order data through the flow-declared
+  // request, deterministically: no model call, and the result is `verified` only
+  // when the response field matches.
+  const verifyBlock =
+    verifyReq !== undefined && isSubmissionFlow
+      ? `
+  const verifyOrigin = new URL(page.url()).origin;
+  const verifyHost = new URL(verifyOrigin).hostname;
+  const jar = await captureCookieJarSnapshot(page, "order-verify", "post-submit", -1);
+  const cookieHeader = jar.cookies
+    .filter((c) => verifyHost === c.domain.replace(/^\\./, "") || verifyHost.endsWith(c.domain.startsWith(".") ? c.domain : \`.\${c.domain}\`))
+    .map((c) => \`\${c.name}=\${c.value}\`)
+    .join("; ");
+  const orderCheck = await verifyOrderData(${JSON.stringify(verifyReq)}, {
+    origin: verifyOrigin,
+    cookieHeader,
+    payload: payload as unknown as Record<string, unknown>,
+  });
+  if (!orderCheck.verified) {
+    logger.error(\`order verification failed: \${orderCheck.reason}\`);
+  }
+  return { verified: orderCheck.verified } as unknown as ${pascal}Response;
+}
+`
+      : "";
+
   const flowStepsBlock =
     stepLiterals.length > 0
       ? stepLiterals.join("\n")
@@ -21509,7 +21568,7 @@ import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? 
 import { type HealingFlowStep, runHealingFlow } from "${ENGINE_PKG}/scraper/flow-runner";
 import { waitForSpaReady } from "${ENGINE_PKG}/scraper/spa-readiness";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";${usesEmailStep ? `\nimport { testmailInboxFromAddress } from "${ENGINE_PKG}/testmail/client";` : ""}
-import type { SessionProxyTuple } from "${ENGINE_PKG}/types/session-proxy";
+import type { SessionProxyTuple } from "${ENGINE_PKG}/types/session-proxy";${secureFlow ? `\nimport type { SitePluginContext } from "${ENGINE_PKG}/site-plugin";` : ""}${verifyStep !== undefined ? `\nimport { captureCookieJarSnapshot } from "${ENGINE_PKG}/scraper/cookie-jar";\nimport { verifyOrderData } from "${ENGINE_PKG}/scraper/order-verification";` : ""}
 import ${
     isSubmissionFlow
       ? `type { ${pascal}Payload, ${pascal}Response }`
@@ -21538,7 +21597,7 @@ export async function run${pascal}BrowserFlow(
   stagehand: Stagehand,
   ${isSubmissionFlow ? "entryUrl" : "baseUrl"}: string,
   payload: ${pascal}Payload,
-  sessionProxy: SessionProxyTuple | null${mixedHandover !== undefined ? ",\n  sessionCookies: Record<string, string>" : ""}
+  sessionProxy: SessionProxyTuple | null${mixedHandover !== undefined ? ",\n  sessionCookies: Record<string, string>" : ""}${secureFlow ? ",\n  context: SitePluginContext" : ""}
 ): Promise<${pascal}Response> {${handoverBlock}
   const page = await stagehand.context.awaitActivePage();
 
@@ -21563,15 +21622,17 @@ ${flowStepsBlock}
     anthropic: buildAnthropicClient(),
     rephraseModel: buildRephraseModel(),
     uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}${usesEmailStep ? "\n    allocatedInbox: allocatedInbox," : ""}${!isSubmissionFlow ? "\n    readOnly: true," : ""}
-    sessionProxy,
+    sessionProxy,${secureFlow ? "\n    recordPreSubmit: ({ stepIndex }) => context.recordPreSubmit({ stepIndex, payload })," : ""}
   });
-
+${verifyBlock}
   // Schema-enforced extract via guardedExtract: Stagehand 3.4.0 accepts
   // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
   // 2.4.3 / PR #944), and the caller-side safeParse defends against SDK
   // contract drift.${
-    isSubmissionFlow && !hasSubmitStep
-      ? `
+    verifyBlock !== ""
+      ? ""
+      : isSubmissionFlow && !hasSubmitStep
+        ? `
   // No step in this flow is a submitStep (the last step declares itself
   // non-submit), so nothing here verified a submit: never report a verified result.
   try {
@@ -21587,8 +21648,8 @@ ${flowStepsBlock}
   }
 }
 `
-      : isSubmissionFlow
-        ? `
+        : isSubmissionFlow
+          ? `
   // runHealingFlow above already verified the submit (submitStep:true), so the
   // application is already committed at the ATS. A schema-validation or
   // watchdog-timeout throw from this trailing confirmation extract must not
@@ -21607,7 +21668,7 @@ ${flowStepsBlock}
   }
 }
 `
-        : `
+          : `
   const result = await guardedExtract(
     stagehand,
     ${readOnlyGetFlow ? readOnlyGetExtractPromptExpr(getInputFields) : /* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ "`extract results matching query: ${payload.query}`"},
