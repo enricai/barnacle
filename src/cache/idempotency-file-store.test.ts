@@ -64,7 +64,7 @@ describe("file store owner/renew/read safety", () => {
     const s = createFileIdempotencyStore(dir);
     s.set("k", { state: "success", value: 1 }, 1000);
     writeFileSync(resolveIdempotencyEntryPath(dir, "k"), '{"record":');
-    expect(s.get("k")?.state).toBe("unknown");
+    expect((s.get("k") as { state: string } | undefined)?.state).toBe("unknown");
     expect(s.claim?.("k", 1000, "a")).toBe(false);
   });
 
