@@ -14973,14 +14973,10 @@ export async function executeStepWithHealing(params: {
       const markersNow = await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page)).catch(
         () => 0
       );
-      const lenNow = /^(\d+):/.exec(settled.visibleTextSignature ?? "");
-      const lenStart = /^(\d+):/.exec(stepStartSnapshot.visibleTextSignature ?? "");
-      if (
-        markersNow > stepStartInvalidMarkerCount &&
-        lenNow &&
-        lenStart &&
-        Number(lenNow[1]) > Number(lenStart[1])
-      ) {
+      // A header/text flip that arrives together with grown markers is the
+      // same blocked submit (an error-review screen), so the text need not
+      // have grown; a changed URL is still a real navigation.
+      if (markersNow > stepStartInvalidMarkerCount && settled.url === stepStartSnapshot.url) {
         return false;
       }
     }
