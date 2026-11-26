@@ -126,6 +126,7 @@ describe("assertResponse emission", () => {
     const code = await generate([STEPS[0], ASSERT, STEPS[1], STEPS[2]]);
     const at = code.indexOf("assertResp1 = await httpClient");
     expect(at).toBeGreaterThan(-1);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on emitted template text
     expect(code).toContain("/api/orders/${encodeURIComponent(String(payload.OrderId))}");
     expect(code).toContain('["customer","email"].reduce');
     expect(code).toContain("String(payload.Email)");

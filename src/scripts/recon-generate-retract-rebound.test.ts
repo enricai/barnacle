@@ -34,6 +34,7 @@ describe("retractReboundStructuredInputs", () => {
 
   it("keeps a field a request still reads", () => {
     const keys = setup();
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder syntax under test
     retractReboundStructuredInputs("${payload.order}", keys, [
       facet("9", "roomId"),
       facet("2", "count"),
