@@ -7149,7 +7149,7 @@ const structuredFieldSamples = new WeakMap<Map<string, string>, Map<string, unkn
  * structured input any request still reads, or with any leaf no declared
  * binding covers, stays registered.
  */
-function retractReboundStructuredInputs(
+export function retractReboundStructuredInputs(
   emitted: string,
   outStructuredKeys: Map<string, string>,
   facets: readonly NavigateToFacetBinding[]
@@ -7180,7 +7180,7 @@ function retractReboundStructuredInputs(
  * Both the by-index accessor loop and the whole-field substitution pass go
  * through here, so an indexed accessor can never coexist with a string schema.
  */
-function registerStructuredPayloadField(
+export function registerStructuredPayloadField(
   outStructuredKeys: Map<string, string>,
   field: string,
   value: unknown
