@@ -10,10 +10,10 @@ import { successEnvelope } from "@/api/helpers/envelope";
 import {
   createConfiguredIdempotencyStore,
   createIdempotencyGuard,
-  type IdempotencyStore,
-  writePreSubmitRecord,
   defaultIsSuccess,
   type IdempotencyGuard,
+  type IdempotencyStore,
+  writePreSubmitRecord,
 } from "@/cache/idempotency-guard";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
@@ -97,7 +97,8 @@ export interface BuildPluginContextInput {
 
 let sharedIdempotencyStore: IdempotencyStore | undefined;
 function getSharedIdempotencyStore(): IdempotencyStore {
-  return (sharedIdempotencyStore ??= createConfiguredIdempotencyStore());
+  sharedIdempotencyStore ??= createConfiguredIdempotencyStore();
+  return sharedIdempotencyStore;
 }
 
 /**
