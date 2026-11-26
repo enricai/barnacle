@@ -1,10 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,8 +24,7 @@ const slug = (s: string) =>
 it("binds each varying body leaf to the declared payloadField of its step", async () => {
   workDir = mkdtempSync(join(tmpdir(), "declared-step-fields-"));
   const runRoot = join(workDir, "run");
-  for (const d of ["graphql", "replays", "aux"])
-    mkdirSync(join(runRoot, d), { recursive: true });
+  for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(runRoot, d), { recursive: true });
   writeFileSync(join(runRoot, "replays", "rate-limit.json"), "[]");
   const stepA = "Pick the first widget kind";
   const stepB = "Pick the second gadget tag";
@@ -56,10 +49,7 @@ it("binds each varying body leaf to the declared payloadField of its step", asyn
       variables: null,
       decodedParams: null,
     };
-    writeFileSync(
-      join(runRoot, "graphql", `00${i}-capture.json`),
-      JSON.stringify(c),
-    );
+    writeFileSync(join(runRoot, "graphql", `00${i}-capture.json`), JSON.stringify(c));
   });
   const siteId = `declared-step-fields-${process.pid}`;
   siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
@@ -73,16 +63,16 @@ it("binds each varying body leaf to the declared payloadField of its step", asyn
         { step: stepA, payloadField: "widgetKind", optional: true },
         { step: stepB, payloadField: "gadgetTag", optional: true },
       ],
-    }),
+    })
   );
   const savedArgv = process.argv;
   const savedCwd = process.cwd();
   const spies = [
     ...(["log", "info", "warn", "error"] as const).map((k) =>
-      vi.spyOn(console, k).mockImplementation(() => {}),
+      vi.spyOn(console, k).mockImplementation(() => {})
     ),
     ...[process.stdout, process.stderr].map((st) =>
-      vi.spyOn(st, "write").mockImplementation((() => true) as never),
+      vi.spyOn(st, "write").mockImplementation((() => true) as never)
     ),
   ];
   try {
