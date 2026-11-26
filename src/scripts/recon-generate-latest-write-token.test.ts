@@ -53,16 +53,20 @@ describe("write token binds to the latest carrying response", () => {
     const runRoot = join(workDir, "run");
     for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(runRoot, d), { recursive: true });
     writeFileSync(join(runRoot, "replays", "rate-limit.json"), "[]");
-    captures().forEach((c, i) =>
-      writeFileSync(join(runRoot, "graphql", `00${i}-capture.json`), JSON.stringify(c))
-    );
+    for (const [i, c] of captures().entries()) {
+      writeFileSync(join(runRoot, "graphql", `00${i}-capture.json`), JSON.stringify(c));
+    }
     const siteId = `latest-write-token-test-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
       JSON.stringify({
-        steps: [{ step: "create doc" }, { step: "update doc" }, { step: "save doc", submitStep: true }],
+        steps: [
+          { step: "create doc" },
+          { step: "update doc" },
+          { step: "save doc", submitStep: true },
+        ],
         submitEndpointPattern: "docs/save",
         requireSubmitEndpointMatch: true,
         ownBackendHostnames: [HOST],
