@@ -2677,6 +2677,20 @@ function sameQueryText(a: string | null | undefined, b: string | null | undefine
   return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
 }
 
+/** The GraphQL document of a capture: the parsed `query`, else the one
+ * carried in a raw JSON `requestPostData` body (captures not yet normalised). */
+function captureQueryText(capture: Capture): string | null {
+  if (capture.query != null) return capture.query;
+  const raw = capture.requestPostData;
+  if (typeof raw !== "string") return null;
+  try {
+    const q = (JSON.parse(raw) as { query?: unknown } | null)?.query;
+    return typeof q === "string" ? q : null;
+  } catch {
+    return null;
+  }
+}
+
 function operationGroupKey(capture: Capture): string {
   const endpointPath = (() => {
     try {
@@ -2685,7 +2699,8 @@ function operationGroupKey(capture: Capture): string {
       return "";
     }
   })();
-  const name = capture.operationName ?? parsedOperationName(capture.query ?? "") ?? "anonymous";
+  const name =
+    capture.operationName ?? parsedOperationName(captureQueryText(capture) ?? "") ?? "anonymous";
   return `${endpointPath}::${name}`;
 }
 
@@ -15028,7 +15043,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
         isGraphQLCapture(primary.capture) &&
         endpointKey(drill.capture.url) === primaryEndpointKey &&
         operationGroupKey(drill.capture) === operationGroupKey(primary.capture) &&
-        sameQueryText(drill.capture.query, primary.capture.query)
+        sameQueryText(captureQueryText(drill.capture), captureQueryText(primary.capture))
       ) {
         continue;
       }
@@ -16518,14 +16533,14 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       // response echo: a payload variant of the primary, not a drill.
       const primaryCap = actions[primaryStepIndex]!.capture;
       if (
-        primaryCap.query != null &&
-        sameQueryText(primaryCap.query, drill.capture.query) &&
+        captureQueryText(primaryCap) != null &&
+        sameQueryText(captureQueryText(primaryCap), captureQueryText(drill.capture)) &&
         operationGroupKey(primaryCap) === operationGroupKey(drill.capture) &&
         (drillStepIndex !== primaryStepIndex ||
           actions.some(
             (a, i) =>
               i !== primaryStepIndex &&
-              sameQueryText(a.capture.query, primaryCap.query) &&
+              sameQueryText(captureQueryText(a.capture), captureQueryText(primaryCap)) &&
               operationGroupKey(a.capture) === operationGroupKey(primaryCap)
           ))
       ) {
