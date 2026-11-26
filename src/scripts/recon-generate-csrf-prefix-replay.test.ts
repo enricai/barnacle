@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { emitMultiStepExecuteHttp, indexStateValues } from "@/scripts/recon-generate";
+import {
+  compileActionSteps,
+  emitMultiStepExecuteHttp,
+  indexStateValues,
+} from "@/scripts/recon-generate";
 import { buildStep } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -60,9 +64,6 @@ describe("emitMultiStepExecuteHttp — CSRF prefix replay end to end", () => {
       method: "GET",
       responseHeaders: { "set-cookie": "sid=sess-value-0123456789; Path=/" },
     });
-    mint.produces = [
-      { kind: "body", name: "token", path: ["csrf", "token"], leafType: "string" },
-    ] as unknown as typeof mint.produces;
     const dup = buildStep("r1", {
       url: `${BASE}/order.json`,
       requestPostData: JSON.stringify({ game: 9 }),
@@ -92,9 +93,6 @@ describe("emitMultiStepExecuteHttp — CSRF prefix replay end to end", () => {
       timestamp: "2024-01-01T00:00:04Z",
       method: "GET",
     });
-    page.produces = [
-      { kind: "html", name: "csrf-token", element: "meta", locatorName: "csrf-token", value: T2 },
-    ] as unknown as typeof page.produces;
     const put = buildStep("r4", {
       url: `${BASE}/order.json`,
       requestPostData: JSON.stringify({ order: { contactName: "Recon Name" } }),
@@ -110,10 +108,19 @@ describe("emitMultiStepExecuteHttp — CSRF prefix replay end to end", () => {
       timestamp: "2024-01-01T00:00:06Z",
       method: "POST",
     });
+    const raw = [mint, dup, nul, page, put, tail];
+    const actions = raw.map((s, index) => ({ capture: s.capture, index }));
+    const compiled = compileActionSteps(actions, indexStateValues(raw.map((s) => s.capture)));
+    // Derive produces from the real indexer->compiler path, not by hand.
+    expect(compiled[0].produces).toMatchObject([{ kind: "body", path: ["csrf", "token"] }]);
+    expect(compiled[3].produces).toMatchObject([
+      { kind: "html", element: "meta", locatorName: "csrf-token", value: T2 },
+    ]);
+    raw.forEach((s, i) => {
+      s.produces = compiled[i].produces as unknown as typeof s.produces;
+    });
     return emitMultiStepExecuteHttp(
-      [mint, dup, nul, page, put, tail] as unknown as Parameters<
-        typeof emitMultiStepExecuteHttp
-      >[0],
+      raw as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
       null,
       { stringMessageKey: null, nestedErrorPaths: [] },
       new Map(),
