@@ -185,7 +185,7 @@ describe("read-only GET classification inputs: incidental mint GET and beacon PO
     expect(classify(false)).toBe(true);
   });
 
-  it("a mint GET the declared read re-sends keeps it a multi-step flow", () => {
-    expect(classify(true)).toBe(false);
+  it("a mint GET the declared read re-sends is still a read flow", () => {
+    expect(classify(true)).toBe(true);
   });
 });
