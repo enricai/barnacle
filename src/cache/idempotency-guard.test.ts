@@ -109,6 +109,22 @@ describe("createIdempotencyGuard", () => {
     await expect(g.run("s", c, { id: "3" }, ex)).rejects.toThrow(/raw/);
   });
 
+  it("treats TaskDeadlineError (direct or as originalError) as unknown outcome", async () => {
+    const { TaskDeadlineError } = await import("@/scraper/errors");
+    const c = { keyFields: ["id"] };
+    const wrapped = Object.assign(new Error("wrapped"), { originalError: new TaskDeadlineError() });
+    for (const [id, e] of [
+      ["1", new TaskDeadlineError()],
+      ["2", wrapped],
+    ] as const) {
+      const g = createIdempotencyGuard();
+      const ex = vi.fn().mockRejectedValue(e);
+      await expect(g.run("s", c, { id }, ex)).rejects.toBe(e);
+      await expect(g.run("s", c, { id }, ex)).rejects.toBeInstanceOf(UnknownOutcomeError);
+      expect(ex).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("honours custom store and ttl", async () => {
     vi.useFakeTimers();
     const g = createIdempotencyGuard({ ttlMs: 50 });
