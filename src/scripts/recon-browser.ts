@@ -1059,6 +1059,8 @@ interface NormalizedStep {
   // executeNavigateStep (a direct page.goto) instead of the self-heal cascade.
   // Optional for the same reason as submitStep — absence is treated as false.
   navigateTo?: string;
+  // Regex the navigateTo settle waits on instead of the flow-level submit patterns.
+  settleOn?: string;
   // See RECON_FLOW_STEP_SCHEMA: recorded into the persisted flow but never
   // executed, verified, or replanned at record time. Absence = false.
   declareOnly?: boolean;
@@ -1100,6 +1102,7 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           // Preserve a persisted replan marker across runs; absence = authored.
           origin: s.origin ?? "original",
           navigateTo: s.navigateTo,
+          settleOn: s.settleOn,
           declareOnly: s.declareOnly,
           sensitive: s.sensitive,
         }
@@ -1149,6 +1152,7 @@ function denormalizeStep(step: NormalizedStep):
       frameSelector?: string;
       origin?: "replan";
       navigateTo?: string;
+      settleOn?: string;
       declareOnly?: true;
       sensitive?: "digits" | "word";
     } {
@@ -1162,6 +1166,7 @@ function denormalizeStep(step: NormalizedStep):
     step.targetId !== undefined ||
     step.origin === "replan" ||
     step.navigateTo !== undefined ||
+    step.settleOn !== undefined ||
     step.declareOnly === true ||
     step.sensitive !== undefined ||
     step.frameSelector !== undefined;
@@ -1190,6 +1195,7 @@ function denormalizeStep(step: NormalizedStep):
     frameSelector?: string;
     origin?: "replan";
     navigateTo?: string;
+    settleOn?: string;
     declareOnly?: true;
     sensitive?: "digits" | "word";
   } = {
@@ -1207,6 +1213,7 @@ function denormalizeStep(step: NormalizedStep):
   if (step.frameSelector !== undefined) out.frameSelector = step.frameSelector;
   if (step.origin === "replan") out.origin = "replan";
   if (step.navigateTo !== undefined) out.navigateTo = step.navigateTo;
+  if (step.settleOn !== undefined) out.settleOn = step.settleOn;
   if (step.declareOnly === true) out.declareOnly = true;
   if (step.sensitive !== undefined) out.sensitive = step.sensitive;
   return out;
@@ -3476,8 +3483,8 @@ async function main(): Promise<void> {
                     timeoutMs: GOTO_TIMEOUT_MS,
                     settle: buildNavigateSettle(
                       captureTracker,
-                      submitEndpointPattern,
-                      submitBodyPattern
+                      step.settleOn ?? submitEndpointPattern,
+                      step.settleOn !== undefined ? null : submitBodyPattern
                     ),
                   })
                 : executeStepWithHealing({

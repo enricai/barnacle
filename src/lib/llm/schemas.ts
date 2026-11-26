@@ -95,6 +95,11 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      */
     navigateTo: z.string().min(1).optional(),
     /**
+     * Regex the navigateTo settle waits on (matched against the captured
+     * request URL) instead of the flow-level submitEndpointPattern/BodyPattern.
+     */
+    settleOn: z.string().min(1).optional(),
+    /**
      * Optional payload-field override for the generator's splicer. When set,
      * `resolveStepPayloadField` returns this field name verbatim instead of
      * inferring one from the instruction's English label — lets a flow author

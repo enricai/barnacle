@@ -219,6 +219,30 @@ describe("recon-browser CLI/main — navigateTo dispatches to executeNavigateSte
     expect(executeStepWithHealingStub).not.toHaveBeenCalled();
   });
 
+  it("passes a settle hook built from the step's settleOn to executeNavigateStep", async () => {
+    const { stagehand } = makeFakePage();
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--flow",
+      JSON.stringify([
+        { step: "open catalog", navigateTo: "https://example.com/c", settleOn: "/api/catalog" },
+      ]),
+    ];
+    await main();
+    const callArgs = executeNavigateStepStub.mock.calls[0]?.[0] as { settle?: unknown };
+    expect(typeof callArgs.settle).toBe("function");
+  });
+
   async function runThreeStepFlow(urlAfterFirstStep: string): Promise<void> {
     let currentUrl = "https://example.com";
     const { stagehand } = makeFakePage(() => currentUrl);
