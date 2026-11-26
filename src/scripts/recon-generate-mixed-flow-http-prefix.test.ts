@@ -135,3 +135,69 @@ describe("emitMultiStepExecuteHttp — HTTP prefix variant", () => {
     expect(full).not.toContain("prefixCookies");
   });
 });
+
+describe("emitMultiStepExecuteHttp — HTML token fetch in a prefix flow", () => {
+  function htmlSteps(): MulticallFixtureStep[] {
+    const [, cart, put, tail] = steps();
+    const page = buildStep("r0", {
+      url: `${BASE}/login`,
+      requestPostData: null,
+      responseBody: `<form><input type="hidden" name="authToken" value="${CSRF}"></form>`,
+      timestamp: "2024-01-01T00:00:01Z",
+      method: "GET",
+    });
+    page.produces = [
+      {
+        kind: "html",
+        name: "authToken",
+        element: "hidden-input",
+        locatorName: "authToken",
+        value: CSRF,
+      },
+    ] as unknown as typeof page.produces;
+    return [page, cart!, put!, tail!];
+  }
+  function emitHtml(count?: number): string {
+    return emitMultiStepExecuteHttp(
+      htmlSteps() as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      BASE,
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+      new Map(),
+      new Set(),
+      [],
+      new Map(),
+      new Map(),
+      null,
+      null,
+      [],
+      undefined,
+      undefined,
+      count
+    );
+  }
+
+  it("sends and collects session cookies on the HTML fetch in a prefix flow", () => {
+    const body = emitHtml(3);
+    expect(body).toContain("fetchFollowingRedirectsPreservingMethod");
+    expect(body).toContain("Object.keys(prefixCookies).length > 0");
+    expect(body).toContain("getSetCookie()");
+    expect(body).toContain("prefixCookies[pair.slice(0, eq).trim()]");
+  });
+
+  it("does not touch cookies on the HTML fetch of a full flow", () => {
+    const body = emitHtml();
+    expect(body).toContain("fetchFollowingRedirectsPreservingMethod");
+    expect(body).not.toContain("getSetCookie()");
+  });
+});
