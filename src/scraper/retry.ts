@@ -8,6 +8,7 @@ import {
   CdpTransportClosedError,
   EmptyResultsError,
   isSessionLifetimeExceededError,
+  isTaskDeadlineError,
   ScraperError,
   SelectorFailureError,
   SessionTimeoutError,
@@ -35,7 +36,7 @@ export interface RetryOptions {
  * Wraps a scraper task with p-retry and a classification policy aligned
  * with our ScraperError hierarchy:
  *
- * - CaptchaError + EmptyResultsError + StepVerificationError + SessionLifetimeExceededError → AbortError, no retry.
+ * - CaptchaError + EmptyResultsError + StepVerificationError + SessionLifetimeExceededError + TaskDeadlineError → AbortError, no retry.
  * - SessionTimeoutError + CdpTransportClosedError → invoke onSessionRestart before every retry, then retry up to maxAttempts.
  * - SelectorFailureError + UnknownScraperError → retry up to maxAttempts.
  * - ApiError (typed client-facing outcome) → AbortError, passed through untouched: never reclassified or retried.
@@ -81,6 +82,11 @@ export async function withScraperRetry<T>(
 
         if (isSessionLifetimeExceededError(raw)) {
           logger.error(`session reached its configured lifetime — aborting retry: ${err.message}`);
+          throw new AbortError(raw);
+        }
+
+        if (isTaskDeadlineError(raw)) {
+          logger.error(`task deadline exceeded, outcome unknown — aborting retry: ${err.message}`);
           throw new AbortError(raw);
         }
 
