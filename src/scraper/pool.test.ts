@@ -236,10 +236,10 @@ describe("scraper/pool", () => {
   describe("task deadline signal", () => {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     // drainPool() above leaves the shared queue paused; use a fresh module instance.
-    let runWithSession: typeof import("./pool").runWithSession;
+    let runWithSession: typeof import("./pool.js").runWithSession;
     beforeEach(async () => {
       vi.resetModules();
-      ({ runWithSession } = await import("./pool"));
+      ({ runWithSession } = await import("./pool.js"));
     });
 
     it("aborts a signal-honoring task, never runs the step, starts once, closes after settle", async () => {
