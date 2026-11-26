@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +18,10 @@ import {
   main,
   splitAssertResponseSteps,
 } from "@/scripts/recon-generate";
-import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
 
 const ASSERT = {
@@ -129,4 +141,41 @@ describe("assertResponse emission", () => {
     const code = await generate(STEPS);
     expect(code).not.toContain("assertDiff");
   }, 60_000);
+
+  it("typechecks the generated output with zero diagnostics", async () => {
+    const tsc = join(__dirname, "..", "..", "node_modules", ".bin", "tsc");
+    if (!existsSync(tsc)) throw new Error("tsc not installed");
+    await generate([STEPS[0], ASSERT, STEPS[1], STEPS[2]]);
+    const repoRoot = join(__dirname, "..", "..");
+    const siteId = `assert-resp-test${process.pid}`;
+    const tsconfig = join(repoRoot, `tsconfig.assert-response.${process.pid}.json`);
+    writeFileSync(
+      tsconfig,
+      JSON.stringify({
+        extends: "./tsconfig.json",
+        compilerOptions: {
+          noEmit: true,
+          incremental: false,
+          tsBuildInfoFile: null,
+          paths: {
+            "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
+            "@/*": ["./src/*"],
+            "@test/*": ["./test/*"],
+            "@enricai/barnacle/*": ["./src/*"],
+          },
+        },
+        include: [`${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/${siteId}/**/*.ts`],
+      })
+    );
+    try {
+      const check = spawnSync(tsc, ["-p", tsconfig, "--noEmit"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      const out = `${check.stdout}\n${check.stderr}`;
+      expect(check.status, out).toBe(0);
+    } finally {
+      rmSync(tsconfig, { force: true });
+    }
+  }, 120_000);
 });
