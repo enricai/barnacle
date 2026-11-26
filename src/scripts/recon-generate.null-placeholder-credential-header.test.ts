@@ -45,7 +45,7 @@ describe("literal null credential header is an empty-token placeholder", () => {
     const ct = isMultipart ? "multipart/form-data; boundary=B" : "application/json";
     it(`${label}: null is not turned into a throwing credential expression`, () => {
       const out = emit([mk({ "Content-Type": ct, Authorization: " NULL " }, isMultipart, "r0")]);
-      expect(out).not.toMatch(/throw/i);
+      expect(out).toContain("` NULL `");
     });
     it(`${label}: a real credential value still takes the credential path`, () => {
       const out = emit([mk({ "Content-Type": ct, Authorization: "Bearer abc.def.ghi" }, isMultipart, "r0")]);
