@@ -466,7 +466,10 @@ export async function guardedAct(
     };
     // An Action is a replayed side-effecting request with no inference step,
     // so it is attempted exactly once; only a string instruction is retried.
-    const raw = await (typeof sendInput === "string" ? retryTransient(attemptAct) : attemptAct()).catch((err) => {
+    const raw = await (typeof sendInput === "string"
+      ? retryTransient(attemptAct)
+      : attemptAct()
+    ).catch((err) => {
       // Retries exhausted on an envelope-borne transient: hand back the
       // failure envelope as before instead of turning it into a throw.
       if (err instanceof EnvelopeTransient) return err.envelope;
