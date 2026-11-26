@@ -88,6 +88,16 @@ describe("redactPii", () => {
     expect(redactPii("tel 4420794609581")).toBe("tel 4420794609581");
   });
 
+  it("matches nothing for a blank digit value", () => {
+    registerSensitiveValues("run-1", { postalField: "", cvcField: "123" }, { digitKeys: ["postalField", "cvcField"] });
+    expect(redactPii("ab 123")).toBe("ab <cvcField>");
+  });
+
+  it("matches nothing for a whitespace-only digit value", () => {
+    registerSensitiveValues("run-1", { postalField: "   " }, { digitKeys: ["postalField"] });
+    expect(redactPii("ab 123")).toBe("ab 123");
+  });
+
   it("matches unlisted keys as literals, including nested values", () => {
     registerSensitiveValues("run-1", PAYLOAD, POLICY);
     const out = redactPii(
