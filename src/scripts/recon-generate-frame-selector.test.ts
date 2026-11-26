@@ -60,10 +60,16 @@ describe("emitBrowserFlowTs — per-step frameSelector literal validity", () => 
     const lines = code.split("\n").filter((l) => /^ {2}\{ instruction:/.test(l));
     return `[${lines.join("\n")}]`;
   };
+  // TypeScript 7 exposes no JS parser API; the step literals are plain JS
+  // object literals, so constructing a Function over them is a syntax check
+  // (a dropped comma throws SyntaxError at construction, same as TS1005).
   const parses = async (src: string): Promise<number> => {
-    const ts = await import("typescript");
-    const sf = ts.createSourceFile("x.ts", `const a = ${src};`, ts.ScriptTarget.Latest, true);
-    return (sf as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics.length;
+    try {
+      new Function("payload", `return ${src};`);
+      return 0;
+    } catch {
+      return 1;
+    }
   };
 
   it("separates frameSelector with a comma on a declareOnly submitStep:false step", async () => {
