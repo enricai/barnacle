@@ -19,8 +19,11 @@ import type { RunState } from "@/lib/telemetry/run-state";
  */
 
 function makeConfig(overrides: Partial<HealthConfig> = {}): HealthConfig {
-  const scraperDefaults = {
+  const scraperDefaults: HealthConfig["scraper"] = {
+    provider: "steel",
     steelApiKey: "test-steel",
+    browserbaseApiKey: "test-bb",
+    browserbaseProjectId: "test-bb-project",
     anthropicApiKey: "test-anthropic",
     readinessQueueThreshold: 20,
     useBedrock: false,
@@ -108,6 +111,9 @@ describe("routes/health /readyz", () => {
     const app = await buildHealthApp(
       makeConfig({
         scraper: {
+          provider: "steel",
+          browserbaseApiKey: undefined,
+          browserbaseProjectId: undefined,
           steelApiKey: undefined,
           anthropicApiKey: undefined,
           readinessQueueThreshold: 20,
@@ -131,10 +137,68 @@ describe("routes/health /readyz", () => {
     }
   });
 
+  it("returns 200 for browserbase provider without a Steel key", async () => {
+    const app = await buildHealthApp(
+      makeConfig({
+        scraper: { ...makeConfig().scraper, provider: "browserbase", steelApiKey: undefined },
+      })
+    );
+    try {
+      const response = await app.inject({ method: "GET", url: "/readyz" });
+      expect(response.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reports missing browserbase keys for the browserbase provider", async () => {
+    const app = await buildHealthApp(
+      makeConfig({
+        scraper: {
+          ...makeConfig().scraper,
+          provider: "browserbase",
+          browserbaseApiKey: undefined,
+          browserbaseProjectId: undefined,
+        },
+      })
+    );
+    try {
+      const response = await app.inject({ method: "GET", url: "/readyz" });
+      expect(response.statusCode).toBe(503);
+      const detail = (response.json() as { checks: { scraperCredentials: { detail: string } } })
+        .checks.scraperCredentials.detail;
+      expect(detail).toContain("BROWSERBASE_API_KEY");
+      expect(detail).toContain("BROWSERBASE_PROJECT_ID");
+      expect(detail).not.toContain("STEEL_API_KEY");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reports STEEL_API_KEY missing for the steel provider", async () => {
+    const app = await buildHealthApp(
+      makeConfig({
+        scraper: { ...makeConfig().scraper, provider: "steel", steelApiKey: undefined },
+      })
+    );
+    try {
+      const response = await app.inject({ method: "GET", url: "/readyz" });
+      expect(response.statusCode).toBe(503);
+      const detail = (response.json() as { checks: { scraperCredentials: { detail: string } } })
+        .checks.scraperCredentials.detail;
+      expect(detail).toContain("STEEL_API_KEY");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns 503 + 'degraded' when scraper queue depth exceeds threshold", async () => {
     const app = await buildHealthApp(
       makeConfig({
         scraper: {
+          provider: "steel",
+          browserbaseApiKey: undefined,
+          browserbaseProjectId: undefined,
           steelApiKey: "test-steel",
           anthropicApiKey: "test-anthropic",
           readinessQueueThreshold: 5,
@@ -163,6 +227,9 @@ describe("routes/health /readyz", () => {
     const app = await buildHealthApp(
       makeConfig({
         scraper: {
+          provider: "steel",
+          browserbaseApiKey: undefined,
+          browserbaseProjectId: undefined,
           steelApiKey: "test-steel",
           anthropicApiKey: "test-anthropic",
           readinessQueueThreshold: 5,
@@ -199,6 +266,9 @@ describe("routes/health /readyz", () => {
     const app = await buildHealthApp(
       makeConfig({
         scraper: {
+          provider: "steel",
+          browserbaseApiKey: undefined,
+          browserbaseProjectId: undefined,
           steelApiKey: "test-steel",
           anthropicApiKey: undefined,
           readinessQueueThreshold: 20,
@@ -221,6 +291,9 @@ describe("routes/health /readyz", () => {
     const app = await buildHealthApp(
       makeConfig({
         scraper: {
+          provider: "steel",
+          browserbaseApiKey: undefined,
+          browserbaseProjectId: undefined,
           steelApiKey: "test-steel",
           anthropicApiKey: undefined,
           readinessQueueThreshold: 20,
@@ -246,6 +319,9 @@ describe("routes/health /readyz", () => {
     const app = await buildHealthApp(
       makeConfig({
         scraper: {
+          provider: "steel",
+          browserbaseApiKey: undefined,
+          browserbaseProjectId: undefined,
           steelApiKey: "test-steel",
           anthropicApiKey: undefined,
           readinessQueueThreshold: 20,
@@ -271,6 +347,9 @@ describe("routes/health /readyz", () => {
     const app = await buildHealthApp(
       makeConfig({
         scraper: {
+          provider: "steel",
+          browserbaseApiKey: undefined,
+          browserbaseProjectId: undefined,
           steelApiKey: "test-steel",
           anthropicApiKey: undefined,
           readinessQueueThreshold: 20,

@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
-
+import { UnknownOutcomeError } from "@/api/errors";
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
@@ -40,7 +40,9 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
   });
 
   async function appWith() {
-    const executeHttp = vi.fn(async (_body: unknown) => ({ data: { ok: true } }));
+    const executeHttp = vi.fn(async (_body: unknown) => ({
+      data: { ok: true },
+    }));
     const plugin = {
       meta: {
         siteId: "idem-site",
@@ -52,7 +54,9 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       execute: vi.fn(),
       executeHttp,
     } as unknown as SitePlugin<unknown, unknown>;
-    const app = Fastify({ loggerInstance: getLogger({ name: "loader-idempotency-test" }) });
+    const app = Fastify({
+      loggerInstance: getLogger({ name: "loader-idempotency-test" }),
+    });
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     await app.register(errorHandlerPlugin);
@@ -65,8 +69,16 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
   it("runs a duplicate submission once when the plugin declares idempotency", async () => {
     const { app, executeHttp } = await appWith();
     const payload = { orderRef: `ref-${Date.now()}-${Math.random()}` };
-    const first = await app.inject({ method: "POST", url: "/v1/idem-site/run", payload });
-    const second = await app.inject({ method: "POST", url: "/v1/idem-site/run", payload });
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/idem-site/run",
+      payload,
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/v1/idem-site/run",
+      payload,
+    });
     expect(first.statusCode).toBe(200);
     expect(second.statusCode).toBe(200);
     expect(executeHttp).toHaveBeenCalledTimes(1);
@@ -109,7 +121,10 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       headers: { "x-barnacle-async": "true" },
     });
     expect(res.statusCode).toBe(200);
-    const poll = await app.inject({ method: "GET", url: "/v1/idem-site/run/operations/nope" });
+    const poll = await app.inject({
+      method: "GET",
+      url: "/v1/idem-site/run/operations/nope",
+    });
     expect(poll.statusCode).toBeGreaterThanOrEqual(400);
     await app.close();
   });
@@ -136,7 +151,9 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       },
       execute,
     } as unknown as SitePlugin<unknown, unknown>;
-    const app = Fastify({ loggerInstance: getLogger({ name: "loader-idempotency-extra" }) });
+    const app = Fastify({
+      loggerInstance: getLogger({ name: "loader-idempotency-extra" }),
+    });
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     await app.register(errorHandlerPlugin);
@@ -158,5 +175,139 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       expect.anything()
     );
     await app.close();
+  });
+  describe("preflight refusal mapping", () => {
+    async function appFailing(thrown: Error, preflight: ReturnType<typeof vi.fn>, siteId: string) {
+      const plugin = {
+        meta: {
+          siteId,
+          displayName: siteId,
+          bodySchema: z.looseObject({}),
+          responseSchema: z.unknown(),
+          idempotency: { keyFields: ["orderRef"] },
+        },
+        execute: vi.fn(),
+        executeHttp: vi.fn(async () => {
+          throw thrown;
+        }),
+        preflight,
+      } as unknown as SitePlugin<unknown, unknown>;
+      const app = Fastify({
+        loggerInstance: getLogger({ name: "loader-idem-refusal" }),
+      });
+      app.setValidatorCompiler(validatorCompiler);
+      app.setSerializerCompiler(serializerCompiler);
+      await app.register(errorHandlerPlugin);
+      await app.register(authPlugin);
+      await registerRoutes(app, cfgStub, [plugin]);
+      await app.ready();
+      return app;
+    }
+    const post = (app: Awaited<ReturnType<typeof appFailing>>, siteId: string) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/${siteId}/run`,
+        payload: { orderRef: `r-${Date.now()}-${Math.random()}` },
+      });
+
+    it("replaces a failure with the preflight UnknownOutcomeError", async () => {
+      // First call (dispatch preflight) passes so the run really fails; the
+      // re-check after the failure is what must produce the refusal.
+      const preflight = vi
+        .fn<() => Promise<void>>()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(new UnknownOutcomeError("already submitted"));
+      const app = await appFailing(new Error("boom"), preflight, "idem-refuse-a");
+      const res = await post(app, "idem-refuse-a");
+      expect(preflight).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(res.json())).toContain("already submitted");
+      await app.close();
+    });
+
+    it("keeps the original failure when preflight passes or throws another error", async () => {
+      for (const [id, pre] of [
+        ["idem-refuse-b", vi.fn(async () => undefined)],
+        [
+          "idem-refuse-c",
+          vi.fn(async () => {
+            throw new Error("other");
+          }),
+        ],
+      ] as const) {
+        const app = await appFailing(new Error("boom-original"), pre, id);
+        const res = await post(app, id);
+        expect(pre).toHaveBeenCalled();
+        expect(JSON.stringify(res.json())).not.toContain("already submitted");
+        expect(res.statusCode).toBeGreaterThanOrEqual(400);
+        await app.close();
+      }
+    });
+
+    it("keeps an UnknownOutcomeError failure as is", async () => {
+      const preflight = vi.fn(async () => undefined);
+      const app = await appFailing(new UnknownOutcomeError("direct"), preflight, "idem-refuse-d");
+      const res = await post(app, "idem-refuse-d");
+      expect(JSON.stringify(res.json())).toContain("direct");
+      await app.close();
+    });
+  });
+
+  describe("dispatch preflight before the session", () => {
+    async function appWithPreflight(siteId: string, preflight?: ReturnType<typeof vi.fn>) {
+      const execute = vi.fn(async () => ({ data: { ok: true } }));
+      const plugin = {
+        meta: {
+          siteId,
+          displayName: siteId,
+          bodySchema: z.looseObject({}),
+          responseSchema: z.unknown(),
+        },
+        execute,
+        ...(preflight ? { preflight } : {}),
+      } as unknown as SitePlugin<unknown, unknown>;
+      const app = Fastify({ loggerInstance: getLogger({ name: "loader-preflight" }) });
+      app.setValidatorCompiler(validatorCompiler);
+      app.setSerializerCompiler(serializerCompiler);
+      await app.register(errorHandlerPlugin);
+      await app.register(authPlugin);
+      await registerRoutes(app, cfgStub, [plugin]);
+      await app.ready();
+      return { app, execute };
+    }
+    const run = (app: Awaited<ReturnType<typeof appWithPreflight>>["app"], siteId: string) =>
+      app.inject({ method: "POST", url: `/v1/${siteId}/run`, payload: { a: 1 } });
+
+    it("answers 409 UNKNOWN_OUTCOME without opening a browser session", async () => {
+      const preflight = vi.fn(async () => {
+        throw new UnknownOutcomeError("already booked");
+      });
+      const { app, execute } = await appWithPreflight("example-booking.test", preflight);
+      const res = await run(app, "example-booking.test");
+      expect(res.statusCode).toBe(409);
+      expect(JSON.stringify(res.json())).toContain("UNKNOWN_OUTCOME");
+      expect(mockRunWithSession).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it("refuses the run before start on a non-UnknownOutcome preflight error", async () => {
+      const preflight = vi.fn(async () => {
+        throw new Error("preflight exploded");
+      });
+      const { app, execute } = await appWithPreflight("example-rentals.test", preflight);
+      const res = await run(app, "example-rentals.test");
+      expect(res.statusCode).toBeGreaterThanOrEqual(400);
+      expect(mockRunWithSession).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it("leaves plugins without preflight unchanged", async () => {
+      const { app, execute } = await appWithPreflight("example-plain.test");
+      const res = await run(app, "example-plain.test");
+      expect(res.statusCode).toBe(200);
+      expect(execute).toHaveBeenCalledTimes(1);
+      await app.close();
+    });
   });
 });

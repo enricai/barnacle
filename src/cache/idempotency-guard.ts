@@ -213,6 +213,12 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
     return config.classifyFailure?.(err) === "unknown";
   }
 
+  // A plugin that refuses must see errors the guard raises (e.g. store
+  // failures) so they cannot read as retry-safe.
+  async function refuse(config: PluginIdempotency, err: unknown): Promise<unknown> {
+    return config.refusalFor ? await config.refusalFor(err) : err;
+  }
+
   function replay(record: IdempotencyRecord): unknown {
     if (record.state === "unknown") throw new UnknownOutcomeError(record.message);
     if (record.state === "success") return record.value;
@@ -283,23 +289,32 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
 
     // Registered synchronously (no await before inFlight.set) so concurrent
     // duplicates always find it; the store lookup happens inside the promise.
+    const lockKey: string = key;
+    const lockConfig: PluginIdempotency = config;
     const promise = (async () => {
-      for (;;) {
-        const recorded = await store.get(key);
-        if (recorded && recorded.state !== "pending") return replay(recorded) as T;
-        if (!store.claim) {
-          if (recorded) throw new Error("unexpected idempotency record state");
-          return execAndRecord(key, config, execute);
-        }
-        if (!recorded && (await store.claim(key, LEASE_MS))) {
-          return execAndRecord(key, config, execute, true);
-        }
-        // Another process holds the lease: wait for its outcome.
-        await new Promise((r) => setTimeout(r, LEASE_POLL_MS));
+      try {
+        return await runLocked();
+      } catch (err) {
+        throw await refuse(config, err);
       }
     })().finally(() => {
       inFlight.delete(key);
     });
+    async function runLocked(): Promise<T> {
+      for (;;) {
+        const recorded = await store.get(lockKey);
+        if (recorded && recorded.state !== "pending") return replay(recorded) as T;
+        if (!store.claim) {
+          if (recorded) throw new Error("unexpected idempotency record state");
+          return execAndRecord(lockKey, lockConfig, execute);
+        }
+        if (!recorded && (await store.claim(lockKey, LEASE_MS))) {
+          return execAndRecord(lockKey, lockConfig, execute, true);
+        }
+        // Another process holds the lease: wait for its outcome.
+        await new Promise((r) => setTimeout(r, LEASE_POLL_MS));
+      }
+    }
     inFlight.set(key, promise);
     return promise;
   }
@@ -329,7 +344,7 @@ export function createIdempotencyGuard(options: IdempotencyGuardOptions = {}): I
       await store.set(k, { state: "pending" }, ttlMs);
     } catch (err) {
       activeOps.delete(k);
-      throw err;
+      throw await refuse(config, err);
     }
     void run(siteId, config, body, execute)
       .then(
