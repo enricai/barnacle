@@ -248,4 +248,63 @@ describe("registerRoutes — meta.idempotency guard around dispatch", () => {
       await app.close();
     });
   });
+
+  describe("dispatch preflight before the session", () => {
+    async function appWithPreflight(siteId: string, preflight?: ReturnType<typeof vi.fn>) {
+      const execute = vi.fn(async () => ({ data: { ok: true } }));
+      const plugin = {
+        meta: {
+          siteId,
+          displayName: siteId,
+          bodySchema: z.looseObject({}),
+          responseSchema: z.unknown(),
+        },
+        execute,
+        ...(preflight ? { preflight } : {}),
+      } as unknown as SitePlugin<unknown, unknown>;
+      const app = Fastify({ loggerInstance: getLogger({ name: "loader-preflight" }) });
+      app.setValidatorCompiler(validatorCompiler);
+      app.setSerializerCompiler(serializerCompiler);
+      await app.register(errorHandlerPlugin);
+      await app.register(authPlugin);
+      await registerRoutes(app, cfgStub, [plugin]);
+      await app.ready();
+      return { app, execute };
+    }
+    const run = (app: Awaited<ReturnType<typeof appWithPreflight>>["app"], siteId: string) =>
+      app.inject({ method: "POST", url: `/v1/${siteId}/run`, payload: { a: 1 } });
+
+    it("answers 409 UNKNOWN_OUTCOME without opening a browser session", async () => {
+      const preflight = vi.fn(async () => {
+        throw new UnknownOutcomeError("already booked");
+      });
+      const { app, execute } = await appWithPreflight("example-booking.test", preflight);
+      const res = await run(app, "example-booking.test");
+      expect(res.statusCode).toBe(409);
+      expect(JSON.stringify(res.json())).toContain("UNKNOWN_OUTCOME");
+      expect(mockRunWithSession).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it("refuses the run before start on a non-UnknownOutcome preflight error", async () => {
+      const preflight = vi.fn(async () => {
+        throw new Error("preflight exploded");
+      });
+      const { app, execute } = await appWithPreflight("example-rentals.test", preflight);
+      const res = await run(app, "example-rentals.test");
+      expect(res.statusCode).toBeGreaterThanOrEqual(400);
+      expect(mockRunWithSession).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it("leaves plugins without preflight unchanged", async () => {
+      const { app, execute } = await appWithPreflight("example-plain.test");
+      const res = await run(app, "example-plain.test");
+      expect(res.statusCode).toBe(200);
+      expect(execute).toHaveBeenCalledTimes(1);
+      await app.close();
+    });
+  });
 });
